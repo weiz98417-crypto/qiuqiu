@@ -37,6 +37,10 @@ class WebSocketService {
     }
   }
 
+  void send(Map<String, dynamic> msg) {
+    _channel?.sink.add(jsonEncode(msg));
+  }
+
   void disconnect() {
     _pingTimer?.cancel();
     _channel?.sink.close();

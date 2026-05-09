@@ -23,6 +23,11 @@ func NewCooldown() *Cooldown {
 	}
 }
 
+// SetBase updates the base cooldown duration dynamically (for talkativeness control).
+func (c *Cooldown) SetBase(d time.Duration) {
+	c.baseDur = d
+}
+
 // IsActive returns true if cooldown is still in effect.
 func (c *Cooldown) IsActive() bool {
 	return time.Now().Before(c.until)

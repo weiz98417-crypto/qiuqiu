@@ -55,6 +55,12 @@ func (c ThrottleConfig) IntervalFor(eventType string) time.Duration {
 	}
 }
 
+var throttleMultiplier float64 = 1.0
+
+func SetThrottleMultiplier(m float64) {
+	throttleMultiplier = m
+}
+
 func NewThrottler(rdb *redis.Client) *Throttler {
 	return &Throttler{
 		rdb:    rdb,
@@ -76,7 +82,10 @@ func (t *Throttler) ShouldThrottle(ev *event.StandardEvent) bool {
 	ctx, cancel := context.WithTimeout(context.Background(), 100*time.Millisecond)
 	defer cancel()
 
-	ok, err := t.rdb.SetNX(ctx, key, "1", interval).Result()
+	s := interval.Nanoseconds()
+	s = int64(float64(s) * throttleMultiplier)
+	if s < 0 { s = 0 }
+	ok, err := t.rdb.SetNX(ctx, key, "1", time.Duration(s)).Result()
 	if err != nil {
 		return false
 	}
