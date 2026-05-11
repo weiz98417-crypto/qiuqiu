@@ -1,11 +1,13 @@
 package llm
 
 import (
+	"bufio"
 	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"strings"
 	"time"
 )
 
@@ -67,6 +69,53 @@ var TestEvents = []string{
 	"上半场结束，比分0-0。双方都还没有进球。请简短总结上半场。",
 	"射门！主队射正了，但被守门员扑出。第60分钟。请简短反应。",
 	"比赛开始！对阵双方是皇家马德里对巴塞罗那。请表达期待。",
+}
+
+// StreamChunk is a token from streaming LLM output.
+type StreamChunk struct {
+	Text    string
+	Done    bool
+	Tokens  int
+}
+
+// StreamWithMessages sends messages and returns a channel of streaming tokens.
+func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, temperature float64) <-chan StreamChunk {
+	ch := make(chan StreamChunk, 16)
+	go func() {
+		defer close(ch)
+		req := ChatRequest{
+			Model: "deepseek-chat", Messages: messages,
+			MaxTokens: 80, Temperature: temperature, Stream: true,
+		}
+		body, _ := json.Marshal(req)
+		httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
+		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		httpReq.Header.Set("Content-Type", "application/json")
+		httpReq.Header.Set("Accept", "text/event-stream")
+
+		resp, err := c.httpClient.Do(httpReq)
+		if err != nil {
+			return
+		}
+		defer resp.Body.Close()
+
+		scanner := bufio.NewScanner(resp.Body)
+		for scanner.Scan() {
+			line := scanner.Text()
+			if !strings.HasPrefix(line, "data: ") { continue }
+			data := strings.TrimPrefix(line, "data: ")
+			if data == "[DONE]" { ch <- StreamChunk{Done: true}; return }
+			var sse struct {
+				Choices []struct {
+					Delta struct{ Content string `json:"content"` } `json:"delta"`
+				} `json:"choices"`
+			}
+			if json.Unmarshal([]byte(data), &sse) == nil && len(sse.Choices) > 0 {
+				ch <- StreamChunk{Text: sse.Choices[0].Delta.Content}
+			}
+		}
+	}()
+	return ch
 }
 
 // GenerateWithMessages sends a full message list with configurable temperature.

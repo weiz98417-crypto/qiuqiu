@@ -7,6 +7,7 @@ import (
 	"qiuqiu/internal/event"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/tts"
+	"strings"
 	"time"
 )
 
@@ -38,8 +39,69 @@ type AIPipelineOutput struct {
 	Expression   string        `json:"expression"`
 	LLMDuration  time.Duration `json:"llm_latency_ms"`
 	TTSDuration  time.Duration `json:"tts_latency_ms"`
+	FirstByteAt  time.Duration `json:"first_byte_ms"` // streaming: first sentence→TTS
 	FallbackUsed bool          `json:"fallback"`
 	Error        error         `json:"-"`
+}
+
+// ProcessStreaming uses streaming LLM + sentence-split TTS for lower perceived latency.
+func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationInstruction) *AIPipelineOutput {
+	output := &AIPipelineOutput{Expression: inst.Expression}
+	messages, err := p.promptMgr.BuildPrompt(inst, UserContext{})
+	if err != nil {
+		output.Text = templateFallback(inst.Event)
+		output.FallbackUsed = true
+		return output
+	}
+	llmMsgs := make([]llm.Message, len(messages))
+	for i, m := range messages {
+		llmMsgs[i] = llm.Message{Role: m.Role, Content: m.Content}
+	}
+
+	splitter := NewSentenceSplitter()
+	var fullText strings.Builder
+	start := time.Now()
+	firstSent := false
+
+	for chunk := range p.llmClient.StreamWithMessages(ctx, llmMsgs, 0.7) {
+		if chunk.Done { break }
+		fullText.WriteString(chunk.Text)
+		if sentence := splitter.Feed(chunk.Text); sentence != "" {
+			if valid, _ := ValidateLLMOutput(sentence); valid {
+				sentence = Sanitize(sentence)
+				if !firstSent {
+					firstSent = true
+					output.FirstByteAt = time.Since(start)
+					output.Text = sentence
+				}
+				if p.ttsClient != nil {
+					ttsResult, err := p.ttsClient.Synthesize(ctx, sentence, "EXAVITQu4vr4xnSDxMaL")
+					if err == nil {
+						output.AudioData = ttsResult.AudioData
+						output.TTSDuration = ttsResult.Duration
+					}
+				}
+				output.LLMDuration = time.Since(start)
+				return output // Return after first sentence for streaming
+			}
+		}
+	}
+	// Flush remaining
+	if remaining := splitter.FlushAll(); remaining != "" && output.Text == "" {
+		output.Text = remaining
+		output.FirstByteAt = time.Since(start)
+		if p.ttsClient != nil {
+			ttsResult, err := p.ttsClient.Synthesize(ctx, remaining, "EXAVITQu4vr4xnSDxMaL")
+			if err == nil {
+				output.AudioData = ttsResult.AudioData
+				output.TTSDuration = ttsResult.Duration
+			}
+		}
+	}
+	if output.Text == "" {
+		output.Text = fullText.String()
+	}
+	return output
 }
 
 // Process handles a single instruction through the full pipeline.
@@ -126,21 +188,29 @@ func (p *AIPipeline) primaryLLM(ctx context.Context, messages []llm.Message, tem
 	return result, err
 }
 
+var fallbackPool = map[string][]string{
+	"goal":     {"球进了！！", "进了！漂亮！", "这球太关键了！", "门将毫无办法！", "关键时刻站出来了！"},
+	"penalty":  {"点球！球进了！", "稳稳罚进！"},
+	"shot":     {"好球！差一点！", "这脚有威胁！", "射门！", "可惜了！", "差之毫厘！"},
+	"yellow_card": {"吃牌了。", "黄牌，这动作没必要。", "领到黄牌了。"},
+	"red_card":    {"红牌！！这下麻烦了！", "直接红牌！", "被罚下了！"},
+	"match_start": {"比赛开始了！一起看吧～", "开球了！今天这场比赛有看头！"},
+	"match_end":   {"比赛结束了！", "全场比赛结束！"},
+	"foul":     {"犯规了。", "这动作有点大。"},
+	"corner":    {"角球！", "角球机会！"},
+	"offside":   {"越位了。", "边裁举旗了。"},
+	"substitution": {"换人了。", "换人调整。"},
+	"var_check":    {"VAR在检查...", "裁判去看回放了。"},
+}
+
+var fallbackIdx = make(map[string]int)
+
 func templateFallback(ev *event.StandardEvent) string {
-	switch ev.Type {
-	case "goal", "penalty":
-		return "球进了！！"
-	case "shot":
-		return "好球！差一点！"
-	case "yellow_card":
-		return "吃牌了。"
-	case "red_card":
-		return "红牌！这下麻烦了。"
-	case "match_start":
-		return "比赛开始了！一起看吧～"
-	case "match_end":
-		return "比赛结束了。"
-	default:
+	pool, ok := fallbackPool[ev.Type]
+	if !ok {
 		return "嗯！"
 	}
+	idx := fallbackIdx[ev.Type]
+	fallbackIdx[ev.Type] = (idx + 1) % len(pool)
+	return pool[idx]
 }
