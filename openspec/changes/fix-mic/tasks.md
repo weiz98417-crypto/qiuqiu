@@ -1,0 +1,3 @@
+- [x] 确认 `vad_service.dart` 中 `_finishSentence()` pushToTalk 分支已设置 `_isListening = false`
+- [x] 添加 `_stopRecording()` 后的 try-catch 防止二次 stop 时 crash
+- [ ] Web 端手动测试: 按住→松手→再按住 (用户端验证)

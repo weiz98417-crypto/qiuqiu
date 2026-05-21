@@ -124,6 +124,10 @@ func (e *Engine) emitInstruction(ev *event.StandardEvent) {
 	}
 }
 
+func (e *Engine) SetCooldown(d time.Duration) {
+	e.cooldown.SetBase(d)
+}
+
 func mapExpression(eventType string) string {
 	switch eventType {
 	case "goal", "penalty":

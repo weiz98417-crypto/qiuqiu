@@ -75,7 +75,7 @@ func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationIns
 					output.Text = sentence
 				}
 				if p.ttsClient != nil {
-					ttsResult, err := p.ttsClient.Synthesize(ctx, sentence, "EXAVITQu4vr4xnSDxMaL")
+					ttsResult, err := p.ttsClient.Synthesize(ctx, sentence, "cgSgspJ2msm6clMCkdW9")
 					if err == nil {
 						output.AudioData = ttsResult.AudioData
 						output.TTSDuration = ttsResult.Duration
@@ -91,7 +91,7 @@ func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationIns
 		output.Text = remaining
 		output.FirstByteAt = time.Since(start)
 		if p.ttsClient != nil {
-			ttsResult, err := p.ttsClient.Synthesize(ctx, remaining, "EXAVITQu4vr4xnSDxMaL")
+			ttsResult, err := p.ttsClient.Synthesize(ctx, remaining, "cgSgspJ2msm6clMCkdW9")
 			if err == nil {
 				output.AudioData = ttsResult.AudioData
 				output.TTSDuration = ttsResult.Duration
@@ -167,7 +167,7 @@ func (p *AIPipeline) Process(ctx context.Context, inst *AIGenerationInstruction)
 
 	// 6. TTS
 	if p.ttsClient != nil {
-		ttsResult, err := p.ttsClient.Synthesize(ctx, text, "EXAVITQu4vr4xnSDxMaL")
+		ttsResult, err := p.ttsClient.Synthesize(ctx, text, "cgSgspJ2msm6clMCkdW9")
 		if err != nil {
 			output.Error = fmt.Errorf("tts: %w", err)
 		} else {

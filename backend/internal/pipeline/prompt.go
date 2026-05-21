@@ -2,6 +2,7 @@ package pipeline
 
 import (
 	"fmt"
+	"qiuqiu/internal/llm"
 	"strings"
 	"sync"
 	"text/template"
@@ -124,6 +125,36 @@ func cardDisplayName(t string) string {
 type UserContext struct {
 	Nickname     string
 	FavoriteTeam string
+}
+
+// System returns the system persona prompt.
+func (pm *PromptManager) System() string {
+	pm.mu.RLock()
+	defer pm.mu.RUnlock()
+	return pm.system
+}
+
+// BuildReplyMessages creates chat messages for user speech → LLM reply.
+func BuildReplyMessages(systemPrompt, text, intent string) []llm.Message {
+	return []llm.Message{
+		{Role: "system", Content: systemPrompt},
+		{Role: "user", Content: fmt.Sprintf("用户%s说：%s\n请根据语境简短回复", intentLabel(intent), text)},
+	}
+}
+
+func intentLabel(intent string) string {
+	switch intent {
+	case "question":
+		return "在问"
+	case "command":
+		return "命令"
+	case "praise":
+		return "在夸"
+	case "complain":
+		return "在吐槽"
+	default:
+		return ""
+	}
 }
 
 // Message is a chat message for LLM API.

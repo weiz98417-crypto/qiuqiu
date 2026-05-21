@@ -61,7 +61,7 @@ func main() {
 
 			// TTS call
 			if ttsClient != nil {
-				ttsResult, err := ttsClient.Synthesize(ctx, rec.Text, "EXAVITQu4vr4xnSDxMaL") // Bella — premade voice, free tier OK
+				ttsResult, err := ttsClient.Synthesize(ctx, rec.Text, "cgSgspJ2msm6clMCkdW9") // Bella — premade voice, free tier OK
 				if err != nil {
 					rec.Err = fmt.Errorf("tts: %w", err)
 					fmt.Printf("TTS FAIL: %v", err)

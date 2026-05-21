@@ -1,0 +1,4 @@
+- [x] T1: 话痨调节 — match_screen.dart 发送 talkativeness + backend cooldown.SetBase()
+- [x] T2: 音频间隙 — audio_player.dart 积累 200ms 再播放，减少 loadMem 调用频率
+- [x] T3: 动作驱动 — live2d.html 加 playMotion(), match_screen.dart 事件分发
+- [x] T4: live2d_view.dart 同步 motion 相关更新

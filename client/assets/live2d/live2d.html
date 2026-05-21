@@ -1,0 +1,157 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
+  canvas { display:block; width:100%; height:100%; }
+</style>
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script src="/assets/live2d-display-bundle.js"></script>
+</head>
+<body>
+<canvas id="live2d"></canvas>
+<script>
+var app = new PIXI.Application({
+    view: document.getElementById('live2d'),
+    autoStart: true,
+    resizeTo: window,
+    backgroundAlpha: 0,
+});
+
+var model = null;
+window.modelReady = false;
+var speaking = false;
+var mouthValue = 0;
+var exprMap = { idle:0, listening:0, confused:0, excited:1, chat:3, tease:3, happy:3, nervous:4, sad:4, surprised:5, angry:6 };
+
+function resizeModel() {
+    if (!model) return;
+    model.anchor.set(0.5, 0);  // anchor top-center
+    model.x = app.screen.width / 2;
+    model.y = 0;
+    var s = Math.min(app.screen.width / 700, app.screen.height / 1000);
+    model.scale.set(s * 0.32);  // half-body view
+}
+
+async function loadModel() {
+    try {
+        var L2D = window.Live2DModel || Live2DModel;
+        model = await L2D.from(
+            '/assets/models/qiuqiu/female_01Arkit_6.model3.json',
+            { autoUpdate: true, autoInteract: false }
+        );
+        app.stage.addChild(model);
+        resizeModel();
+        window.addEventListener('resize', resizeModel);
+        window.modelReady = true;
+        try { window.flutter_inappwebview.postMessage(JSON.stringify({type:'ready'})); } catch(_) {}
+    } catch(e) {
+        console.error('Live2D load error:', e);
+        window.modelReady = true;
+        try { window.flutter_inappwebview.postMessage(JSON.stringify({type:'ready'})); } catch(_) {}
+    }
+}
+
+function setExpression(name) {
+    var idx = exprMap[name] || 0;
+    try { if (model) model.expression(idx); } catch(e) {}
+}
+
+function playMotion(name) {
+    if (!model) return;
+    var map = {
+        hello: ['hello', 0],
+        cheer: ['idle', 1],
+        idle: ['idle', 0],
+        listen: ['listen', 0],
+        speak: ['speak', 0],
+        think: ['think', 0],
+    };
+    var m = map[name];
+    if (m) try { model.motion(m[0], m[1], 3); } catch(e) {}
+}
+
+function setSpeaking(v) {
+    speaking = v;
+    if (!v) mouthValue = 0;
+}
+
+setInterval(function() {
+    if (!model) return;
+    if (speaking) {
+        mouthValue = 0.25 + Math.random() * 0.75;
+    } else {
+        mouthValue += (0 - mouthValue) * 0.25;
+    }
+    try {
+        model.internalModel.coreModel.setParameterValueById('ParamJawOpen', mouthValue);
+    } catch(e) {}
+}, 50);
+
+// === Web Audio Recording + VAD ===
+var audioCtx=null, mediaStream=null, recorderNode=null, audioChunks=[];
+var isRecording=false, vadSpeaking=false, silenceTimer=null, speechFrames=0;
+window.vadResult=null;
+
+async function startRecording() {
+    if(isRecording)return;
+    try{
+        mediaStream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:!0}});
+        audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+        var src=audioCtx.createMediaStreamSource(mediaStream);
+        var processor=audioCtx.createScriptProcessor(4096,1,1);
+        src.connect(processor);processor.connect(audioCtx.destination);
+        isRecording=true;audioChunks=[];speechFrames=0;vadSpeaking=false;
+        processor.onaudioprocess=function(e){
+            if(!isRecording)return;
+            var input=e.inputBuffer.getChannelData(0);
+            var pcm=new Int16Array(input.length);
+            var sum=0;
+            for(var i=0;i<input.length;i++){var s=Math.max(-1,Math.min(1,input[i]));pcm[i]=s*0x7FFF;sum+=s*s}
+            var rms=Math.sqrt(sum/input.length);
+            audioChunks.push(pcm);
+            if(rms>0.02){
+                speechFrames++;
+                if(speechFrames===5){vadSpeaking=true;window.vadResult=JSON.stringify({event:'speaking'})}
+                silenceTimer&&clearTimeout(silenceTimer);silenceTimer=null;
+            }else if(vadSpeaking){
+                silenceTimer=setTimeout(function(){
+                    isRecording=false;vadSpeaking=false;speechFrames=0;
+                    var totalLen=audioChunks.reduce(function(a,b){return a+b.length},0);
+                    var buf=new Int16Array(totalLen),off=0;
+                    for(var i=0;i<audioChunks.length;i++){buf.set(audioChunks[i],off);off+=audioChunks[i].length}
+                    var bytes=new Uint8Array(buf.buffer);
+                    var b64='';for(var i=0;i<bytes.length;i++)b64+=String.fromCharCode(bytes[i]);
+                    window.vadResult=JSON.stringify({event:'sentenceEnd',audio:btoa(b64)});
+                    audioChunks=[];silenceTimer=null;
+                    mediaStream.getTracks().forEach(function(t){t.stop()});
+                    audioCtx.close();audioCtx=null;
+                },800);
+            }
+        };
+    }catch(e){console.error('mic error:',e)}
+}
+function stopRecording(){
+    isRecording=false;
+    silenceTimer&&clearTimeout(silenceTimer);
+    if(vadSpeaking){
+        var totalLen=audioChunks.reduce(function(a,b){return a+b.length},0);
+        var buf=new Int16Array(totalLen),off=0;
+        for(var i=0;i<audioChunks.length;i++){buf.set(audioChunks[i],off);off+=audioChunks[i].length}
+        var bytes=new Uint8Array(buf.buffer);
+        var b64='';for(var i=0;i<bytes.length;i++)b64+=String.fromCharCode(bytes[i]);
+        window.vadResult=JSON.stringify({event:'sentenceEnd',audio:btoa(b64)});
+    }
+    audioChunks=[];speechFrames=0;vadSpeaking=false;
+    if(mediaStream){mediaStream.getTracks().forEach(function(t){t.stop()});mediaStream=null}
+    if(audioCtx){audioCtx.close();audioCtx=null}
+}
+function getVAD(){var r=window.vadResult;window.vadResult=null;return r||'null'}
+
+loadModel();
+</script>
+</body>
+</html>

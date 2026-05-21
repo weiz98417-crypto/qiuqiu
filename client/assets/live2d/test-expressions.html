@@ -1,0 +1,52 @@
+<!DOCTYPE html>
+<html><head><meta charset="utf-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<style>*{margin:0;padding:0;box-sizing:border-box}html,body{height:100%;overflow:hidden;background:#1a1a2e;color:#fff;font-family:sans-serif}canvas{display:block}body{display:flex;flex-direction:column;align-items:center}</style>
+</head><body>
+<canvas id="live2d" style="width:400px;height:580px;background:#2d3436"></canvas>
+<div style="padding:6px;font-size:12px;text-align:center;max-width:420px">
+  <p style="margin:2px 0;color:#ff6b35;font-weight:bold">Expression (如果有)</p>
+  <button onclick="testExpr(0)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP0</button>
+  <button onclick="testExpr(1)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP1</button>
+  <button onclick="testExpr(2)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP2</button>
+  <button onclick="testExpr(3)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP3</button>
+  <button onclick="testExpr(4)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP4</button>
+  <button onclick="testExpr(5)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP5</button>
+  <button onclick="testExpr(6)" style="margin:2px;padding:4px 10px;background:#e17055;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">EXP6</button>
+  <p style="margin:8px 0 2px;color:#00b894;font-weight:bold">Motion</p>
+  <button onclick="testMotion('hello',0)" style="margin:2px;padding:4px 10px;background:#00b894;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">HELLO</button>
+  <button onclick="testMotion('idle',0)" style="margin:2px;padding:4px 10px;background:#0984e3;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">IDLE1</button>
+  <button onclick="testMotion('idle',1)" style="margin:2px;padding:4px 10px;background:#0984e3;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">IDLE2</button>
+  <button onclick="testMotion('idle',2)" style="margin:2px;padding:4px 10px;background:#0984e3;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">IDLE3</button>
+  <button onclick="testMotion('speak',0)" style="margin:2px;padding:4px 10px;background:#6c5ce7;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">SPEAK1</button>
+  <button onclick="testMotion('speak',1)" style="margin:2px;padding:4px 10px;background:#6c5ce7;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">SPEAK2</button>
+  <button onclick="testMotion('listen',0)" style="margin:2px;padding:4px 10px;background:#fdcb6e;color:#222;border:none;border-radius:3px;cursor:pointer;font-size:11px">LISTEN1</button>
+  <button onclick="testMotion('listen',1)" style="margin:2px;padding:4px 10px;background:#fdcb6e;color:#222;border:none;border-radius:3px;cursor:pointer;font-size:11px">LISTEN2</button>
+  <button onclick="testMotion('think',0)" style="margin:2px;padding:4px 10px;background:#d63031;color:#fff;border:none;border-radius:3px;cursor:pointer;font-size:11px">THINK</button>
+  <div id="label" style="margin-top:6px;color:#ffeaa7;min-height:20px">点动作按钮看效果</div>
+</div>
+<script src="https://cubism.live2d.com/sdk-web/cubismcore/live2dcubismcore.min.js"></script>
+<script src="/assets/live2d-display-bundle.js"></script>
+<script>
+var app=new PIXI.Application({view:document.getElementById('live2d'),autoStart:!0,width:400,height:580,backgroundColor:0x2d3436});
+var model=null;
+async function init(){
+  try{
+    var L2D=window.Live2DModel||Live2DModel;
+    model=await L2D.from('/assets/models/qiuqiu/female_01Arkit_6.model3.json',{autoUpdate:!0,autoInteract:!1});
+    model.anchor.set(0.5,0);model.x=200;model.y=0;
+    model.scale.set(Math.min(400/700,580/1000)*0.45);
+    app.stage.addChild(model);
+    document.getElementById('label').textContent='模型加载完成，点按钮测试';
+  }catch(e){console.error(e);document.getElementById('label').textContent='加载失败: '+e.message}
+}
+function testExpr(i){
+  if(!model)return;
+  try{model.expression(i);document.getElementById('label').textContent='EXP'+i}catch(e){document.getElementById('label').textContent='EXP'+i+' error'}
+}
+function testMotion(g,i){
+  if(!model)return;
+  try{model.motion(g,i,3);document.getElementById('label').textContent=g.toUpperCase()+' #'+i}catch(e){document.getElementById('label').textContent=g+' error: '+e.message}
+}
+init();
+</script></body></html>

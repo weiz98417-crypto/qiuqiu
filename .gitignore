@@ -29,3 +29,10 @@ client/pubspec.lock
 # Screenshots
 *.png
 *.jpg
+.gstack/
+
+# Backup / temp
+*~
+Textoon-main/
+.claude/
+.codex/

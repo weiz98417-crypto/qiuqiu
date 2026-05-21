@@ -11,7 +11,7 @@ import (
 	"time"
 )
 
-// Client wraps OpenAI Whisper API for speech recognition.
+// Client wraps SiliconFlow SenseVoice API for speech recognition.
 type Client struct {
 	apiKey     string
 	baseURL    string
@@ -21,8 +21,8 @@ type Client struct {
 func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey:  apiKey,
-		baseURL: "https://api.openai.com/v1",
-		httpClient: &http.Client{Timeout: 15 * time.Second},
+		baseURL: "https://api.siliconflow.cn/v1",
+		httpClient: &http.Client{Timeout: 30 * time.Second},
 	}
 }
 
@@ -32,35 +32,24 @@ type Result struct {
 	DurationMs int     `json:"duration_ms"`
 }
 
-// Transcribe sends PCM audio to Whisper and returns recognized text.
+// Transcribe sends PCM audio to SenseVoice and returns recognized text.
 func (c *Client) Transcribe(ctx context.Context, audio []byte, hints []string) (*Result, error) {
 	body := &bytes.Buffer{}
 	w := multipart.NewWriter(body)
 
-	// Audio file part
 	part, _ := w.CreateFormFile("file", "audio.wav")
 	part.Write(audio)
 
-	w.WriteField("model", "whisper-1")
-	w.WriteField("language", "zh")
-	w.WriteField("response_format", "verbose_json")
-
-	// Inject context hints as prompt
-	if len(hints) > 0 {
-		prompt := ""
-		for _, h := range hints {
-			prompt += h + " "
-		}
-		w.WriteField("prompt", prompt)
-	}
+	w.WriteField("model", "FunAudioLLM/SenseVoiceSmall")
 
 	w.Close()
 
+	start := time.Now()
 	req, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/audio/transcriptions", body)
 	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 	req.Header.Set("Content-Type", w.FormDataContentType())
+	req.Header.Set("Accept", "application/json")
 
-	start := time.Now()
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
 		return nil, fmt.Errorf("asr request: %w", err)
@@ -73,26 +62,15 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, hints []string) (
 	}
 
 	var raw struct {
-		Text     string `json:"text"`
-		Segments []struct {
-			Confidence float64 `json:"confidence"`
-		} `json:"segments"`
+		Text string `json:"text"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
 		return nil, fmt.Errorf("asr decode: %w", err)
 	}
 
-	confidence := 0.0
-	if len(raw.Segments) > 0 {
-		for _, s := range raw.Segments {
-			confidence += s.Confidence
-		}
-		confidence /= float64(len(raw.Segments))
-	}
-
 	return &Result{
 		Text:       raw.Text,
-		Confidence: confidence,
+		Confidence: 0,
 		DurationMs: int(time.Since(start).Milliseconds()),
 	}, nil
 }
