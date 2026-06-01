@@ -144,6 +144,91 @@ func TestEvalCompanionBoundariesDoNotInventUnrecordedFacts(t *testing.T) {
 	assertContains(t, control.Reply, "少说")
 }
 
+func TestEvalCompanionCorrectionAwareMemoryAndUnknownFallback(t *testing.T) {
+	ctx := context.Background()
+	store := matchstate.NewStore()
+	tools := NewStoreMemoryTools(store)
+	agent := NewAgent(tools)
+	matchID := "product-eval-correction"
+
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	original, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "12:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		Score:       matchstate.Score{Home: 1, Away: 0},
+		Description: "佩德里破门。",
+		Participants: []matchstate.Participant{
+			{Role: "scorer", Name: "佩德里"},
+			{Role: "assist", Name: "法比安"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create original goal error: %v", err)
+	}
+	replacement, _, err := store.Correct(matchID, original.ID, matchstate.MatchEvent{
+		EventType:   "var_check",
+		Period:      "first_half",
+		Clock:       "13:10",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       matchstate.Score{Home: 0, Away: 0},
+		Description: "VAR 取消这粒进球。",
+	})
+	if err != nil {
+		t.Fatalf("Correct goal error: %v", err)
+	}
+
+	scoreReply, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "user-1",
+		Text:    "现在几比几？",
+		Now:     fixedTime(),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage score error: %v", err)
+	}
+	assertContains(t, scoreReply.Reply, "0-0")
+	assertNotContains(t, scoreReply.Reply, "1-0")
+
+	assistReply, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "user-1",
+		Text:    "刚才谁助攻？",
+		Now:     fixedTime(),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage assist error: %v", err)
+	}
+	assertNotContains(t, strings.Join(assistReply.Trace.RetrievedEvent, ","), original.ID)
+	assertNotContains(t, assistReply.Trace.Output, "法比安")
+	assertContains(t, assistReply.Trace.Output, "没看到")
+	_ = replacement
+
+	unknownReply, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "user-1",
+		Text:    "请你分析一下今天球场草皮对传控节奏的隐藏影响",
+		Now:     fixedTime(),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage unknown error: %v", err)
+	}
+	if unknownReply.Intent != IntentUnknown {
+		t.Fatalf("expected unknown intent, got %s", unknownReply.Intent)
+	}
+	assertContains(t, unknownReply.Reply, "陪看")
+	if len(unknownReply.Trace.ToolCalls) != 0 {
+		t.Fatalf("unknown fallback should not query match tools, got %+v", unknownReply.Trace.ToolCalls)
+	}
+}
+
 func BenchmarkEvalCompanionRecentEventAnswer(b *testing.B) {
 	ctx := context.Background()
 	store := matchstate.NewStore()
@@ -192,6 +277,13 @@ func assertContains(t *testing.T, text, want string) {
 	t.Helper()
 	if !strings.Contains(text, want) {
 		t.Fatalf("expected %q to contain %q", text, want)
+	}
+}
+
+func assertNotContains(t *testing.T, text, want string) {
+	t.Helper()
+	if strings.Contains(text, want) {
+		t.Fatalf("expected %q not to contain %q", text, want)
 	}
 }
 

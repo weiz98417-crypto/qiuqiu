@@ -9,9 +9,10 @@ import (
 )
 
 type StoreMemoryTools struct {
-	store  matchstate.Repository
-	mu     sync.Mutex
-	traces []Trace
+	store       matchstate.Repository
+	traceWriter TraceWriter
+	mu          sync.Mutex
+	traces      []Trace
 }
 
 func NewStoreMemoryTools(store *matchstate.Store) *StoreMemoryTools {
@@ -20,6 +21,11 @@ func NewStoreMemoryTools(store *matchstate.Store) *StoreMemoryTools {
 
 func NewRepositoryMemoryTools(store matchstate.Repository) *StoreMemoryTools {
 	return &StoreMemoryTools{store: store}
+}
+
+func (m *StoreMemoryTools) WithTraceWriter(writer TraceWriter) *StoreMemoryTools {
+	m.traceWriter = writer
+	return m
 }
 
 func (m *StoreMemoryTools) Snapshot(ctx context.Context, matchID string) (matchstate.Snapshot, error) {
@@ -52,10 +58,12 @@ func (m *StoreMemoryTools) EventsByPlayer(ctx context.Context, matchID, playerNa
 }
 
 func (m *StoreMemoryTools) WriteTrace(ctx context.Context, trace Trace) error {
-	_ = ctx
 	m.mu.Lock()
-	defer m.mu.Unlock()
 	m.traces = append(m.traces, trace)
+	m.mu.Unlock()
+	if m.traceWriter != nil {
+		return m.traceWriter.WriteTrace(ctx, trace)
+	}
 	return nil
 }
 

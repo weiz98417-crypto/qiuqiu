@@ -14,6 +14,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/asr"
+	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/llm"
@@ -70,6 +71,16 @@ func main() {
 	} else {
 		log.Printf("match store: memory")
 	}
+	companionTools := companion.NewRepositoryMemoryTools(matchStore)
+	if cfg.DatabaseURL != "" {
+		traceWriter, err := companion.OpenPostgresTraceWriter(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres trace writer: %v", err)
+		}
+		defer traceWriter.Close()
+		companionTools.WithTraceWriter(companion.NewAsyncTraceWriter(traceWriter, 256))
+	}
+	companionAgent := companion.NewAgent(companionTools)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", hub.HandleHealth)
@@ -222,23 +233,17 @@ func main() {
 							return
 						}
 
-						// Classify intent
-						intent := pipeline.ClassifyIntent(text)
-						if intent == "ignore" {
-							return
-						}
-
-						// Build reply prompt
-						snapshot := matchStore.Snapshot(matchIDStr)
-						messages := pipeline.BuildReplyMessagesWithMatch(promptMgr.System(), text, intent, snapshot)
-
-						// Generate reply
-						result, err := llmClient.GenerateWithMessages(bgCtx, messages, 0.8)
+						result, err := companionAgent.HandleMessage(bgCtx, companion.MessageRequest{
+							MatchID: matchIDStr,
+							UserID:  fallbackString(str(req, "userId"), r.RemoteAddr),
+							Text:    text,
+							Now:     time.Now(),
+						})
 						if err != nil {
-							log.Printf("llm reply error: %v", err)
+							log.Printf("companion reply error: %v", err)
 							return
 						}
-						replyText = result.Text
+						replyText = result.Reply
 
 						// Synthesize speech
 						var audioData []byte
@@ -477,6 +482,13 @@ func readFile(path string) string {
 func str(m map[string]interface{}, key string) string {
 	v, _ := m[key].(string)
 	return v
+}
+
+func fallbackString(value, fallback string) string {
+	if strings.TrimSpace(value) == "" {
+		return fallback
+	}
+	return value
 }
 
 func sendJSON(conn *websocket.Conn, msg interface{}) {
