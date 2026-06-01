@@ -1,0 +1,25 @@
+schema: spec-driven
+
+context: |
+  启动新的实现计划、修复计划或阶段性工作时，先在 openspec/changes/<change-id>/ 下建立 proposal.md、tasks.md，必要时补 design.md。
+  聊天里的计划只能作为即时说明，长期状态以 OpenSpec 任务清单为准。
+  不要把 API key、token、账号密码等密钥写入 OpenSpec；只记录环境变量名和配置方式。
+
+# Project context (optional)
+# This is shown to AI when creating artifacts.
+# Add your tech stack, conventions, style guides, domain knowledge, etc.
+# Example:
+#   context: |
+#     Tech stack: TypeScript, React, Node.js
+#     We use conventional commits
+#     Domain: e-commerce platform
+
+# Per-artifact rules (optional)
+# Add custom rules for specific artifacts.
+# Example:
+#   rules:
+#     proposal:
+#       - Keep proposals under 500 words
+#       - Always include a "Non-goals" section
+#     tasks:
+#       - Break tasks into chunks of max 2 hours

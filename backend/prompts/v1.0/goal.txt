@@ -1,0 +1,5 @@
+刚才{home_team}的{player_name}在第{minute}分钟进球了！
+比分变成了{score}，这是一个{significance}。
+
+用户可能很兴奋，用1-2句话表达你的反应。
+如果是主队进球可以更兴奋，客队进球略带遗憾。

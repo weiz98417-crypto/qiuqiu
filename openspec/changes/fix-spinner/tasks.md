@@ -1,0 +1,2 @@
+- [x] 在 `onLoadStop` 中加 `Timer(Duration(seconds:5))` → `setState(_modelReady = true)`
+- [x] 保留现有 poll + postMessage 逻辑不变，超时仅作为兜底

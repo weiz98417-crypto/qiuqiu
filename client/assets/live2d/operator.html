@@ -1,0 +1,1633 @@
+<!DOCTYPE html>
+<html class="dark" lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>赛事直播导演控台 - 实战导演</title>
+<link rel="preconnect" href="https://fonts.googleapis.com">
+<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
+<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
+<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
+<style>
+  :root {
+    --background: #051424;
+    --surface: #051424;
+    --surface-lowest: #010f1f;
+    --surface-low: #0d1c2d;
+    --surface-container: #122131;
+    --surface-high: #1c2b3c;
+    --surface-bright: #2c3a4c;
+    --surface-variant: #273647;
+    --primary: #ffb693;
+    --primary-container: #ff6b00;
+    --on-primary: #561f00;
+    --on-primary-container: #572000;
+    --secondary: #bcc7de;
+    --tertiary: #bec6e0;
+    --on-surface: #d4e4fa;
+    --on-variant: #e2bfb0;
+    --outline: #a98a7d;
+    --error: #ffb4ab;
+    --green: #34d399;
+  }
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: var(--background); color: var(--on-surface); font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { height: 100vh; overflow: hidden; display: flex; font-size: 14px; line-height: 20px; }
+  button, input, select, textarea { font: inherit; }
+  button { cursor: pointer; }
+  input, select, textarea {
+    min-width: 0;
+    border: 1px solid rgba(169, 138, 125, .22);
+    background: var(--surface-lowest);
+    color: var(--on-surface);
+    border-radius: 6px;
+    padding: 8px 10px;
+    outline: none;
+  }
+  input:focus, select:focus, textarea:focus {
+    border-color: var(--primary);
+    box-shadow: 0 0 0 2px rgba(255, 182, 147, .16);
+  }
+  input[type=number]::-webkit-inner-spin-button { opacity: .35; }
+  textarea { resize: vertical; min-height: 64px; }
+  label { display: grid; gap: 5px; color: var(--on-variant); font-size: 11px; line-height: 16px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+  ::-webkit-scrollbar { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: transparent; }
+  ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .12); border-radius: 999px; }
+  ::selection { background: var(--primary-container); color: white; }
+  .material-symbols-outlined { font-size: 20px; line-height: 1; vertical-align: middle; }
+  .shell { display: flex; width: 100%; min-width: 0; }
+  .side-nav {
+    width: 256px;
+    flex: 0 0 256px;
+    height: 100vh;
+    padding: 80px 12px 16px;
+    background: var(--surface-lowest);
+    border-right: 1px solid rgba(255,255,255,.06);
+    display: flex;
+    flex-direction: column;
+    gap: 18px;
+  }
+  .brand { display: flex; align-items: center; gap: 12px; padding: 0 8px; }
+  .avatar {
+    width: 42px; height: 42px; border-radius: 50%;
+    display: grid; place-items: center;
+    background: var(--surface-variant);
+    border: 1px solid rgba(255,255,255,.1);
+    color: var(--primary);
+  }
+  .brand-title { font-size: 20px; line-height: 28px; font-weight: 700; color: var(--primary); }
+  .brand-sub { font: 700 11px/16px "JetBrains Mono", monospace; color: var(--on-variant); letter-spacing: .05em; }
+  .nav-stack { display: flex; flex-direction: column; gap: 6px; }
+  .nav-item {
+    display: flex; align-items: center; gap: 16px;
+    min-height: 44px; padding: 10px 16px;
+    border-radius: 8px;
+    color: var(--on-variant);
+    text-decoration: none;
+    font-size: 16px; font-weight: 600;
+  }
+  .nav-item:hover { background: var(--surface-variant); color: var(--on-surface); }
+  .nav-item.active { background: var(--primary-container); color: var(--on-primary-container); transform: scale(.98); font-weight: 800; }
+  .quick-btn, .primary-btn, .ghost-btn, .small-btn, .event-btn, .template-chip, .player-chip {
+    border-radius: 8px;
+    transition: transform .16s ease, border-color .16s ease, background .16s ease, color .16s ease, box-shadow .16s ease;
+  }
+  .quick-btn, .primary-btn {
+    border: 0;
+    background: var(--primary-container);
+    color: var(--on-primary-container);
+    font-weight: 800;
+    box-shadow: 0 0 16px rgba(255,107,0,.28);
+  }
+  .quick-btn { width: calc(100% - 16px); margin: 0 8px; padding: 10px 12px; display: flex; align-items: center; justify-content: center; gap: 8px; }
+  .primary-btn { width: 100%; min-height: 56px; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 20px; line-height: 28px; }
+  .primary-btn:hover, .quick-btn:hover { filter: brightness(1.08); transform: translateY(-1px); }
+  .ghost-btn, .small-btn {
+    border: 1px solid rgba(255,255,255,.08);
+    background: var(--surface-variant);
+    color: var(--on-variant);
+  }
+  .ghost-btn { padding: 8px 12px; font-weight: 700; }
+  .small-btn { padding: 6px 8px; font-size: 12px; line-height: 16px; }
+  .ghost-btn:hover, .small-btn:hover { color: var(--on-surface); border-color: rgba(255,182,147,.45); }
+  .main { position: relative; flex: 1; min-width: 0; height: 100vh; display: flex; flex-direction: column; overflow: hidden; }
+  .topbar {
+    position: fixed; left: 0; top: 0; right: 0; z-index: 20;
+    height: 64px; padding: 0 24px 0 280px;
+    display: flex; align-items: center; justify-content: space-between;
+    background: rgba(13, 28, 45, .92);
+    backdrop-filter: blur(18px);
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .top-title { font-size: 32px; line-height: 40px; font-weight: 800; color: var(--primary); }
+  .top-tabs { display: flex; align-items: center; gap: 24px; margin-left: 28px; }
+  .top-tabs a { color: var(--on-variant); text-decoration: none; font-weight: 600; padding: 6px 8px; border-radius: 6px; }
+  .top-tabs a.active { color: var(--primary); border-bottom: 2px solid var(--primary); border-radius: 0; }
+  .icon-btn {
+    width: 36px; height: 36px; border: 0; border-radius: 999px;
+    background: transparent; color: var(--on-surface);
+  }
+  .icon-btn:hover { background: rgba(39,54,71,.65); color: var(--primary); }
+  .scorebar {
+    margin-top: 64px;
+    min-height: 82px;
+    padding: 10px 24px;
+    display: grid;
+    grid-template-columns: minmax(210px,1fr) minmax(290px, 420px) minmax(210px,1fr);
+    align-items: center;
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    background: var(--surface-high);
+  }
+  .score-side { display: flex; align-items: center; gap: 16px; }
+  .score-side.home { justify-content: flex-end; padding-right: 28px; }
+  .score-side.away { justify-content: flex-start; padding-left: 28px; }
+  .team-name {
+    width: 150px;
+    border: 0;
+    background: transparent;
+    color: var(--tertiary);
+    font-size: 20px;
+    line-height: 28px;
+    font-weight: 800;
+    padding: 4px 0;
+  }
+  .team-name.home { text-align: right; }
+  .team-name.away { text-align: left; color: var(--secondary); }
+  .score-input {
+    width: 70px;
+    background: var(--surface-lowest);
+    border-color: var(--surface-variant);
+    text-align: center;
+    font-size: 32px;
+    line-height: 40px;
+    font-weight: 800;
+    padding: 6px 4px;
+  }
+  .clock-box { display: flex; flex-direction: column; align-items: center; gap: 8px; }
+  .clock-main {
+    display: flex; align-items: center; gap: 10px;
+    background: var(--surface-lowest);
+    border: 1px solid var(--surface-variant);
+    border-radius: 999px;
+    padding: 8px 16px;
+  }
+  .clock-main input {
+    width: 86px;
+    border: 0;
+    background: transparent;
+    padding: 0;
+    color: var(--primary);
+    font: 800 20px/24px "JetBrains Mono", monospace;
+    text-align: center;
+  }
+  .clock-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
+  .clock-row select { border: 0; background: transparent; color: var(--on-variant); padding: 0 18px 0 0; font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+  .workspace {
+    flex: 1;
+    min-height: 0;
+    padding: 16px;
+    display: grid;
+    grid-template-columns: minmax(260px, 320px) minmax(460px, 1fr) minmax(260px, 320px);
+    gap: 16px;
+    overflow: hidden;
+  }
+  .panel {
+    min-width: 0;
+    min-height: 0;
+    background: var(--surface-container);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 8px;
+    overflow: hidden;
+    display: flex;
+    flex-direction: column;
+  }
+  .panel.glass { background: rgba(18, 33, 49, .78); backdrop-filter: blur(14px); box-shadow: 0 8px 32px rgba(0,0,0,.22); }
+  .panel-head {
+    min-height: 52px;
+    padding: 12px 16px;
+    background: rgba(28,43,60,.72);
+    border-bottom: 1px solid rgba(255,255,255,.06);
+    display: flex; align-items: center; justify-content: space-between; gap: 12px;
+  }
+  .panel-title { display: flex; align-items: center; gap: 8px; font-size: 16px; line-height: 24px; font-weight: 800; }
+  .fact-pill { border: 1px solid rgba(255,255,255,.08); background: var(--surface-variant); color: var(--on-variant); border-radius: 4px; padding: 3px 7px; font: 700 11px/16px "JetBrains Mono", monospace; }
+  .panel-body { padding: 12px; min-height: 0; flex: 1; overflow-y: auto; display: flex; flex-direction: column; gap: 12px; }
+  .team-tools { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: end; flex: 0 0 auto; }
+  .selection-line {
+    border: 1px solid rgba(52,211,153,.35);
+    background: rgba(6,78,59,.22);
+    color: #86efac;
+    border-radius: 7px;
+    padding: 7px 9px;
+    font-size: 12px;
+    line-height: 16px;
+    font-weight: 700;
+    flex: 0 0 auto;
+  }
+  .roster-box { display: grid; gap: 6px; flex: 0 0 auto; }
+  .roster-box textarea { min-height: 82px; font: 500 13px/18px "JetBrains Mono", monospace; }
+  .chips { display: flex; flex: 0 0 auto; flex-wrap: wrap; gap: 7px; min-height: 72px; max-height: 116px; overflow: auto; padding-right: 2px; }
+  .player-chip {
+    border: 1px solid var(--surface-variant);
+    background: var(--surface-lowest);
+    color: var(--on-variant);
+    padding: 6px 8px;
+    display: inline-flex; align-items: center; gap: 6px;
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .player-chip:hover, .player-chip.selected { border-color: var(--primary); color: var(--on-surface); box-shadow: 0 0 0 2px rgba(255,182,147,.1); }
+  .chip-num { background: var(--surface-variant); color: var(--on-surface); border-radius: 3px; padding: 1px 5px; font: 700 11px/15px "JetBrains Mono", monospace; }
+  .event-grid { display: grid; flex: 0 0 auto; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; margin-top: auto; padding-top: 12px; border-top: 1px solid rgba(255,255,255,.06); }
+  .event-btn {
+    min-height: 58px;
+    border: 1px solid var(--surface-variant);
+    background: var(--surface-low);
+    color: var(--on-surface);
+    text-align: left;
+    padding: 8px 10px;
+    display: flex;
+    flex-direction: column;
+    align-items: flex-start;
+    justify-content: center;
+    gap: 2px;
+  }
+  .event-btn.major { border-color: rgba(127,29,29,.7); background: rgba(127,29,29,.22); }
+  .event-btn.medium { border-color: rgba(120,53,15,.7); background: rgba(120,53,15,.2); }
+  .event-btn:hover { border-color: rgba(255,182,147,.65); transform: translateY(-1px); }
+  .event-label { font-weight: 800; font-size: 14px; line-height: 18px; }
+  .event-meta { color: rgba(226,191,176,.72); font: 700 10px/14px "JetBrains Mono", monospace; }
+  .center { display: flex; flex-direction: column; gap: 16px; min-height: 0; overflow: hidden; }
+  .combiner { flex: 0 0 auto; max-height: 62%; }
+  .form-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 10px; }
+  .wide { grid-column: 1 / -1; }
+  .half { grid-column: span 2; }
+  .type-row { display: grid; grid-template-columns: 160px 1fr auto; gap: 8px; align-items: center; padding: 8px; background: var(--surface-low); border: 1px solid var(--surface-variant); border-radius: 8px; }
+  .template-board {
+    border: 1px solid rgba(255,255,255,.06);
+    background: rgba(13,28,45,.58);
+    border-radius: 8px;
+    padding: 10px;
+    display: grid;
+    gap: 8px;
+  }
+  .template-board-head {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 10px;
+    color: var(--on-variant);
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 800;
+    letter-spacing: .05em;
+    text-transform: uppercase;
+  }
+  .templates { display: flex; flex-wrap: wrap; gap: 7px; min-height: 76px; max-height: 128px; overflow: auto; padding: 2px; align-content: flex-start; }
+  .template-chip {
+    border: 1px solid var(--surface-variant);
+    background: var(--surface-low);
+    color: var(--on-variant);
+    padding: 6px 9px;
+    font-size: 12px;
+    line-height: 16px;
+  }
+  .template-chip:hover { border-color: var(--primary); color: var(--on-surface); }
+  .template-empty {
+    min-height: 70px;
+    width: 100%;
+    border: 1px dashed rgba(255,255,255,.12);
+    border-radius: 7px;
+    display: grid;
+    place-items: center;
+    color: rgba(226,191,176,.62);
+    font-size: 12px;
+  }
+  .context-preview {
+    border: 1px solid rgba(255,182,147,.24);
+    background: rgba(255,182,147,.07);
+    border-radius: 8px;
+    padding: 10px;
+    display: grid;
+    gap: 7px;
+  }
+  .context-preview textarea {
+    min-height: 82px;
+    resize: vertical;
+    color: var(--secondary);
+    font: 500 12px/18px "JetBrains Mono", monospace;
+  }
+  .slots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 10px; }
+  .slot {
+    position: relative;
+    border: 1px solid var(--surface-variant);
+    background: var(--surface-lowest);
+    border-radius: 8px;
+    padding: 12px 10px 9px;
+  }
+  .slot.active { border-color: var(--primary); box-shadow: 0 0 0 1px rgba(255,182,147,.28); }
+  .slot-label {
+    position: absolute;
+    top: -9px;
+    left: 9px;
+    background: var(--surface-lowest);
+    padding: 0 5px;
+    color: var(--on-variant);
+    font-size: 11px;
+    line-height: 16px;
+    font-weight: 800;
+    letter-spacing: .05em;
+  }
+  .slot.active .slot-label { color: var(--primary); }
+  .slot input { width: 100%; border: 0; background: transparent; padding: 0; font-weight: 800; }
+  .timeline { flex: 1; min-height: 190px; position: relative; }
+  .timeline::before {
+    content: "";
+    position: absolute;
+    inset: 0;
+    background: rgba(15,23,42,.34);
+    backdrop-filter: blur(10px);
+    pointer-events: none;
+  }
+  .timeline-list { position: relative; z-index: 1; padding: 12px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .event-card {
+    position: relative;
+    border: 1px solid rgba(255,255,255,.06);
+    background: var(--surface-low);
+    border-radius: 8px;
+    padding: 10px 10px 10px 14px;
+    display: grid;
+    gap: 6px;
+  }
+  .event-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--primary); border-radius: 8px 0 0 8px; }
+  .event-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-weight: 800; }
+  .mono { font-family: "JetBrains Mono", monospace; }
+  .time-badge { color: var(--primary); background: rgba(255,182,147,.1); border-radius: 4px; padding: 2px 6px; font: 700 13px/16px "JetBrains Mono", monospace; }
+  .score-badge { background: var(--surface-container); border: 1px solid rgba(255,255,255,.06); border-radius: 4px; padding: 2px 8px; font-weight: 800; }
+  .muted { color: rgba(226,191,176,.72); font-size: 12px; line-height: 17px; }
+  .voice-line { color: var(--secondary); background: rgba(188,199,222,.1); border: 1px solid rgba(188,199,222,.18); border-radius: 6px; padding: 6px 8px; font-size: 12px; line-height: 17px; }
+  .status { color: var(--primary); font-size: 13px; font-weight: 800; }
+  .status.ok { color: var(--green); }
+  .status.bad { color: var(--error); }
+  .toast {
+    position: fixed; right: 24px; bottom: 24px; z-index: 60;
+    background: var(--surface-low);
+    border: 1px solid var(--green);
+    color: #dcfce7;
+    border-radius: 8px;
+    padding: 12px 16px;
+    box-shadow: 0 10px 26px rgba(0,0,0,.42);
+    opacity: 0; transform: translateY(14px);
+    transition: opacity .18s ease, transform .18s ease;
+  }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  .flash { animation: flash .65s ease-out; }
+  .view { display: none; }
+  .view.active { display: grid; }
+  .workspace.view.active { display: grid; }
+  .scorebar.view.active { display: grid; }
+  .setup-canvas.view.active, .settings-canvas.view.active { display: block; }
+  .setup-canvas, .settings-canvas {
+    flex: 1;
+    min-height: 0;
+    margin-top: 64px;
+    padding: 32px;
+    overflow-y: auto;
+    background: radial-gradient(ellipse at top right, rgba(13,28,45,.56), var(--background) 48%, var(--background));
+  }
+  .page-head {
+    display: flex;
+    align-items: flex-end;
+    justify-content: space-between;
+    gap: 18px;
+    margin-bottom: 24px;
+  }
+  .page-title { margin: 0 0 4px; font-size: 20px; line-height: 28px; font-weight: 800; color: var(--on-surface); }
+  .page-desc { margin: 0; color: var(--on-variant); }
+  .status-strip {
+    display: flex;
+    align-items: center;
+    gap: 12px;
+    border: 1px solid rgba(255,255,255,.06);
+    background: rgba(18,33,49,.72);
+    backdrop-filter: blur(14px);
+    border-radius: 999px;
+    padding: 8px 14px;
+  }
+  .status-dot { width: 8px; height: 8px; border-radius: 999px; background: var(--green); box-shadow: 0 0 12px rgba(52,211,153,.45); }
+  .status-dot.warn { background: var(--error); box-shadow: 0 0 12px rgba(255,180,171,.35); }
+  .setup-meta { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 16px; margin-bottom: 16px; }
+  .setup-rosters { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 16px; }
+  .setup-card, .settings-card {
+    background: rgba(18,33,49,.78);
+    backdrop-filter: blur(14px);
+    border: 1px solid rgba(255,255,255,.06);
+    border-radius: 12px;
+    overflow: hidden;
+    box-shadow: 0 8px 32px rgba(0,0,0,.22);
+  }
+  .setup-card-body, .settings-card-body { padding: 16px; display: grid; gap: 14px; }
+  .setup-card-head, .settings-card-head {
+    min-height: 54px;
+    padding: 13px 16px;
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+    background: rgba(28,43,60,.72);
+    border-bottom: 1px solid rgba(255,255,255,.06);
+  }
+  .setup-grid-2, .settings-grid-2 { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 12px; }
+  .roster-preview {
+    min-height: 150px;
+    max-height: 260px;
+    overflow: auto;
+    display: grid;
+    grid-template-columns: repeat(3, minmax(0, 1fr));
+    align-content: start;
+    gap: 8px;
+    padding-right: 3px;
+  }
+  .empty-roster {
+    min-height: 190px;
+    border: 1px dashed rgba(255,255,255,.12);
+    border-radius: 8px;
+    display: grid;
+    place-items: center;
+    color: rgba(226,191,176,.65);
+    text-align: center;
+    background: rgba(1,15,31,.35);
+  }
+  .player-card {
+    border: 1px solid rgba(255,255,255,.06);
+    background: var(--surface-container);
+    border-radius: 6px;
+    padding: 7px;
+    display: flex;
+    align-items: center;
+    gap: 7px;
+    min-width: 0;
+  }
+  .player-name { flex: 1; min-width: 0; overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .settings-grid { display: grid; grid-template-columns: minmax(0, 2fr) minmax(320px, 1fr); gap: 16px; align-items: start; }
+  .settings-stack { display: grid; gap: 16px; }
+  .radio-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+  .radio-tile input { position: absolute; opacity: 0; pointer-events: none; }
+  .radio-tile span {
+    display: block;
+    border: 1px solid rgba(169,138,125,.22);
+    background: var(--surface-lowest);
+    border-radius: 7px;
+    padding: 10px;
+    text-align: center;
+    color: var(--on-variant);
+  }
+  .radio-tile input:checked + span { border-color: var(--tertiary); background: rgba(190,198,224,.1); color: var(--tertiary); }
+  .metric-card {
+    border: 1px solid rgba(255,255,255,.06);
+    background: var(--surface-lowest);
+    border-radius: 7px;
+    padding: 12px;
+    display: flex;
+    justify-content: space-between;
+    gap: 12px;
+    align-items: center;
+  }
+  .metric-value { color: var(--green); font-size: 32px; line-height: 40px; font-weight: 800; }
+  @keyframes flash {
+    0% { box-shadow: 0 0 0 2px var(--primary-container), 0 0 18px rgba(255,107,0,.5); }
+    100% { box-shadow: none; }
+  }
+  @media (max-width: 1200px) {
+    .workspace { grid-template-columns: 1fr; overflow-y: auto; }
+    .panel, .combiner { min-height: 320px; max-height: none; }
+    .center { overflow: visible; }
+    body { overflow: auto; }
+    .main { height: auto; min-height: 100vh; overflow: visible; }
+  }
+  @media (max-width: 860px) {
+    .side-nav { display: none; }
+    .topbar { padding-left: 16px; }
+    .top-title { font-size: 22px; line-height: 28px; }
+    .top-tabs { display: none; }
+    .scorebar { grid-template-columns: 1fr; gap: 8px; }
+    .score-side.home, .score-side.away { justify-content: center; padding: 0; }
+    .workspace { padding: 10px; }
+    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview { grid-template-columns: 1fr; }
+    .half { grid-column: 1 / -1; }
+    .setup-canvas, .settings-canvas { padding: 16px; }
+  }
+</style>
+</head>
+<body>
+  <div class="shell">
+    <nav class="side-nav">
+      <div class="brand">
+        <div class="avatar"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">account_circle</span></div>
+        <div>
+          <div class="brand-title">导演工作台</div>
+          <div class="brand-sub">V2.4.0 稳定版</div>
+        </div>
+      </div>
+      <button class="quick-btn" id="quickCut" type="button"><span class="material-symbols-outlined">bolt</span>快速切镜</button>
+      <div class="nav-stack">
+        <a class="nav-item" href="#setup" data-view-link="setup"><span class="material-symbols-outlined">settings_applications</span><span>赛前配置</span></a>
+        <a class="nav-item active" href="#live" data-view-link="live"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">videocam</span><span>实战导演</span></a>
+        <a class="nav-item" href="#settings" data-view-link="settings"><span class="material-symbols-outlined">tune</span><span>系统设置</span></a>
+      </div>
+      <div class="nav-stack" style="margin-top:auto">
+        <a class="nav-item" href="#"><span class="material-symbols-outlined">help</span><span>帮助文档</span></a>
+      </div>
+    </nav>
+
+    <main class="main">
+      <header class="topbar">
+        <div style="display:flex;align-items:center;min-width:0">
+          <div class="top-title">赛事直播导演控台</div>
+          <nav class="top-tabs">
+            <a href="#live" data-view-link="live">实时监控</a>
+            <a href="#setup" data-view-link="setup">信号源管理</a>
+            <a class="active" href="#live" data-view-link="live">自动化流</a>
+          </nav>
+        </div>
+        <div style="display:flex;align-items:center;gap:8px">
+          <button class="icon-btn" title="通知" type="button"><span class="material-symbols-outlined">notifications</span></button>
+          <button class="icon-btn" title="账号" type="button"><span class="material-symbols-outlined">account_circle</span></button>
+        </div>
+      </header>
+
+      <section class="scorebar view active" data-view-panel="live">
+        <div class="score-side home">
+          <input class="team-name home" id="homeTeam" value="西班牙">
+          <input class="score-input" id="homeScore" min="0" type="number" value="0">
+        </div>
+        <div class="clock-box">
+          <div class="clock-main">
+            <input id="clock" value="00:00" placeholder="45:00">
+            <button class="icon-btn" id="clockStart" title="开始/暂停" type="button"><span class="material-symbols-outlined">play_arrow</span></button>
+          </div>
+          <div class="clock-row">
+            <select id="period">
+              <option value="pre_match">赛前</option>
+              <option value="first_half" selected>上半场</option>
+              <option value="halftime">中场</option>
+              <option value="second_half">下半场</option>
+              <option value="extra_time">加时</option>
+              <option value="fulltime">完场</option>
+            </select>
+            <button class="small-btn" id="clockMinus" type="button">-1'</button>
+            <button class="small-btn" id="clockPlus" type="button">+1'</button>
+            <button class="small-btn" id="scoreUndo" type="button">比分回退</button>
+          </div>
+        </div>
+        <div class="score-side away">
+          <input class="score-input" id="awayScore" min="0" type="number" value="0">
+          <input class="team-name away" id="awayTeam" value="德国">
+        </div>
+      </section>
+
+      <section class="workspace view active" data-view-panel="live">
+        <aside class="panel glass">
+          <div class="panel-head">
+            <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">groups</span><span id="homeTitle">西班牙事实员</span></div>
+            <button class="small-btn" data-side="home" type="button">当前主队</button>
+          </div>
+          <div class="panel-body">
+            <div style="display:grid;grid-template-columns:1fr auto;gap:8px">
+              <label>比赛 ID <input id="matchId" value="test"></label>
+              <button class="ghost-btn" id="saveConfig" type="button" style="align-self:end">保存配置</button>
+            </div>
+            <div class="roster-box">
+              <label>主队名单 / 每行：号码 姓名 位置</label>
+              <textarea id="homePlayers" placeholder="10 佩德里 CM&#10;7 莫拉塔 ST&#10;19 亚马尔 RW">10 佩德里 CM
+7 莫拉塔 ST
+19 亚马尔 RW
+8 法比安 CM</textarea>
+            </div>
+            <div class="team-tools">
+              <label>当前主队球员 <input id="homeActive" placeholder="先选/输入球员，再点事件"></label>
+              <button class="ghost-btn" data-use-side="home" type="button">使用</button>
+            </div>
+            <div class="selection-line" id="homeSelected">主队当前球员：未选择</div>
+            <div class="chips" id="homeChips"></div>
+            <div class="event-grid" id="homeEvents"></div>
+          </div>
+        </aside>
+
+        <div class="center">
+          <form class="panel glass combiner" id="draft">
+            <div class="panel-head">
+              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">hub</span>逻辑组合器</div>
+              <div style="display:flex;align-items:center;gap:10px">
+                <button class="small-btn" id="clearDraft" type="button">清空草稿</button>
+                <button class="small-btn" id="reload" type="button">刷新</button>
+                <span class="status" id="status">准备就绪</span>
+              </div>
+            </div>
+            <div class="panel-body">
+              <div class="type-row">
+                <select id="eventType"></select>
+                <input id="templateSearch" placeholder="搜索模板，也可直接在下方打字">
+                <button class="small-btn" id="hint" type="button">导演提示</button>
+              </div>
+              <div class="template-board">
+                <div class="template-board-head">
+                  <span>事件模板库</span>
+                  <span id="templateCount">0 条</span>
+                </div>
+                <div class="templates" id="templates"></div>
+              </div>
+              <div class="slots" id="slots"></div>
+              <div class="form-grid">
+                <label>当前方
+                  <select id="sideSelect">
+                    <option value="home">主队</option>
+                    <option value="away">客队</option>
+                    <option value="">双方/无</option>
+                  </select>
+                </label>
+                <label>主参与人 <input id="mainPlayer" placeholder="自动带入"></label>
+                <label>强度
+                  <select id="intensity">
+                    <option value="1">1 安静</option>
+                    <option value="2">2 轻微</option>
+                    <option value="3" selected>3 明显</option>
+                    <option value="4">4 强烈</option>
+                    <option value="5">5 爆发</option>
+                  </select>
+                </label>
+                <label>动作
+                  <select id="action">
+                    <option value="">自动</option>
+                    <option value="celebrate">celebrate</option>
+                    <option value="tense">tense</option>
+                    <option value="miss">miss</option>
+                    <option value="complain">complain</option>
+                    <option value="angry">angry</option>
+                    <option value="analysis">analysis</option>
+                    <option value="focus">focus</option>
+                    <option value="surprise">surprise</option>
+                    <option value="comfort">comfort</option>
+                  </select>
+                </label>
+                <label class="wide">详细描述
+                  <textarea id="description" placeholder="选择模板后可继续修改；也可以完全手写。"></textarea>
+                </label>
+                <label class="half">球球主动话术
+                  <textarea id="proactive" placeholder="留空自动生成；导演手写时会按原文发布。"></textarea>
+                </label>
+                <label class="half">发布方式
+                  <select id="mode">
+                    <option value="auto">直接发布并触发球球</option>
+                    <option value="quiet">只记事件，不主动说话</option>
+                    <option value="manual">使用我写的主动话术</option>
+                  </select>
+                </label>
+              </div>
+              <div class="context-preview">
+                <div class="template-board-head" style="padding:0;text-transform:none;letter-spacing:0">
+                  <span>发送给球球的上下文</span>
+                  <span class="fact-pill" id="contextScore">0-0</span>
+                </div>
+                <textarea id="contextPreview" readonly></textarea>
+              </div>
+              <button class="primary-btn" type="submit"><span class="material-symbols-outlined">send</span>发布详细事件 (PUSH TO AI)</button>
+            </div>
+          </form>
+
+          <section class="panel glass timeline">
+            <div class="panel-head" style="position:relative;z-index:1">
+              <div class="panel-title">事件时间轴</div>
+              <span class="material-symbols-outlined" style="color:var(--on-variant)">history</span>
+            </div>
+            <div class="timeline-list" id="timeline"></div>
+          </section>
+        </div>
+
+        <aside class="panel glass">
+          <div class="panel-head">
+            <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">groups</span><span id="awayTitle">德国事实员</span></div>
+            <button class="small-btn" data-side="away" type="button">当前客队</button>
+          </div>
+          <div class="panel-body">
+            <div class="fact-pill">远端事实员 / Away Desk</div>
+            <div class="roster-box">
+              <label>客队名单 / 每行：号码 姓名 位置</label>
+              <textarea id="awayPlayers" placeholder="10 穆西亚拉 AM&#10;9 菲尔克鲁格 ST">10 穆西亚拉 AM
+9 菲尔克鲁格 ST
+7 哈弗茨 FW
+22 吕迪格 CB</textarea>
+            </div>
+            <div class="team-tools">
+              <label>当前客队球员 <input id="awayActive" placeholder="先选/输入球员，再点事件"></label>
+              <button class="ghost-btn" data-use-side="away" type="button">使用</button>
+            </div>
+            <div class="selection-line" id="awaySelected">客队当前球员：未选择</div>
+            <div class="chips" id="awayChips"></div>
+            <div class="event-grid" id="awayEvents"></div>
+          </div>
+        </aside>
+      </section>
+
+      <section class="setup-canvas view" data-view-panel="setup">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">赛前信息配置中心</h1>
+            <p class="page-desc">核对比赛元数据、双方名单与首发状态，确认后同步到实战导演台。</p>
+          </div>
+          <div style="display:flex;align-items:center;gap:14px;flex-wrap:wrap;justify-content:flex-end">
+            <div class="status-strip">
+              <span class="status-dot"></span><span class="event-meta" id="preMetaStatus">元数据就绪</span>
+              <span style="width:1px;height:18px;background:rgba(255,255,255,.1)"></span>
+              <span class="status-dot" id="preHomeDot"></span><span class="event-meta" id="preHomeStatus">主队: 0人</span>
+              <span style="width:1px;height:18px;background:rgba(255,255,255,.1)"></span>
+              <span class="status-dot warn" id="preAwayDot"></span><span class="event-meta" id="preAwayStatus">客队: 缺失</span>
+            </div>
+            <button class="quick-btn" id="preSubmit" type="button" style="width:auto;margin:0;padding:10px 18px"><span class="material-symbols-outlined">cloud_upload</span>提交至导演台</button>
+          </div>
+        </div>
+
+        <section class="setup-card" style="margin-bottom:16px">
+          <div class="setup-card-head">
+            <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">info</span>比赛元数据</div>
+          </div>
+          <div class="setup-card-body setup-meta">
+            <label>比赛 ID <input class="mono" id="preMatchId" value="test"></label>
+            <label>赛事名称 <input id="competition" placeholder="例如：2026 世界杯小组赛" value="国际友谊赛"></label>
+            <label>开球时间 <input id="kickoff" type="datetime-local"></label>
+            <label>场馆 <input id="venue" placeholder="输入场馆名称" value="国家体育场"></label>
+          </div>
+        </section>
+
+        <div class="setup-rosters">
+          <section class="setup-card">
+            <div class="setup-card-head">
+              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">shield</span>主队名单管理</div>
+              <span class="fact-pill" id="preHomeTeamBadge">主队</span>
+            </div>
+            <div class="setup-card-body">
+              <div class="setup-grid-2">
+                <label>主队名称 <input id="preHomeTeam" value="西班牙"></label>
+                <label>阵型 <input class="mono" id="homeFormation" value="4-3-3"></label>
+                <label>主教练 <input id="homeCoach" value="路易斯·德拉富恩特"></label>
+                <label>事实员 <input id="homeFactOperator" value="HOME-DESK-01"></label>
+              </div>
+              <label>批量粘贴录入
+                <textarea class="mono" id="preHomePlayers" placeholder="10 佩德里 CM&#10;7 莫拉塔 ST"></textarea>
+              </label>
+              <div class="roster-preview" id="preHomePreview"></div>
+            </div>
+          </section>
+
+          <section class="setup-card">
+            <div class="setup-card-head">
+              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">shield</span>客队名单管理</div>
+              <span class="fact-pill" id="preAwayTeamBadge">客队</span>
+            </div>
+            <div class="setup-card-body">
+              <div class="setup-grid-2">
+                <label>客队名称 <input id="preAwayTeam" value="德国"></label>
+                <label>阵型 <input class="mono" id="awayFormation" value="4-2-3-1"></label>
+                <label>主教练 <input id="awayCoach" value="尤利安·纳格尔斯曼"></label>
+                <label>事实员 <input id="awayFactOperator" value="AWAY-DESK-01"></label>
+              </div>
+              <label>批量粘贴录入
+                <textarea class="mono" id="preAwayPlayers" placeholder="10 穆西亚拉 AM&#10;9 菲尔克鲁格 ST"></textarea>
+              </label>
+              <div class="roster-preview" id="preAwayPreview"></div>
+            </div>
+          </section>
+        </div>
+      </section>
+
+      <section class="settings-canvas view" data-view-panel="settings">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">系统设置中心</h1>
+            <p class="page-desc">配置模型、数字人表现、连接监控和导演工作台偏好。</p>
+          </div>
+          <div class="status-strip">
+            <span class="status-dot"></span><span class="event-meta">连接正常</span>
+            <span style="width:1px;height:18px;background:rgba(255,255,255,.1)"></span>
+            <span class="event-meta mono">WS-ALPHA-01</span>
+          </div>
+        </div>
+
+        <div class="settings-grid">
+          <div class="settings-stack">
+            <section class="settings-card">
+              <div class="settings-card-head">
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">memory</span>模型引擎配置</div>
+              </div>
+              <div class="settings-card-body">
+                <label>API Endpoint <input class="mono" id="apiEndpoint" value="https://api.deepseek.com/v1"></label>
+                <label>API Key <input class="mono" id="apiKey" type="password" value="sk-****************"></label>
+                <div class="settings-grid-2">
+                  <label>首选推理模型
+                    <select id="modelName">
+                      <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
+                      <option value="deepseek-chat">DeepSeek Chat</option>
+                      <option value="qwen-max">Qwen Max</option>
+                    </select>
+                  </label>
+                  <label>推理温度
+                    <input id="temperature" type="range" min="0" max="1" step="0.1" value="0.3">
+                  </label>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-card">
+              <div class="settings-card-head">
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--tertiary)">face</span>数字人表现特征</div>
+              </div>
+              <div class="settings-card-body">
+                <div class="settings-grid-2">
+                  <label>数字人渲染 ID <input class="mono" id="avatarId" value="AVATAR_SPORTS_M_01"></label>
+                  <label>主输出语言
+                    <select id="outputLanguage">
+                      <option value="zh">中文（简体）</option>
+                      <option value="en">English</option>
+                      <option value="ja">日本語</option>
+                    </select>
+                  </label>
+                </div>
+                <label>声学模型</label>
+                <div class="radio-grid">
+                  <label class="radio-tile"><input checked name="voice" type="radio" value="calm_male"><span>沉稳男声</span></label>
+                  <label class="radio-tile"><input name="voice" type="radio" value="hype_male"><span>激情男声</span></label>
+                  <label class="radio-tile"><input name="voice" type="radio" value="pro_female"><span>专业女声</span></label>
+                </div>
+                <label>情绪表现敏感度 <input id="emotionSensitivity" type="range" min="0" max="100" value="80"></label>
+              </div>
+            </section>
+          </div>
+
+          <div class="settings-stack">
+            <section class="settings-card">
+              <div class="settings-card-head">
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">wifi_tethering</span>连接与心跳</div>
+                <span class="status-dot"></span>
+              </div>
+              <div class="settings-card-body">
+                <div class="metric-card">
+                  <div><div class="event-meta">大模型 API 延迟</div><div class="muted mono">llm.core.stream</div></div>
+                  <div><span class="metric-value">12</span><span class="muted mono">ms</span></div>
+                </div>
+                <div class="metric-card">
+                  <div><div class="event-meta">直播推流服务器</div><div class="muted mono">rtmp://push.edge</div></div>
+                  <div><span class="metric-value">38</span><span class="muted mono">ms</span></div>
+                </div>
+                <div class="metric-card">
+                  <div><div class="event-meta">工作台状态</div><div class="muted mono">DIR-04_ZHAO</div></div>
+                  <div class="status ok">ONLINE</div>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-card">
+              <div class="settings-card-head">
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">keyboard_command_key</span>快捷键</div>
+              </div>
+              <div class="settings-card-body">
+                <div class="metric-card"><span>循环切换待机槽位</span><span class="fact-pill">Tab</span></div>
+                <div class="metric-card"><span>强制打断数字人播报</span><span class="fact-pill" style="color:var(--error)">Esc</span></div>
+                <div class="metric-card"><span>确认发送当前指令</span><span class="fact-pill">Ctrl + Enter</span></div>
+                <button class="quick-btn" id="saveSettings" type="button" style="width:100%;margin:0"><span class="material-symbols-outlined">save</span>保存全局设置</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+    </main>
+  </div>
+  <div class="toast" id="toast"></div>
+
+<script>
+const token = new URLSearchParams(location.search).get('token') || 'qiuqiu-dev-token';
+const $ = (id) => document.getElementById(id);
+
+const presets = [
+  { key: '1', type: 'goal', label: '进球', level: 'major', action: 'celebrate', intensity: 5, score: 1, text: '进球了！' },
+  { key: '2', type: 'big_chance', label: '绝佳机会', level: 'major', action: 'tense', intensity: 5, text: '出现绝佳机会。' },
+  { key: '3', type: 'shot', label: '射门', level: 'medium', action: 'focus', intensity: 3, text: '完成一次射门。' },
+  { key: '4', type: 'save', label: '扑救', level: 'medium', action: 'surprise', intensity: 4, text: '门将完成关键扑救。' },
+  { key: '5', type: 'miss', label: '错失', level: 'medium', action: 'miss', intensity: 4, text: '这次机会差一点转化成进球。' },
+  { key: '6', type: 'foul', label: '犯规', action: 'complain', intensity: 3, text: '裁判吹罚犯规。' },
+  { key: '7', type: 'yellow_card', label: '黄牌', action: 'complain', intensity: 3, text: '裁判出示黄牌。' },
+  { key: '8', type: 'red_card', label: '红牌', level: 'major', action: 'angry', intensity: 5, text: '裁判出示红牌，比赛形势发生重大变化。' },
+  { key: '9', type: 'var_check', label: 'VAR', level: 'major', action: 'tense', intensity: 4, text: 'VAR 正在介入检查。' },
+  { key: '0', type: 'penalty', label: '点球', level: 'major', action: 'tense', intensity: 5, text: '裁判判罚点球。' },
+  { key: 'Q', type: 'substitution', label: '换人', action: 'analysis', intensity: 2, text: '场边准备换人调整。' },
+  { key: 'W', type: 'tactical_shift', label: '战术变化', action: 'analysis', intensity: 3, text: '场上战术站位出现变化。' },
+  { key: 'E', type: 'pressure', label: '持续压迫', action: 'focus', intensity: 4, text: '正在形成持续压迫。' },
+  { key: 'R', type: 'injury', label: '伤停', action: 'comfort', intensity: 3, text: '场上有球员受伤，比赛暂时中断。' },
+  { key: 'T', type: 'operator_note', label: '备注', action: 'analysis', intensity: 2, text: '运营补充一条比赛背景。' }
+];
+
+const templates = [
+  ['goal', '禁区内抢点破门。'], ['goal', '远射破门，门将没能碰到。'], ['goal', '反击推进后冷静推射得分。'], ['goal', '定位球机会转化成进球。'], ['goal', '补射得手，把比分改写。'],
+  ['big_chance', '单刀机会出现，防线被打穿。'], ['big_chance', '门前连续混战，差点形成进球。'], ['big_chance', '反击三打二，机会非常好。'],
+  ['shot', '禁区外尝试一脚射门。'], ['shot', '小角度打门被封堵。'], ['shot', '接传中后头球攻门。'], ['shot', '内切后起脚，球被后卫挡出。'],
+  ['save', '门将飞身把近角射门扑出。'], ['save', '门将出击化解单刀。'], ['save', '后卫在门线附近完成关键解围。'],
+  ['miss', '门前包抄差一步。'], ['miss', '射门稍稍偏出立柱。'], ['miss', '击中门框弹出。'], ['miss', '面对门将处理得有些着急。'],
+  ['foul', '中场战术犯规阻断反击。'], ['foul', '禁区前沿出现身体接触。'], ['foul', '边路对抗动作较大，裁判响哨。'],
+  ['yellow_card', '因为战术犯规吃到黄牌。'], ['yellow_card', '动作过大，裁判出示黄牌。'],
+  ['red_card', '最后一名防守球员犯规，被直接罚下。'], ['red_card', '裁判出示红牌，比赛形势发生重大变化。'],
+  ['var_check', 'VAR 正在检查禁区内接触。'], ['var_check', '裁判等待视频助理裁判确认进球是否有效。'], ['var_check', '主裁去场边看回放。'],
+  ['penalty', '禁区内犯规，获得点球机会。'], ['penalty', '裁判判罚点球，比赛来到关键时刻。'],
+  ['substitution', '准备换人，明显是在调整节奏。'], ['substitution', '换上进攻球员，阵型可能要前压。'], ['substitution', '用防守球员换下前场球员，开始守比分。'],
+  ['tactical_shift', '阵型从四后卫切到三中卫。'], ['tactical_shift', '边路压得更靠前，开始加强进攻。'], ['tactical_shift', '中场站位回收，先稳住防线。'],
+  ['pressure', '连续把球压在对方半场。'], ['pressure', '这一段攻势很密集，防线压力很大。'], ['pressure', '连续获得角球和二点球机会。'],
+  ['injury', '队医进场，比赛暂时中断。'], ['operator_note', '场上节奏变慢，双方都在重新组织。'], ['operator_note', '这一段更像是在试探，不急着冒险。']
+].map(([type, text]) => ({ type, text }));
+
+const roles = {
+  goal: [['scorer', '进球者'], ['assist', '助攻者'], ['pre_assist', '策动者'], ['defender', '防守相关']],
+  shot: [['shooter', '射门者'], ['assist', '传球者'], ['blocker', '封堵者'], ['keeper', '门将']],
+  big_chance: [['attacker', '进攻者'], ['passer', '传球者'], ['defender', '防守者'], ['keeper', '门将']],
+  save: [['keeper', '扑救门将'], ['shooter', '射门者'], ['rebound', '二点球员']],
+  miss: [['shooter', '错失者'], ['assist', '传球者'], ['keeper', '门将']],
+  foul: [['offender', '犯规者'], ['fouled', '被犯规者']],
+  yellow_card: [['offender', '吃牌者'], ['fouled', '对抗对象']],
+  red_card: [['offender', '红牌球员'], ['fouled', '对抗对象']],
+  var_check: [['subject', '被检查球员'], ['affected', '受影响球员']],
+  penalty: [['taker', '主罚者'], ['won_by', '造点者'], ['offender', '犯规者'], ['keeper', '门将']],
+  substitution: [['sub_on', '上场'], ['sub_off', '下场']],
+  injury: [['injured', '受伤球员'], ['challenger', '对抗球员']],
+  tactical_shift: [['leader', '关键球员'], ['target', '影响球员']],
+  pressure: [['attacker', '压迫发起'], ['target', '被压迫方']],
+  operator_note: [['player', '相关球员']]
+};
+
+let side = 'home';
+let focusedRole = '';
+let lastScore = { home: 0, away: 0 };
+let correctingId = '';
+let clockTimer = null;
+let clockRunning = false;
+let activeView = 'live';
+
+function setView(next) {
+  activeView = ['setup', 'live', 'settings'].includes(next) ? next : 'live';
+  document.querySelectorAll('[data-view-panel]').forEach((panel) => {
+    panel.classList.toggle('active', panel.dataset.viewPanel === activeView);
+  });
+  document.querySelectorAll('[data-view-link]').forEach((link) => {
+    link.classList.toggle('active', link.dataset.viewLink === activeView);
+  });
+  if (activeView === 'setup') syncPreFromMain();
+  if (activeView === 'settings') loadSettings();
+}
+
+function value(id) { return $(id).value.trim(); }
+function currentMatchId() { return value('matchId') || 'test'; }
+function team(sideName = side) {
+  if (sideName === 'away') return value('awayTeam') || '客队';
+  if (sideName === 'home') return value('homeTeam') || '主队';
+  return '';
+}
+function setStatus(text, tone = 'normal') {
+  const el = $('status');
+  el.textContent = text;
+  el.className = tone === 'ok' ? 'status ok' : tone === 'bad' ? 'status bad' : 'status';
+}
+function toast(text, tone = 'ok') {
+  setStatus(text, tone);
+  const el = $('toast');
+  el.textContent = text;
+  el.className = 'toast show';
+  window.clearTimeout(el._timer);
+  el._timer = window.setTimeout(() => el.classList.remove('show'), 2100);
+}
+function flash(el) {
+  if (!el) return;
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 650);
+}
+function parsePlayers(text) {
+  return text.split('\n').map((line) => {
+    const parts = line.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return null;
+    const hasNumber = /^\d{1,3}$/.test(parts[0]);
+    const nameParts = hasNumber ? parts.slice(1, -1) : parts.slice(0, -1);
+    return {
+      number: hasNumber ? parts[0] : '',
+      name: nameParts.join(' ') || (hasNumber ? parts[1] : parts[0]) || '',
+      position: parts.length > 1 ? parts[parts.length - 1] : ''
+    };
+  }).filter((p) => p && p.name);
+}
+function playersToText(players = []) {
+  return players.map((p) => [p.number, p.name, p.position].filter(Boolean).join(' ')).join('\n');
+}
+function activePlayer(sideName = side) {
+  return sideName === 'away' ? value('awayActive') : value('homeActive');
+}
+function setSide(next) {
+  side = next;
+  $('sideSelect').value = next;
+  $('mainPlayer').value = activePlayer(next) || value('mainPlayer');
+  syncSelected();
+  updateContextPreview();
+}
+function syncSelected() {
+  $('homeTitle').textContent = `${team('home')}事实员`;
+  $('awayTitle').textContent = `${team('away')}事实员`;
+  $('homeSelected').textContent = `主队当前球员：${value('homeActive') || '未选择'}`;
+  $('awaySelected').textContent = `客队当前球员：${value('awayActive') || '未选择'}`;
+  if ($('preHomeTeamBadge')) $('preHomeTeamBadge').textContent = value('preHomeTeam') || team('home');
+  if ($('preAwayTeamBadge')) $('preAwayTeamBadge').textContent = value('preAwayTeam') || team('away');
+}
+function syncPreFromMain() {
+  $('preMatchId').value = currentMatchId();
+  $('preHomeTeam').value = team('home');
+  $('preAwayTeam').value = team('away');
+  $('preHomePlayers').value = value('homePlayers');
+  $('preAwayPlayers').value = value('awayPlayers');
+  renderPreviews();
+}
+function syncMainFromPre() {
+  $('matchId').value = value('preMatchId') || currentMatchId();
+  $('homeTeam').value = value('preHomeTeam') || team('home');
+  $('awayTeam').value = value('preAwayTeam') || team('away');
+  $('homePlayers').value = value('preHomePlayers');
+  $('awayPlayers').value = value('preAwayPlayers');
+  syncSelected();
+  renderPlayers();
+}
+function renderPreviews() {
+  renderRosterPreview('preHomePreview', parsePlayers(value('preHomePlayers')), 'home');
+  renderRosterPreview('preAwayPreview', parsePlayers(value('preAwayPlayers')), 'away');
+  const homeCount = parsePlayers(value('preHomePlayers')).length;
+  const awayCount = parsePlayers(value('preAwayPlayers')).length;
+  $('preHomeStatus').textContent = `主队: ${homeCount}人`;
+  $('preAwayStatus').textContent = awayCount ? `客队: ${awayCount}人` : '客队: 缺失';
+  $('preHomeDot').classList.toggle('warn', homeCount === 0);
+  $('preAwayDot').classList.toggle('warn', awayCount === 0);
+  $('preHomeTeamBadge').textContent = value('preHomeTeam') || '主队';
+  $('preAwayTeamBadge').textContent = value('preAwayTeam') || '客队';
+}
+function renderRosterPreview(id, list, sideName) {
+  const host = $(id);
+  host.innerHTML = '';
+  if (!list.length) {
+    host.className = 'empty-roster';
+    host.innerHTML = `<div><span class="material-symbols-outlined" style="font-size:44px;color:var(--surface-variant)">group_add</span><div>暂无球员数据</div><div class="muted">请粘贴文本后提交</div></div>`;
+    return;
+  }
+  host.className = 'roster-preview';
+  list.forEach((p) => {
+    const card = document.createElement('div');
+    card.className = 'player-card';
+    card.innerHTML = `<span class="chip-num">${escapeHTML(p.number || '-')}</span><span class="player-name">${escapeHTML(p.name)}</span><span class="event-meta">${escapeHTML(p.position || '')}</span>`;
+    card.onclick = () => setPlayer(sideName, p.name);
+    host.appendChild(card);
+  });
+}
+function setPlayer(nextSide, name, button) {
+  if (nextSide === 'away') $('awayActive').value = name; else $('homeActive').value = name;
+  setSide(nextSide);
+  if (focusedRole) setSlot(focusedRole, name, nextSide);
+  $('mainPlayer').value = name;
+  document.querySelectorAll('.player-chip').forEach((chip) => chip.classList.remove('selected'));
+  if (button) button.classList.add('selected');
+  toast(`已选择：${team(nextSide)} ${name}`);
+}
+function renderPlayers() {
+  renderPlayerGroup('homeChips', parsePlayers(value('homePlayers')), 'home');
+  renderPlayerGroup('awayChips', parsePlayers(value('awayPlayers')), 'away');
+}
+function renderPlayerGroup(id, list, listSide) {
+  const host = $(id);
+  host.innerHTML = '';
+  list.forEach((p) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = 'player-chip';
+    btn.innerHTML = `${p.number ? `<span class="chip-num">${escapeHTML(p.number)}</span>` : ''}<span>${escapeHTML(p.name)}</span>${p.position ? `<span class="event-meta">${escapeHTML(p.position)}</span>` : ''}`;
+    btn.onclick = () => setPlayer(listSide, p.name, btn);
+    host.appendChild(btn);
+  });
+}
+function renderEvents(id, eventSide) {
+  const host = $(id);
+  host.innerHTML = '';
+  presets.forEach((preset) => {
+    const btn = document.createElement('button');
+    btn.type = 'button';
+    btn.className = `event-btn ${preset.level || ''}`;
+    btn.innerHTML = `<span class="event-label">${preset.key} ${preset.label}</span><span class="event-meta">${preset.action} / ${preset.intensity}</span>`;
+    btn.onclick = () => {
+      flash(btn);
+      publishPreset(preset, eventSide);
+    };
+    host.appendChild(btn);
+  });
+}
+function renderEventTypes() {
+  $('eventType').innerHTML = presets.map((p) => `<option value="${p.type}">${p.label}</option>`).join('');
+}
+function roleSet() {
+  return roles[value('eventType')] || roles.operator_note;
+}
+function renderSlots() {
+  const host = $('slots');
+  host.innerHTML = '';
+  roleSet().forEach(([role, label], index) => {
+    const slot = document.createElement('div');
+    slot.className = `slot ${(focusedRole === role || (!focusedRole && index === 0)) ? 'active' : ''}`;
+    slot.dataset.role = role;
+    slot.innerHTML = `<span class="slot-label">${label}</span><input id="slot_${role}" data-role="${role}" placeholder="点球员 chip 或手写">`;
+    slot.onclick = () => focusRole(role);
+    host.appendChild(slot);
+    const input = slot.querySelector('input');
+    input.addEventListener('focus', () => focusRole(role));
+    input.addEventListener('input', () => {
+      if (roleSet()[0]?.[0] === role) $('mainPlayer').value = input.value.trim();
+    });
+  });
+  if (!focusedRole || !roleSet().some(([role]) => role === focusedRole)) focusRole(roleSet()[0]?.[0] || '');
+}
+function focusRole(role) {
+  focusedRole = role;
+  document.querySelectorAll('.slot').forEach((slot) => slot.classList.toggle('active', slot.dataset.role === role));
+}
+function setSlot(role, name, slotSide = side) {
+  const input = $(`slot_${role}`);
+  if (input) input.value = name;
+  if (roleSet()[0]?.[0] === role) $('mainPlayer').value = name;
+  setStatus(`已填入 ${roleLabel(role)}：${name}`, 'ok');
+}
+function roleLabel(role) {
+  const item = roleSet().find(([key]) => key === role);
+  return item ? item[1] : role;
+}
+function participants() {
+  const selected = value('sideSelect') || side;
+  return roleSet().map(([role]) => {
+    const input = $(`slot_${role}`);
+    const name = input ? input.value.trim() : '';
+    return name ? { role, name, teamId: selected, teamName: team(selected) } : null;
+  }).filter(Boolean);
+}
+function periodLabel(period = value('period')) {
+  return ({
+    pre_match: '赛前',
+    first_half: '上半场',
+    halftime: '中场',
+    second_half: '下半场',
+    extra_time: '加时',
+    fulltime: '完场'
+  })[period] || period || '未知阶段';
+}
+function sideLabel(sideName = value('sideSelect') || side) {
+  if (sideName === 'home') return `主队 / ${team('home')}`;
+  if (sideName === 'away') return `客队 / ${team('away')}`;
+  return '双方/无';
+}
+function participantLine(list = participants()) {
+  return list.length ? list.map((p) => `${roleLabel(p.role)}(${p.role})=${p.name}`).join('；') : '未填写';
+}
+function cleanDirectorDescription(text = value('description')) {
+  return text
+    .split('\n')
+    .map((line) => line.trim())
+    .filter((line) => line && !/^参与人[:：]/.test(line) && !/^球球主动说[:：]/.test(line))
+    .join(' ');
+}
+function buildEventPackage(score = currentScore()) {
+  const part = participants();
+  const scoreText = `${score.home ?? 0}-${score.away ?? 0}`;
+  const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
+  return {
+    time: `${periodLabel()} ${value('clock') || '00:00'}`,
+    match: `${team('home')} vs ${team('away')}`,
+    score: scoreText,
+    side: sideLabel(),
+    event: eventLabel(value('eventType')),
+    action: value('action') || preset.action || 'auto',
+    intensity: value('intensity') || String(preset.intensity || 3),
+    mainPlayer: value('mainPlayer') || activePlayer(value('sideSelect') || side) || '未选择',
+    participants: part,
+    participantText: participantLine(part),
+    description: cleanDirectorDescription() || preset.text || '未填写',
+    outputMode: value('mode') === 'manual' ? '导演手动覆写' : value('mode') === 'quiet' ? '静默记录' : '交给球球自动生成',
+    manualProactive: value('proactive') || ''
+  };
+}
+function buildContextPreview() {
+  const pack = buildEventPackage();
+  return [
+    '[比赛状态]',
+    `比赛：${pack.match}`,
+    `时间：${pack.time}`,
+    `比分：${pack.score}`,
+    '',
+    '[实时事件]',
+    `事件：${pack.side} ${pack.event}`,
+    `主参与人：${pack.mainPlayer}`,
+    `参与人：${pack.participantText}`,
+    `强度：${pack.intensity}/5`,
+    `推荐动作：${pack.action}`,
+    `导演描述：${pack.description}`,
+    '',
+    '[球球生成任务]',
+    `模式：${pack.outputMode}`,
+    value('mode') === 'manual'
+      ? `使用导演话术：${pack.manualProactive || '未填写'}`
+      : value('mode') === 'quiet'
+        ? '不生成主动话术，只记录事件。'
+        : '根据以上比赛状态和实时事件，生成一句口语化、有陪伴感、不编造画面外信息的短反应。'
+  ].join('\n');
+}
+function updateContextPreview() {
+  if (!$('contextPreview')) return;
+  $('contextPreview').value = buildContextPreview();
+  $('contextScore').textContent = `${value('homeScore') || 0}-${value('awayScore') || 0}`;
+}
+function renderTemplates() {
+  const host = $('templates');
+  const query = value('templateSearch').toLowerCase();
+  const type = value('eventType');
+  host.innerHTML = '';
+  const list = templates
+    .filter((item) => (!type || item.type === type) && (!query || item.text.toLowerCase().includes(query) || item.type.includes(query)))
+  $('templateCount').textContent = `${list.length} 条`;
+  if (!list.length) {
+    host.innerHTML = '<div class="template-empty">当前事件类型没有匹配模板</div>';
+    updateContextPreview();
+    return;
+  }
+  list.forEach((item) => {
+      const btn = document.createElement('button');
+      btn.type = 'button';
+      btn.className = 'template-chip';
+      btn.textContent = item.text;
+      btn.onclick = () => {
+        $('description').value = item.text;
+        flash(btn);
+        toast('已套用模板');
+        updateContextPreview();
+      };
+      host.appendChild(btn);
+    });
+  updateContextPreview();
+}
+function syncEventTypeUI() {
+  focusedRole = '';
+  const preset = presets.find((p) => p.type === value('eventType'));
+  if (preset && !value('action')) $('action').value = preset.action;
+  renderTemplates();
+  renderSlots();
+  updateContextPreview();
+}
+function currentScore() {
+  return { home: Number(value('homeScore') || 0), away: Number(value('awayScore') || 0) };
+}
+function applyScore(preset, eventSide) {
+  lastScore = currentScore();
+  if (!preset.score || !eventSide) return lastScore;
+  const next = { ...lastScore };
+  next[eventSide] += preset.score;
+  $('homeScore').value = next.home;
+  $('awayScore').value = next.away;
+  return next;
+}
+function buildDescription(preset, eventSide) {
+  const main = participants()[0]?.name || value('mainPlayer') || activePlayer(eventSide);
+  const text = cleanDirectorDescription() || preset.text;
+  if (!main || text.startsWith(main) || text.includes(`${main}：`) || text.includes(`${main}:`)) return text;
+  return `${main}：${text}`;
+}
+function buildProactiveText(preset, eventSide) {
+  const mode = value('mode');
+  if (mode === 'quiet') return '__quiet__';
+  if (mode === 'manual') return value('proactive');
+  return '';
+}
+function payloadFromPreset(preset, score, eventSide) {
+  const list = participants();
+  const main = list[0]?.name || value('mainPlayer') || activePlayer(eventSide);
+  const eventPackage = buildEventPackage(score);
+  return {
+    source: 'operator',
+    providerName: 'director-console',
+    eventType: preset.type,
+    period: value('period'),
+    clock: value('clock'),
+    teamId: eventSide,
+    teamName: team(eventSide),
+    playerName: main,
+    participants: list,
+    score,
+    intensity: Number(value('intensity') || preset.intensity || 3),
+    description: buildDescription(preset, eventSide),
+    recommendedAction: value('action') || preset.action,
+    tags: [
+      `time=${eventPackage.time}`,
+      `score=${eventPackage.score}`,
+      `event=${eventPackage.event}`,
+      `participants=${list.map((p) => `${p.role}:${p.name}`).join('|') || 'none'}`
+    ],
+    proactiveText: buildProactiveText(preset, eventSide)
+  };
+}
+async function saveConfig() {
+  syncSelected();
+  renderPlayers();
+  const body = {
+    homeTeam: team('home'),
+    awayTeam: team('away'),
+    competition: value('competition'),
+    kickoff: value('kickoff'),
+    homePlayers: parsePlayers(value('homePlayers')),
+    awayPlayers: parsePlayers(value('awayPlayers'))
+  };
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config?token=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function savePrematchConfig() {
+  syncMainFromPre();
+  localStorage.setItem('qiuqiu.operator.meta', JSON.stringify({
+    venue: value('venue'),
+    homeFormation: value('homeFormation'),
+    awayFormation: value('awayFormation'),
+    homeCoach: value('homeCoach'),
+    awayCoach: value('awayCoach'),
+    homeFactOperator: value('homeFactOperator'),
+    awayFactOperator: value('awayFactOperator')
+  }));
+  const saved = await saveConfig();
+  toast('赛前配置已同步到导演台', 'ok');
+  setView('live');
+  return saved;
+}
+function settingsPayload() {
+  return {
+    apiEndpoint: value('apiEndpoint'),
+    modelName: value('modelName'),
+    temperature: value('temperature'),
+    avatarId: value('avatarId'),
+    outputLanguage: value('outputLanguage'),
+    emotionSensitivity: value('emotionSensitivity'),
+    voice: document.querySelector('input[name="voice"]:checked')?.value || 'calm_male'
+  };
+}
+function loadSettings() {
+  const saved = JSON.parse(localStorage.getItem('qiuqiu.operator.settings') || '{}');
+  Object.entries(saved).forEach(([key, val]) => {
+    const el = $(key);
+    if (el) el.value = val;
+  });
+  if (saved.voice) {
+    const radio = document.querySelector(`input[name="voice"][value="${CSS.escape(saved.voice)}"]`);
+    if (radio) radio.checked = true;
+  }
+}
+function saveSettings() {
+  localStorage.setItem('qiuqiu.operator.settings', JSON.stringify(settingsPayload()));
+  toast('全局设置已保存到本机工作台', 'ok');
+}
+async function publishEvent(event) {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events?token=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(event)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function correctEvent(eventId, event) {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events/${encodeURIComponent(eventId)}/correct?token=${encodeURIComponent(token)}`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(event)
+  });
+  if (!res.ok) throw new Error(await res.text());
+  return res.json();
+}
+async function publishPreset(preset, eventSide = side) {
+  try {
+    setSide(eventSide);
+    $('eventType').value = preset.type;
+    $('action').value = preset.action;
+    $('intensity').value = String(preset.intensity || 3);
+    syncEventTypeUI();
+    const current = activePlayer(eventSide);
+    if (current && !participants().length) setSlot(roleSet()[0][0], current, eventSide);
+    await saveConfig();
+    const score = applyScore(preset, eventSide);
+    await publishEvent(payloadFromPreset(preset, score, eventSide));
+  $('description').value = '';
+  $('proactive').value = '';
+  toast(`已发布：${team(eventSide)} ${preset.label}`, 'ok');
+  updateContextPreview();
+  await loadTimeline();
+  } catch (err) {
+    toast(err.message || '发布失败', 'bad');
+  }
+}
+async function loadConfig() {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
+  if (!res.ok) return;
+  const data = await res.json();
+  if (data.config?.updatedAt) {
+    $('homeTeam').value = data.config.homeTeam || value('homeTeam') || '西班牙';
+    $('awayTeam').value = data.config.awayTeam || value('awayTeam') || '德国';
+    $('competition').value = data.config.competition || value('competition');
+    $('kickoff').value = data.config.kickoff || value('kickoff');
+    if (data.config.homePlayers?.length) $('homePlayers').value = playersToText(data.config.homePlayers);
+    if (data.config.awayPlayers?.length) $('awayPlayers').value = playersToText(data.config.awayPlayers);
+  }
+  if (data.snapshot) {
+    $('homeScore').value = data.snapshot.score?.home ?? value('homeScore') ?? 0;
+    $('awayScore').value = data.snapshot.score?.away ?? value('awayScore') ?? 0;
+    $('period').value = data.snapshot.period || value('period') || 'first_half';
+    $('clock').value = data.snapshot.clock || value('clock') || '00:00';
+  }
+  syncSelected();
+  renderPlayers();
+  syncPreFromMain();
+}
+async function loadTimeline() {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`);
+  if (!res.ok) return;
+  const data = await res.json();
+  const host = $('timeline');
+  host.innerHTML = '';
+  const events = data.events || [];
+  if (!events.length) {
+    host.innerHTML = '<div class="muted">暂无事件。选择球员和事件后，最新记录会出现在这里。</div>';
+    return;
+  }
+  events.forEach((event) => {
+    const card = document.createElement('div');
+    card.className = 'event-card';
+    const roleText = (event.participants || []).map((p) => `${p.role}=${p.name}`).join('；');
+    card.innerHTML = `
+      <div class="event-top">
+        <div style="display:flex;gap:8px;align-items:center;min-width:0">
+          <span class="time-badge">${escapeHTML(event.clock || '')}</span>
+          <span>${escapeHTML(event.teamName || '')} ${eventLabel(event.eventType)}</span>
+        </div>
+        <div style="display:flex;gap:8px;align-items:center">
+          <span class="score-badge">${event.score?.home ?? 0}-${event.score?.away ?? 0}</span>
+          <button class="small-btn" type="button">拉回更正</button>
+        </div>
+      </div>
+      <div>${escapeHTML(event.description || '')}</div>
+      ${roleText ? `<div class="muted">参与人：${escapeHTML(roleText)}</div>` : ''}
+      ${event.proactiveText ? `<div class="voice-line">球球主动说：${escapeHTML(event.proactiveText)}</div>` : ''}
+      <div class="muted mono">${escapeHTML(event.status || 'created')} / ${escapeHTML(event.recommendedAction || 'auto')} / ${escapeHTML(event.id || '')}</div>
+    `;
+    card.querySelector('button').onclick = () => editCorrection(event);
+    host.appendChild(card);
+  });
+}
+function editCorrection(event) {
+  correctingId = event.id || '';
+  $('eventType').value = event.eventType || 'operator_note';
+  renderTemplates();
+  renderSlots();
+  $('period').value = event.period || 'first_half';
+  $('clock').value = event.clock || value('clock');
+  $('homeScore').value = event.score?.home ?? value('homeScore');
+  $('awayScore').value = event.score?.away ?? value('awayScore');
+  $('sideSelect').value = event.teamId || '';
+  $('mainPlayer').value = event.playerName || '';
+  if (event.teamId === 'home') $('homeActive').value = event.playerName || '';
+  if (event.teamId === 'away') $('awayActive').value = event.playerName || '';
+  (event.participants || []).forEach((p) => setSlot(p.role, p.name, p.teamId || event.teamId || ''));
+  $('intensity').value = String(event.intensity || 3);
+  $('action').value = event.recommendedAction || '';
+  $('description').value = event.description || '';
+  $('proactive').value = event.proactiveText || '';
+  $('mode').value = event.proactiveText ? 'manual' : 'auto';
+  setSide(event.teamId || '');
+  updateContextPreview();
+  toast(`正在更正：${event.id}`, 'ok');
+}
+function clearDraft() {
+  correctingId = '';
+  $('mainPlayer').value = '';
+  $('description').value = '';
+  $('proactive').value = '';
+  $('mode').value = 'auto';
+  document.querySelectorAll('#slots input').forEach((input) => { input.value = ''; });
+  updateContextPreview();
+  toast('草稿已清空', 'ok');
+}
+function parseClock() {
+  const match = value('clock').match(/^(\d{1,3})(?::(\d{1,2}))?$/);
+  return match ? Number(match[1]) * 60 + Number(match[2] || 0) : 0;
+}
+function setClock(seconds) {
+  const safe = Math.max(0, seconds);
+  $('clock').value = `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+function toggleClock() {
+  clockRunning = !clockRunning;
+  $('clockStart').innerHTML = `<span class="material-symbols-outlined">${clockRunning ? 'pause' : 'play_arrow'}</span>`;
+  clearInterval(clockTimer);
+  if (clockRunning) clockTimer = setInterval(() => setClock(parseClock() + 1), 1000);
+}
+function eventLabel(type) {
+  return presets.find((p) => p.type === type)?.label || type || '事件';
+}
+function escapeHTML(text) {
+  return String(text ?? '').replace(/[&<>"']/g, (ch) => ({ '&': '&amp;', '<': '&lt;', '>': '&gt;', '"': '&quot;', "'": '&#39;' }[ch]));
+}
+
+$('draft').addEventListener('submit', async (event) => {
+  event.preventDefault();
+  try {
+    const eventSide = value('sideSelect') || side;
+    setSide(eventSide);
+    await saveConfig();
+    const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
+    const payload = payloadFromPreset({ ...preset, score: 0 }, currentScore(), eventSide);
+    if (correctingId) {
+      await correctEvent(correctingId, payload);
+      toast(`已发布更正：${correctingId}`, 'ok');
+      correctingId = '';
+    } else {
+      await publishEvent(payload);
+      toast(`已发布详细事件：${preset.label}`, 'ok');
+    }
+    clearDraft();
+    await loadTimeline();
+  } catch (err) {
+    toast(err.message || '发布失败', 'bad');
+  }
+});
+$('saveConfig').addEventListener('click', async () => {
+  try { await saveConfig(); toast('赛前配置已保存', 'ok'); } catch (err) { toast(err.message || '保存失败', 'bad'); }
+});
+$('reload').addEventListener('click', async () => { await loadConfig(); await loadTimeline(); toast('已刷新', 'ok'); });
+$('clearDraft').addEventListener('click', clearDraft);
+$('clockStart').addEventListener('click', toggleClock);
+$('clockMinus').addEventListener('click', () => { setClock(parseClock() - 60); updateContextPreview(); });
+$('clockPlus').addEventListener('click', () => { setClock(parseClock() + 60); updateContextPreview(); });
+$('scoreUndo').addEventListener('click', () => { $('homeScore').value = lastScore.home; $('awayScore').value = lastScore.away; updateContextPreview(); toast('比分已回退', 'ok'); });
+$('hint').addEventListener('click', () => { $('proactive').value = '这一下很关键，我们先看裁判和双方球员怎么反应。'; $('mode').value = 'manual'; updateContextPreview(); toast('已套用导演话术', 'ok'); });
+$('quickCut').addEventListener('click', () => toast('已标记快速切镜点', 'ok'));
+$('preSubmit').addEventListener('click', async () => {
+  try { await savePrematchConfig(); } catch (err) { toast(err.message || '赛前配置提交失败', 'bad'); }
+});
+$('saveSettings').addEventListener('click', saveSettings);
+$('homeTeam').addEventListener('input', syncSelected);
+$('awayTeam').addEventListener('input', syncSelected);
+$('homePlayers').addEventListener('input', renderPlayers);
+$('awayPlayers').addEventListener('input', renderPlayers);
+$('preMatchId').addEventListener('input', () => { $('matchId').value = value('preMatchId') || 'test'; });
+$('preHomeTeam').addEventListener('input', renderPreviews);
+$('preAwayTeam').addEventListener('input', renderPreviews);
+$('preHomePlayers').addEventListener('input', renderPreviews);
+$('preAwayPlayers').addEventListener('input', renderPreviews);
+$('homeActive').addEventListener('input', () => { setSide('home'); syncSelected(); });
+$('awayActive').addEventListener('input', () => { setSide('away'); syncSelected(); });
+$('eventType').addEventListener('change', syncEventTypeUI);
+$('templateSearch').addEventListener('input', renderTemplates);
+$('sideSelect').addEventListener('change', () => setSide(value('sideSelect')));
+['homeScore', 'awayScore', 'clock', 'period', 'mainPlayer', 'intensity', 'action', 'description', 'proactive', 'mode'].forEach((id) => {
+  $(id).addEventListener('input', updateContextPreview);
+  $(id).addEventListener('change', updateContextPreview);
+});
+document.querySelectorAll('[data-side]').forEach((btn) => btn.addEventListener('click', () => { setSide(btn.dataset.side); flash(btn); toast(`当前操作方：${team(btn.dataset.side)}`, 'ok'); }));
+document.querySelectorAll('[data-use-side]').forEach((btn) => btn.addEventListener('click', () => { setSide(btn.dataset.useSide); flash(btn); toast(`当前操作方：${team(btn.dataset.useSide)}`, 'ok'); }));
+document.querySelectorAll('[data-view-link]').forEach((link) => link.addEventListener('click', (event) => {
+  event.preventDefault();
+  setView(link.dataset.viewLink);
+  history.replaceState(null, '', `#${link.dataset.viewLink}`);
+}));
+window.addEventListener('hashchange', () => setView(location.hash.replace('#', '') || 'live'));
+document.addEventListener('keydown', (event) => {
+  if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
+  const preset = presets.find((p) => p.key.toLowerCase() === event.key.toLowerCase());
+  if (!preset) return;
+  event.preventDefault();
+  publishPreset(preset, side);
+});
+
+syncSelected();
+renderEventTypes();
+renderEvents('homeEvents', 'home');
+renderEvents('awayEvents', 'away');
+renderPlayers();
+renderTemplates();
+renderSlots();
+setSide('home');
+syncPreFromMain();
+loadSettings();
+setView(location.hash.replace('#', '') || 'live');
+loadConfig().then(loadTimeline).catch(() => loadTimeline());
+</script>
+</body>
+</html>

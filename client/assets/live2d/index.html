@@ -1,0 +1,172 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  * { margin: 0; padding: 0; box-sizing: border-box; }
+  html, body { width: 100%; height: 100%; overflow: hidden; background: transparent; }
+  canvas { display: block; width: 100%; height: 100%; }
+</style>
+</head>
+<body>
+<canvas id="live2d"></canvas>
+
+<!--
+  Live2D Cubism 5 SDK for Web
+  Download from: https://www.live2d.com/en/download/cubism-sdk/
+  Place in:
+    - cubismcore/live2dcubismcore.min.js
+    - Place Cubism 5 SDK JS files in this directory
+-->
+<script src="cubismcore/live2dcubismcore.min.js"></script>
+<script>
+// ============================================================
+// Ball Ball (球球) — Live2D WebView Host
+// ============================================================
+// Minimal Live2D loader using Cubism Web SDK.
+// Communicates with Flutter via evaluateJavascript / postMessage.
+//
+// Setup:
+// 1. Download Cubism 5 SDK for Web from live2d.com
+// 2. Place live2dcubismcore.min.js in cubismcore/
+// 3. Place .model3.json + .moc3 + textures in models/Haru/
+// ============================================================
+
+let modelReady = false;
+let currentExpression = 'idle';
+let isSpeaking = false;
+let mouthOpenY = 0.0;
+let targetMouthOpen = 0.0;
+
+// ---- Flutter Callbacks ----
+function setExpression(name) {
+  currentExpression = name;
+  console.log('[Live2D] expression:', name);
+  // TODO: call Cubism SDK setExpression when model loaded
+}
+
+function setSpeaking(speaking) {
+  isSpeaking = speaking;
+  console.log('[Live2D] speaking:', speaking);
+  if (!speaking) {
+    targetMouthOpen = 0.0;
+  }
+}
+
+// ---- Audio RMS (Lip Sync) ----
+// When Web Audio API is connected (audio-playback change),
+// RMS analysis runs in the same WebView context for low-latency lipsync.
+let audioContext = null;
+let analyserNode = null;
+
+function initAudioContext() {
+  if (audioContext) return;
+  audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  analyserNode = audioContext.createAnalyser();
+  analyserNode.fftSize = 256;
+  analyserNode.connect(audioContext.destination);
+}
+
+function updateLipSync() {
+  if (!isSpeaking || !analyserNode) {
+    mouthOpenY += (0.0 - mouthOpenY) * 0.3;
+  } else {
+    const data = new Uint8Array(analyserNode.frequencyBinCount);
+    analyserNode.getByteTimeDomainData(data);
+    let sum = 0;
+    for (let i = 0; i < data.length; i++) {
+      const v = (data[i] - 128) / 128;
+      sum += v * v;
+    }
+    const rms = Math.sqrt(sum / data.length);
+    targetMouthOpen = Math.min(rms * 3.0, 1.0);
+    mouthOpenY += (targetMouthOpen - mouthOpenY) * 0.4;
+    console.log('[Live2D] mouthOpen:', mouthOpenY.toFixed(2));
+  }
+}
+
+setInterval(updateLipSync, 100); // 100ms interval (10Hz)
+
+// ---- Ready notification ----
+function notifyReady() {
+  modelReady = true;
+  if (window.flutter_inappwebview) {
+    window.flutter_inappwebview.callHandler('onModelReady');
+  }
+  // Also via postMessage as fallback
+  window.postMessage({ type: 'ready' }, '*');
+}
+
+// Notify Flutter after a short delay (model loading simulated for Phase 0)
+setTimeout(notifyReady, 500);
+
+// ---- Placeholder model rendering ----
+// Phase 0: Draw a placeholder on canvas to verify WebView rendering.
+// Replace with actual Cubism SDK rendering in live2d-character change.
+(function renderLoop() {
+  const canvas = document.getElementById('live2d');
+  const ctx = canvas.getContext('2d');
+  if (!ctx) return;
+
+  function resize() {
+    canvas.width = canvas.clientWidth * window.devicePixelRatio;
+    canvas.height = canvas.clientHeight * window.devicePixelRatio;
+    ctx.scale(window.devicePixelRatio, window.devicePixelRatio);
+  }
+  resize();
+  window.addEventListener('resize', resize);
+
+  let frame = 0;
+  function draw() {
+    frame++;
+    ctx.clearRect(0, 0, canvas.width, canvas.height);
+
+    const w = canvas.clientWidth;
+    const h = canvas.clientHeight;
+
+    // Simple placeholder character shape
+    const cx = w / 2;
+    const cy = h * 0.45;
+    const r = Math.min(w, h) * 0.2;
+
+    // Body
+    ctx.fillStyle = '#FF6B35';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + r * 1.2, r * 0.7, r * 0.9, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Head
+    ctx.fillStyle = '#FFE0C0';
+    ctx.beginPath();
+    ctx.arc(cx, cy, r, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Eyes
+    const eyeY = cy - r * 0.15;
+    ctx.fillStyle = '#333';
+    ctx.beginPath();
+    ctx.arc(cx - r * 0.3, eyeY, r * 0.08, 0, Math.PI * 2);
+    ctx.fill();
+    ctx.beginPath();
+    ctx.arc(cx + r * 0.3, eyeY, r * 0.08, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Mouth (lip sync)
+    const mouthW = r * 0.3;
+    const mouthH = r * 0.05 + mouthOpenY * r * 0.15;
+    ctx.fillStyle = '#C44';
+    ctx.beginPath();
+    ctx.ellipse(cx, cy + r * 0.2, mouthW, mouthH, 0, 0, Math.PI * 2);
+    ctx.fill();
+
+    // Breathing idle motion
+    const breath = Math.sin(frame * 0.05) * 2;
+
+    requestAnimationFrame(draw);
+  }
+  draw();
+})();
+</script>
+</body>
+</html>

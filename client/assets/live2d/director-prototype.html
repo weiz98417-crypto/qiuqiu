@@ -1,0 +1,475 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>球球比赛导演台原型</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; min-height: 100%; background: #0d141b; color: #f8fafc; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  button, input, select, textarea { font: inherit; }
+  input, select, textarea { border: 1px solid #334155; border-radius: 8px; background: #0b1120; color: #f8fafc; padding: 8px 9px; outline: none; min-width: 0; }
+  textarea { resize: vertical; min-height: 62px; }
+  header { display: grid; grid-template-columns: minmax(520px, 1fr) auto; gap: 14px; align-items: center; padding: 12px 14px; border-bottom: 1px solid rgba(255,255,255,.12); background: #0f172a; position: sticky; top: 0; z-index: 5; }
+  h1, h2, h3 { margin: 0; letter-spacing: 0; }
+  h1 { font-size: 18px; margin-bottom: 8px; }
+  h2 { font-size: 14px; }
+  h3 { font-size: 13px; color: #e2e8f0; }
+  label { display: grid; gap: 5px; color: #cbd5e1; font-size: 12px; font-weight: 700; }
+  main { display: grid; grid-template-columns: minmax(260px, .78fr) minmax(480px, 1.3fr) minmax(260px, .78fr); gap: 12px; padding: 12px; }
+  section { border: 1px solid rgba(255,255,255,.12); border-radius: 8px; background: #172033; overflow: hidden; min-width: 0; }
+  .section-head { display: flex; justify-content: space-between; align-items: center; gap: 8px; padding: 10px 11px; border-bottom: 1px solid rgba(255,255,255,.1); }
+  .content { padding: 11px; }
+  .stack { display: grid; gap: 10px; }
+  .match-setup { display: grid; grid-template-columns: 90px 1fr 1fr auto; gap: 8px; align-items: end; }
+  .scorebar { display: grid; grid-template-columns: auto 64px auto 64px auto; gap: 8px; align-items: center; font-size: 18px; font-weight: 900; }
+  .scorebar input { width: 64px; text-align: center; font-size: 22px; font-weight: 900; }
+  .toolbar { display: grid; grid-template-columns: 120px 1fr auto auto auto; gap: 8px; align-items: end; }
+  .clock-row { display: flex; gap: 6px; align-items: center; flex-wrap: wrap; }
+  .clock-row input { width: 82px; text-align: center; font-weight: 900; }
+  .btn, .tiny, .event-btn, .template-chip, .player-chip { border-radius: 8px; cursor: pointer; transition: border-color .15s ease, box-shadow .15s ease, transform .15s ease, background .15s ease; }
+  .btn { border: 1px solid #334155; background: #0b1120; color: #e2e8f0; padding: 8px 10px; font-weight: 800; }
+  .btn.primary { border: 0; background: #f97316; color: white; }
+  .btn.green { border-color: #166534; background: #052e16; color: #dcfce7; }
+  .btn.red { border-color: #7f1d1d; background: #2a1214; color: #fee2e2; }
+  .tiny { border: 1px solid #334155; background: #0b1120; color: #e2e8f0; padding: 6px 8px; font-size: 12px; }
+  .context-box { display: grid; grid-template-columns: 1fr auto; gap: 7px; align-items: end; }
+  .selected-line { border: 1px solid #166534; background: #052e16; color: #dcfce7; border-radius: 8px; padding: 7px 8px; font-size: 12px; font-weight: 800; }
+  .players { display: flex; flex-wrap: wrap; gap: 6px; max-height: 92px; overflow: auto; }
+  .player-chip, .template-chip { border: 1px solid #334155; background: #0b1120; color: #cbd5e1; padding: 6px 8px; font-size: 12px; }
+  .player-chip.selected, .slot.active, .flash { border-color: #22c55e !important; box-shadow: 0 0 0 3px rgba(34,197,94,.2); }
+  .event-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .event-btn { min-height: 58px; border: 1px solid #334155; background: #101827; color: #e2e8f0; display: grid; gap: 3px; align-content: center; text-align: left; padding: 8px; }
+  .event-btn:hover, .player-chip:hover, .template-chip:hover, .btn:hover, .tiny:hover { border-color: #f97316; transform: translateY(-1px); }
+  .event-btn strong { font-size: 13px; }
+  .event-btn span { color: #94a3b8; font-size: 11px; }
+  .event-btn.major { border-color: #7f1d1d; background: #2a1214; }
+  .event-btn.medium { border-color: #78350f; background: #23170b; }
+  .template-filter { display: grid; grid-template-columns: 1fr 120px; gap: 8px; }
+  .templates { display: flex; flex-wrap: wrap; gap: 6px; max-height: 130px; overflow: auto; padding-right: 2px; }
+  .slots { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 8px; }
+  .slot { border: 1px solid #334155; border-radius: 8px; background: #0b1120; padding: 8px; display: grid; gap: 6px; }
+  .draft { display: grid; grid-template-columns: repeat(4, minmax(0, 1fr)); gap: 8px; }
+  .wide { grid-column: 1 / -1; }
+  .half { grid-column: span 2; }
+  .director { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .timeline { display: grid; gap: 8px; max-height: 250px; overflow: auto; }
+  .event-card { border: 1px solid #334155; border-radius: 8px; background: #0b1120; padding: 9px; display: grid; gap: 5px; }
+  .event-top { display: flex; justify-content: space-between; gap: 8px; font-weight: 900; }
+  .event-meta, .hint, .status { color: #94a3b8; font-size: 12px; line-height: 1.45; }
+  .ok { color: #86efac; }
+  .bad { color: #fca5a5; }
+  .toast { position: fixed; right: 14px; bottom: 14px; background: #052e16; border: 1px solid #22c55e; color: #dcfce7; border-radius: 8px; padding: 10px 12px; font-size: 13px; opacity: 0; transform: translateY(8px); transition: opacity .18s ease, transform .18s ease; z-index: 20; }
+  .toast.show { opacity: 1; transform: translateY(0); }
+  @media (max-width: 1120px) {
+    header, main, .match-setup, .toolbar, .director { grid-template-columns: 1fr; }
+    .draft, .slots { grid-template-columns: 1fr 1fr; }
+  }
+</style>
+</head>
+<body>
+  <header>
+    <div>
+      <h1>球球比赛导演台原型</h1>
+      <div class="match-setup">
+        <label>比赛 ID <input value="prototype"></label>
+        <label>主队 <input id="homeTeam" value="西班牙"></label>
+        <label>客队 <input id="awayTeam" value="德国"></label>
+        <button class="btn" type="button" data-feedback="赛前配置已保存">保存赛前配置</button>
+      </div>
+    </div>
+    <div class="scorebar">
+      <span id="homeLabel">西班牙</span>
+      <input id="homeScore" type="number" min="0" value="0">
+      <span>-</span>
+      <input id="awayScore" type="number" min="0" value="0">
+      <span id="awayLabel">德国</span>
+    </div>
+  </header>
+
+  <main>
+    <section>
+      <div class="section-head">
+        <h2 id="homeTitle">西班牙事实员</h2>
+        <button class="tiny" type="button" data-side="home">当前主队</button>
+      </div>
+      <div class="content stack">
+        <label>主队出场名单
+          <textarea id="homePlayers">10 佩德里 CM
+7 莫拉塔 ST
+19 亚马尔 RW
+8 法比安 CM</textarea>
+        </label>
+        <div class="context-box">
+          <label>当前主队球员 <input id="homeActive" placeholder="先选/输入球员，再点事件"></label>
+          <button class="btn green" type="button" data-side="home">使用主队</button>
+        </div>
+        <div class="selected-line" id="homeSelected">主队当前球员：未选择</div>
+        <div class="players" id="homeChips"></div>
+        <div class="event-grid" id="homeEvents"></div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2>比赛状态 / 球球导演</h2>
+        <span class="status" id="status">准备就绪</span>
+      </div>
+      <div class="content stack">
+        <div class="toolbar">
+          <label>阶段
+            <select id="period">
+              <option>上半场</option>
+              <option>中场</option>
+              <option>下半场</option>
+              <option>加时</option>
+              <option>完场</option>
+            </select>
+          </label>
+          <label>比赛时间
+            <div class="clock-row">
+              <input id="clock" value="23:15">
+              <button class="tiny" id="clockStart" type="button">暂停</button>
+              <button class="tiny" id="clockMinus" type="button">-1'</button>
+              <button class="tiny" id="clockPlus" type="button">+1'</button>
+            </div>
+          </label>
+          <button class="btn" id="scoreUndo" type="button">比分回退</button>
+          <button class="btn" type="button" data-feedback="时间线已刷新">刷新</button>
+          <button class="btn green" id="clearDraft" type="button">清草稿</button>
+        </div>
+
+        <div>
+          <div class="template-filter">
+            <input id="templateSearch" placeholder="搜索模板，也可以直接在描述框打字">
+            <select id="eventType"></select>
+          </div>
+          <div class="templates" id="templates"></div>
+        </div>
+
+        <div>
+          <div class="section-head" style="padding-left:0;padding-right:0;border-bottom:0;">
+            <h3>参与人槽位</h3>
+            <span class="hint">先点槽位，再点左右球员 chip。支持多名球员。</span>
+          </div>
+          <div class="slots" id="slots"></div>
+        </div>
+
+        <form class="draft" id="draft">
+          <label>当前方
+            <select id="sideSelect">
+              <option value="home">主队</option>
+              <option value="away">客队</option>
+              <option value="">双方/无</option>
+            </select>
+          </label>
+          <label>主参与人
+            <input id="mainPlayer" placeholder="由槽位自动带入，也可手打">
+          </label>
+          <label>强度
+            <select id="intensity">
+              <option>1 安静</option>
+              <option>2 轻微</option>
+              <option selected>3 明显</option>
+              <option>4 强烈</option>
+              <option>5 爆发</option>
+            </select>
+          </label>
+          <label>动作
+            <select id="action">
+              <option>自动</option>
+              <option>celebrate</option>
+              <option>tense</option>
+              <option>miss</option>
+              <option>complain</option>
+              <option>angry</option>
+              <option>analysis</option>
+            </select>
+          </label>
+          <label class="wide">详细描述
+            <textarea id="description" placeholder="选择模板后可继续修改；也可以完全手写。"></textarea>
+          </label>
+          <label class="half">球球主动话术
+            <textarea id="proactive" placeholder="留空自动生成；也可以导演手写。"></textarea>
+          </label>
+          <label class="half">发布方式
+            <select id="mode">
+              <option value="auto">直接发布并触发球球</option>
+              <option value="quiet">只记事件，不主动说话</option>
+              <option value="manual">使用我写的主动话术</option>
+            </select>
+          </label>
+          <div class="wide director">
+            <button class="btn primary" type="submit">发布详细事件</button>
+            <button class="btn" id="hint" type="button">套一句导演提示</button>
+          </div>
+        </form>
+
+        <div>
+          <div class="section-head" style="padding-left:0;padding-right:0;border-bottom:0;">
+            <h3>事件时间线</h3>
+            <span class="hint">原型内模拟，不连接后端</span>
+          </div>
+          <div class="timeline" id="timeline"></div>
+        </div>
+      </div>
+    </section>
+
+    <section>
+      <div class="section-head">
+        <h2 id="awayTitle">德国事实员</h2>
+        <button class="tiny" type="button" data-side="away">当前客队</button>
+      </div>
+      <div class="content stack">
+        <label>客队出场名单
+          <textarea id="awayPlayers">10 穆西亚拉 AM
+9 菲尔克鲁格 ST
+7 哈弗茨 FW
+22 吕迪格 CB</textarea>
+        </label>
+        <div class="context-box">
+          <label>当前客队球员 <input id="awayActive" placeholder="先选/输入球员，再点事件"></label>
+          <button class="btn green" type="button" data-side="away">使用客队</button>
+        </div>
+        <div class="selected-line" id="awaySelected">客队当前球员：未选择</div>
+        <div class="players" id="awayChips"></div>
+        <div class="event-grid" id="awayEvents"></div>
+      </div>
+    </section>
+  </main>
+  <div class="toast" id="toast"></div>
+
+<script>
+const presets = [
+  { key: '1', type: 'goal', label: '进球', level: 'major', action: 'celebrate', score: 1, text: '进球了！' },
+  { key: '2', type: 'big_chance', label: '绝佳机会', level: 'major', action: 'tense', text: '出现绝佳机会。' },
+  { key: '3', type: 'shot', label: '射门', level: 'medium', action: 'focus', text: '完成一次射门。' },
+  { key: '4', type: 'save', label: '扑救', level: 'medium', action: 'surprise', text: '门将完成关键扑救。' },
+  { key: '5', type: 'miss', label: '错失', level: 'medium', action: 'miss', text: '这次机会差一点转化成进球。' },
+  { key: '6', type: 'foul', label: '犯规', action: 'complain', text: '裁判吹罚犯规。' },
+  { key: '7', type: 'yellow_card', label: '黄牌', action: 'complain', text: '裁判出示黄牌。' },
+  { key: '8', type: 'red_card', label: '红牌', level: 'major', action: 'angry', text: '裁判出示红牌，比赛形势发生重大变化。' },
+  { key: '9', type: 'var_check', label: 'VAR', level: 'major', action: 'tense', text: 'VAR 正在介入检查。' },
+  { key: '0', type: 'penalty', label: '点球', level: 'major', action: 'tense', text: '裁判判罚点球。' }
+];
+const templates = [
+  ['goal', '禁区内抢点破门。'], ['goal', '佩德里送出直塞，莫拉塔冷静推射。'], ['goal', '定位球机会转化成进球。'],
+  ['shot', '禁区外尝试一脚射门。'], ['shot', '小角度打门被封堵。'], ['shot', '接传中后头球攻门。'],
+  ['save', '门将飞身把近角射门扑出。'], ['save', '门将出击化解单刀。'],
+  ['miss', '门前包抄差一步。'], ['miss', '击中门框弹出。'],
+  ['foul', '中场战术犯规阻断反击。'], ['yellow_card', '动作过大，裁判出示黄牌。'], ['red_card', '最后一名防守球员犯规，被直接罚下。'],
+  ['var_check', 'VAR 正在检查禁区内接触。'], ['penalty', '禁区内犯规，获得点球机会。']
+].map(([type, text]) => ({ type, text }));
+const roles = {
+  goal: [['scorer', '进球者'], ['assist', '助攻者'], ['pre_assist', '策动者'], ['defender', '防守相关']],
+  shot: [['shooter', '射门者'], ['assist', '传球者'], ['blocker', '封堵者'], ['keeper', '门将']],
+  save: [['keeper', '扑救门将'], ['shooter', '射门者']],
+  miss: [['shooter', '错失者'], ['assist', '传球者'], ['keeper', '门将']],
+  foul: [['offender', '犯规者'], ['fouled', '被犯规者']],
+  yellow_card: [['offender', '吃牌者'], ['fouled', '对抗对象']],
+  red_card: [['offender', '红牌球员'], ['fouled', '对抗对象']],
+  var_check: [['subject', '被检查球员'], ['affected', '受影响球员']],
+  penalty: [['taker', '主罚者'], ['won_by', '造点者'], ['offender', '犯规者'], ['keeper', '门将']],
+  big_chance: [['attacker', '进攻者'], ['passer', '传球者'], ['defender', '防守者']]
+};
+const $ = (id) => document.getElementById(id);
+let side = 'home';
+let focusedRole = '';
+let lastScore = { home: 0, away: 0 };
+
+function toast(text) {
+  $('status').textContent = text;
+  $('status').className = 'status ok';
+  const el = $('toast');
+  el.textContent = text;
+  el.classList.add('show');
+  setTimeout(() => el.classList.remove('show'), 1000);
+}
+function flash(el) {
+  el.classList.add('flash');
+  setTimeout(() => el.classList.remove('flash'), 650);
+}
+function team(sideName = side) {
+  return sideName === 'away' ? $('awayTeam').value : $('homeTeam').value;
+}
+function players(text) {
+  return text.split('\n').map((line) => {
+    const parts = line.trim().split(/\s+/).filter(Boolean);
+    if (!parts.length) return null;
+    const hasNumber = /^\d{1,2}$/.test(parts[0]);
+    return { number: hasNumber ? parts[0] : '', name: hasNumber ? parts.slice(1, -1).join(' ') || parts[1] : parts.slice(0, -1).join(' ') || parts[0], pos: parts.at(-1) };
+  }).filter(Boolean);
+}
+function setSide(next) {
+  side = next;
+  $('sideSelect').value = next;
+  toast(`当前操作方：${team(next)}`);
+}
+function setPlayer(nextSide, name, button) {
+  if (nextSide === 'away') $('awayActive').value = name; else $('homeActive').value = name;
+  setSide(nextSide);
+  if (focusedRole) setSlot(focusedRole, name);
+  $('mainPlayer').value = name;
+  document.querySelectorAll('.player-chip').forEach((chip) => chip.classList.remove('selected'));
+  if (button) button.classList.add('selected');
+  syncSelected();
+  toast(`已选择：${team(nextSide)} ${name}`);
+}
+function activePlayer(nextSide = side) {
+  return nextSide === 'away' ? $('awayActive').value : $('homeActive').value;
+}
+function syncSelected() {
+  $('homeLabel').textContent = $('homeTeam').value;
+  $('awayLabel').textContent = $('awayTeam').value;
+  $('homeTitle').textContent = `${$('homeTeam').value}事实员`;
+  $('awayTitle').textContent = `${$('awayTeam').value}事实员`;
+  $('homeSelected').textContent = `主队当前球员：${$('homeActive').value || '未选择'}`;
+  $('awaySelected').textContent = `客队当前球员：${$('awayActive').value || '未选择'}`;
+}
+function renderPlayers() {
+  renderPlayerGroup('homeChips', players($('homePlayers').value), 'home');
+  renderPlayerGroup('awayChips', players($('awayPlayers').value), 'away');
+}
+function renderPlayerGroup(id, list, listSide) {
+  $(id).innerHTML = '';
+  list.forEach((p) => {
+    const btn = document.createElement('button');
+    btn.className = 'player-chip';
+    btn.type = 'button';
+    btn.textContent = `${p.number ? p.number + ' ' : ''}${p.name}${p.pos ? ' · ' + p.pos : ''}`;
+    btn.onclick = () => setPlayer(listSide, p.name, btn);
+    $(id).appendChild(btn);
+  });
+}
+function renderEvents(id, eventSide) {
+  $(id).innerHTML = '';
+  presets.forEach((p) => {
+    const btn = document.createElement('button');
+    btn.className = `event-btn ${p.level || ''}`;
+    btn.type = 'button';
+    btn.innerHTML = `<strong>${p.key} ${p.label}</strong><span>${p.action}</span>`;
+    btn.onclick = () => { flash(btn); publish(p, eventSide); };
+    $(id).appendChild(btn);
+  });
+}
+function renderEventTypes() {
+  $('eventType').innerHTML = presets.map((p) => `<option value="${p.type}">${p.label}</option>`).join('');
+}
+function roleSet() {
+  return roles[$('eventType').value] || roles.goal;
+}
+function renderSlots() {
+  $('slots').innerHTML = '';
+  roleSet().forEach(([role, label], index) => {
+    const slot = document.createElement('div');
+    slot.className = `slot ${focusedRole === role || (!focusedRole && index === 0) ? 'active' : ''}`;
+    slot.dataset.role = role;
+    slot.innerHTML = `<label>${label}</label><input id="slot_${role}" placeholder="点球员 chip 或手打">`;
+    slot.onclick = () => focusRole(role);
+    $('slots').appendChild(slot);
+  });
+  if (!focusedRole || !roleSet().some(([r]) => r === focusedRole)) focusRole(roleSet()[0][0]);
+}
+function focusRole(role) {
+  focusedRole = role;
+  document.querySelectorAll('.slot').forEach((s) => s.classList.toggle('active', s.dataset.role === role));
+}
+function setSlot(role, name) {
+  const input = $(`slot_${role}`);
+  if (input) input.value = name;
+  if (roleSet()[0]?.[0] === role) $('mainPlayer').value = name;
+}
+function renderTemplates() {
+  const query = $('templateSearch').value.toLowerCase();
+  const type = $('eventType').value;
+  $('templates').innerHTML = '';
+  templates.filter((t) => t.type === type && (!query || t.text.toLowerCase().includes(query))).forEach((t) => {
+    const btn = document.createElement('button');
+    btn.className = 'template-chip';
+    btn.type = 'button';
+    btn.textContent = t.text;
+    btn.onclick = () => { $('description').value = t.text; flash(btn); toast('已套用模板'); };
+    $('templates').appendChild(btn);
+  });
+}
+function participants() {
+  return roleSet().map(([role]) => {
+    const input = $(`slot_${role}`);
+    const name = input ? input.value.trim() : '';
+    return name ? `${role}=${name}` : null;
+  }).filter(Boolean);
+}
+function publish(preset, eventSide = side) {
+  setSide(eventSide);
+  $('eventType').value = preset.type;
+  renderSlots();
+  renderTemplates();
+  const currentPlayer = activePlayer(eventSide);
+  if (currentPlayer && !$(`slot_${roleSet()[0][0]}`)?.value) setSlot(roleSet()[0][0], currentPlayer);
+  const description = $('description').value || preset.text;
+  const main = participants()[0]?.split('=')[1] || currentPlayer;
+  const finalDescription = main && !description.startsWith(main) ? `${main}：${description}` : description;
+  lastScore = { home: Number($('homeScore').value || 0), away: Number($('awayScore').value || 0) };
+  if (preset.score) {
+    if (eventSide === 'home') $('homeScore').value = lastScore.home + preset.score;
+    if (eventSide === 'away') $('awayScore').value = lastScore.away + preset.score;
+  }
+  addTimeline({
+    type: preset.type,
+    team: team(eventSide),
+    score: `${$('homeScore').value}-${$('awayScore').value}`,
+    desc: finalDescription,
+    participants: participants(),
+    proactive: $('mode').value === 'quiet' ? '' : ($('proactive').value || '球球会根据这个事件主动说一句。')
+  });
+  $('description').value = '';
+  $('proactive').value = '';
+  toast(`已发布：${team(eventSide)} ${preset.label}`);
+}
+function addTimeline(event) {
+  const card = document.createElement('div');
+  card.className = 'event-card';
+  card.innerHTML = `
+    <div class="event-top"><span>${$('clock').value} ${event.team} ${event.type}</span><span>${event.score}</span></div>
+    <div>${event.desc}</div>
+    ${event.participants.length ? `<div class="event-meta">参与人：${event.participants.join('；')}</div>` : ''}
+    ${event.proactive ? `<div class="event-meta">球球主动说：${event.proactive}</div>` : ''}
+    <div><button class="tiny" type="button">拉回更正</button></div>
+  `;
+  card.querySelector('button').onclick = () => toast('已拉回草稿，可继续编辑');
+  $('timeline').prepend(card);
+}
+function parseClock() {
+  const match = $('clock').value.match(/^(\d{1,3})(?::(\d{1,2}))?$/);
+  return match ? Number(match[1]) * 60 + Number(match[2] || 0) : 0;
+}
+function setClock(seconds) {
+  const safe = Math.max(0, seconds);
+  $('clock').value = `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+}
+
+$('homeTeam').oninput = syncSelected;
+$('awayTeam').oninput = syncSelected;
+$('homePlayers').oninput = renderPlayers;
+$('awayPlayers').oninput = renderPlayers;
+$('eventType').onchange = () => { focusedRole = ''; renderSlots(); renderTemplates(); };
+$('templateSearch').oninput = renderTemplates;
+$('clockMinus').onclick = () => setClock(parseClock() - 60);
+$('clockPlus').onclick = () => setClock(parseClock() + 60);
+$('scoreUndo').onclick = () => { $('homeScore').value = lastScore.home; $('awayScore').value = lastScore.away; toast('比分已回退'); };
+$('clearDraft').onclick = () => { $('description').value = ''; $('proactive').value = ''; document.querySelectorAll('.slot input').forEach((i) => i.value = ''); toast('草稿已清空'); };
+$('hint').onclick = () => { $('proactive').value = '这一下很关键，我们先看裁判和双方球员怎么反应。'; $('mode').value = 'manual'; toast('已套用导演话术'); };
+$('draft').onsubmit = (event) => { event.preventDefault(); publish(presets.find((p) => p.type === $('eventType').value) || presets[0], $('sideSelect').value); };
+document.querySelectorAll('[data-side]').forEach((btn) => btn.onclick = () => { setSide(btn.dataset.side); flash(btn); });
+document.querySelectorAll('[data-feedback]').forEach((btn) => btn.onclick = () => { toast(btn.dataset.feedback); flash(btn); });
+
+syncSelected();
+renderPlayers();
+renderEvents('homeEvents', 'home');
+renderEvents('awayEvents', 'away');
+renderEventTypes();
+renderSlots();
+renderTemplates();
+</script>
+</body>
+</html>

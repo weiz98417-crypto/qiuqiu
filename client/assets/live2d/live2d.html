@@ -1,0 +1,720 @@
+<!DOCTYPE html>
+<html>
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0, maximum-scale=1.0, user-scalable=no">
+<style>
+  * { margin:0; padding:0; box-sizing:border-box; }
+  html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
+  canvas { display:block; width:100%; height:100%; }
+</style>
+<script src="/assets/cubismcore/live2dcubismcore.min.js"></script>
+<script src="/assets/live2d-display-bundle.js"></script>
+</head>
+<body>
+<canvas id="live2d"></canvas>
+<script>
+var app = new PIXI.Application({
+    view: document.getElementById('live2d'),
+    autoStart: true,
+    resizeTo: window,
+    backgroundAlpha: 0,
+});
+
+var model = null;
+window.modelReady = false;
+var speaking = false;
+var mouthValue = 0;
+var currentMode = 'idle';
+var modeUntil = 0;
+var idleTimer = null;
+var baseModelX = 0;
+var baseModelY = 0;
+var baseModelScale = 1;
+var activePose = null;
+var fxLayer = new PIXI.Container();
+var fxItems = [];
+var exprMap = {
+    idle: 0,
+    listening: 0,
+    confused: 0,
+    think: 0,
+    thinking: 0,
+    excited: 1,
+    cheer: 1,
+    chat: 3,
+    tease: 3,
+    happy: 3,
+    nervous: 4,
+    sad: 4,
+    complain: 4,
+    surprised: 5,
+    surprise: 5,
+    angry: 6,
+};
+var motionGroups = {
+    hello: [['hello', 0]],
+    cheer: [['idle', 1]],
+    celebrate: [['celebrate', 0], ['celebrate', 1]],
+    miss: [['miss', 0]],
+    complain: [['complain', 0]],
+    analysis: [['analysis', 0]],
+    tense: [['tense', 0]],
+    agree: [['agree', 0]],
+    wave: [['wave', 0]],
+    idle: [['idle', 0], ['idle', 1], ['idle', 2]],
+    listen: [['listen', 0], ['listen', 1]],
+    speak: [['speak', 0], ['speak', 1]],
+    think: [['think', 0]],
+};
+var actionMap = {
+    hello: { mood: 'happy', motion: 'hello', mode: 'event', ms: 2200, priority: 4, pose: 'sway', effect: 'greeting' },
+    cheer: { mood: 'cheer', motion: 'cheer', mode: 'event', ms: 2400, priority: 4, pose: 'jump', effect: 'goalBurst' },
+    celebrate: { mood: 'cheer', motion: 'celebrate', mode: 'event', ms: 2800, priority: 4, pose: 'jump', effect: 'goalBurst' },
+    goal: { mood: 'cheer', motion: 'celebrate', mode: 'event', ms: 2800, priority: 4, pose: 'jump', effect: 'goalBurst' },
+    miss: { mood: 'sad', motion: 'miss', mode: 'event', ms: 2400, priority: 4, pose: 'slump', effect: 'nearMiss' },
+    complain: { mood: 'complain', motion: 'complain', mode: 'event', ms: 2400, priority: 4, pose: 'shake', effect: 'referee' },
+    analysis: { mood: 'thinking', motion: 'analysis', mode: 'think', ms: 3200, priority: 3, pose: 'coach', effect: 'tactics' },
+    tense: { mood: 'nervous', motion: 'tense', mode: 'event', ms: 2600, priority: 4, pose: 'leanIn', effect: 'heartbeat' },
+    agree: { mood: 'happy', motion: 'agree', mode: 'listen', ms: 1400, priority: 2, pose: 'nod', effect: 'check' },
+    wave: { mood: 'happy', motion: 'wave', mode: 'event', ms: 2000, priority: 3, pose: 'sway', effect: 'greeting' },
+    listen: { mood: 'listening', motion: 'listen', mode: 'listen', ms: 2600, priority: 2 },
+    listening: { mood: 'listening', motion: 'listen', mode: 'listen', ms: 2600, priority: 2 },
+    speak: { mood: 'chat', motion: 'speak', mode: 'speak', ms: 3600, priority: 3 },
+    think: { mood: 'thinking', motion: 'think', mode: 'think', ms: 2600, priority: 3 },
+    thinking: { mood: 'thinking', motion: 'think', mode: 'think', ms: 2600, priority: 3 },
+    surprise: { mood: 'surprised', motion: 'listen', mode: 'event', ms: 2000, priority: 4, pose: 'pop', effect: 'surprise' },
+    angry: { mood: 'angry', motion: 'complain', mode: 'event', ms: 2400, priority: 4, pose: 'shake', effect: 'anger' },
+    happy: { mood: 'happy', motion: 'speak', mode: 'event', ms: 2200, priority: 4, pose: 'bounce', effect: 'happyAura' },
+    laugh: { mood: 'happy', motion: 'speak', mode: 'event', ms: 2200, priority: 3, pose: 'bounce', effect: 'laughBurst' },
+    proud: { mood: 'cheer', motion: 'agree', mode: 'event', ms: 2200, priority: 3, pose: 'proud', effect: 'crown' },
+    curious: { mood: 'surprised', motion: 'analysis', mode: 'event', ms: 2200, priority: 3, pose: 'tilt', effect: 'question' },
+    comfort: { mood: 'sad', motion: 'agree', mode: 'event', ms: 2400, priority: 3, pose: 'soft', effect: 'heart' },
+    bored: { mood: 'sad', motion: 'idle', mode: 'event', ms: 2600, priority: 2, pose: 'bored', effect: 'ellipsis' },
+    focus: { mood: 'listening', motion: 'tense', mode: 'listen', ms: 2400, priority: 3, pose: 'focus', effect: 'focus' },
+    idle: { mood: 'idle', motion: 'idle', mode: 'idle', ms: 1200, priority: 1 },
+};
+
+function resizeModel() {
+    if (!model) return;
+    model.anchor.set(0.5, 0);  // anchor top-center
+    baseModelX = app.screen.width / 2;
+    baseModelY = Math.max(12, app.screen.height * 0.03);
+    var s = Math.min(app.screen.width / 700, app.screen.height / 1000);
+    baseModelScale = s * 0.28;  // keep the head visible in short mobile panes
+    applyPoseFrame();
+}
+
+async function loadModel() {
+    try {
+        var L2D = window.Live2DModel || Live2DModel;
+        model = await L2D.from(
+            '/assets/models/qiuqiu/female_01Arkit_6.model3.json?v=motionpack1',
+            { autoUpdate: true, autoInteract: false }
+        );
+        app.stage.addChild(model);
+        app.stage.addChild(fxLayer);
+        resizeModel();
+        window.addEventListener('resize', resizeModel);
+        window.modelReady = true;
+        setMood('idle');
+        scheduleIdle();
+        try { window.flutter_inappwebview.postMessage(JSON.stringify({type:'ready'})); } catch(_) {}
+    } catch(e) {
+        console.error('Live2D load error:', e);
+        window.modelReady = true;
+        try { window.flutter_inappwebview.postMessage(JSON.stringify({type:'ready'})); } catch(_) {}
+    }
+}
+
+function setExpression(name) {
+    setMood(name);
+}
+
+function playMotion(name) {
+    playMotionGroup(name, 3);
+}
+
+function pick(list) {
+    return list[Math.floor(Math.random() * list.length)];
+}
+
+function setMood(name) {
+    var idx = exprMap[name] || 0;
+    try { if (model) model.expression(idx); } catch(e) {}
+}
+
+function canInterrupt(priority) {
+    if (!model) return false;
+    if (Date.now() > modeUntil) return true;
+    var currentPriority = currentMode === 'speak' ? 3 : currentMode === 'listen' || currentMode === 'think' ? 2 : currentMode === 'event' ? 4 : 1;
+    return priority >= currentPriority;
+}
+
+function playMotionGroup(group, priority) {
+    if (!model) return;
+    priority = priority || 1;
+    if (!canInterrupt(priority)) return;
+    var motions = motionGroups[group] || motionGroups.idle;
+    var m = pick(motions);
+    try { model.motion(m[0], m[1], 3); } catch(e) {}
+}
+
+function startPose(kind, ms) {
+    if (!kind) return;
+    activePose = { kind: kind, start: performance.now(), ms: ms || 1800 };
+}
+
+function easeOut(t) {
+    return 1 - Math.pow(1 - Math.max(0, Math.min(1, t)), 3);
+}
+
+function applyPoseFrame() {
+    if (!model) return;
+    var x = baseModelX;
+    var y = baseModelY;
+    var scale = baseModelScale;
+    var rotation = 0;
+    if (activePose) {
+        var now = performance.now();
+        var p = Math.min(1, (now - activePose.start) / activePose.ms);
+        var fade = 1 - easeOut(p);
+        var wave = Math.sin(p * Math.PI * 2);
+        var fast = Math.sin(p * Math.PI * 10);
+        switch (activePose.kind) {
+        case 'jump':
+            y -= Math.abs(Math.sin(p * Math.PI * 4)) * 44 * fade;
+            scale *= 1 + Math.abs(Math.sin(p * Math.PI * 4)) * 0.035 * fade;
+            rotation = Math.sin(p * Math.PI * 6) * 0.035 * fade;
+            break;
+        case 'shake':
+            x += fast * 14 * fade;
+            rotation = fast * 0.055 * fade;
+            break;
+        case 'sway':
+            x += wave * 18 * fade;
+            rotation = wave * 0.035 * fade;
+            break;
+        case 'slump':
+            y += easeOut(Math.min(p * 1.3, 1)) * 18 * fade;
+            rotation = -0.05 * fade;
+            break;
+        case 'tremble':
+            x += fast * 7 * fade;
+            y += Math.sin(p * Math.PI * 14) * 3 * fade;
+            break;
+        case 'thoughtful':
+            rotation = Math.sin(p * Math.PI * 2) * 0.025 * fade;
+            y += Math.sin(p * Math.PI * 2) * 6 * fade;
+            break;
+        case 'coach':
+            x -= easeOut(Math.min(p * 1.4, 1)) * 18 * fade;
+            rotation = -0.035 * fade;
+            y += Math.sin(p * Math.PI * 1.5) * 4 * fade;
+            break;
+        case 'leanIn':
+            y -= easeOut(Math.min(p * 1.6, 1)) * 18 * fade;
+            scale *= 1 + 0.035 * fade;
+            x += fast * 3 * fade;
+            break;
+        case 'bounce':
+            y -= Math.abs(Math.sin(p * Math.PI * 5)) * 26 * fade;
+            scale *= 1 + Math.abs(Math.sin(p * Math.PI * 5)) * 0.025 * fade;
+            break;
+        case 'proud':
+            y -= easeOut(Math.min(p * 1.3, 1)) * 12 * fade;
+            scale *= 1 + 0.025 * fade;
+            rotation = Math.sin(p * Math.PI * 2) * 0.018 * fade;
+            break;
+        case 'tilt':
+            rotation = -0.12 * fade;
+            x += Math.sin(p * Math.PI * 2) * 10 * fade;
+            break;
+        case 'soft':
+            y += Math.sin(p * Math.PI) * 12 * fade;
+            rotation = 0.045 * fade;
+            break;
+        case 'bored':
+            y += easeOut(Math.min(p * 1.2, 1)) * 22 * fade;
+            rotation = -0.075 * fade;
+            break;
+        case 'focus':
+            y -= 10 * fade;
+            scale *= 1 + 0.02 * fade;
+            break;
+        case 'nod':
+            y += Math.sin(p * Math.PI * 4) * 8 * fade;
+            break;
+        case 'pop':
+            scale *= 1 + Math.sin(Math.min(p * 2, 1) * Math.PI) * 0.055;
+            break;
+        }
+        if (p >= 1) activePose = null;
+    }
+    model.x = x;
+    model.y = y;
+    model.scale.set(scale);
+    model.rotation = rotation;
+}
+
+function addParticle(display, vx, vy, life, spin, grow) {
+    fxLayer.addChild(display);
+    fxItems.push({ display: display, vx: vx || 0, vy: vy || 0, life: life || 1000, age: 0, spin: spin || 0, grow: !!grow });
+}
+
+function drawStar(g, x, y, r, color) {
+    g.beginFill(color);
+    for (var i = 0; i < 10; i++) {
+        var a = -Math.PI / 2 + i * Math.PI / 5;
+        var rr = i % 2 === 0 ? r : r * 0.45;
+        var px = x + Math.cos(a) * rr;
+        var py = y + Math.sin(a) * rr;
+        if (i === 0) g.moveTo(px, py); else g.lineTo(px, py);
+    }
+    g.closePath();
+    g.endFill();
+}
+
+function drawBall(g, x, y, r) {
+    g.beginFill(0xffffff);
+    g.lineStyle(2, 0x111827, 0.9);
+    g.drawCircle(x, y, r);
+    g.endFill();
+    g.lineStyle(1.5, 0x111827, 0.75);
+    g.moveTo(x - r * 0.6, y); g.lineTo(x + r * 0.6, y);
+    g.moveTo(x, y - r * 0.6); g.lineTo(x, y + r * 0.6);
+}
+
+function drawCheck(g, x, y, scale, color) {
+    g.lineStyle(6 * scale, color, 0.95);
+    g.moveTo(x - 18 * scale, y);
+    g.lineTo(x - 4 * scale, y + 14 * scale);
+    g.lineTo(x + 24 * scale, y - 18 * scale);
+}
+
+function drawCrown(g, x, y, scale, color) {
+    g.beginFill(color, 0.95);
+    g.moveTo(x - 36 * scale, y + 18 * scale);
+    g.lineTo(x - 28 * scale, y - 16 * scale);
+    g.lineTo(x - 10 * scale, y + 4 * scale);
+    g.lineTo(x, y - 24 * scale);
+    g.lineTo(x + 10 * scale, y + 4 * scale);
+    g.lineTo(x + 28 * scale, y - 16 * scale);
+    g.lineTo(x + 36 * scale, y + 18 * scale);
+    g.closePath();
+    g.endFill();
+    g.lineStyle(2 * scale, 0xffffff, 0.75);
+    g.moveTo(x - 28 * scale, y + 20 * scale);
+    g.lineTo(x + 28 * scale, y + 20 * scale);
+}
+
+function drawWhistle(g, x, y, scale) {
+    g.lineStyle(3 * scale, 0xffffff, 0.9);
+    g.beginFill(0x111827, 0.86);
+    g.drawRoundedRect(x - 28 * scale, y - 12 * scale, 42 * scale, 24 * scale, 8 * scale);
+    g.endFill();
+    g.beginFill(0xffffff, 0.92);
+    g.drawCircle(x + 16 * scale, y, 12 * scale);
+    g.endFill();
+    g.beginFill(0x111827, 0.86);
+    g.drawCircle(x + 16 * scale, y, 5 * scale);
+    g.endFill();
+    g.lineStyle(3 * scale, 0xffffff, 0.9);
+    g.moveTo(x - 30 * scale, y);
+    g.lineTo(x - 48 * scale, y - 10 * scale);
+}
+
+function drawHeart(g, x, y, r, color, alpha) {
+    g.beginFill(color, alpha == null ? 1 : alpha);
+    g.moveTo(x, y + r * 0.45);
+    g.bezierCurveTo(x - r * 1.35, y - r * 0.35, x - r * 0.7, y - r * 1.2, x, y - r * 0.45);
+    g.bezierCurveTo(x + r * 0.7, y - r * 1.2, x + r * 1.35, y - r * 0.35, x, y + r * 0.45);
+    g.endFill();
+}
+
+function addSoftCircle(x, y, r, color, alpha, life) {
+    var g = new PIXI.Graphics();
+    g.beginFill(color, alpha);
+    g.drawCircle(0, 0, r);
+    g.endFill();
+    g.x = x;
+    g.y = y;
+    addParticle(g, 0, 0, life || 900, 0, true);
+}
+
+function addTextParticle(text, x, y, color, size, vx, vy, life) {
+    var t = new PIXI.Text(text, {
+        fontFamily: 'Arial, sans-serif',
+        fontSize: size || 28,
+        fontWeight: '700',
+        fill: color || 0xffffff,
+        stroke: 0x111827,
+        strokeThickness: 3,
+    });
+    t.anchor.set(0.5);
+    t.x = x;
+    t.y = y;
+    addParticle(t, vx || 0, vy || -0.6, life || 900, 0);
+}
+
+function spawnEffect(kind) {
+    if (!fxLayer) return;
+    if (kind === 'goalBurst') {
+        addSoftCircle(baseModelX, baseModelY + 115, 120, 0xf6c85f, 0.13, 850);
+        addSoftCircle(baseModelX, baseModelY + 115, 70, 0xffffff, 0.10, 700);
+        var arc = new PIXI.Graphics();
+        arc.lineStyle(5, 0xf6c85f, 0.75);
+        arc.arc(0, 0, 72, Math.PI * 0.15, Math.PI * 0.85);
+        arc.lineStyle(3, 0x62d879, 0.65);
+        arc.arc(0, 0, 92, Math.PI * 1.1, Math.PI * 1.85);
+        arc.x = baseModelX;
+        arc.y = baseModelY + 120;
+        addParticle(arc, 0, -0.5, 950, 0.035);
+        var colors = [0xe85d2a, 0xf6c85f, 0x62d879, 0x4da3ff, 0xffffff];
+        for (var i = 0; i < 22; i++) {
+            var g = new PIXI.Graphics();
+            if (i % 4 === 0) drawStar(g, 0, 0, 8, colors[i % colors.length]);
+            else {
+                g.beginFill(colors[i % colors.length], 0.92);
+                g.drawRoundedRect(-3, -8, 6, 16, 2);
+                g.endFill();
+            }
+            g.x = app.screen.width * (0.25 + Math.random() * 0.5);
+            g.y = app.screen.height * (0.12 + Math.random() * 0.18);
+            g.rotation = Math.random() * Math.PI;
+            addParticle(g, (Math.random() - 0.5) * 4.5, 1.5 + Math.random() * 3.5, 1200 + Math.random() * 700, (Math.random() - 0.5) * 0.22);
+        }
+        for (var b = 0; b < 4; b++) {
+            var ball = new PIXI.Graphics();
+            drawBall(ball, 0, 0, 12);
+            ball.x = baseModelX + (b - 1.5) * 46;
+            ball.y = baseModelY + 80 + Math.random() * 50;
+            addParticle(ball, (b - 1.5) * 1.4, -2.8 - Math.random(), 1100, 0.16);
+        }
+        addTextParticle('GOAL', baseModelX, baseModelY + 52, 0xf6c85f, 32, 0, -1.0, 900);
+    } else if (kind === 'greeting') {
+        for (var gr = 0; gr < 3; gr++) {
+            var ribbon = new PIXI.Graphics();
+            ribbon.lineStyle(4, gr % 2 ? 0x4da3ff : 0xffffff, 0.7);
+            ribbon.moveTo(-36, 0);
+            ribbon.bezierCurveTo(-16, -18, 16, 18, 36, 0);
+            ribbon.x = baseModelX + 72 + gr * 12;
+            ribbon.y = baseModelY + 76 + gr * 28;
+            addParticle(ribbon, 0.25, -0.45, 850 + gr * 130, 0.025);
+        }
+        addSoftCircle(baseModelX + 96, baseModelY + 112, 52, 0x4da3ff, 0.08, 820);
+    } else if (kind === 'nearMiss') {
+        var post = new PIXI.Graphics();
+        post.lineStyle(6, 0xffffff, 0.88);
+        post.moveTo(-42, -42); post.lineTo(-42, 42); post.lineTo(42, 42);
+        post.lineStyle(3, 0xff3b30, 0.82);
+        post.moveTo(-52, -18); post.lineTo(44, 30);
+        post.x = baseModelX + 88;
+        post.y = baseModelY + 122;
+        addParticle(post, 0, -0.25, 1200, -0.01);
+        var missBall = new PIXI.Graphics();
+        drawBall(missBall, 0, 0, 10);
+        missBall.x = baseModelX + 28;
+        missBall.y = baseModelY + 70;
+        addParticle(missBall, 3.0, 1.5, 900, 0.2);
+    } else if (kind === 'referee') {
+        var card = new PIXI.Graphics();
+        card.beginFill(0xf6c85f, 0.96);
+        card.drawRoundedRect(-18, -28, 36, 56, 5);
+        card.endFill();
+        card.x = baseModelX + 104;
+        card.y = baseModelY + 84;
+        card.rotation = -0.2;
+        addParticle(card, 0.2, -0.5, 950, 0.035);
+        var whistle = new PIXI.Graphics();
+        drawWhistle(whistle, 0, 0, 1);
+        whistle.x = baseModelX + 74;
+        whistle.y = baseModelY + 150;
+        addParticle(whistle, -0.1, -0.35, 1000, -0.025);
+    } else if (kind === 'anger') {
+        addSoftCircle(baseModelX + 105, baseModelY + 90, 70, 0xff3b30, 0.12, 700);
+        for (var a = 0; a < 6; a++) {
+            var mark = new PIXI.Graphics();
+            mark.lineStyle(5, 0xff3b30, 1);
+            mark.moveTo(-12, -4); mark.quadraticCurveTo(0, -16, 12, -4);
+            mark.moveTo(-12, 5); mark.quadraticCurveTo(0, 16, 12, 5);
+            mark.x = baseModelX + 70 + Math.random() * 90;
+            mark.y = baseModelY + 45 + Math.random() * 90;
+            mark.rotation = Math.random() * Math.PI;
+            addParticle(mark, (Math.random() - 0.5) * 1.5, -0.4 - Math.random() * 1.2, 750 + Math.random() * 350, 0.06);
+        }
+        addTextParticle('!', baseModelX + 115, baseModelY + 46, 0xff3b30, 38, 0.5, -0.8, 700);
+    } else if (kind === 'heartbeat') {
+        addSoftCircle(baseModelX, baseModelY + 110, 96, 0xffb020, 0.10, 820);
+        for (var h = 0; h < 3; h++) {
+            var beat = new PIXI.Graphics();
+            beat.lineStyle(4, 0xffb020, 0.9);
+            beat.moveTo(-56, 0);
+            beat.lineTo(-32, 0);
+            beat.lineTo(-20, -22);
+            beat.lineTo(-4, 22);
+            beat.lineTo(12, -12);
+            beat.lineTo(24, 0);
+            beat.lineTo(56, 0);
+            beat.x = baseModelX;
+            beat.y = baseModelY + 90 + h * 24;
+            addParticle(beat, 0, -0.2, 700 + h * 180, 0);
+        }
+    } else if (kind === 'pulse') {
+        for (var r = 0; r < 3; r++) {
+            var ring = new PIXI.Graphics();
+            ring.lineStyle(3, 0xffb020, 0.85);
+            ring.drawCircle(0, 0, 36 + r * 22);
+            ring.x = baseModelX;
+            ring.y = baseModelY + 110;
+            ring.scale.set(0.45);
+            addParticle(ring, 0, 0, 900 + r * 180, 0, true);
+        }
+    } else if (kind === 'tactics') {
+        addSoftCircle(baseModelX + 115, baseModelY + 135, 86, 0x62d879, 0.10, 1400);
+        var board = new PIXI.Graphics();
+        board.beginFill(0x0f172a, 0.72);
+        board.lineStyle(2, 0x62d879, 0.9);
+        board.drawRoundedRect(-74, -48, 148, 96, 8);
+        board.moveTo(0, -48); board.lineTo(0, 48);
+        board.drawCircle(0, 0, 20);
+        var nodes = [[-44,-22],[22,-18],[48,24],[-18,28]];
+        for (var n = 0; n < nodes.length; n++) {
+            board.beginFill(n % 2 ? 0x4da3ff : 0xf6c85f);
+            board.drawCircle(nodes[n][0], nodes[n][1], 5);
+            board.endFill();
+            if (n < nodes.length - 1) {
+                board.lineStyle(2, 0xffffff, 0.65);
+                board.moveTo(nodes[n][0], nodes[n][1]);
+                board.lineTo(nodes[n + 1][0], nodes[n + 1][1]);
+            }
+        }
+        board.x = baseModelX + 115;
+        board.y = baseModelY + 135;
+        addParticle(board, 0, -0.15, 1800, 0);
+    } else if (kind === 'sparkle' || kind === 'shine') {
+        addSoftCircle(baseModelX, baseModelY + 110, 90, kind === 'shine' ? 0xf6c85f : 0xffffff, 0.08, 900);
+        for (var sp = 0; sp < 14; sp++) {
+            var star = new PIXI.Graphics();
+            drawStar(star, 0, 0, 7 + Math.random() * 5, kind === 'shine' ? 0xf6c85f : 0xffffff);
+            star.x = baseModelX + (Math.random() - 0.5) * 170;
+            star.y = baseModelY + 50 + Math.random() * 160;
+            addParticle(star, (Math.random() - 0.5) * 1.2, -0.7 - Math.random(), 850 + Math.random() * 600, 0.09);
+        }
+    } else if (kind === 'laughBurst') {
+        addSoftCircle(baseModelX, baseModelY + 110, 86, 0xffffff, 0.10, 760);
+        for (var lb = 0; lb < 9; lb++) {
+            addTextParticle('ha', baseModelX - 90 + Math.random() * 180, baseModelY + 55 + Math.random() * 120, lb % 2 ? 0xf6c85f : 0xffffff, 18 + Math.random() * 8, (Math.random() - 0.5) * 1.2, -1.0 - Math.random(), 850);
+        }
+    } else if (kind === 'crown') {
+        addSoftCircle(baseModelX, baseModelY + 90, 82, 0xf6c85f, 0.10, 900);
+        var crown = new PIXI.Graphics();
+        drawCrown(crown, 0, 0, 1, 0xf6c85f);
+        crown.x = baseModelX;
+        crown.y = baseModelY + 58;
+        addParticle(crown, 0, -0.55, 1100, 0.015);
+        for (var cr = 0; cr < 8; cr++) {
+            var crownStar = new PIXI.Graphics();
+            drawStar(crownStar, 0, 0, 6, 0xffffff);
+            crownStar.x = baseModelX - 80 + Math.random() * 160;
+            crownStar.y = baseModelY + 72 + Math.random() * 90;
+            addParticle(crownStar, (Math.random() - 0.5) * 1.0, -0.6 - Math.random(), 850, 0.07);
+        }
+    } else if (kind === 'happyAura') {
+        addSoftCircle(baseModelX, baseModelY + 118, 96, 0x62d879, 0.10, 950);
+        for (var ha = 0; ha < 3; ha++) {
+            var smile = new PIXI.Graphics();
+            smile.lineStyle(5, 0x62d879, 0.9);
+            smile.arc(0, 0, 24 + ha * 10, Math.PI * 0.15, Math.PI * 0.85);
+            smile.x = baseModelX + 70 + ha * 18;
+            smile.y = baseModelY + 78 + ha * 22;
+            addParticle(smile, 0, -0.35, 850 + ha * 120, 0.02);
+        }
+    } else if (kind === 'check') {
+        var check = new PIXI.Graphics();
+        drawCheck(check, 0, 0, 1.2, 0x62d879);
+        check.x = baseModelX + 96;
+        check.y = baseModelY + 92;
+        addParticle(check, 0, -0.5, 850, 0.02);
+        addSoftCircle(baseModelX + 96, baseModelY + 92, 46, 0x62d879, 0.10, 820);
+    } else if (kind === 'question') {
+        addSoftCircle(baseModelX + 105, baseModelY + 90, 64, 0x4da3ff, 0.10, 850);
+        addTextParticle('?', baseModelX + 90, baseModelY + 70, 0x4da3ff, 42, 0.2, -0.7, 1000);
+        addTextParticle('?', baseModelX + 125, baseModelY + 105, 0xffffff, 28, -0.1, -0.5, 850);
+    } else if (kind === 'heart') {
+        for (var he = 0; he < 7; he++) {
+            var heart = new PIXI.Graphics();
+            drawHeart(heart, 0, 0, 10 + Math.random() * 5, 0xff7aa2, 0.9);
+            heart.x = baseModelX - 75 + Math.random() * 150;
+            heart.y = baseModelY + 90 + Math.random() * 120;
+            addParticle(heart, (Math.random() - 0.5) * 0.8, -0.8 - Math.random(), 1200, (Math.random() - 0.5) * 0.04);
+        }
+    } else if (kind === 'ellipsis') {
+        addTextParticle('...', baseModelX + 82, baseModelY + 95, 0xc9d3e4, 34, 0, -0.25, 1200);
+    } else if (kind === 'focus') {
+        var scope = new PIXI.Graphics();
+        scope.lineStyle(3, 0x62d879, 0.85);
+        scope.drawCircle(0, 0, 52);
+        scope.moveTo(-68, 0); scope.lineTo(-40, 0);
+        scope.moveTo(40, 0); scope.lineTo(68, 0);
+        scope.moveTo(0, -68); scope.lineTo(0, -40);
+        scope.moveTo(0, 40); scope.lineTo(0, 68);
+        scope.x = baseModelX;
+        scope.y = baseModelY + 125;
+        addParticle(scope, 0, 0, 1100, 0, true);
+    } else if (kind === 'surprise') {
+        for (var s = 0; s < 12; s++) {
+            var ray = new PIXI.Graphics();
+            ray.lineStyle(4, 0xffffff, 0.9);
+            ray.moveTo(0, 0); ray.lineTo(0, -26);
+            ray.x = baseModelX + Math.cos(s / 12 * Math.PI * 2) * 95;
+            ray.y = baseModelY + 120 + Math.sin(s / 12 * Math.PI * 2) * 75;
+            ray.rotation = s / 12 * Math.PI * 2;
+            addParticle(ray, 0, -0.4, 650, 0);
+        }
+    }
+}
+
+function updateEffects(delta) {
+    for (var i = fxItems.length - 1; i >= 0; i--) {
+        var item = fxItems[i];
+        item.age += delta * 16.67;
+        item.display.x += item.vx * delta;
+        item.display.y += item.vy * delta;
+        item.display.rotation += item.spin * delta;
+        if (item.grow && item.display.scale) {
+            var growth = item.age / item.life;
+            item.display.scale.set(0.55 + growth * 1.15);
+        }
+        item.display.alpha = Math.max(0, 1 - item.age / item.life);
+        if (item.age >= item.life) {
+            if (item.display.parent) item.display.parent.removeChild(item.display);
+            item.display.destroy();
+            fxItems.splice(i, 1);
+        }
+    }
+}
+
+function performAction(action) {
+    var config = actionMap[action] || actionMap.idle;
+    if (!canInterrupt(config.priority)) return;
+    currentMode = config.mode;
+    modeUntil = Date.now() + config.ms;
+    setMood(config.mood);
+    playMotionGroup(config.motion, config.priority);
+    startPose(config.pose, config.ms);
+    spawnEffect(config.effect);
+    if (config.mode !== 'idle') scheduleIdle();
+}
+
+function scheduleIdle() {
+    if (idleTimer) clearTimeout(idleTimer);
+    idleTimer = setTimeout(function() {
+        if (!speaking && Date.now() > modeUntil) {
+            performAction('idle');
+        }
+        scheduleIdle();
+    }, 8000 + Math.random() * 6000);
+}
+
+function setSpeaking(v) {
+    speaking = v;
+    if (v) {
+        currentMode = 'speak';
+        modeUntil = Date.now() + 3000;
+    } else {
+        mouthValue = 0;
+        currentMode = 'idle';
+        modeUntil = 0;
+        scheduleIdle();
+    }
+}
+
+setInterval(function() {
+    if (!model) return;
+    if (speaking) {
+        mouthValue = 0.25 + Math.random() * 0.75;
+    } else {
+        mouthValue += (0 - mouthValue) * 0.25;
+    }
+    try {
+        model.internalModel.coreModel.setParameterValueById('ParamJawOpen', mouthValue);
+    } catch(e) {}
+}, 50);
+
+app.ticker.add(function(delta) {
+    applyPoseFrame();
+    updateEffects(delta);
+});
+
+// === Web Audio Recording + VAD ===
+var audioCtx=null, mediaStream=null, recorderNode=null, audioChunks=[];
+var isRecording=false, vadSpeaking=false, silenceTimer=null, speechFrames=0;
+window.vadResult=null;
+
+async function startRecording() {
+    if(isRecording)return;
+    try{
+        mediaStream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:!0}});
+        audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
+        var src=audioCtx.createMediaStreamSource(mediaStream);
+        var processor=audioCtx.createScriptProcessor(4096,1,1);
+        src.connect(processor);processor.connect(audioCtx.destination);
+        isRecording=true;audioChunks=[];speechFrames=0;vadSpeaking=false;
+        processor.onaudioprocess=function(e){
+            if(!isRecording)return;
+            var input=e.inputBuffer.getChannelData(0);
+            var pcm=new Int16Array(input.length);
+            var sum=0;
+            for(var i=0;i<input.length;i++){var s=Math.max(-1,Math.min(1,input[i]));pcm[i]=s*0x7FFF;sum+=s*s}
+            var rms=Math.sqrt(sum/input.length);
+            audioChunks.push(pcm);
+            if(rms>0.02){
+                speechFrames++;
+                if(speechFrames===5){vadSpeaking=true;window.vadResult=JSON.stringify({event:'speaking'})}
+                silenceTimer&&clearTimeout(silenceTimer);silenceTimer=null;
+            }else if(vadSpeaking){
+                silenceTimer=setTimeout(function(){
+                    isRecording=false;vadSpeaking=false;speechFrames=0;
+                    var totalLen=audioChunks.reduce(function(a,b){return a+b.length},0);
+                    var buf=new Int16Array(totalLen),off=0;
+                    for(var i=0;i<audioChunks.length;i++){buf.set(audioChunks[i],off);off+=audioChunks[i].length}
+                    var bytes=new Uint8Array(buf.buffer);
+                    var b64='';for(var i=0;i<bytes.length;i++)b64+=String.fromCharCode(bytes[i]);
+                    window.vadResult=JSON.stringify({event:'sentenceEnd',audio:btoa(b64)});
+                    audioChunks=[];silenceTimer=null;
+                    mediaStream.getTracks().forEach(function(t){t.stop()});
+                    audioCtx.close();audioCtx=null;
+                },800);
+            }
+        };
+    }catch(e){console.error('mic error:',e)}
+}
+function stopRecording(){
+    isRecording=false;
+    silenceTimer&&clearTimeout(silenceTimer);
+    if(vadSpeaking){
+        var totalLen=audioChunks.reduce(function(a,b){return a+b.length},0);
+        var buf=new Int16Array(totalLen),off=0;
+        for(var i=0;i<audioChunks.length;i++){buf.set(audioChunks[i],off);off+=audioChunks[i].length}
+        var bytes=new Uint8Array(buf.buffer);
+        var b64='';for(var i=0;i<bytes.length;i++)b64+=String.fromCharCode(bytes[i]);
+        window.vadResult=JSON.stringify({event:'sentenceEnd',audio:btoa(b64)});
+    }
+    audioChunks=[];speechFrames=0;vadSpeaking=false;
+    if(mediaStream){mediaStream.getTracks().forEach(function(t){t.stop()});mediaStream=null}
+    if(audioCtx){audioCtx.close();audioCtx=null}
+}
+function getVAD(){var r=window.vadResult;window.vadResult=null;return r||'null'}
+
+window.setExpression = setExpression;
+window.playMotion = playMotion;
+window.setSpeaking = setSpeaking;
+window.setMood = setMood;
+window.playMotionGroup = playMotionGroup;
+window.performAction = performAction;
+
+loadModel();
+</script>
+</body>
+</html>

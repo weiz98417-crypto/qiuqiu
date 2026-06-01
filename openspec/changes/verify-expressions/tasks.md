@@ -1,0 +1,4 @@
+- [x] 创建 `test-expressions.html`: 加载相同模型 + 7 个表情按钮
+- [x] Go 后端加路由 `/test-expressions.html`
+- [ ] 用户逐个测试表情，记录实际效果 — 打开 http://localhost:8080/test-expressions.html
+- [ ] 根据测试结果修正 `live2d.html` 和 `live2d_view.dart` 中的 exprMap

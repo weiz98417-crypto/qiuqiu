@@ -1,0 +1,5 @@
+比赛{status}！
+对阵：{home_team} vs {away_team}{score_line}
+
+开始：表达期待，简单一句话。
+结束：简要总结心情，不要长篇大论。

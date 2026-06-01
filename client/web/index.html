@@ -1,0 +1,78 @@
+<!DOCTYPE html>
+<html>
+<head>
+  <!--
+    If you are serving your web app in a path other than the root, change the
+    href value below to reflect the base path you are serving from.
+
+    The path provided below has to start and end with a slash "/" in order for
+    it to work correctly.
+
+    For more details:
+    * https://developer.mozilla.org/en-US/docs/Web/HTML/Element/base
+
+    This is a placeholder for base href that will be replaced by the value of
+    the `--base-href` argument provided to `flutter build`.
+  -->
+  <base href="$FLUTTER_BASE_HREF">
+
+  <meta charset="UTF-8">
+  <meta content="IE=Edge" http-equiv="X-UA-Compatible">
+  <meta name="description" content="A new Flutter project.">
+
+  <!-- iOS meta tags & icons -->
+  <meta name="mobile-web-app-capable" content="yes">
+  <meta name="apple-mobile-web-app-status-bar-style" content="black">
+  <meta name="apple-mobile-web-app-title" content="qiuqiu">
+  <link rel="apple-touch-icon" href="icons/Icon-192.png">
+
+  <!-- Favicon -->
+  <link rel="icon" type="image/png" href="favicon.png"/>
+
+  <title>qiuqiu</title>
+  <link rel="manifest" href="manifest.json">
+</head>
+<body>
+  <script src="flutter_bootstrap.js" async></script>
+  <script>
+    var __qDiv = document.createElement('div');
+    __qDiv.id = '__qDiv'; __qDiv.style.display = 'none';
+    document.body.appendChild(__qDiv);
+    __qDiv.textContent = 'null';
+
+    window.__qRecStart = function() {
+      if (window.__qRec) window.__qRec();
+      var s=null,c=null,p=null,chunks=[],speaking=false,st=null,sf=0;
+      navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
+        s=stream; c=new(window.AudioContext||window.webkitAudioContext)();
+        var src=c.createMediaStreamSource(stream);
+        p=c.createScriptProcessor(4096,1,1);
+        src.connect(p);p.connect(c.destination);
+        p.onaudioprocess=function(e){
+          var input=e.inputBuffer.getChannelData(0);
+          var pcm=new Int16Array(input.length);var sum=0;
+          for(var i=0;i<input.length;i++){var v=Math.max(-1,Math.min(1,input[i]));pcm[i]=v*32767;sum+=v*v}
+          var rms=Math.sqrt(sum/input.length);
+          chunks.push(new Uint8Array(pcm.buffer));
+          if(rms>0.02){sf++;if(sf===5&&!speaking){speaking=true;__qDiv.textContent=JSON.stringify({e:"speaking"})}}
+          else if(speaking){
+            st=setTimeout(function(){
+              var tl=0;chunks.forEach(function(x){tl+=x.length});
+              var b=new Int16Array(tl),o=0;chunks.forEach(function(x){b.set(new Int16Array(x.buffer),o);o+=x.length});
+              var bytes=new Uint8Array(b.buffer),b64="";
+              for(var i=0;i<bytes.length;i++)b64+=String.fromCharCode(bytes[i]);
+              __qDiv.textContent=JSON.stringify({e:"sentenceEnd",a:btoa(b64)});
+              speaking=false;chunks=[];sf=0;st=null;
+              p.disconnect();s.getTracks().forEach(function(t){t.stop()});if(c.state!=='closed')c.close();
+            },800);
+          }
+        };
+      }).catch(function(e){__qDiv.textContent=JSON.stringify({e:"error"});console.error(e)});
+      window.__qRec=function(){
+        if(p)p.disconnect();if(s)s.getTracks().forEach(function(t){t.stop()});if(c&&c.state!=='closed')c.close();
+        speaking=false;chunks=[];sf=0;
+      };
+    };
+  </script>
+</body>
+</html>

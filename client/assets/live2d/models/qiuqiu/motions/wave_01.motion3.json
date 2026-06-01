@@ -1,0 +1,12 @@
+{
+  "Version": 3,
+  "Meta": { "Duration": 2.2, "Fps": 30.0, "Loop": false, "AreBeziersRestricted": true, "CurveCount": 6, "TotalSegmentCount": 28, "TotalPointCount": 34, "UserDataCount": 0, "TotalUserDataSize": 0 },
+  "Curves": [
+    { "Target": "Parameter", "Id": "Action01", "Segments": [0, 0, 0, 0.2, 1, 0, 1.7, 1, 0, 2.2, 0] },
+    { "Target": "Parameter", "Id": "WaveHello", "Segments": [0, 0, 0, 0.25, 1, 0, 0.55, -1, 0, 0.85, 1, 0, 1.15, -1, 0, 1.45, 1, 0, 1.75, 0, 0, 2.2, 0] },
+    { "Target": "Parameter", "Id": "ParamAngleX", "Segments": [0, 0, 0, 0.3, 8, 0, 1.25, -6, 0, 2.2, 0] },
+    { "Target": "Parameter", "Id": "ParamAngleZ", "Segments": [0, 0, 0, 0.3, 6, 0, 1.25, -5, 0, 2.2, 0] },
+    { "Target": "Parameter", "Id": "ParamBodyAngleX", "Segments": [0, 0, 0, 0.3, 2, 0, 1.25, -2, 0, 2.2, 0] },
+    { "Target": "Parameter", "Id": "ParamMouthSmile", "Segments": [0, 0, 0, 0.25, 0.75, 0, 1.65, 0.75, 0, 2.2, 0] }
+  ]
+}

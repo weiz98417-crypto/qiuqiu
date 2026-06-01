@@ -1,0 +1,271 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>球球</title>
+<style>
+  * { box-sizing: border-box; }
+  html, body { margin: 0; width: 100%; height: 100%; overflow: hidden; background: #10131a; color: #f5f7fb; font-family: system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
+  body { display: grid; grid-template-columns: minmax(360px, 1fr) 420px; height: 100vh; }
+  .stage { position: relative; height: 100vh; min-height: 0; background: radial-gradient(circle at 50% 18%, #2a3140 0, #141922 42%, #10131a 100%); overflow: hidden; }
+  .scorebar { position: absolute; top: 18px; left: 20px; right: 20px; display: flex; align-items: center; justify-content: space-between; gap: 12px; z-index: 2; }
+  .brand { font-size: 18px; font-weight: 700; letter-spacing: 0; }
+  .status { display: inline-flex; align-items: center; gap: 8px; color: #c9d3e4; font-size: 13px; }
+  .dot { width: 9px; height: 9px; border-radius: 50%; background: #d65050; box-shadow: 0 0 0 4px rgba(214,80,80,.14); }
+  .dot.on { background: #62d879; box-shadow: 0 0 0 4px rgba(98,216,121,.14); }
+  iframe { width: 100%; height: 100%; border: 0; display: block; }
+  .panel { display: grid; grid-template-rows: auto minmax(0, 1fr) auto; height: 100vh; min-height: 0; border-left: 1px solid rgba(255,255,255,.1); background: #f5f7fb; color: #161b24; overflow: hidden; }
+  header { padding: 18px 20px 14px; border-bottom: 1px solid #d9dee8; }
+  h1 { margin: 0; font-size: 18px; line-height: 1.2; letter-spacing: 0; }
+  .sub { margin-top: 6px; color: #5c6677; font-size: 13px; }
+  .messages { min-height: 0; overflow-y: auto; overscroll-behavior: contain; padding: 18px 18px 8px; display: flex; flex-direction: column; gap: 12px; }
+  .msg { max-width: 92%; padding: 10px 12px; border-radius: 8px; line-height: 1.45; font-size: 14px; white-space: pre-wrap; }
+  .msg.user { align-self: flex-end; background: #1b6fd8; color: white; }
+  .msg.bot { align-self: flex-start; background: white; border: 1px solid #dbe1eb; color: #161b24; }
+  .msg.system { align-self: center; color: #667085; background: transparent; border: 0; font-size: 12px; padding: 2px 0; }
+  .msg.match-event { align-self: stretch; max-width: 100%; background: #fff7ed; border: 1px solid #fed7aa; color: #7c2d12; }
+  .controls { padding: 14px; border-top: 1px solid #d9dee8; background: #ffffff; display: grid; gap: 10px; max-height: 46vh; overflow-y: auto; }
+  .action-groups { display: grid; gap: 10px; }
+  .action-title { font-size: 12px; color: #667085; font-weight: 700; }
+  .quick { display: flex; gap: 8px; flex-wrap: wrap; }
+  button, select, input { font: inherit; }
+  .chip { border: 1px solid #cdd5e1; background: #f8fafc; color: #2d3748; border-radius: 8px; padding: 7px 9px; cursor: pointer; }
+  .chip:hover { border-color: #9fb0c7; background: #eef3f9; }
+  .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  input, select { border: 1px solid #cdd5e1; border-radius: 8px; padding: 10px 11px; min-width: 0; outline: none; }
+  input:focus, select:focus { border-color: #1b6fd8; box-shadow: 0 0 0 3px rgba(27,111,216,.16); }
+  .send { border: 0; border-radius: 8px; background: #e85d2a; color: white; padding: 0 15px; cursor: pointer; font-weight: 700; }
+  .send:disabled { background: #b8c0cc; cursor: default; }
+  .row { display: grid; grid-template-columns: 1fr auto; gap: 8px; align-items: center; }
+  @media (max-width: 860px) {
+    body { grid-template-columns: 1fr; grid-template-rows: 50dvh 50dvh; height: 100dvh; }
+    .stage { height: 50dvh; min-height: 260px; }
+    .panel { height: 50dvh; min-height: 0; border-left: 0; border-top: 1px solid rgba(255,255,255,.1); }
+    header { padding: 12px 14px; }
+    .messages { padding: 12px; }
+  }
+</style>
+</head>
+<body>
+  <section class="stage">
+    <div class="scorebar">
+      <div class="brand">球球</div>
+      <div class="status"><span id="dot" class="dot"></span><span id="status">正在连接</span></div>
+    </div>
+    <iframe id="live2d" src="/live2d.html" title="Live2D 球球"></iframe>
+  </section>
+  <main class="panel">
+    <header>
+      <h1>足球陪看助手</h1>
+      <div class="sub" id="match">等待比赛状态...</div>
+    </header>
+    <section class="messages" id="messages"></section>
+    <section class="controls">
+      <div class="row">
+        <select id="talk">
+          <option value="normal">正常话量</option>
+          <option value="quiet">少说一点</option>
+          <option value="active">活跃陪聊</option>
+        </select>
+        <button class="chip" id="reconnect" type="button">重连</button>
+      </div>
+      <div class="action-groups">
+        <div>
+          <div class="action-title">比赛场景</div>
+          <div class="quick">
+            <button class="chip" type="button" data-action="wave" data-say="现在比赛刚开始，跟我打个招呼">开场</button>
+            <button class="chip" type="button" data-action="celebrate" data-say="nice goal">进球了</button>
+            <button class="chip" type="button" data-action="miss" data-say="这球差点就进了，太可惜了">可惜</button>
+            <button class="chip" type="button" data-action="complain" data-say="刚才这个判罚是不是有点离谱">吐槽</button>
+            <button class="chip" type="button" data-action="angry" data-say="这判罚太气人了，真的有点生气">生气</button>
+            <button class="chip" type="button" data-action="analysis" data-say="你帮我分析一下现在场上的局势">分析</button>
+            <button class="chip" type="button" data-action="tense" data-say="最后几分钟好紧张，帮我盯着局势">紧张</button>
+            <button class="chip" type="button" data-action="surprise" data-say="刚才这一下也太突然了">惊讶</button>
+          </div>
+        </div>
+        <div>
+          <div class="action-title">陪伴情绪</div>
+          <div class="quick">
+            <button class="chip" type="button" data-action="laugh" data-say="这球看得我笑出来了">开心</button>
+            <button class="chip" type="button" data-action="proud" data-say="这个判断我是不是很懂球">得意</button>
+            <button class="chip" type="button" data-action="curious" data-say="这个换人我有点看不懂，你怎么看">好奇</button>
+            <button class="chip" type="button" data-action="comfort" data-say="主队落后了，安慰我一下">安慰</button>
+            <button class="chip" type="button" data-action="bored" data-say="这段比赛有点无聊，陪我聊聊">无聊</button>
+            <button class="chip" type="button" data-action="focus" data-say="接下来认真盯着这个关键回合">专注</button>
+            <button class="chip" type="button" data-action="agree" data-say="你说得对，我也这么觉得">点头</button>
+            <button class="chip" type="button" data-action="happy" data-say="今天看球心情不错">愉快</button>
+          </div>
+        </div>
+      </div>
+      <form class="composer" id="form">
+        <input id="input" autocomplete="off" placeholder="和球球聊一句，比如：这球漂亮吗？">
+        <button class="send" id="send" type="submit">发送</button>
+      </form>
+    </section>
+  </main>
+<script>
+const messages = document.getElementById('messages');
+const input = document.getElementById('input');
+const form = document.getElementById('form');
+const send = document.getElementById('send');
+const dot = document.getElementById('dot');
+const statusText = document.getElementById('status');
+const match = document.getElementById('match');
+const talk = document.getElementById('talk');
+const live2d = document.getElementById('live2d');
+let ws = null;
+let speakingTimer = null;
+
+function addMessage(kind, text) {
+  const el = document.createElement('div');
+  el.className = 'msg ' + kind;
+  el.textContent = text;
+  messages.appendChild(el);
+  messages.scrollTop = messages.scrollHeight;
+}
+
+function setStatus(text, on) {
+  statusText.textContent = text;
+  dot.classList.toggle('on', !!on);
+  send.disabled = !on;
+}
+
+function liveCall(name, arg) {
+  try {
+    const win = live2d.contentWindow;
+    if (win && typeof win[name] === 'function') win[name](arg);
+  } catch (_) {}
+}
+
+function inferAction(text) {
+  if (/进球|破门|goal|漂亮|nice|牛|厉害|神扑|扑出来/i.test(text)) return 'celebrate';
+  if (/生气|气人|火大|太黑|黑哨|离大谱/i.test(text)) return 'angry';
+  if (/笑|开心|乐|哈哈|绷不住/i.test(text)) return 'laugh';
+  if (/得意|稳了|优势|拿捏|漂亮话/i.test(text)) return 'proud';
+  if (/看不懂|好奇|什么情况|奇怪|怎么回事/i.test(text)) return 'curious';
+  if (/安慰|难受|输了|落后|别急|陪我/i.test(text)) return 'comfort';
+  if (/无聊|沉闷|没意思|犯困/i.test(text)) return 'bored';
+  if (/盯着|专注|认真看|关键回合/i.test(text)) return 'focus';
+  if (/差点|没进|可惜|门柱|横梁|射偏|打飞|错失/i.test(text)) return 'miss';
+  if (/离谱|判罚|裁判|var|犯规|黄牌|红牌|点球|吐槽/i.test(text)) return 'complain';
+  if (/紧张|危险|压上|补时|最后|绝杀|点球大战/i.test(text)) return 'tense';
+  if (/分析|为什么|怎么|局势|战术|阵型|节奏|控球/i.test(text)) return 'analysis';
+  if (/好|对|可以|懂了|明白|确实|有道理/i.test(text)) return 'agree';
+  return 'speak';
+}
+
+function speakFor(text) {
+  clearTimeout(speakingTimer);
+  const action = inferAction(text);
+  liveCall('performAction', action);
+  liveCall('setSpeaking', true);
+  speakingTimer = setTimeout(() => {
+    liveCall('setSpeaking', false);
+    liveCall('performAction', 'idle');
+  }, Math.max(1800, Math.min(5600, text.length * 140)));
+}
+
+function formatMatchSnapshot(snapshot) {
+  if (!snapshot) return '等待比赛状态...';
+  const home = snapshot.homeTeam || '主队';
+  const away = snapshot.awayTeam || '客队';
+  const score = snapshot.score || { home: 0, away: 0 };
+  const clock = snapshot.clock || '00:00';
+  const period = snapshot.period || 'pre_match';
+  return `${home} ${score.home || 0}-${score.away || 0} ${away} · ${period} ${clock}`;
+}
+
+function handleMatchEvent(eventData, snapshot) {
+  if (snapshot) match.textContent = formatMatchSnapshot(snapshot);
+  if (!eventData) return;
+  const action = eventData.recommendedAction || inferAction(eventData.description || '');
+  const clock = eventData.clock || '';
+  const label = eventData.eventType || 'event';
+  const description = eventData.description || '';
+  const team = eventData.teamName ? `${eventData.teamName} · ` : '';
+  addMessage('match-event', `${clock} ${team}${label}: ${description}`);
+  liveCall('performAction', action || 'focus');
+  if (eventData.proactiveText) {
+    addMessage('bot', eventData.proactiveText);
+    speakFor(eventData.proactiveText);
+  }
+}
+
+function connect() {
+  if (ws) ws.close();
+  setStatus('正在连接', false);
+  const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
+  ws = new WebSocket(`${scheme}://${location.host}/ws/match/test?token=qiuqiu-dev-token`);
+  ws.onopen = () => {
+    setStatus('已连接', true);
+    addMessage('system', '已连接到后端');
+    liveCall('performAction', 'wave');
+  };
+  ws.onclose = () => {
+    setStatus('已断开', false);
+    addMessage('system', '连接断开，可以点重连');
+    liveCall('performAction', 'idle');
+  };
+  ws.onerror = () => setStatus('连接异常', false);
+  ws.onmessage = (event) => {
+    if (typeof event.data !== 'string') return;
+    let msg;
+    try { msg = JSON.parse(event.data); } catch (_) { return; }
+    if (msg.type === 'match_status') {
+      match.textContent = msg.status || '比赛状态已连接';
+      return;
+    }
+    if (msg.type === 'match_snapshot') {
+      match.textContent = formatMatchSnapshot(msg.data);
+      return;
+    }
+    if (msg.type === 'match_event') {
+      handleMatchEvent(msg.data, msg.snapshot);
+      return;
+    }
+    if (msg.type === 'expression') {
+      liveCall('setMood', msg.state || 'idle');
+      return;
+    }
+    if (msg.type === 'interrupt') {
+      liveCall('setSpeaking', false);
+      liveCall('performAction', 'listen');
+      return;
+    }
+    if (msg.type === 'event' && msg.event === 'qiuqiu_reply') {
+      const text = (msg.data && msg.data.text) || '';
+      addMessage('bot', text || '我刚刚有点走神，再说一遍？');
+      speakFor(text);
+      return;
+    }
+    if (msg.type === 'pong') return;
+  };
+}
+
+function sendText(text, preferredAction) {
+  const value = text.trim();
+  if (!value || !ws || ws.readyState !== WebSocket.OPEN) return;
+  addMessage('user', value);
+  liveCall('performAction', preferredAction || inferAction(value) || 'listen');
+  ws.send(JSON.stringify({ type: 'user_speech', text: value, talkativeness: talk.value }));
+}
+
+form.addEventListener('submit', (event) => {
+  event.preventDefault();
+  sendText(input.value);
+  input.value = '';
+  input.focus();
+});
+
+document.querySelectorAll('[data-say]').forEach((button) => {
+  button.addEventListener('click', () => sendText(button.dataset.say || '', button.dataset.action || 'listen'));
+});
+
+document.getElementById('reconnect').addEventListener('click', connect);
+
+addMessage('bot', '我准备好了，开场、进球、可惜、吐槽、生气、紧张、好奇、安慰和战术分析都可以接。');
+connect();
+</script>
+</body>
+</html>

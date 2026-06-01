@@ -1,0 +1,40 @@
+# Build
+.tools/
+backend/*.exe
+backend/cmd/**/*.exe
+backend/*.log
+client/build/
+client/.dart_tool/
+client/android/.gradle/
+client/android/app/build/
+client/android/local.properties
+
+# Secrets
+.env
+*.env
+!*.env.example
+
+# IDE
+.idea/
+.vscode/
+*.swp
+*.swo
+
+# OS
+.DS_Store
+Thumbs.db
+
+# Flutter
+client/.pub/
+client/pubspec.lock
+
+# Screenshots
+*.png
+*.jpg
+.gstack/
+
+# Backup / temp
+*~
+Textoon-main/
+.claude/
+.codex/
