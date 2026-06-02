@@ -72,19 +72,21 @@ func main() {
 		log.Printf("match store: memory")
 	}
 	companionTools := companion.NewRepositoryMemoryTools(matchStore)
+	var traceReader companion.TraceReader = companionTools
 	if cfg.DatabaseURL != "" {
 		traceWriter, err := companion.OpenPostgresTraceWriter(context.Background(), cfg.DatabaseURL)
 		if err != nil {
 			log.Fatalf("postgres trace writer: %v", err)
 		}
 		defer traceWriter.Close()
+		traceReader = traceWriter
 		companionTools.WithTraceWriter(companion.NewAsyncTraceWriter(traceWriter, 256))
 	}
 	companionAgent := companion.NewAgent(companionTools)
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", hub.HandleHealth)
-	mux.HandleFunc("/api/matches/", handleMatchAPI(matchStore, cfg, llmClient, promptMgr))
+	mux.HandleFunc("/api/matches/", handleMatchAPI(matchStore, traceReader, cfg, llmClient, promptMgr))
 	fs := http.StripPrefix("/assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -295,7 +297,7 @@ func main() {
 	}
 }
 
-func handleMatchAPI(store matchstate.Repository, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
+func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -346,6 +348,42 @@ func handleMatchAPI(store matchstate.Repository, cfg *config.Config, llmClient *
 		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"snapshot": store.Snapshot(matchID),
+			})
+		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			limit := 50
+			if value := r.URL.Query().Get("limit"); value != "" {
+				if parsed, err := strconv.Atoi(value); err == nil {
+					limit = parsed
+				}
+			}
+			traces, err := traceReader.ListTraces(r.Context(), matchID, limit)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"traces": traces,
+			})
+		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 3:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			trace, err := traceReader.GetTrace(r.Context(), matchID, parts[2])
+			if err != nil {
+				status := http.StatusInternalServerError
+				if errors.Is(err, companion.ErrTraceNotFound) {
+					status = http.StatusNotFound
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"trace": trace,
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {

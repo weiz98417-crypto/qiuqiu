@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"sort"
 	"strings"
 	"sync"
 
@@ -71,6 +72,40 @@ func (m *StoreMemoryTools) Traces() []Trace {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return append([]Trace(nil), m.traces...)
+}
+
+func (m *StoreMemoryTools) ListTraces(ctx context.Context, matchID string, limit int) ([]Trace, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	var traces []Trace
+	for _, trace := range m.traces {
+		if trace.MatchID == matchID {
+			traces = append(traces, trace)
+		}
+	}
+	sort.SliceStable(traces, func(i, j int) bool {
+		return traces[i].CreatedAt.After(traces[j].CreatedAt)
+	})
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if len(traces) > limit {
+		traces = traces[:limit]
+	}
+	return append([]Trace(nil), traces...), nil
+}
+
+func (m *StoreMemoryTools) GetTrace(ctx context.Context, matchID, traceID string) (Trace, error) {
+	_ = ctx
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	for _, trace := range m.traces {
+		if trace.MatchID == matchID && trace.ID == traceID {
+			return trace, nil
+		}
+	}
+	return Trace{}, ErrTraceNotFound
 }
 
 func activeOnly(events []matchstate.MatchEvent) []matchstate.MatchEvent {

@@ -47,6 +47,22 @@ The companion agent gets tools, not database access. Tool outputs are trusted fa
 
 Hard rule: the user-facing agent cannot call `operator.create_event` or `operator.correct_event`.
 
+## Operator trace viewer
+
+The director console includes a read-only `球球日志` view for the active match.
+
+Operators use this view to inspect why QiuQiu answered or spoke:
+
+- `input`: user text, or an explicit proactive-line marker for director-triggered output
+- `intent`: deterministic routing result such as recent event, player question, smalltalk, or proactive line
+- `toolCalls`: memory tools used before the reply
+- `retrievedEventIds`: match event IDs used as factual grounding
+- `output`: the final user-facing QiuQiu line
+- `reason`: policy label, for example deterministic companion policy or proactive event line
+- `latencyMs` and `error`: operational diagnostics
+
+The trace viewer is deliberately read-only. If a trace reveals a wrong fact, the operator should correct the underlying match event through the live director timeline, then re-check the next QiuQiu decision trace.
+
 ## Runtime split
 
 Keep Go as the realtime fact and delivery layer. Add a TypeScript companion-agent service when LLM orchestration grows.

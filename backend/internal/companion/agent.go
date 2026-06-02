@@ -40,21 +40,23 @@ type ProactiveResponse struct {
 }
 
 type Trace struct {
-	ID             string
-	MatchID        string
-	UserID         string
-	Input          string
-	Intent         Intent
-	ToolCalls      []ToolCall
-	RetrievedEvent []string
-	Output         string
-	Reason         string
-	CreatedAt      time.Time
+	ID             string     `json:"id"`
+	MatchID        string     `json:"matchId"`
+	UserID         string     `json:"userId"`
+	Input          string     `json:"input"`
+	Intent         Intent     `json:"intent"`
+	ToolCalls      []ToolCall `json:"toolCalls"`
+	RetrievedEvent []string   `json:"retrievedEventIds"`
+	Output         string     `json:"output"`
+	Reason         string     `json:"reason"`
+	LatencyMS      int        `json:"latencyMs"`
+	Error          string     `json:"error"`
+	CreatedAt      time.Time  `json:"createdAt"`
 }
 
 type ToolCall struct {
-	Name string
-	Args map[string]string
+	Name string            `json:"name"`
+	Args map[string]string `json:"args"`
 }
 
 type MemoryTools interface {
@@ -73,6 +75,7 @@ func NewAgent(tools MemoryTools) *Agent {
 }
 
 func (a *Agent) HandleMessage(ctx context.Context, req MessageRequest) (Response, error) {
+	start := time.Now()
 	intent := Classify(req.Text)
 	trace := Trace{
 		ID:        traceID(req.Now),
@@ -118,6 +121,7 @@ func (a *Agent) HandleMessage(ctx context.Context, req MessageRequest) (Response
 	}
 
 	trace.Output = reply
+	trace.LatencyMS = int(time.Since(start).Milliseconds())
 	if trace.Reason == "" {
 		trace.Reason = "deterministic_companion_policy"
 	}
@@ -128,6 +132,7 @@ func (a *Agent) HandleMessage(ctx context.Context, req MessageRequest) (Response
 }
 
 func (a *Agent) HandleProactiveEvent(ctx context.Context, userID string, ev matchstate.MatchEvent, snapshot matchstate.Snapshot) (ProactiveResponse, error) {
+	start := time.Now()
 	trace := Trace{
 		ID:        traceID(time.Now()),
 		MatchID:   ev.MatchID,
@@ -148,6 +153,7 @@ func (a *Agent) HandleProactiveEvent(ctx context.Context, userID string, ev matc
 		reply = fallbackProactive(ev, snapshot)
 	}
 	trace.Output = reply
+	trace.LatencyMS = int(time.Since(start).Milliseconds())
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
 		return ProactiveResponse{}, err
 	}

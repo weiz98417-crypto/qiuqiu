@@ -387,8 +387,8 @@
   .view.active { display: grid; }
   .workspace.view.active { display: grid; }
   .scorebar.view.active { display: grid; }
-  .setup-canvas.view.active, .settings-canvas.view.active { display: block; }
-  .setup-canvas, .settings-canvas {
+  .setup-canvas.view.active, .settings-canvas.view.active, .trace-canvas.view.active { display: block; }
+  .setup-canvas, .settings-canvas, .trace-canvas {
     flex: 1;
     min-height: 0;
     margin-top: 64px;
@@ -495,6 +495,36 @@
     align-items: center;
   }
   .metric-value { color: var(--green); font-size: 32px; line-height: 40px; font-weight: 800; }
+  .trace-layout { display: grid; grid-template-columns: minmax(440px, 1.2fr) minmax(360px, .8fr); gap: 16px; align-items: start; }
+  .trace-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+  .trace-filter.active { color: var(--primary); border-color: rgba(255,182,147,.55); background: rgba(255,182,147,.08); }
+  .trace-list { display: grid; gap: 8px; max-height: calc(100vh - 250px); overflow: auto; padding-right: 4px; }
+  .trace-row {
+    width: 100%;
+    border: 1px solid rgba(255,255,255,.06);
+    background: var(--surface-lowest);
+    color: var(--on-surface);
+    border-radius: 8px;
+    padding: 10px;
+    text-align: left;
+    display: grid;
+    gap: 6px;
+  }
+  .trace-row:hover, .trace-row.active { border-color: rgba(255,182,147,.55); background: rgba(39,54,71,.5); }
+  .trace-row-top { display: flex; align-items: center; justify-content: space-between; gap: 8px; }
+  .trace-intent { color: var(--primary); font: 700 11px/16px "JetBrains Mono", monospace; }
+  .trace-preview { color: var(--on-surface); overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .trace-detail { display: grid; gap: 12px; }
+  .trace-field {
+    border: 1px solid rgba(255,255,255,.06);
+    background: var(--surface-lowest);
+    border-radius: 8px;
+    padding: 10px;
+    display: grid;
+    gap: 5px;
+  }
+  .trace-field-label { color: var(--on-variant); font-size: 11px; line-height: 16px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+  .trace-json { white-space: pre-wrap; word-break: break-word; font: 500 12px/18px "JetBrains Mono", monospace; color: var(--secondary); }
   @keyframes flash {
     0% { box-shadow: 0 0 0 2px var(--primary-container), 0 0 18px rgba(255,107,0,.5); }
     100% { box-shadow: none; }
@@ -514,9 +544,9 @@
     .scorebar { grid-template-columns: 1fr; gap: 8px; }
     .score-side.home, .score-side.away { justify-content: center; padding: 0; }
     .workspace { padding: 10px; }
-    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview { grid-template-columns: 1fr; }
+    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .trace-layout, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview { grid-template-columns: 1fr; }
     .half { grid-column: 1 / -1; }
-    .setup-canvas, .settings-canvas { padding: 16px; }
+    .setup-canvas, .settings-canvas, .trace-canvas { padding: 16px; }
   }
 </style>
 </head>
@@ -534,6 +564,7 @@
       <div class="nav-stack">
         <a class="nav-item" href="#setup" data-view-link="setup"><span class="material-symbols-outlined">settings_applications</span><span>赛前配置</span></a>
         <a class="nav-item active" href="#live" data-view-link="live"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">videocam</span><span>实战导演</span></a>
+        <a class="nav-item" href="#traces" data-view-link="traces"><span class="material-symbols-outlined">fact_check</span><span>球球日志</span></a>
         <a class="nav-item" href="#settings" data-view-link="settings"><span class="material-symbols-outlined">tune</span><span>系统设置</span></a>
       </div>
       <div class="nav-stack" style="margin-top:auto">
@@ -549,6 +580,7 @@
             <a href="#live" data-view-link="live">实时监控</a>
             <a href="#setup" data-view-link="setup">信号源管理</a>
             <a class="active" href="#live" data-view-link="live">自动化流</a>
+            <a href="#traces" data-view-link="traces">球球日志</a>
           </nav>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
@@ -900,6 +932,43 @@
           </div>
         </div>
       </section>
+
+      <section class="trace-canvas view" data-view-panel="traces">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">球球决策日志</h1>
+            <p class="page-desc">查看用户问题、意图识别、记忆工具调用和球球最终回复。</p>
+          </div>
+          <div class="trace-toolbar">
+            <button class="small-btn trace-filter active" data-trace-filter="all" type="button">全部</button>
+            <button class="small-btn trace-filter" data-trace-filter="missing" type="button">缺失事实</button>
+            <button class="small-btn trace-filter" data-trace-filter="question" type="button">用户问题</button>
+            <button class="small-btn trace-filter" data-trace-filter="proactive" type="button">主动线</button>
+            <button class="small-btn trace-filter" data-trace-filter="error" type="button">错误</button>
+            <button class="quick-btn" id="refreshTraces" type="button" style="width:auto;margin:0;padding:8px 14px"><span class="material-symbols-outlined">refresh</span>刷新</button>
+          </div>
+        </div>
+        <div class="trace-layout">
+          <section class="settings-card">
+            <div class="settings-card-head">
+              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">manage_search</span>最近决策</div>
+              <span class="fact-pill" id="traceCount">0</span>
+            </div>
+            <div class="settings-card-body">
+              <div class="trace-list" id="traceList"></div>
+            </div>
+          </section>
+          <section class="settings-card">
+            <div class="settings-card-head">
+              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">fact_check</span>Trace 详情</div>
+              <span class="fact-pill" id="traceDetailId">未选择</span>
+            </div>
+            <div class="settings-card-body trace-detail" id="traceDetail">
+              <div class="muted">选择左侧一条日志，查看完整输入、输出、工具调用和命中事件。</div>
+            </div>
+          </section>
+        </div>
+      </section>
     </main>
   </div>
   <div class="toast" id="toast"></div>
@@ -968,9 +1037,12 @@ let correctingId = '';
 let clockTimer = null;
 let clockRunning = false;
 let activeView = 'live';
+let traceItems = [];
+let traceFilter = 'all';
+let activeTraceId = '';
 
 function setView(next) {
-  activeView = ['setup', 'live', 'settings'].includes(next) ? next : 'live';
+  activeView = ['setup', 'live', 'settings', 'traces'].includes(next) ? next : 'live';
   document.querySelectorAll('[data-view-panel]').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.viewPanel === activeView);
   });
@@ -979,6 +1051,7 @@ function setView(next) {
   });
   if (activeView === 'setup') syncPreFromMain();
   if (activeView === 'settings') loadSettings();
+  if (activeView === 'traces') loadTraces();
 }
 
 function value(id) { return $(id).value.trim(); }
@@ -1491,6 +1564,137 @@ async function loadTimeline() {
     host.appendChild(card);
   });
 }
+async function loadTraces() {
+  const list = $('traceList');
+  if (!list) return;
+  list.innerHTML = '<div class="muted">正在读取球球决策日志...</div>';
+  try {
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/traces?token=${encodeURIComponent(token)}&limit=50`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    traceItems = data.traces || [];
+    if (activeTraceId && !traceItems.some((trace) => trace.id === activeTraceId)) activeTraceId = '';
+    renderTraceList();
+    if (!activeTraceId && filteredTraces()[0]) {
+      renderTraceDetail(filteredTraces()[0]);
+      activeTraceId = filteredTraces()[0].id;
+      renderTraceList();
+    } else if (activeTraceId) {
+      const active = traceItems.find((trace) => trace.id === activeTraceId);
+      if (active) renderTraceDetail(active);
+    } else {
+      renderTraceDetail(null);
+    }
+  } catch (err) {
+    traceItems = [];
+    list.innerHTML = `<div class="muted">读取失败：${escapeHTML(err.message || 'unknown error')}</div>`;
+    $('traceCount').textContent = '0';
+    renderTraceDetail(null);
+  }
+}
+function filteredTraces() {
+  return traceItems.filter(traceMatchesFilter);
+}
+function traceMatchesFilter(trace) {
+  if (traceFilter === 'all') return true;
+  if (traceFilter === 'error') return Boolean(trace.error);
+  if (traceFilter === 'proactive') return !trace.input || trace.reason === 'proactive_event_line';
+  if (traceFilter === 'question') return Boolean(trace.input) || String(trace.intent || '').includes('question');
+  if (traceFilter === 'missing') {
+    const text = `${trace.reason || ''} ${trace.output || ''}`.toLowerCase();
+    return text.includes('missing') || text.includes('not_found') || text.includes('缺失') || text.includes('没有') || text.includes('未记录');
+  }
+  return true;
+}
+function renderTraceList() {
+  const host = $('traceList');
+  const list = filteredTraces();
+  $('traceCount').textContent = String(list.length);
+  host.innerHTML = '';
+  if (!list.length) {
+    host.innerHTML = '<div class="muted">当前筛选下暂无日志。用户问一句比赛问题，或触发一次球球主动线后，这里会出现决策 trace。</div>';
+    return;
+  }
+  list.forEach((trace) => {
+    const row = document.createElement('button');
+    row.type = 'button';
+    row.className = `trace-row ${trace.id === activeTraceId ? 'active' : ''}`;
+    const prompt = trace.input || '[主动线] 导演台事件触发';
+    row.innerHTML = `
+      <div class="trace-row-top">
+        <span>${escapeHTML(trace.intent || 'proactive')}</span>
+        <span class="mono">${escapeHTML(formatTraceTime(trace.createdAt))}</span>
+      </div>
+      <div>${escapeHTML(prompt)}</div>
+      <div class="muted">${escapeHTML(traceReasonLabel(trace.reason))} / ${Number(trace.latencyMs || 0)}ms</div>
+    `;
+    row.onclick = () => selectTrace(trace.id);
+    host.appendChild(row);
+  });
+}
+async function selectTrace(traceId) {
+  activeTraceId = traceId;
+  renderTraceList();
+  const local = traceItems.find((trace) => trace.id === traceId);
+  if (local) renderTraceDetail(local);
+  try {
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/traces/${encodeURIComponent(traceId)}?token=${encodeURIComponent(token)}`);
+    if (!res.ok) throw new Error(await res.text());
+    const data = await res.json();
+    if (data.trace) renderTraceDetail(data.trace);
+  } catch (err) {
+    toast(err.message || 'Trace 详情读取失败', 'bad');
+  }
+}
+function renderTraceDetail(trace) {
+  const host = $('traceDetail');
+  if (!host) return;
+  if (!trace) {
+    $('traceDetailId').textContent = '未选择';
+    host.innerHTML = '<div class="muted">选择左侧一条日志，查看完整输入、输出、工具调用和命中事件。</div>';
+    return;
+  }
+  $('traceDetailId').textContent = trace.id || 'trace';
+  const toolCalls = trace.toolCalls || [];
+  const eventIds = trace.retrievedEventIds || [];
+  host.innerHTML = `
+    <div class="trace-field"><span>输入</span><div>${escapeHTML(trace.input || '[主动线] 导演台事件触发')}</div></div>
+    <div class="trace-field"><span>意图</span><div>${escapeHTML(trace.intent || 'proactive')} / ${escapeHTML(traceReasonLabel(trace.reason))}</div></div>
+    <div class="trace-field"><span>输出</span><div>${escapeHTML(trace.output || '无输出')}</div></div>
+    <div class="trace-field"><span>性能</span><div class="mono">${Number(trace.latencyMs || 0)}ms / ${escapeHTML(formatTraceTime(trace.createdAt))}</div></div>
+    ${trace.error ? `<div class="trace-field"><span>错误</span><div style="color:var(--error)">${escapeHTML(trace.error)}</div></div>` : ''}
+    <div class="trace-field">
+      <span>命中事件 ID</span>
+      <div>
+        <div class="mono">${escapeHTML(eventIds.join(', ') || 'none')}</div>
+        <button class="small-btn" id="copyTraceEvents" type="button" style="margin-top:8px">复制事件 ID</button>
+      </div>
+    </div>
+    <div class="trace-field"><span>工具调用</span><pre class="trace-json">${escapeHTML(prettyJSON(toolCalls))}</pre></div>
+    <div class="trace-field"><span>原始 Trace</span><pre class="trace-json">${escapeHTML(prettyJSON(trace))}</pre></div>
+  `;
+  $('copyTraceEvents').onclick = async () => {
+    await navigator.clipboard.writeText(eventIds.join(', '));
+    toast('已复制命中事件 ID', 'ok');
+  };
+}
+function traceReasonLabel(reason) {
+  return ({
+    deterministic_companion_policy: '确定性陪看策略',
+    proactive_event_line: '导演台主动线',
+    missing_fact_response: '缺失事实保护',
+    correction_aware_memory: '更正感知记忆'
+  })[reason] || reason || '未标注策略';
+}
+function formatTraceTime(createdAt) {
+  if (!createdAt) return '';
+  const date = new Date(createdAt);
+  if (Number.isNaN(date.getTime())) return String(createdAt);
+  return date.toLocaleTimeString('zh-CN', { hour12: false });
+}
+function prettyJSON(value) {
+  return JSON.stringify(value ?? null, null, 2);
+}
 function editCorrection(event) {
   correctingId = event.id || '';
   $('eventType').value = event.eventType || 'operator_note';
@@ -1582,6 +1786,7 @@ $('preSubmit').addEventListener('click', async () => {
   try { await savePrematchConfig(); } catch (err) { toast(err.message || '赛前配置提交失败', 'bad'); }
 });
 $('saveSettings').addEventListener('click', saveSettings);
+if ($('refreshTraces')) $('refreshTraces').addEventListener('click', loadTraces);
 $('homeTeam').addEventListener('input', syncSelected);
 $('awayTeam').addEventListener('input', syncSelected);
 $('homePlayers').addEventListener('input', renderPlayers);
@@ -1602,6 +1807,15 @@ $('sideSelect').addEventListener('change', () => setSide(value('sideSelect')));
 });
 document.querySelectorAll('[data-side]').forEach((btn) => btn.addEventListener('click', () => { setSide(btn.dataset.side); flash(btn); toast(`当前操作方：${team(btn.dataset.side)}`, 'ok'); }));
 document.querySelectorAll('[data-use-side]').forEach((btn) => btn.addEventListener('click', () => { setSide(btn.dataset.useSide); flash(btn); toast(`当前操作方：${team(btn.dataset.useSide)}`, 'ok'); }));
+document.querySelectorAll('[data-trace-filter]').forEach((btn) => btn.addEventListener('click', () => {
+  traceFilter = btn.dataset.traceFilter || 'all';
+  activeTraceId = '';
+  document.querySelectorAll('[data-trace-filter]').forEach((item) => item.classList.toggle('active', item === btn));
+  renderTraceList();
+  renderTraceDetail(filteredTraces()[0] || null);
+  if (filteredTraces()[0]) activeTraceId = filteredTraces()[0].id;
+  renderTraceList();
+}));
 document.querySelectorAll('[data-view-link]').forEach((link) => link.addEventListener('click', (event) => {
   event.preventDefault();
   setView(link.dataset.viewLink);
