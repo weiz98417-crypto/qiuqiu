@@ -118,6 +118,16 @@ func (s *PostgresStore) Config(matchID string) MatchConfig {
 	return normalizeConfig(matchID, config)
 }
 
+func (s *PostgresStore) Reset(matchID string) error {
+	ctx := context.Background()
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	_, err := s.pool.Exec(ctx, `DELETE FROM matches WHERE id = $1`, matchID)
+	return err
+}
+
 func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {
 	ctx := context.Background()
 	matchID = strings.TrimSpace(matchID)

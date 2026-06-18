@@ -653,8 +653,12 @@ var isRecording=false, vadSpeaking=false, silenceTimer=null, speechFrames=0;
 window.vadResult=null;
 
 async function startRecording() {
-    if(isRecording)return;
+    if(isRecording)return {ok:true};
     try{
+        if(!navigator.mediaDevices||!navigator.mediaDevices.getUserMedia){
+            window.vadResult=JSON.stringify({event:'error',reason:'microphone unavailable'});
+            return {ok:false,reason:'microphone unavailable'};
+        }
         mediaStream=await navigator.mediaDevices.getUserMedia({audio:{sampleRate:16000,channelCount:1,echoCancellation:!0}});
         audioCtx=new(window.AudioContext||window.webkitAudioContext)({sampleRate:16000});
         var src=audioCtx.createMediaStreamSource(mediaStream);
@@ -688,7 +692,12 @@ async function startRecording() {
                 },800);
             }
         };
-    }catch(e){console.error('mic error:',e)}
+        return {ok:true};
+    }catch(e){
+        console.error('mic error:',e);
+        window.vadResult=JSON.stringify({event:'error',reason:e&&e.message?e.message:'microphone failed'});
+        return {ok:false,reason:e&&e.message?e.message:'microphone failed'};
+    }
 }
 function stopRecording(){
     isRecording=false;
@@ -713,6 +722,9 @@ window.setSpeaking = setSpeaking;
 window.setMood = setMood;
 window.playMotionGroup = playMotionGroup;
 window.performAction = performAction;
+window.startRecording = startRecording;
+window.stopRecording = stopRecording;
+window.getVAD = getVAD;
 
 loadModel();
 </script>

@@ -33,6 +33,11 @@
   .chip { border: 1px solid #cdd5e1; background: #f8fafc; color: #2d3748; border-radius: 8px; padding: 7px 9px; cursor: pointer; }
   .chip:hover { border-color: #9fb0c7; background: #eef3f9; }
   .composer { display: grid; grid-template-columns: 1fr auto; gap: 8px; }
+  .voicebar { display: grid; grid-template-columns: auto 1fr; gap: 8px; align-items: center; }
+  .mic { border: 1px solid #cdd5e1; background: #f8fafc; color: #243044; border-radius: 8px; padding: 10px 12px; cursor: pointer; font-weight: 700; }
+  .mic.active { border-color: #e85d2a; background: #fff7ed; color: #9a3412; box-shadow: 0 0 0 3px rgba(232,93,42,.12); }
+  .mic:disabled { color: #98a2b3; cursor: default; }
+  .voice-status { min-height: 18px; color: #667085; font-size: 12px; }
   input, select { border: 1px solid #cdd5e1; border-radius: 8px; padding: 10px 11px; min-width: 0; outline: none; }
   input:focus, select:focus { border-color: #1b6fd8; box-shadow: 0 0 0 3px rgba(27,111,216,.16); }
   .send { border: 0; border-radius: 8px; background: #e85d2a; color: white; padding: 0 15px; cursor: pointer; font-weight: 700; }
@@ -53,7 +58,7 @@
       <div class="brand">球球</div>
       <div class="status"><span id="dot" class="dot"></span><span id="status">正在连接</span></div>
     </div>
-    <iframe id="live2d" src="/live2d.html" title="Live2D 球球"></iframe>
+    <iframe id="live2d" src="/live2d.html" title="Live2D 球球" allow="microphone; autoplay"></iframe>
   </section>
   <main class="panel">
     <header>
@@ -102,6 +107,10 @@
         <input id="input" autocomplete="off" placeholder="和球球聊一句，比如：这球漂亮吗？">
         <button class="send" id="send" type="submit">发送</button>
       </form>
+      <div class="voicebar">
+        <button class="mic" id="mic" type="button">语音</button>
+        <div class="voice-status" id="voiceStatus">可用文字输入；语音需要浏览器授权麦克风。</div>
+      </div>
     </section>
   </main>
 <script>
@@ -114,8 +123,15 @@ const statusText = document.getElementById('status');
 const match = document.getElementById('match');
 const talk = document.getElementById('talk');
 const live2d = document.getElementById('live2d');
+const mic = document.getElementById('mic');
+const voiceStatus = document.getElementById('voiceStatus');
 let ws = null;
 let speakingTimer = null;
+let recording = false;
+let vadPoll = null;
+let audioUnlocked = false;
+let pendingAudioMime = 'audio/mpeg';
+let pendingAudioTraceId = '';
 
 function addMessage(kind, text) {
   const el = document.createElement('div');
@@ -134,8 +150,65 @@ function setStatus(text, on) {
 function liveCall(name, arg) {
   try {
     const win = live2d.contentWindow;
-    if (win && typeof win[name] === 'function') win[name](arg);
+    if (win && typeof win[name] === 'function') return win[name](arg);
   } catch (_) {}
+  return undefined;
+}
+
+function setVoiceStatus(text, state) {
+  voiceStatus.textContent = text;
+  mic.classList.toggle('active', state === 'listening' || state === 'processing');
+  mic.disabled = state === 'processing';
+}
+
+async function unlockAudio() {
+  if (audioUnlocked) return true;
+  try {
+    const Ctx = window.AudioContext || window.webkitAudioContext;
+    if (!Ctx) {
+      audioUnlocked = true;
+      return true;
+    }
+    const ctx = new Ctx();
+    await ctx.resume();
+    await ctx.close();
+    audioUnlocked = true;
+    return true;
+  } catch (_) {
+    return false;
+  }
+}
+
+function playAudioBlob(data, mime) {
+  const traceId = pendingAudioTraceId;
+  pendingAudioTraceId = '';
+  const blob = new Blob([data], { type: mime || pendingAudioMime || 'audio/mpeg' });
+  const url = URL.createObjectURL(blob);
+  const audio = new Audio(url);
+  liveCall('setSpeaking', true);
+  audio.onended = () => {
+    URL.revokeObjectURL(url);
+    liveCall('setSpeaking', false);
+    setVoiceStatus('语音回复播放完成。', 'idle');
+    reportVoicePlayback(traceId, 'ended');
+  };
+  audio.onerror = () => {
+    URL.revokeObjectURL(url);
+    liveCall('setSpeaking', false);
+    setVoiceStatus('音频播放失败，文字回复仍可用。', 'failed');
+    reportVoicePlayback(traceId, 'error');
+  };
+  audio.play().catch(() => {
+    URL.revokeObjectURL(url);
+    liveCall('setSpeaking', false);
+    setVoiceStatus('浏览器阻止了音频播放，点一次语音后可恢复。', 'failed');
+    reportVoicePlayback(traceId, 'play_rejected');
+  });
+}
+
+function reportVoicePlayback(traceId, state) {
+  if (!traceId || !ws || ws.readyState !== WebSocket.OPEN) return;
+  ws.send(JSON.stringify({ type: 'voice_playback', traceId, state }));
 }
 
 function inferAction(text) {
@@ -186,10 +259,6 @@ function handleMatchEvent(eventData, snapshot) {
   const team = eventData.teamName ? `${eventData.teamName} · ` : '';
   addMessage('match-event', `${clock} ${team}${label}: ${description}`);
   liveCall('performAction', action || 'focus');
-  if (eventData.proactiveText) {
-    addMessage('bot', eventData.proactiveText);
-    speakFor(eventData.proactiveText);
-  }
 }
 
 function connect() {
@@ -209,7 +278,10 @@ function connect() {
   };
   ws.onerror = () => setStatus('连接异常', false);
   ws.onmessage = (event) => {
-    if (typeof event.data !== 'string') return;
+    if (typeof event.data !== 'string') {
+      playAudioBlob(event.data, pendingAudioMime);
+      return;
+    }
     let msg;
     try { msg = JSON.parse(event.data); } catch (_) { return; }
     if (msg.type === 'match_status') {
@@ -228,6 +300,19 @@ function connect() {
       liveCall('setMood', msg.state || 'idle');
       return;
     }
+    if (msg.type === 'voice_status') {
+      const state = msg.state || 'idle';
+      if (state === 'text_fallback') setVoiceStatus('语音识别失败，已使用文字输入继续。', 'failed');
+      else if (state === 'tts_fallback') setVoiceStatus('语音合成失败，已显示文字回复。', 'failed');
+      else setVoiceStatus(msg.reason || state, state);
+      return;
+    }
+    if (msg.type === 'voice_audio') {
+      pendingAudioMime = msg.mime || 'audio/mpeg';
+      pendingAudioTraceId = msg.traceId || '';
+      setVoiceStatus('正在播放球球语音回复。', 'replying');
+      return;
+    }
     if (msg.type === 'interrupt') {
       liveCall('setSpeaking', false);
       liveCall('performAction', 'listen');
@@ -237,6 +322,7 @@ function connect() {
       const text = (msg.data && msg.data.text) || '';
       addMessage('bot', text || '我刚刚有点走神，再说一遍？');
       speakFor(text);
+      setVoiceStatus('可以继续说或打字。', 'idle');
       return;
     }
     if (msg.type === 'pong') return;
@@ -251,6 +337,75 @@ function sendText(text, preferredAction) {
   ws.send(JSON.stringify({ type: 'user_speech', text: value, talkativeness: talk.value }));
 }
 
+async function toggleMic() {
+  if (recording) {
+    stopMic();
+    return;
+  }
+  if (!ws || ws.readyState !== WebSocket.OPEN) {
+    setVoiceStatus('后端还没连上，先用文字或点重连。', 'failed');
+    return;
+  }
+  setVoiceStatus('等待浏览器麦克风授权。', 'processing');
+  liveCall('performAction', 'listen');
+  await unlockAudio();
+  let started;
+  try {
+    started = liveCall('startRecording');
+    if (started && typeof started.then === 'function') started = await started;
+  } catch (err) {
+    setVoiceStatus('麦克风启动失败，文字输入仍可用。', 'failed');
+    liveCall('performAction', 'idle');
+    return;
+  }
+  if (!started || started.ok === false) {
+    setVoiceStatus('麦克风未授权或不可用，文字输入仍可用。', 'failed');
+    liveCall('performAction', 'idle');
+    return;
+  }
+  recording = true;
+  setVoiceStatus('正在听你说话，说完会自动发送。', 'listening');
+  liveCall('performAction', 'listen');
+  vadPoll = setInterval(readVAD, 220);
+}
+
+function stopMic() {
+  if (!recording) return;
+  liveCall('stopRecording');
+  readVAD();
+  recording = false;
+  clearInterval(vadPoll);
+  vadPoll = null;
+  setVoiceStatus('录音已停止。', 'idle');
+}
+
+function readVAD() {
+  const raw = liveCall('getVAD');
+  if (!raw || raw === 'null') return;
+  let result;
+  try { result = JSON.parse(raw); } catch (_) { return; }
+  if (result.event === 'error') {
+    recording = false;
+    clearInterval(vadPoll);
+    vadPoll = null;
+    setVoiceStatus('麦克风未授权或不可用，文字输入仍可用。', 'failed');
+    liveCall('performAction', 'idle');
+    return;
+  }
+  if (result.event === 'speaking') {
+    setVoiceStatus('已检测到声音，继续说。', 'listening');
+    return;
+  }
+  if (result.event === 'sentenceEnd' && result.audio) {
+    recording = false;
+    clearInterval(vadPoll);
+    vadPoll = null;
+    setVoiceStatus('球球正在理解。', 'processing');
+    liveCall('performAction', 'analysis');
+    ws.send(JSON.stringify({ type: 'user_speech', audio: result.audio, talkativeness: talk.value }));
+  }
+}
+
 form.addEventListener('submit', (event) => {
   event.preventDefault();
   sendText(input.value);
@@ -263,6 +418,7 @@ document.querySelectorAll('[data-say]').forEach((button) => {
 });
 
 document.getElementById('reconnect').addEventListener('click', connect);
+mic.addEventListener('click', toggleMic);
 
 addMessage('bot', '我准备好了，开场、进球、可惜、吐槽、生气、紧张、好奇、安慰和战术分析都可以接。');
 connect();

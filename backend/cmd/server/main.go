@@ -5,6 +5,7 @@ import (
 	"encoding/base64"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"net/http"
 	"os"
@@ -16,7 +17,6 @@ import (
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
-	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/pipeline"
@@ -28,6 +28,24 @@ import (
 	"github.com/joho/godotenv"
 	"github.com/redis/go-redis/v9"
 )
+
+type speechRecognizer interface {
+	Transcribe(ctx context.Context, audio []byte, hints []string) (*asr.Result, error)
+}
+
+type speechSynthesizer interface {
+	Synthesize(ctx context.Context, text, voiceID string) (*tts.SynthesizeResult, error)
+}
+
+type voiceSessionResult struct {
+	Text      string
+	Reply     string
+	Trace     companion.Trace
+	AudioData []byte
+	AudioMIME string
+	ASRError  string
+	TTSError  string
+}
 
 func main() {
 	_ = godotenv.Load()
@@ -47,13 +65,14 @@ func main() {
 	promptMgr.LoadTemplate("match_status", readFile("prompts/v1.0/match_status.txt"))
 
 	// AI clients
-	llmClient := llm.NewClient(cfg.DeepseekBaseURL, cfg.DeepseekAPIKey, cfg.DeepseekModel)
+	llmClient := newTextLLMClient(cfg)
 	var ttsClient *tts.Client
-	if cfg.ElevenLabsKey != "" {
-		ttsClient = tts.NewClient(cfg.ElevenLabsKey)
+	ttsKey := fallbackString(cfg.MiMoAPIKey, cfg.ElevenLabsKey)
+	if ttsKey != "" {
+		ttsClient = tts.NewClient(ttsKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
 	}
-	apiSports := datasource.NewClient(os.Getenv("APISPORTS_API_KEY"))
-	asrClient := asr.NewClient(os.Getenv("SILICONFLOW_API_KEY"))
+	asrKey := fallbackString(cfg.MiMoAPIKey, os.Getenv("SILICONFLOW_API_KEY"))
+	asrClient := asr.NewClient(asrKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
 
 	var sessionsMu sync.Mutex
 	sessions := make(map[string]*session.WatchSession)
@@ -73,6 +92,7 @@ func main() {
 	}
 	companionTools := companion.NewRepositoryMemoryTools(matchStore)
 	var traceReader companion.TraceReader = companionTools
+	var demoResetter companion.DemoResetter = companionTools
 	if cfg.DatabaseURL != "" {
 		traceWriter, err := companion.OpenPostgresTraceWriter(context.Background(), cfg.DatabaseURL)
 		if err != nil {
@@ -80,13 +100,18 @@ func main() {
 		}
 		defer traceWriter.Close()
 		traceReader = traceWriter
+		companionTools.WithTurnReader(traceWriter)
+		demoResetter = traceWriter
 		companionTools.WithTraceWriter(companion.NewAsyncTraceWriter(traceWriter, 256))
 	}
 	companionAgent := companion.NewAgent(companionTools)
+	if llmClient != nil {
+		companionAgent.WithPolisher(companion.NewLLMReplyPolisher(llmClient), 3*time.Second)
+	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", hub.HandleHealth)
-	mux.HandleFunc("/api/matches/", handleMatchAPI(matchStore, traceReader, cfg, llmClient, promptMgr))
+	mux.HandleFunc("/api/matches/", handleMatchAPI(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr))
 	fs := http.StripPrefix("/assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -149,10 +174,6 @@ func main() {
 		sessions[matchIDStr] = sess
 		sessionsMu.Unlock()
 
-		// Start polling data source
-		poller := datasource.NewPoller(apiSports, matchID, engine.EventChan())
-		go poller.Run(ctx)
-
 		go sess.Run(ctx)
 		writer.SendJSON(map[string]interface{}{
 			"type": "match_snapshot",
@@ -160,11 +181,15 @@ func main() {
 		})
 		go func() {
 			for ev := range matchEvents {
+				snapshot := matchStore.Snapshot(matchIDStr)
 				writer.SendJSON(map[string]interface{}{
 					"type":     "match_event",
 					"data":     ev,
-					"snapshot": matchStore.Snapshot(matchIDStr),
+					"snapshot": snapshot,
 				})
+				if strings.TrimSpace(ev.ProactiveText) != "" && ev.Visibility == "public" && ev.Status == "active" {
+					go emitProactiveEvent(context.Background(), writer, companionAgent, ttsClient, fallbackString(r.RemoteAddr, "broadcast"), ev, snapshot)
+				}
 			}
 		}()
 
@@ -192,7 +217,6 @@ func main() {
 					cancel = newCancel
 					go engine.Run(ctx)
 					go sess.Run(ctx)
-					go datasource.NewPoller(apiSports, matchID, engine.EventChan()).Run(ctx)
 
 					writer.SendJSON(map[string]interface{}{
 						"type":       "interrupt",
@@ -214,68 +238,58 @@ func main() {
 						}
 					}
 					go func() {
-						// Use independent context - connection ctx may be cancelled
 						bgCtx := context.Background()
-						var replyText string
-						if audioB64 != "" {
-							audioBytes, err := base64.StdEncoding.DecodeString(audioB64)
-							if err == nil && len(audioBytes) > 0 {
-								wav := pcmToWav(audioBytes)
-								result, err := asrClient.Transcribe(bgCtx, wav, nil)
-								if err == nil {
-									text = result.Text
-									log.Printf("asr: %q (conf=%.2f)", text, result.Confidence)
-								} else {
-									log.Printf("asr error: %v", err)
-								}
-							}
-						}
-
-						if text == "" {
-							return
-						}
-
-						result, err := companionAgent.HandleMessage(bgCtx, companion.MessageRequest{
-							MatchID: matchIDStr,
-							UserID:  fallbackString(str(req, "userId"), r.RemoteAddr),
-							Text:    text,
-							Now:     time.Now(),
-						})
+						userID := fallbackString(str(req, "userId"), r.RemoteAddr)
+						result, err := handleVoiceSession(bgCtx, companionAgent, asrClient, nil, matchIDStr, userID, text, audioB64, time.Now())
 						if err != nil {
-							log.Printf("companion reply error: %v", err)
+							log.Printf("companion voice reply error: %v", err)
+							if result.ASRError != "" {
+								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": result.ASRError})
+							}
 							return
 						}
-						replyText = result.Reply
-
-						// Synthesize speech
-						var audioData []byte
-						if ttsClient != nil {
-							ttsResult, err := ttsClient.Synthesize(bgCtx, replyText, "cgSgspJ2msm6clMCkdW9")
-							if err == nil {
-								audioData = ttsResult.AudioData
-							}
+						if result.ASRError != "" {
+							writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "text_fallback", "reason": result.ASRError})
 						}
-
-						// Send expression
 						writer.SendJSON(map[string]interface{}{
 							"type":  "expression",
 							"state": "chat",
 						})
-
-						// Send audio
-						if len(audioData) > 0 {
-							writer.SendBinary(audioData)
-						}
-
-						// Send text
 						writer.SendJSON(map[string]interface{}{
 							"type":  "event",
 							"event": "qiuqiu_reply",
 							"data": map[string]interface{}{
-								"text": replyText,
+								"text": result.Reply,
 							},
 						})
+						if ttsClient != nil {
+							ttsResult, err := ttsClient.Synthesize(bgCtx, result.Reply, "cgSgspJ2msm6clMCkdW9")
+							if err != nil {
+								result.TTSError = err.Error()
+								recordVoiceTTS(bgCtx, companionAgent, result, "", 0, err.Error())
+								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
+								return
+							}
+							if len(ttsResult.AudioData) > 0 {
+								recordVoiceTTS(bgCtx, companionAgent, result, fallbackString(ttsResult.MimeType, "audio/mpeg"), len(ttsResult.AudioData), "")
+								writer.SendJSON(map[string]interface{}{"type": "voice_audio", "mime": fallbackString(ttsResult.MimeType, "audio/mpeg"), "traceId": result.Trace.ID})
+								writer.SendBinary(ttsResult.AudioData)
+							}
+						}
 					}()
+				case "voice_playback":
+					traceID := strings.TrimSpace(str(req, "traceId"))
+					state := strings.TrimSpace(str(req, "state"))
+					if traceID == "" || state == "" {
+						continue
+					}
+					status := "ok"
+					if state != "ended" && state != "started" {
+						status = "failed:" + state
+					}
+					if err := recordPlaybackStatus(context.Background(), traceReader, companionAgent, matchIDStr, traceID, status); err != nil {
+						log.Printf("voice playback trace update error: %v", err)
+					}
 				}
 			}
 		}()
@@ -297,7 +311,7 @@ func main() {
 	}
 }
 
-func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
+func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
@@ -317,6 +331,30 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 		matchID := parts[0]
 		resource := parts[1]
 		switch {
+		case r.Method == http.MethodPost && resource == "reset" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if !isDemoMatchID(matchID) {
+				http.Error(w, "reset is only available for local demo match ids", http.StatusBadRequest)
+				return
+			}
+			if err := store.Reset(matchID); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			if demoResetter != nil {
+				if err := demoResetter.Reset(matchID); err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"ok":       true,
+				"matchId":  matchID,
+				"snapshot": store.Snapshot(matchID),
+			})
 		case r.Method == http.MethodGet && resource == "config" && len(parts) == 2:
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"config":   store.Config(matchID),
@@ -447,6 +485,167 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 	}
 }
 
+func handleVoiceSession(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time) (voiceSessionResult, error) {
+	result := voiceSessionResult{Text: strings.TrimSpace(text)}
+	voiceMeta := &companion.VoiceTraceMetadata{}
+	if audioB64 != "" {
+		audioBytes, err := base64.StdEncoding.DecodeString(audioB64)
+		if err != nil {
+			result.ASRError = "invalid audio payload"
+			voiceMeta.ASRStatus = "failed"
+			voiceMeta.ASRError = result.ASRError
+		} else if len(audioBytes) > 0 {
+			if recognizer == nil {
+				result.ASRError = asr.ErrNotConfigured.Error()
+				voiceMeta.ASRStatus = "failed"
+				voiceMeta.ASRError = result.ASRError
+			} else {
+				asrResult, err := recognizer.Transcribe(ctx, pcmToWav(audioBytes), nil)
+				if err != nil {
+					result.ASRError = err.Error()
+					voiceMeta.ASRStatus = "failed"
+					voiceMeta.ASRError = result.ASRError
+				} else if strings.TrimSpace(asrResult.Text) != "" {
+					result.Text = strings.TrimSpace(asrResult.Text)
+					voiceMeta.ASRStatus = "ok"
+					voiceMeta.ASRText = result.Text
+					voiceMeta.ASRProvider = asrResult.Provider
+					log.Printf("asr: %q (conf=%.2f)", result.Text, asrResult.Confidence)
+				} else {
+					result.ASRError = "empty voice input"
+					voiceMeta.ASRStatus = "failed"
+					voiceMeta.ASRError = result.ASRError
+				}
+			}
+		}
+	}
+	if result.Text == "" {
+		if result.ASRError == "" {
+			result.ASRError = "empty voice input"
+		}
+		return result, fmt.Errorf("no usable user text")
+	}
+	response, err := agent.HandleMessage(ctx, companion.MessageRequest{
+		MatchID: matchID,
+		UserID:  userID,
+		Text:    result.Text,
+		Now:     now,
+		Voice:   nonEmptyVoiceMeta(voiceMeta),
+	})
+	if err != nil {
+		return result, err
+	}
+	result.Reply = response.Reply
+	result.Trace = response.Trace
+	if synthesizer != nil {
+		ttsResult, err := synthesizer.Synthesize(ctx, result.Reply, "cgSgspJ2msm6clMCkdW9")
+		if err != nil {
+			result.TTSError = err.Error()
+			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
+			result.Trace.Voice.TTSStatus = "failed"
+			result.Trace.Voice.TTSError = result.TTSError
+			_ = agent.UpdateTrace(ctx, result.Trace)
+		} else {
+			result.AudioData = ttsResult.AudioData
+			result.AudioMIME = ttsResult.MimeType
+			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
+			result.Trace.Voice.TTSStatus = "ok"
+			result.Trace.Voice.TTSMime = result.AudioMIME
+			result.Trace.Voice.TTSByteCount = len(result.AudioData)
+			_ = agent.UpdateTrace(ctx, result.Trace)
+		}
+	}
+	return result, nil
+}
+
+func recordVoiceTTS(ctx context.Context, agent *companion.Agent, result voiceSessionResult, mime string, byteCount int, errText string) {
+	if result.Trace.ID == "" {
+		return
+	}
+	trace := result.Trace
+	trace.Voice = ensureVoiceMeta(trace.Voice)
+	if errText != "" {
+		trace.Voice.TTSStatus = "failed"
+		trace.Voice.TTSError = errText
+	} else {
+		trace.Voice.TTSStatus = "ok"
+		trace.Voice.TTSMime = mime
+		trace.Voice.TTSByteCount = byteCount
+	}
+	if err := agent.UpdateTrace(ctx, trace); err != nil {
+		log.Printf("voice trace update error: %v", err)
+	}
+}
+
+func emitProactiveEvent(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, userID string, ev matchstate.MatchEvent, snapshot matchstate.Snapshot) {
+	response, err := agent.HandleProactiveEvent(ctx, userID, ev, snapshot)
+	if err != nil {
+		log.Printf("proactive event error: %v", err)
+		return
+	}
+	writer.SendJSON(map[string]interface{}{
+		"type":  "event",
+		"event": "qiuqiu_reply",
+		"data": map[string]interface{}{
+			"text":    response.Reply,
+			"traceId": response.Trace.ID,
+			"eventId": ev.ID,
+			"source":  "operator_proactive",
+		},
+	})
+	if ttsClient == nil {
+		return
+	}
+	ttsResult, err := ttsClient.Synthesize(ctx, response.Reply, "")
+	if err != nil {
+		trace := response.Trace
+		trace.Voice = ensureVoiceMeta(trace.Voice)
+		trace.Voice.TTSStatus = "failed"
+		trace.Voice.TTSError = err.Error()
+		_ = agent.UpdateTrace(ctx, trace)
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
+		return
+	}
+	if len(ttsResult.AudioData) == 0 {
+		return
+	}
+	trace := response.Trace
+	trace.Voice = ensureVoiceMeta(trace.Voice)
+	trace.Voice.TTSStatus = "ok"
+	trace.Voice.TTSMime = fallbackString(ttsResult.MimeType, "audio/mpeg")
+	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
+	_ = agent.UpdateTrace(ctx, trace)
+	writer.SendJSON(map[string]interface{}{"type": "voice_audio", "mime": trace.Voice.TTSMime, "traceId": response.Trace.ID})
+	writer.SendBinary(ttsResult.AudioData)
+}
+
+func recordPlaybackStatus(ctx context.Context, reader companion.TraceReader, agent *companion.Agent, matchID, traceID, status string) error {
+	trace, err := reader.GetTrace(ctx, matchID, traceID)
+	if err != nil {
+		return err
+	}
+	trace.Voice = ensureVoiceMeta(trace.Voice)
+	trace.Voice.PlaybackStatus = status
+	return agent.UpdateTrace(ctx, trace)
+}
+
+func ensureVoiceMeta(meta *companion.VoiceTraceMetadata) *companion.VoiceTraceMetadata {
+	if meta != nil {
+		return meta
+	}
+	return &companion.VoiceTraceMetadata{}
+}
+
+func nonEmptyVoiceMeta(meta *companion.VoiceTraceMetadata) *companion.VoiceTraceMetadata {
+	if meta == nil {
+		return nil
+	}
+	if meta.ASRStatus == "" && meta.ASRText == "" && meta.ASRError == "" && meta.TTSStatus == "" && meta.TTSError == "" {
+		return nil
+	}
+	return meta
+}
+
 func validAPIToken(r *http.Request, cfg *config.Config) bool {
 	if cfg.AppToken == "" {
 		return true
@@ -456,6 +655,11 @@ func validAPIToken(r *http.Request, cfg *config.Config) bool {
 	}
 	auth := r.Header.Get("Authorization")
 	return auth == "Bearer "+cfg.AppToken
+}
+
+func isDemoMatchID(matchID string) bool {
+	matchID = strings.TrimSpace(matchID)
+	return matchID == "test" || strings.HasPrefix(matchID, "demo-")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {
@@ -485,6 +689,13 @@ func generateProactiveText(ctx context.Context, llmClient *llm.Client, promptMgr
 		return fallbackProactiveText(ev)
 	}
 	return strings.TrimSpace(result.Text)
+}
+
+func newTextLLMClient(cfg *config.Config) *llm.Client {
+	if cfg == nil || strings.TrimSpace(cfg.DeepseekAPIKey) == "" {
+		return nil
+	}
+	return llm.NewClient(cfg.DeepseekBaseURL, cfg.DeepseekAPIKey, cfg.DeepseekModel)
 }
 
 func fallbackProactiveText(ev matchstate.MatchEvent) string {

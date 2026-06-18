@@ -948,6 +948,18 @@
             <button class="quick-btn" id="refreshTraces" type="button" style="width:auto;margin:0;padding:8px 14px"><span class="material-symbols-outlined">refresh</span>刷新</button>
           </div>
         </div>
+        <section class="settings-card" style="margin-bottom:16px">
+          <div class="settings-card-head">
+            <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">psychology_alt</span>当前比赛记忆</div>
+            <span class="fact-pill" id="memoryClock">未同步</span>
+          </div>
+          <div class="settings-card-body">
+            <div class="setup-grid-2">
+              <div class="trace-field"><span>当前事实</span><div id="memorySnapshot">等待读取比赛状态...</div></div>
+              <div class="trace-field"><span>最近可用事件</span><div id="memoryEvents">等待读取事件...</div></div>
+            </div>
+          </div>
+        </section>
         <div class="trace-layout">
           <section class="settings-card">
             <div class="settings-card-head">
@@ -1051,7 +1063,10 @@ function setView(next) {
   });
   if (activeView === 'setup') syncPreFromMain();
   if (activeView === 'settings') loadSettings();
-  if (activeView === 'traces') loadTraces();
+  if (activeView === 'traces') {
+    loadMemoryPanel();
+    loadTraces();
+  }
 }
 
 function value(id) { return $(id).value.trim(); }
@@ -1528,6 +1543,7 @@ async function loadConfig() {
   syncSelected();
   renderPlayers();
   syncPreFromMain();
+  updateContextPreview();
 }
 async function loadTimeline() {
   const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`);
@@ -1592,13 +1608,57 @@ async function loadTraces() {
     renderTraceDetail(null);
   }
 }
+
+async function loadMemoryPanel() {
+  const snapshotHost = $('memorySnapshot');
+  const eventsHost = $('memoryEvents');
+  if (!snapshotHost || !eventsHost) return;
+  try {
+    const [stateRes, eventsRes] = await Promise.all([
+      fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/state`),
+      fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`)
+    ]);
+    if (!stateRes.ok) throw new Error(await stateRes.text());
+    if (!eventsRes.ok) throw new Error(await eventsRes.text());
+    const state = await stateRes.json();
+    const eventData = await eventsRes.json();
+    const snapshot = state.snapshot || {};
+    const score = snapshot.score || { home: 0, away: 0 };
+    $('memoryClock').textContent = `${periodLabel(snapshot.period || '')} ${snapshot.clock || '00:00'}`;
+    snapshotHost.innerHTML = `
+      <div>${escapeHTML(snapshot.homeTeam || '主队')} <b>${Number(score.home || 0)}-${Number(score.away || 0)}</b> ${escapeHTML(snapshot.awayTeam || '客队')}</div>
+      <div class="muted">推荐动作：${escapeHTML(snapshot.lastRecommendedAction || '无')} / 情绪温度：${Number(snapshot.emotionalTemperature || 1)}/5</div>
+      <div class="muted">最新描述：${escapeHTML(snapshot.lastPublicDescription || '暂无')}</div>
+    `;
+    const events = eventData.events || [];
+    if (!events.length) {
+      eventsHost.innerHTML = '<div class="muted">暂无导演台事件。</div>';
+      return;
+    }
+    eventsHost.innerHTML = events.slice(0, 6).map((event) => {
+      const roleText = (event.participants || []).map((p) => `${p.role}=${p.name}`).join('；');
+      const status = event.status === 'corrected' ? '已更正' : '有效';
+      return `<div style="margin-bottom:8px">
+        <span class="mono">${escapeHTML(event.clock || '')}</span>
+        <b>${escapeHTML(eventLabel(event.eventType))}</b>
+        <span class="muted">${escapeHTML(status)} / ${escapeHTML(event.id || '')}</span>
+        <div>${escapeHTML(event.description || '')}</div>
+        ${roleText ? `<div class="muted">${escapeHTML(roleText)}</div>` : ''}
+      </div>`;
+    }).join('');
+  } catch (err) {
+    snapshotHost.innerHTML = `<div class="muted">读取失败：${escapeHTML(err.message || 'unknown error')}</div>`;
+    eventsHost.innerHTML = '<div class="muted">暂无可显示事件。</div>';
+  }
+}
+
 function filteredTraces() {
   return traceItems.filter(traceMatchesFilter);
 }
 function traceMatchesFilter(trace) {
   if (traceFilter === 'all') return true;
   if (traceFilter === 'error') return Boolean(trace.error);
-  if (traceFilter === 'proactive') return !trace.input || trace.reason === 'proactive_event_line';
+  if (traceFilter === 'proactive') return !trace.input || trace.reason === 'proactive_event_line' || trace.reason === 'operator_event_proactive_line';
   if (traceFilter === 'question') return Boolean(trace.input) || String(trace.intent || '').includes('question');
   if (traceFilter === 'missing') {
     const text = `${trace.reason || ''} ${trace.output || ''}`.toLowerCase();
@@ -1657,12 +1717,14 @@ function renderTraceDetail(trace) {
   $('traceDetailId').textContent = trace.id || 'trace';
   const toolCalls = trace.toolCalls || [];
   const eventIds = trace.retrievedEventIds || [];
+  const voice = trace.voice || null;
   host.innerHTML = `
     <div class="trace-field"><span>输入</span><div>${escapeHTML(trace.input || '[主动线] 导演台事件触发')}</div></div>
     <div class="trace-field"><span>意图</span><div>${escapeHTML(trace.intent || 'proactive')} / ${escapeHTML(traceReasonLabel(trace.reason))}</div></div>
     <div class="trace-field"><span>输出</span><div>${escapeHTML(trace.output || '无输出')}</div></div>
     <div class="trace-field"><span>性能</span><div class="mono">${Number(trace.latencyMs || 0)}ms / ${escapeHTML(formatTraceTime(trace.createdAt))}</div></div>
     ${trace.error ? `<div class="trace-field"><span>错误</span><div style="color:var(--error)">${escapeHTML(trace.error)}</div></div>` : ''}
+    ${voice ? `<div class="trace-field"><span>语音链路</span><pre class="trace-json">${escapeHTML(prettyJSON(voice))}</pre></div>` : ''}
     <div class="trace-field">
       <span>命中事件 ID</span>
       <div>
@@ -1682,6 +1744,7 @@ function traceReasonLabel(reason) {
   return ({
     deterministic_companion_policy: '确定性陪看策略',
     proactive_event_line: '导演台主动线',
+    operator_event_proactive_line: '导演台主动线',
     missing_fact_response: '缺失事实保护',
     correction_aware_memory: '更正感知记忆'
   })[reason] || reason || '未标注策略';
@@ -1786,7 +1849,10 @@ $('preSubmit').addEventListener('click', async () => {
   try { await savePrematchConfig(); } catch (err) { toast(err.message || '赛前配置提交失败', 'bad'); }
 });
 $('saveSettings').addEventListener('click', saveSettings);
-if ($('refreshTraces')) $('refreshTraces').addEventListener('click', loadTraces);
+if ($('refreshTraces')) $('refreshTraces').addEventListener('click', () => {
+  loadMemoryPanel();
+  loadTraces();
+});
 $('homeTeam').addEventListener('input', syncSelected);
 $('awayTeam').addEventListener('input', syncSelected);
 $('homePlayers').addEventListener('input', renderPlayers);

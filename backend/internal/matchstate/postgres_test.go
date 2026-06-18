@@ -13,13 +13,17 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		t.Skip("DATABASE_URL not set")
 	}
 
-	store, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	ctx := context.Background()
+	store, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
 	if err != nil {
 		t.Fatalf("OpenPostgresStore error: %v", err)
 	}
 	defer store.Close()
 
-	matchID := "pg-eval-" + time.Now().UTC().Format("20060102150405")
+	matchID := "pg-store-eval-" + time.Now().UTC().Format("20060102150405")
+	if err := store.Reset(matchID); err != nil {
+		t.Fatalf("Reset match error: %v", err)
+	}
 	config, snapshot, err := store.SetConfig(matchID, MatchConfig{
 		HomeTeam: "西班牙",
 		AwayTeam: "德国",
@@ -33,6 +37,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if config.MatchID != matchID || snapshot.HomeTeam != "西班牙" {
 		t.Fatalf("config/snapshot mismatch: config=%+v snapshot=%+v", config, snapshot)
+	}
+	if len(store.Config(matchID).HomePlayers) != 2 {
+		t.Fatalf("players did not round-trip: %+v", store.Config(matchID).HomePlayers)
 	}
 
 	events, unsubscribe := store.Subscribe(matchID)

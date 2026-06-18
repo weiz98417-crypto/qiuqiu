@@ -47,6 +47,11 @@ type AIPipelineOutput struct {
 // ProcessStreaming uses streaming LLM + sentence-split TTS for lower perceived latency.
 func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationInstruction) *AIPipelineOutput {
 	output := &AIPipelineOutput{Expression: inst.Expression}
+	if p.llmClient == nil {
+		output.Text = templateFallback(inst.Event)
+		output.FallbackUsed = true
+		return output
+	}
 	messages, err := p.promptMgr.BuildPrompt(inst, UserContext{})
 	if err != nil {
 		output.Text = templateFallback(inst.Event)
@@ -64,7 +69,9 @@ func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationIns
 	firstSent := false
 
 	for chunk := range p.llmClient.StreamWithMessages(ctx, llmMsgs, 0.7) {
-		if chunk.Done { break }
+		if chunk.Done {
+			break
+		}
 		fullText.WriteString(chunk.Text)
 		if sentence := splitter.Feed(chunk.Text); sentence != "" {
 			if valid, _ := ValidateLLMOutput(sentence); valid {
@@ -107,6 +114,11 @@ func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationIns
 // Process handles a single instruction through the full pipeline.
 func (p *AIPipeline) Process(ctx context.Context, inst *AIGenerationInstruction) *AIPipelineOutput {
 	output := &AIPipelineOutput{Expression: inst.Expression}
+	if p.llmClient == nil {
+		output.Text = templateFallback(inst.Event)
+		output.FallbackUsed = true
+		return output
+	}
 
 	// 1. Build messages from the event
 	messages, err := p.promptMgr.BuildPrompt(inst, UserContext{})
@@ -189,16 +201,16 @@ func (p *AIPipeline) primaryLLM(ctx context.Context, messages []llm.Message, tem
 }
 
 var fallbackPool = map[string][]string{
-	"goal":     {"球进了！！", "进了！漂亮！", "这球太关键了！", "门将毫无办法！", "关键时刻站出来了！"},
-	"penalty":  {"点球！球进了！", "稳稳罚进！"},
-	"shot":     {"好球！差一点！", "这脚有威胁！", "射门！", "可惜了！", "差之毫厘！"},
-	"yellow_card": {"吃牌了。", "黄牌，这动作没必要。", "领到黄牌了。"},
-	"red_card":    {"红牌！！这下麻烦了！", "直接红牌！", "被罚下了！"},
-	"match_start": {"比赛开始了！一起看吧～", "开球了！今天这场比赛有看头！"},
-	"match_end":   {"比赛结束了！", "全场比赛结束！"},
-	"foul":     {"犯规了。", "这动作有点大。"},
-	"corner":    {"角球！", "角球机会！"},
-	"offside":   {"越位了。", "边裁举旗了。"},
+	"goal":         {"球进了！！", "进了！漂亮！", "这球太关键了！", "门将毫无办法！", "关键时刻站出来了！"},
+	"penalty":      {"点球！球进了！", "稳稳罚进！"},
+	"shot":         {"好球！差一点！", "这脚有威胁！", "射门！", "可惜了！", "差之毫厘！"},
+	"yellow_card":  {"吃牌了。", "黄牌，这动作没必要。", "领到黄牌了。"},
+	"red_card":     {"红牌！！这下麻烦了！", "直接红牌！", "被罚下了！"},
+	"match_start":  {"比赛开始了！一起看吧～", "开球了！今天这场比赛有看头！"},
+	"match_end":    {"比赛结束了！", "全场比赛结束！"},
+	"foul":         {"犯规了。", "这动作有点大。"},
+	"corner":       {"角球！", "角球机会！"},
+	"offside":      {"越位了。", "边裁举旗了。"},
 	"substitution": {"换人了。", "换人调整。"},
 	"var_check":    {"VAR在检查...", "裁判去看回放了。"},
 }

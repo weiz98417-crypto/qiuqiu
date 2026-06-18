@@ -13,6 +13,10 @@ type Config struct {
 	DeepseekAPIKey  string
 	DeepseekBaseURL string
 	DeepseekModel   string
+	MiMoAPIKey      string
+	MiMoBaseURL     string
+	MiMoModel       string
+	MiMoVoice       string
 	ElevenLabsKey   string
 }
 
@@ -25,6 +29,10 @@ func Load() *Config {
 		DeepseekAPIKey:  getEnv("DEEPSEEK_API_KEY", ""),
 		DeepseekBaseURL: getEnv("DEEPSEEK_BASE_URL", "https://api.deepseek.com/v1"),
 		DeepseekModel:   getEnv("DEEPSEEK_MODEL", "deepseek-v4-flash"),
+		MiMoAPIKey:      getEnv("MIMO_API_KEY", ""),
+		MiMoBaseURL:     getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		MiMoModel:       getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		MiMoVoice:       getEnv("MIMO_VOICE", "Chloe"),
 		ElevenLabsKey:   getEnv("ELEVENLABS_API_KEY", ""),
 	}
 }

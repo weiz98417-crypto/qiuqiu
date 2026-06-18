@@ -33,6 +33,13 @@ func NewClient(baseURL, apiKey, model string) *Client {
 	}
 }
 
+func (c *Client) DebugString() string {
+	if c == nil {
+		return "<nil>"
+	}
+	return fmt.Sprintf("llm.Client{baseURL:%s,model:%s}", c.baseURL, c.model)
+}
+
 type ChatRequest struct {
 	Model       string    `json:"model"`
 	Messages    []Message `json:"messages"`
@@ -67,9 +74,9 @@ type Usage struct {
 }
 
 type GenerateResult struct {
-	Text      string
-	Duration  time.Duration
-	Tokens    int
+	Text     string
+	Duration time.Duration
+	Tokens   int
 }
 
 var systemPrompt = `你是"球球"，一个陪用户看足球比赛的AI语音助手。你像一个朋友一样聊天，不是专业解说员。每次回复不超过2句话。用自然口语表达。`
@@ -84,9 +91,9 @@ var TestEvents = []string{
 
 // StreamChunk is a token from streaming LLM output.
 type StreamChunk struct {
-	Text    string
-	Done    bool
-	Tokens  int
+	Text   string
+	Done   bool
+	Tokens int
 }
 
 // StreamWithMessages sends messages and returns a channel of streaming tokens.
@@ -101,7 +108,7 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 		}
 		body, _ := json.Marshal(req)
 		httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
-		httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+		c.setAuthHeaders(httpReq)
 		httpReq.Header.Set("Content-Type", "application/json")
 		httpReq.Header.Set("Accept", "text/event-stream")
 
@@ -114,12 +121,19 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
 			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") { continue }
+			if !strings.HasPrefix(line, "data: ") {
+				continue
+			}
 			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" { ch <- StreamChunk{Done: true}; return }
+			if data == "[DONE]" {
+				ch <- StreamChunk{Done: true}
+				return
+			}
 			var sse struct {
 				Choices []struct {
-					Delta struct{ Content string `json:"content"` } `json:"delta"`
+					Delta struct {
+						Content string `json:"content"`
+					} `json:"delta"`
 				} `json:"choices"`
 			}
 			if json.Unmarshal([]byte(data), &sse) == nil && len(sse.Choices) > 0 {
@@ -163,7 +177,7 @@ func (c *Client) Generate(ctx context.Context, prompt string) (*GenerateResult, 
 func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, error) {
 	body, _ := json.Marshal(req)
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
-	httpReq.Header.Set("Authorization", "Bearer "+c.apiKey)
+	c.setAuthHeaders(httpReq)
 	httpReq.Header.Set("Content-Type", "application/json")
 
 	start := time.Now()
@@ -192,4 +206,12 @@ func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, 
 		Duration: time.Since(start),
 		Tokens:   chatResp.Usage.TotalTokens,
 	}, nil
+}
+
+func (c *Client) setAuthHeaders(req *http.Request) {
+	if strings.Contains(c.baseURL, "xiaomimimo.com") || strings.HasPrefix(c.model, "mimo-") {
+		req.Header.Set("api-key", c.apiKey)
+		return
+	}
+	req.Header.Set("Authorization", "Bearer "+c.apiKey)
 }

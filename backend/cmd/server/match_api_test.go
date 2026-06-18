@@ -21,7 +21,7 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
 	promptMgr := pipeline.NewPromptManager()
-	handler := handleMatchAPI(store, traces, cfg, nil, promptMgr)
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, promptMgr)
 
 	configResp := doJSON(t, handler, http.MethodPost, "/api/matches/api-eval/config?token=eval-token", matchstate.MatchConfig{
 		HomeTeam: "Spain",
@@ -93,7 +93,7 @@ func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
 
 	unauth := doJSON(t, handler, http.MethodPost, "/api/matches/api-boundary/events", matchstate.MatchEvent{
 		EventType:   "goal",
@@ -150,7 +150,7 @@ func TestEvalTraceAPIListDetailAndAuth(t *testing.T) {
 	traces := companion.NewStoreMemoryTools(store)
 	agent := companion.NewAgent(traces)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
 
 	matchID := "trace-eval"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Spain", AwayTeam: "Germany"}); err != nil {
@@ -218,6 +218,72 @@ func TestEvalTraceAPIListDetailAndAuth(t *testing.T) {
 	}
 	if detailEnvelope.Trace.ID != reply.Trace.ID || len(detailEnvelope.Trace.RetrievedEvent) == 0 {
 		t.Fatalf("trace detail mismatch: %+v", detailEnvelope.Trace)
+	}
+}
+
+func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+
+	if _, _, err := store.SetConfig("test", matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	if _, _, err := store.Create("test", matchstate.MatchEvent{
+		EventType:   "goal",
+		Clock:       "24:10",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       matchstate.Score{Home: 1, Away: 0},
+		Description: "佩德里：禁区内抢点破门。",
+	}); err != nil {
+		t.Fatalf("Create event error: %v", err)
+	}
+	agent := companion.NewAgent(traces)
+	if _, err := agent.HandleMessage(contextless(), companion.MessageRequest{
+		MatchID: "test",
+		UserID:  "user-1",
+		Text:    "刚才谁助攻？",
+		Now:     time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+	}); err != nil {
+		t.Fatalf("HandleMessage error: %v", err)
+	}
+
+	unauth := doJSON(t, handler, http.MethodPost, "/api/matches/test/reset", nil)
+	if unauth.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized reset, got %d", unauth.Code)
+	}
+
+	disallowed := doJSON(t, handler, http.MethodPost, "/api/matches/real-match/reset?token=eval-token", nil)
+	if disallowed.Code != http.StatusBadRequest {
+		t.Fatalf("expected reset to reject non-demo match, got %d", disallowed.Code)
+	}
+
+	reset := doJSON(t, handler, http.MethodPost, "/api/matches/test/reset?token=eval-token", nil)
+	if reset.Code != http.StatusOK {
+		t.Fatalf("reset status=%d body=%s", reset.Code, reset.Body.String())
+	}
+	if got := store.Events("test"); len(got) != 0 {
+		t.Fatalf("expected reset to clear events, got %+v", got)
+	}
+	traceList, err := traces.ListTraces(contextless(), "test", 10)
+	if err != nil {
+		t.Fatalf("ListTraces error: %v", err)
+	}
+	if len(traceList) != 0 {
+		t.Fatalf("expected reset to clear traces, got %+v", traceList)
+	}
+	turns, err := traces.RecentTurns(contextless(), "test", "user-1", 10)
+	if err != nil {
+		t.Fatalf("RecentTurns error: %v", err)
+	}
+	if len(turns) != 0 {
+		t.Fatalf("expected reset to clear turns, got %+v", turns)
+	}
+	if got := store.Snapshot("test"); got.HomeTeam != "主队" || got.Score.Home != 0 || got.Score.Away != 0 {
+		t.Fatalf("expected reset snapshot defaults, got %+v", got)
 	}
 }
 

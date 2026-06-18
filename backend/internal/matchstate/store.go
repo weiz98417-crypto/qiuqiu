@@ -89,6 +89,7 @@ type Snapshot struct {
 type Repository interface {
 	SetConfig(matchID string, config MatchConfig) (MatchConfig, Snapshot, error)
 	Config(matchID string) MatchConfig
+	Reset(matchID string) error
 	Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, error)
 	Correct(matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error)
 	Events(matchID string) []MatchEvent
@@ -134,6 +135,18 @@ func (s *Store) Config(matchID string) MatchConfig {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return normalizeConfig(matchID, s.configs[matchID])
+}
+
+func (s *Store) Reset(matchID string) error {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	s.mu.Lock()
+	delete(s.events, matchID)
+	delete(s.configs, matchID)
+	s.mu.Unlock()
+	return nil
 }
 
 func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {

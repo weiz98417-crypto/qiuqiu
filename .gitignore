@@ -3,6 +3,8 @@
 backend/*.exe
 backend/cmd/**/*.exe
 backend/*.log
+backend/*.out
+backend/cmd/**/*.out
 client/build/
 client/.dart_tool/
 client/android/.gradle/

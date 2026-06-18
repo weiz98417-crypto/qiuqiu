@@ -96,8 +96,12 @@ CREATE TABLE IF NOT EXISTS agent_traces (
   reason TEXT NOT NULL,
   latency_ms INT NOT NULL DEFAULT 0,
   error TEXT NOT NULL DEFAULT '',
+  voice JSONB,
   created_at TIMESTAMPTZ NOT NULL DEFAULT now()
 );
+
+ALTER TABLE agent_traces
+  ADD COLUMN IF NOT EXISTS voice JSONB;
 
 CREATE INDEX IF NOT EXISTS idx_agent_traces_match_created
   ON agent_traces(match_id, created_at DESC);

@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -106,6 +107,59 @@ func TestEvalProactiveLineThenUserAsksAboutRecordedMatchMemory(t *testing.T) {
 	}
 }
 
+func TestEvalDirectorProactiveTraceAnchorsFollowUpMemory(t *testing.T) {
+	ctx := context.Background()
+	store := matchstate.NewStore()
+	tools := NewStoreMemoryTools(store)
+	agent := NewAgent(tools)
+	matchID := "product-eval-director-proactive"
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	goal, snapshot, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType:     "goal",
+		Period:        "first_half",
+		Clock:         "24:10",
+		TeamID:        "home",
+		TeamName:      "西班牙",
+		PlayerName:    "佩德里",
+		Score:         matchstate.Score{Home: 1, Away: 0},
+		Description:   "佩德里：禁区内抢点破门。",
+		ProactiveText: "佩德里这一下太关键了，法比安的助攻也很漂亮。",
+		Participants: []matchstate.Participant{
+			{Role: "scorer", Name: "佩德里", TeamID: "home", TeamName: "西班牙"},
+			{Role: "assist", Name: "法比安", TeamID: "home", TeamName: "西班牙"},
+			{Role: "pre_assist", Name: "亚马尔", TeamID: "home", TeamName: "西班牙"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create goal error: %v", err)
+	}
+	proactive, err := agent.HandleProactiveEvent(ctx, "demo-user", goal, snapshot)
+	if err != nil {
+		t.Fatalf("HandleProactiveEvent error: %v", err)
+	}
+	if proactive.Reply != goal.ProactiveText {
+		t.Fatalf("manual proactive line changed: got %q want %q", proactive.Reply, goal.ProactiveText)
+	}
+	if proactive.Trace.Reason != "operator_event_proactive_line" {
+		t.Fatalf("unexpected proactive reason: %+v", proactive.Trace)
+	}
+	assertContains(t, strings.Join(proactive.Trace.RetrievedEvent, ","), goal.ID)
+
+	followUp, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "demo-user",
+		Text:    "谁策动的？",
+		Now:     fixedTime().Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage follow-up error: %v", err)
+	}
+	assertContains(t, followUp.Reply, "亚马尔")
+	assertContains(t, strings.Join(followUp.Trace.RetrievedEvent, ","), goal.ID)
+}
+
 func TestEvalCompanionBoundariesDoNotInventUnrecordedFacts(t *testing.T) {
 	ctx := context.Background()
 	store := matchstate.NewStore()
@@ -142,6 +196,165 @@ func TestEvalCompanionBoundariesDoNotInventUnrecordedFacts(t *testing.T) {
 		t.Fatalf("expected control intent, got %s", control.Intent)
 	}
 	assertContains(t, control.Reply, "少说")
+}
+
+func TestEvalCompanionFollowUpUsesShortTermConversationMemory(t *testing.T) {
+	ctx := context.Background()
+	store := matchstate.NewStore()
+	tools := NewStoreMemoryTools(store)
+	agent := NewAgent(tools)
+	matchID := "product-eval-follow-up"
+
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	goal, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "24:10",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       matchstate.Score{Home: 1, Away: 0},
+		Description: "佩德里禁区内抢点破门。",
+		Participants: []matchstate.Participant{
+			{Role: "scorer", Name: "佩德里", TeamID: "home", TeamName: "西班牙"},
+			{Role: "assist", Name: "法比安", TeamID: "home", TeamName: "西班牙"},
+			{Role: "pre_assist", Name: "亚马尔", TeamID: "home", TeamName: "西班牙"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Create goal error: %v", err)
+	}
+
+	assistReply, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "user-1",
+		Text:    "刚才谁助攻？",
+		Now:     fixedTime(),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage assist error: %v", err)
+	}
+	assertContains(t, assistReply.Reply, "法比安")
+	assertContains(t, strings.Join(assistReply.Trace.RetrievedEvent, ","), goal.ID)
+
+	followUp, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "user-1",
+		Text:    "谁策动的？",
+		Now:     fixedTime().Add(time.Second),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage follow-up error: %v", err)
+	}
+	if followUp.Intent != IntentFollowUp {
+		t.Fatalf("expected follow-up intent, got %s", followUp.Intent)
+	}
+	assertContains(t, followUp.Reply, "亚马尔")
+	assertContains(t, strings.Join(followUp.Trace.RetrievedEvent, ","), goal.ID)
+	assertToolCalled(t, followUp.Trace, "conversation.read_recent")
+	assertToolCalled(t, followUp.Trace, "match.search_events")
+	assertToolCalled(t, followUp.Trace, "conversation.append_turn")
+}
+
+func TestEvalUserAgentToolBoundaryForbidsOperatorMutations(t *testing.T) {
+	for _, allowed := range []string{
+		"match.read_snapshot",
+		"match.search_events",
+		"match.get_player_timeline",
+		"conversation.append_turn",
+		"trace.write_decision",
+		"response.emit_companion_reply",
+	} {
+		if !IsUserAgentToolAllowed(allowed) {
+			t.Fatalf("expected user agent tool %q to be allowed", allowed)
+		}
+	}
+	for _, forbidden := range []string{
+		"operator.create_event",
+		"operator.correct_event",
+		"database.exec_match_mutation",
+	} {
+		if IsUserAgentToolAllowed(forbidden) {
+			t.Fatalf("expected mutation tool %q to be forbidden", forbidden)
+		}
+	}
+	for _, schema := range CompanionToolSchemas() {
+		if schema.MutatesMatchFacts {
+			t.Fatalf("companion tool schema must not mutate match facts: %+v", schema)
+		}
+	}
+}
+
+func TestEvalPolishPreservesGroundedFactsOrFallsBack(t *testing.T) {
+	cases := []struct {
+		name       string
+		polisher   ReplyPolisher
+		wantReply  string
+		wantReason string
+		wantError  string
+	}{
+		{
+			name:       "success",
+			polisher:   fakePolisher{reply: "刚才这球确实是法比安助攻，亚马尔参与策动，信息很清楚。"},
+			wantReply:  "刚才这球确实是法比安助攻，亚马尔参与策动，信息很清楚。",
+			wantReason: "deterministic_companion_policy",
+		},
+		{
+			name:       "empty",
+			polisher:   fakePolisher{reply: ""},
+			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
+			wantReason: "polish_fallback_error",
+			wantError:  "empty",
+		},
+		{
+			name:       "error",
+			polisher:   fakePolisher{err: fmt.Errorf("provider timeout")},
+			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
+			wantReason: "polish_fallback_error",
+			wantError:  "provider timeout",
+		},
+		{
+			name:       "anchor mismatch",
+			polisher:   fakePolisher{reply: "刚才这球是莫拉塔助攻，节奏很好。"},
+			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
+			wantReason: "polish_fallback_anchor_mismatch",
+		},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			ctx := context.Background()
+			store := matchstate.NewStore()
+			tools := NewStoreMemoryTools(store)
+			agent := NewAgent(tools).WithPolisher(tc.polisher, time.Second)
+			matchID := "product-eval-polish-" + strings.ReplaceAll(tc.name, " ", "-")
+			seedPolishGoal(t, store, matchID)
+
+			reply, err := agent.HandleMessage(ctx, MessageRequest{
+				MatchID: matchID,
+				UserID:  "user-1",
+				Text:    "刚才谁助攻？",
+				Now:     fixedTime(),
+			})
+			if err != nil {
+				t.Fatalf("HandleMessage error: %v", err)
+			}
+			if reply.Reply != tc.wantReply {
+				t.Fatalf("wrong reply: got %q want %q", reply.Reply, tc.wantReply)
+			}
+			if reply.Trace.Reason != tc.wantReason {
+				t.Fatalf("wrong reason: got %q want %q", reply.Trace.Reason, tc.wantReason)
+			}
+			if tc.wantError != "" {
+				assertContains(t, reply.Trace.Error, tc.wantError)
+			}
+			assertContains(t, reply.Reply, "法比安")
+			assertContains(t, reply.Reply, "亚马尔")
+			assertToolCalled(t, reply.Trace, "response.emit_companion_reply")
+		})
+	}
 }
 
 func TestEvalCompanionCorrectionAwareMemoryAndUnknownFallback(t *testing.T) {
@@ -224,9 +437,11 @@ func TestEvalCompanionCorrectionAwareMemoryAndUnknownFallback(t *testing.T) {
 		t.Fatalf("expected unknown intent, got %s", unknownReply.Intent)
 	}
 	assertContains(t, unknownReply.Reply, "陪看")
-	if len(unknownReply.Trace.ToolCalls) != 0 {
-		t.Fatalf("unknown fallback should not query match tools, got %+v", unknownReply.Trace.ToolCalls)
-	}
+	assertToolNotCalled(t, unknownReply.Trace, "match.read_snapshot")
+	assertToolNotCalled(t, unknownReply.Trace, "match.search_events")
+	assertToolNotCalled(t, unknownReply.Trace, "match.get_player_timeline")
+	assertToolCalled(t, unknownReply.Trace, "conversation.append_turn")
+	assertToolCalled(t, unknownReply.Trace, "trace.write_decision")
 }
 
 func BenchmarkEvalCompanionRecentEventAnswer(b *testing.B) {
@@ -295,6 +510,50 @@ func assertToolCalled(t *testing.T, trace Trace, name string) {
 		}
 	}
 	t.Fatalf("expected tool %q in trace %+v", name, trace.ToolCalls)
+}
+
+func assertToolNotCalled(t *testing.T, trace Trace, name string) {
+	t.Helper()
+	for _, call := range trace.ToolCalls {
+		if call.Name == name {
+			t.Fatalf("expected tool %q not to be called in trace %+v", name, trace.ToolCalls)
+		}
+	}
+}
+
+type fakePolisher struct {
+	reply string
+	err   error
+}
+
+func (f fakePolisher) Polish(ctx context.Context, req PolishRequest) (string, error) {
+	_ = ctx
+	_ = req
+	return f.reply, f.err
+}
+
+func seedPolishGoal(t *testing.T, store *matchstate.Store, matchID string) {
+	t.Helper()
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "24:10",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       matchstate.Score{Home: 1, Away: 0},
+		Description: "佩德里禁区内抢点破门。",
+		Participants: []matchstate.Participant{
+			{Role: "scorer", Name: "佩德里", TeamID: "home", TeamName: "西班牙"},
+			{Role: "assist", Name: "法比安", TeamID: "home", TeamName: "西班牙"},
+			{Role: "pre_assist", Name: "亚马尔", TeamID: "home", TeamName: "西班牙"},
+		},
+	}); err != nil {
+		t.Fatalf("Create goal error: %v", err)
+	}
 }
 
 func fixedTime() time.Time {
