@@ -13,21 +13,24 @@ function wsUrl() {
   const url = new URL(baseUrl);
   url.protocol = url.protocol === 'https:' ? 'wss:' : 'ws:';
   url.pathname = `/ws/match/${encodeURIComponent(matchId)}`;
-  url.search = `?token=${encodeURIComponent(token)}`;
+  url.search = '';
   return url.toString();
 }
 
-async function getJSON(path) {
-  const res = await fetch(`${baseUrl}${path}`);
+async function getJSON(path, authenticated = false) {
+  const headers = authenticated && token ? { Authorization: `Bearer ${token}` } : {};
+  const res = await fetch(`${baseUrl}${path}`, { headers });
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}: ${await res.text()}`);
   return res.json();
 }
 
 async function postJSON(path, body) {
-  const join = path.includes('?') ? '&' : '?';
-  const res = await fetch(`${baseUrl}${path}${join}token=${encodeURIComponent(token)}`, {
+  const res = await fetch(`${baseUrl}${path}`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    headers: {
+      'Content-Type': 'application/json; charset=utf-8',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+    },
     body: JSON.stringify(body),
   });
   const text = await res.text();
@@ -130,16 +133,16 @@ async function openWebSocket(url) {
 
   const key = crypto.randomBytes(16).toString('base64');
   const path = `${url.pathname}${url.search}`;
-  socket.write([
+  const headers = [
     `GET ${path} HTTP/1.1`,
     `Host: ${url.host}`,
     'Upgrade: websocket',
     'Connection: Upgrade',
     `Sec-WebSocket-Key: ${key}`,
     'Sec-WebSocket-Version: 13',
-    '',
-    '',
-  ].join('\r\n'));
+  ];
+  if (token) headers.push(`Sec-WebSocket-Protocol: qiuqiu-auth.${Buffer.from(token).toString('base64url')}`);
+  socket.write([...headers, '', ''].join('\r\n'));
 
   const header = await readHTTPHeader(socket, 5000);
   if (!header.startsWith('HTTP/1.1 101 ')) {
@@ -274,7 +277,7 @@ if (!reply.includes('法比安') || !reply.includes('亚马尔')) {
   throw new Error(`unexpected reply: ${reply}`);
 }
 
-const traces = await getJSON(`/api/matches/${encodeURIComponent(matchId)}/traces?token=${encodeURIComponent(token)}&limit=5`);
+const traces = await getJSON(`/api/matches/${encodeURIComponent(matchId)}/traces?limit=5`, true);
 const trace = (traces.traces || []).find((item) => item.input === question || item.userId === 'demo-smoke');
 if (!trace) throw new Error('expected trace for demo smoke question');
 if (trace.intent !== 'recent_event_question') throw new Error(`unexpected trace intent: ${trace.intent}`);

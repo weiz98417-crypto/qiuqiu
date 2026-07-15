@@ -15,19 +15,13 @@ import (
 )
 
 func main() {
-	_ = config.Load()
-	dsKey := os.Getenv("DEEPSEEK_API_KEY")
-	elKey := os.Getenv("ELEVENLABS_API_KEY")
-
-	if dsKey == "" {
-		log.Fatal("DEEPSEEK_API_KEY required")
+	cfg := config.Load()
+	if cfg.MiMoAPIKey == "" {
+		log.Fatal("MIMO_API_KEY required")
 	}
 
-	llmClient := llm.NewClient("https://api.deepseek.com/v1", dsKey, os.Getenv("DEEPSEEK_MODEL"))
-	var ttsClient *tts.Client
-	if elKey != "" {
-		ttsClient = tts.NewClient(elKey)
-	}
+	llmClient := llm.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)
+	ttsClient := tts.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
 
 	promptMgr := pipeline.NewPromptManager()
 	promptMgr.LoadSystem(readFile("prompts/v1.0/system.txt"))
@@ -65,7 +59,7 @@ func main() {
 	}
 
 	fmt.Println("=== Mock 全链路测试 ===")
-	fmt.Println("模拟: 利物浦 vs 切尔西\n")
+	fmt.Println("模拟: 利物浦 vs 切尔西")
 
 	totalStart := time.Now()
 	for _, me := range mockEvents {

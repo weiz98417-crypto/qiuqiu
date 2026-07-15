@@ -12,6 +12,7 @@ import (
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
+	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/pipeline"
 )
@@ -51,6 +52,9 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	if quietEvent.ProactiveText != "" {
 		t.Fatalf("quiet mode should clear proactiveText, got %q", quietEvent.ProactiveText)
 	}
+	if !hasEventTag(quietEvent, "proactive=quiet") {
+		t.Fatalf("quiet event missing mode tag: %+v", quietEvent.Tags)
+	}
 
 	manual := "Manual director line."
 	manualResp := doJSON(t, handler, http.MethodPost, "/api/matches/api-eval/events?token=eval-token", matchstate.MatchEvent{
@@ -70,6 +74,9 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	if got := decodeEvent(t, manualResp).ProactiveText; got != manual {
 		t.Fatalf("manual proactiveText changed: %q", got)
 	}
+	if manualEvent := decodeEvent(t, manualResp); !hasEventTag(manualEvent, "proactive=manual") {
+		t.Fatalf("manual event missing mode tag: %+v", manualEvent.Tags)
+	}
 
 	autoResp := doJSON(t, handler, http.MethodPost, "/api/matches/api-eval/events?token=eval-token", matchstate.MatchEvent{
 		EventType:   "penalty",
@@ -86,6 +93,9 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	autoEvent := decodeEvent(t, autoResp)
 	if strings.TrimSpace(autoEvent.ProactiveText) == "" || autoEvent.ProactiveText == "__quiet__" {
 		t.Fatalf("auto fallback should produce proactiveText, got %q", autoEvent.ProactiveText)
+	}
+	if !hasEventTag(autoEvent, "proactive=auto") {
+		t.Fatalf("auto event missing mode tag: %+v", autoEvent.Tags)
 	}
 }
 
@@ -142,6 +152,127 @@ func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 	replacement := decodeEvent(t, correctResp)
 	if replacement.RevisionOf != created.ID || replacement.EventType != "var_check" {
 		t.Fatalf("wrong replacement event: %+v", replacement)
+	}
+}
+
+func TestSourceControlAPIReportsAndSwitchesSources(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	sources := datasource.NewManager(context.Background(), store, nil, datasource.ManagerConfig{})
+	t.Cleanup(sources.Close)
+	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, pipeline.NewPromptManager(), sources)
+
+	statusResp := doJSON(t, handler, http.MethodGet, "/api/matches/source-api/sources?token=eval-token", nil)
+	if statusResp.Code != http.StatusOK {
+		t.Fatalf("sources status=%d body=%s", statusResp.Code, statusResp.Body.String())
+	}
+	var statusEnvelope struct {
+		Status datasource.MatchSourceStatus `json:"status"`
+	}
+	if err := json.Unmarshal(statusResp.Body.Bytes(), &statusEnvelope); err != nil {
+		t.Fatalf("decode source status: %v", err)
+	}
+	if statusEnvelope.Status.ActiveSource != datasource.SourceManual {
+		t.Fatalf("active source = %q, want manual", statusEnvelope.Status.ActiveSource)
+	}
+
+	replayResp := doJSON(t, handler, http.MethodPost, "/api/matches/source-api/sources/start?token=eval-token", datasource.SourceConfig{Type: datasource.SourceReplay})
+	if replayResp.Code != http.StatusOK {
+		t.Fatalf("replay start status=%d body=%s", replayResp.Code, replayResp.Body.String())
+	}
+	if err := json.Unmarshal(replayResp.Body.Bytes(), &statusEnvelope); err != nil {
+		t.Fatalf("decode replay status: %v", err)
+	}
+	if statusEnvelope.Status.ActiveSource != datasource.SourceReplay {
+		t.Fatalf("active source = %q, want replay", statusEnvelope.Status.ActiveSource)
+	}
+
+	stopResp := doJSON(t, handler, http.MethodPost, "/api/matches/source-api/sources/stop?token=eval-token", nil)
+	if stopResp.Code != http.StatusOK {
+		t.Fatalf("source stop status=%d body=%s", stopResp.Code, stopResp.Body.String())
+	}
+	if err := json.Unmarshal(stopResp.Body.Bytes(), &statusEnvelope); err != nil {
+		t.Fatalf("decode stopped status: %v", err)
+	}
+	if statusEnvelope.Status.ActiveSource != datasource.SourceManual {
+		t.Fatalf("active source after stop = %q, want manual", statusEnvelope.Status.ActiveSource)
+	}
+}
+
+func TestAutomationAPIRequiresAuthAndPersistsPolicy(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	path := "/api/matches/automation-api/automation"
+
+	unauthorized := doJSON(t, handler, http.MethodGet, path, nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	policy := matchstate.AutomationPolicy{
+		Mode:            matchstate.AutomationModePaused,
+		EventTypes:      []string{"goal", "red_card"},
+		CooldownSeconds: 15,
+	}
+	update := doJSON(t, handler, http.MethodPost, path+"?token=eval-token", policy)
+	if update.Code != http.StatusOK {
+		t.Fatalf("automation update status=%d body=%s", update.Code, update.Body.String())
+	}
+
+	if configResp := doJSON(t, handler, http.MethodPost, "/api/matches/automation-api/config?token=eval-token", matchstate.MatchConfig{
+		HomeTeam: "Spain",
+		AwayTeam: "Germany",
+	}); configResp.Code != http.StatusOK {
+		t.Fatalf("config update status=%d body=%s", configResp.Code, configResp.Body.String())
+	}
+
+	get := doJSON(t, handler, http.MethodGet, path+"?token=eval-token", nil)
+	if get.Code != http.StatusOK {
+		t.Fatalf("automation get status=%d body=%s", get.Code, get.Body.String())
+	}
+	var envelope struct {
+		Policy matchstate.AutomationPolicy `json:"policy"`
+	}
+	if err := json.Unmarshal(get.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode automation policy: %v", err)
+	}
+	if envelope.Policy.Mode != matchstate.AutomationModePaused || envelope.Policy.CooldownSeconds != 15 {
+		t.Fatalf("unexpected automation policy: %+v", envelope.Policy)
+	}
+}
+
+func TestManualTakeoverSwitchesSourceAndPausesAutomation(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	sources := datasource.NewManager(context.Background(), store, nil, datasource.ManagerConfig{})
+	t.Cleanup(sources.Close)
+	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, pipeline.NewPromptManager(), sources)
+	matchID := "manual-takeover"
+
+	if _, err := sources.Start(matchID, datasource.SourceConfig{Type: datasource.SourceReplay}); err != nil {
+		t.Fatalf("start replay source: %v", err)
+	}
+	if _, err := store.SetAutomation(matchID, matchstate.AutomationPolicy{
+		Mode:            matchstate.AutomationModeActive,
+		EventTypes:      []string{"goal"},
+		CooldownSeconds: 8,
+	}); err != nil {
+		t.Fatalf("set automation: %v", err)
+	}
+
+	response := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/takeover?token=eval-token", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("takeover status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := sources.Status(matchID).ActiveSource; got != datasource.SourceManual {
+		t.Fatalf("active source after takeover = %q, want manual", got)
+	}
+	if got := store.Config(matchID).Automation.Mode; got != matchstate.AutomationModePaused {
+		t.Fatalf("automation mode after takeover = %q, want paused", got)
 	}
 }
 
@@ -294,6 +425,12 @@ func doJSON(t *testing.T, handler http.HandlerFunc, method, target string, body 
 		t.Fatalf("marshal: %v", err)
 	}
 	req := httptest.NewRequest(method, target, bytes.NewReader(payload))
+	query := req.URL.Query()
+	if token := query.Get("token"); token != "" {
+		req.Header.Set("Authorization", "Bearer "+token)
+		query.Del("token")
+		req.URL.RawQuery = query.Encode()
+	}
 	req.Header.Set("Content-Type", "application/json")
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)

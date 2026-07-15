@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -9,24 +10,27 @@ import (
 	"log"
 	"net/http"
 	"os"
+	"path/filepath"
 	"strconv"
 	"strings"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
+	"qiuqiu/internal/conversation"
+	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/pipeline"
-	"qiuqiu/internal/session"
+	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 	"qiuqiu/internal/ws"
 
 	"github.com/gorilla/websocket"
 	"github.com/joho/godotenv"
-	"github.com/redis/go-redis/v9"
 )
 
 type speechRecognizer interface {
@@ -38,22 +42,53 @@ type speechSynthesizer interface {
 }
 
 type voiceSessionResult struct {
-	Text      string
-	Reply     string
-	Trace     companion.Trace
-	AudioData []byte
-	AudioMIME string
-	ASRError  string
-	TTSError  string
+	Text         string
+	Reply        string
+	Trace        companion.Trace
+	Presentation relationship.PresentationPlan
+	AudioData    []byte
+	AudioMIME    string
+	ASRError     string
+	TTSError     string
+}
+
+func qiuqiuReplyData(text, traceID, source, eventID string, presentation relationship.PresentationPlan) map[string]interface{} {
+	data := map[string]interface{}{
+		"text":    text,
+		"traceId": traceID,
+		"source":  source,
+	}
+	if eventID != "" {
+		data["eventId"] = eventID
+	}
+	if presentation.Expression != "" || presentation.Motion != "" || presentation.VoiceStyle != "" {
+		data["presentation"] = presentation
+	}
+	return data
+}
+
+type demoStateResetter struct {
+	traces        companion.DemoResetter
+	relationships relationship.MatchResetter
+}
+
+func (resetter demoStateResetter) Reset(matchID string) error {
+	if resetter.traces != nil {
+		if err := resetter.traces.Reset(matchID); err != nil {
+			return err
+		}
+	}
+	if resetter.relationships != nil {
+		return resetter.relationships.ResetMatch(matchID)
+	}
+	return nil
 }
 
 func main() {
 	_ = godotenv.Load()
 	cfg := config.Load()
-
-	var rdb *redis.Client
-	if cfg.RedisAddr != "" {
-		rdb = redis.NewClient(&redis.Options{Addr: cfg.RedisAddr})
+	if err := cfg.Validate(); err != nil {
+		log.Fatal(err)
 	}
 
 	// Prompt manager
@@ -67,15 +102,10 @@ func main() {
 	// AI clients
 	llmClient := newTextLLMClient(cfg)
 	var ttsClient *tts.Client
-	ttsKey := fallbackString(cfg.MiMoAPIKey, cfg.ElevenLabsKey)
-	if ttsKey != "" {
-		ttsClient = tts.NewClient(ttsKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
+	if cfg.MiMoAPIKey != "" {
+		ttsClient = tts.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
 	}
-	asrKey := fallbackString(cfg.MiMoAPIKey, os.Getenv("SILICONFLOW_API_KEY"))
-	asrClient := asr.NewClient(asrKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
-
-	var sessionsMu sync.Mutex
-	sessions := make(map[string]*session.WatchSession)
+	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
 
 	hub := ws.NewHub(cfg)
 	var matchStore matchstate.Repository = matchstate.NewStore()
@@ -90,6 +120,12 @@ func main() {
 	} else {
 		log.Printf("match store: memory")
 	}
+	var sportsClient datasource.EventsClient
+	if cfg.APISportsAPIKey != "" {
+		sportsClient = datasource.NewClient(cfg.APISportsAPIKey)
+	}
+	sourceManager := datasource.NewManager(context.Background(), matchStore, sportsClient, datasource.ManagerConfig{})
+	defer sourceManager.Close()
 	companionTools := companion.NewRepositoryMemoryTools(matchStore)
 	var traceReader companion.TraceReader = companionTools
 	var demoResetter companion.DemoResetter = companionTools
@@ -102,18 +138,31 @@ func main() {
 		traceReader = traceWriter
 		companionTools.WithTurnReader(traceWriter)
 		demoResetter = traceWriter
-		companionTools.WithTraceWriter(companion.NewAsyncTraceWriter(traceWriter, 256))
+		companionTools.WithTraceWriter(traceWriter)
 	}
 	companionAgent := companion.NewAgent(companionTools)
+	var relationshipRepository relationship.StateRepository = relationship.NewMemoryRepository()
+	if cfg.DatabaseURL != "" {
+		postgresRelationshipRepository, err := relationship.OpenPostgresRepository(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("relationship repository: %v", err)
+		}
+		defer postgresRelationshipRepository.Close()
+		relationshipRepository = postgresRelationshipRepository
+	}
+	companionAgent.WithDirector(relationship.NewDirector(relationshipRepository))
+	if relationshipResetter, ok := relationshipRepository.(relationship.MatchResetter); ok {
+		demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter}
+	}
 	if llmClient != nil {
-		companionAgent.WithPolisher(companion.NewLLMReplyPolisher(llmClient), 3*time.Second)
+		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), 3*time.Second)
 	}
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", hub.HandleHealth)
-	mux.HandleFunc("/api/matches/", handleMatchAPI(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr))
-	fs := http.StripPrefix("/assets/", http.FileServer(http.Dir("../client/assets/live2d")))
-	mux.HandleFunc("/assets/", func(w http.ResponseWriter, r *http.Request) {
+	mux.HandleFunc("/api/matches/", handleMatchAPIWithSources(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager))
+	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
+	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
 		if r.Method == "OPTIONS" {
@@ -125,14 +174,6 @@ func main() {
 	mux.HandleFunc("/live2d.html", func(w http.ResponseWriter, r *http.Request) {
 		noCache(w)
 		http.ServeFile(w, r, "../client/assets/live2d/live2d.html")
-	})
-	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
-		if r.URL.Path != "/" && r.URL.Path != "/app.html" {
-			http.NotFound(w, r)
-			return
-		}
-		noCache(w)
-		http.ServeFile(w, r, "../client/assets/live2d/app.html")
 	})
 	mux.HandleFunc("/test-expressions.html", func(w http.ResponseWriter, r *http.Request) {
 		noCache(w)
@@ -146,56 +187,118 @@ func main() {
 		noCache(w)
 		http.ServeFile(w, r, "../client/assets/live2d/director-prototype.html")
 	})
+	webApp := http.FileServer(http.Dir(resolveWebAppDir()))
+	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/app.html" {
+			http.Redirect(w, r, "/", http.StatusPermanentRedirect)
+			return
+		}
+		if r.URL.Path == "/" || filepath.Ext(r.URL.Path) == ".html" {
+			noCache(w)
+		}
+		webApp.ServeHTTP(w, r)
+	})
 
 	mux.HandleFunc("/ws/match/", func(w http.ResponseWriter, r *http.Request) {
-		conn, err := ws.Upgrade(w, r, cfg)
+		conn, release, err := hub.Upgrade(w, r)
 		if err != nil {
 			return
 		}
+		defer release()
+		defer conn.Close()
 		writer := &wsWriter{conn: conn}
+		identity := newConnectionIdentity("")
 
 		matchIDStr := r.URL.Path[len("/ws/match/"):]
-		matchID, _ := strconv.ParseInt(matchIDStr, 10, 64)
 		matchEvents, unsubscribe := matchStore.Subscribe(matchIDStr)
 		defer unsubscribe()
 
-		deduper := pipeline.NewDeduper(rdb)
-		throttler := pipeline.NewThrottler(rdb)
-		enricher := pipeline.NewContextEnricher()
-		engine := pipeline.NewEngine(deduper, throttler, enricher)
-		aiPipe := pipeline.NewAIPipeline(llmClient, ttsClient, promptMgr)
+		connectionCtx, connectionCancel := context.WithCancel(r.Context())
+		defer connectionCancel()
+		conversationScheduler := conversation.NewScheduler(connectionCtx, conversation.Config{})
+		proactiveGate := conversation.NewProactiveGate()
+		deliveryTracker := newReplyDeliveryTracker()
+		var userSpeaking atomic.Bool
+		var userTurnActive atomic.Bool
+		defer func() {
+			for _, pending := range deliveryTracker.Drain() {
+				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				if err := observeReplyDelivery(cleanupCtx, companionAgent, pending.Trace, pending.UserID, pending.MatchID, "interrupted", time.Now().UTC()); err != nil {
+					log.Printf("relationship interrupted delivery cleanup error: %v", err)
+				}
+				cleanupCancel()
+			}
+		}()
+		defer conversationScheduler.Close()
 
-		ctx, cancel := context.WithCancel(context.Background())
-		defer cancel()
-		go engine.Run(ctx)
-
-		sess := session.New(matchIDStr, matchID, conn, engine, aiPipe, &writer.mu)
-		sessionsMu.Lock()
-		sessions[matchIDStr] = sess
-		sessionsMu.Unlock()
-
-		go sess.Run(ctx)
 		writer.SendJSON(map[string]interface{}{
 			"type": "match_snapshot",
 			"data": matchStore.Snapshot(matchIDStr),
 		})
 		go func() {
-			for ev := range matchEvents {
-				snapshot := matchStore.Snapshot(matchIDStr)
-				writer.SendJSON(map[string]interface{}{
-					"type":     "match_event",
-					"data":     ev,
-					"snapshot": snapshot,
-				})
-				if strings.TrimSpace(ev.ProactiveText) != "" && ev.Visibility == "public" && ev.Status == "active" {
-					go emitProactiveEvent(context.Background(), writer, companionAgent, ttsClient, fallbackString(r.RemoteAddr, "broadcast"), ev, snapshot)
+			for {
+				select {
+				case <-connectionCtx.Done():
+					return
+				case ev := <-matchEvents:
+					snapshot := matchStore.Snapshot(matchIDStr)
+					writer.SendJSON(map[string]interface{}{
+						"type":     "match_event",
+						"data":     ev,
+						"snapshot": snapshot,
+					})
+					if ev.Visibility == "public" && ev.Status == "active" {
+						userID := identity.Get()
+						if userID == "" {
+							userID = identity.Wait(connectionCtx)
+							if userID == "" {
+								return
+							}
+						}
+						policy := matchStore.Config(matchIDStr).Automation
+						critical := proactiveUrgency(ev.EventType) == conversation.UrgencyCritical
+						now := time.Now()
+						allowed := proactiveGate.Allow(policy, ev.EventType, critical, now)
+						if hasEventTag(ev, "proactive=manual") {
+							allowed = proactiveGate.AllowManual(now)
+						}
+						response, err := companionAgent.HandleMatchEvent(connectionCtx, companion.MatchEventRequest{
+							UserID:                userID,
+							Event:                 ev,
+							Snapshot:              snapshot,
+							OutputAllowed:         allowed,
+							Critical:              critical,
+							UserSpeaking:          userSpeaking.Load() || userTurnActive.Load(),
+							NormalCooldownSeconds: policy.CooldownSeconds,
+							Now:                   now,
+						})
+						if err != nil {
+							log.Printf("match turn planning error: %v", err)
+							continue
+						}
+						if response.Presentation.Expression != "" {
+							writer.SendJSON(map[string]interface{}{
+								"type":    "presentation",
+								"data":    response.Presentation,
+								"eventId": ev.ID,
+								"source":  "match_reaction",
+							})
+						}
+						if strings.TrimSpace(response.Reply) == "" {
+							continue
+						}
+						urgency, ttl := proactiveSchedule(response.Decision, ev.EventType)
+						conversationScheduler.SubmitProactive(ev.ID, urgency, ttl, func(replyCtx context.Context, playback conversation.Playback) {
+							emitProactiveResponse(replyCtx, writer, companionAgent, ttsClient, playback, response, ev.ID)
+						})
+					}
 				}
 			}
 		}()
 
 		// Read loop
 		go func() {
-			defer cancel()
+			defer connectionCancel()
 			for {
 				_, msg, err := conn.ReadMessage()
 				if err != nil {
@@ -208,15 +311,44 @@ func main() {
 				switch req["type"] {
 				case "ping":
 					writer.SendJSON(map[string]string{"type": "pong"})
+				case "identify":
+					identity.Set(str(req, "userId"))
+				case "user_activity":
+					userSpeaking.Store(str(req, "state") == "speaking")
+				case "session_opened":
+					userID := identity.Set(str(req, "userId"))
+					if userID == "" {
+						continue
+					}
+					if _, err := companionAgent.ObserveSession(connectionCtx, "session:"+userID+":"+matchIDStr, userID, matchIDStr, time.Now().UTC()); err != nil {
+						log.Printf("relationship session observation error: %v", err)
+					}
+
+				case "first_meeting":
+					userID := identity.Set(str(req, "userId"))
+					if userID == "" {
+						continue
+					}
+					nickname := str(req, "nickname")
+					favoriteTeam := str(req, "favoriteTeam")
+					firstMeetingSignalID := fmt.Sprintf("first-meeting:%s:%s:%d", userID, matchIDStr, time.Now().UnixNano())
+					conversationScheduler.SubmitProactive("first-meeting:"+userID, conversation.UrgencyNormal, 30*time.Second, func(replyCtx context.Context, playback conversation.Playback) {
+						emitFirstMeeting(
+							replyCtx,
+							writer,
+							companionAgent,
+							ttsClient,
+							playback,
+							matchIDStr,
+							userID,
+							nickname,
+							favoriteTeam,
+							firstMeetingSignalID,
+						)
+					})
 
 				case "interrupt":
-					// Cancel current generation, restart context
-					cancel()
-					newCtx, newCancel := context.WithCancel(context.Background())
-					ctx = newCtx
-					cancel = newCancel
-					go engine.Run(ctx)
-					go sess.Run(ctx)
+					conversationScheduler.Interrupt()
 
 					writer.SendJSON(map[string]interface{}{
 						"type":       "interrupt",
@@ -226,69 +358,126 @@ func main() {
 				case "user_speech":
 					text := str(req, "text")
 					audioB64 := str(req, "audio")
-					// Adjust cooldown based on talkativeness
-					if t := str(req, "talkativeness"); t != "" {
-						switch t {
-						case "quiet":
-							engine.SetCooldown(15 * time.Second)
-						case "active":
-							engine.SetCooldown(4 * time.Second)
-						default:
-							engine.SetCooldown(8 * time.Second)
-						}
+					userID := identity.Set(str(req, "userId"))
+					if userID == "" {
+						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": "identity required"})
+						continue
 					}
-					go func() {
-						bgCtx := context.Background()
-						userID := fallbackString(str(req, "userId"), r.RemoteAddr)
-						result, err := handleVoiceSession(bgCtx, companionAgent, asrClient, nil, matchIDStr, userID, text, audioB64, time.Now())
+					generatedSignalID := fmt.Sprintf("turn_%s_%d", userID, time.Now().UnixNano())
+					turnSignalID := stableSignalID(str(req, "signalId"), generatedSignalID)
+					writer.SendJSON(map[string]interface{}{
+						"type":       "interrupt",
+						"expression": "listening",
+					})
+					userTurnActive.Store(true)
+					conversationScheduler.SubmitUser(func(replyCtx context.Context, playback conversation.Playback) {
+						defer userTurnActive.Store(false)
+						result, err := handleVoiceTurnWithFactRefresh(
+							func() matchstate.Snapshot { return matchStore.Snapshot(matchIDStr) },
+							func(turnText, turnAudio string) (voiceSessionResult, error) {
+								return handleVoiceSessionWithSignalID(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), turnSignalID)
+							},
+							text,
+							audioB64,
+						)
 						if err != nil {
+							state := "failed"
+							if errors.Is(err, context.Canceled) {
+								state = "interrupted"
+								cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+								_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+								cleanupCancel()
+								return
+							}
+							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+							cleanupCancel()
 							log.Printf("companion voice reply error: %v", err)
 							if result.ASRError != "" {
 								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": result.ASRError})
 							}
 							return
 						}
+						if replyCtx.Err() != nil {
+							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "interrupted", time.Now().UTC())
+							cleanupCancel()
+							return
+						}
 						if result.ASRError != "" {
 							writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "text_fallback", "reason": result.ASRError})
 						}
-						writer.SendJSON(map[string]interface{}{
-							"type":  "expression",
-							"state": "chat",
-						})
-						writer.SendJSON(map[string]interface{}{
+						if strings.TrimSpace(result.Reply) == "" {
+							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "skipped", time.Now().UTC())
+							cleanupCancel()
+							return
+						}
+						deliveryTracker.Track(result.Trace, userID, matchIDStr)
+						if err := writer.SendJSON(map[string]interface{}{
 							"type":  "event",
 							"event": "qiuqiu_reply",
-							"data": map[string]interface{}{
-								"text": result.Reply,
-							},
-						})
+							"data":  qiuqiuReplyData(result.Reply, result.Trace.ID, "conversation", "", result.Presentation),
+						}); err != nil {
+							deliveryTracker.Remove(result.Trace.ID)
+							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "failed", time.Now().UTC())
+							cleanupCancel()
+							return
+						}
 						if ttsClient != nil {
-							ttsResult, err := ttsClient.Synthesize(bgCtx, result.Reply, "cgSgspJ2msm6clMCkdW9")
+							ttsResult, err := ttsClient.Synthesize(replyCtx, result.Reply, "cgSgspJ2msm6clMCkdW9")
 							if err != nil {
+								if errors.Is(err, context.Canceled) {
+									return
+								}
+								log.Printf("voice reply tts error: %v", err)
 								result.TTSError = err.Error()
-								recordVoiceTTS(bgCtx, companionAgent, result, "", 0, err.Error())
+								recordVoiceTTS(replyCtx, companionAgent, result, "", 0, err.Error())
 								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
 								return
 							}
 							if len(ttsResult.AudioData) > 0 {
-								recordVoiceTTS(bgCtx, companionAgent, result, fallbackString(ttsResult.MimeType, "audio/mpeg"), len(ttsResult.AudioData), "")
-								writer.SendJSON(map[string]interface{}{"type": "voice_audio", "mime": fallbackString(ttsResult.MimeType, "audio/mpeg"), "traceId": result.Trace.ID})
-								writer.SendBinary(ttsResult.AudioData)
+								recordVoiceTTS(replyCtx, companionAgent, result, fallbackString(ttsResult.MimeType, "audio/mpeg"), len(ttsResult.AudioData), "")
+								playback(result.Trace.ID)
+								writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": fallbackString(ttsResult.MimeType, "audio/mpeg"), "traceId": result.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
 							}
 						}
-					}()
+					})
 				case "voice_playback":
 					traceID := strings.TrimSpace(str(req, "traceId"))
 					state := strings.TrimSpace(str(req, "state"))
 					if traceID == "" || state == "" {
 						continue
 					}
-					status := "ok"
-					if state != "ended" && state != "started" {
-						status = "failed:" + state
+					status := playbackTraceStatus(state)
+					updateCtx, updateCancel := context.WithTimeout(connectionCtx, 3*time.Second)
+					userID := identity.Get()
+					err := recordPlaybackStatus(updateCtx, traceReader, companionAgent, matchIDStr, traceID, userID, status)
+					if err == nil {
+						conversationScheduler.PlaybackChanged(traceID, state)
+						if _, relationshipErr := companionAgent.ObserveDelivery(updateCtx, "delivery:"+traceID+":"+state, userID, matchIDStr, "", state, "", nil, time.Now().UTC()); relationshipErr != nil && !errors.Is(relationshipErr, context.Canceled) {
+							log.Printf("relationship delivery observation error: %v", relationshipErr)
+						}
 					}
-					if err := recordPlaybackStatus(context.Background(), traceReader, companionAgent, matchIDStr, traceID, status); err != nil {
+					updateCancel()
+					if err != nil && !errors.Is(err, context.Canceled) {
 						log.Printf("voice playback trace update error: %v", err)
+					}
+				case "reply_displayed":
+					traceID := strings.TrimSpace(str(req, "traceId"))
+					userID := identity.Get()
+					if traceID == "" || userID == "" {
+						continue
+					}
+					updateCtx, updateCancel := context.WithTimeout(connectionCtx, 3*time.Second)
+					err := recordDisplayedReply(updateCtx, traceReader, companionAgent, matchIDStr, traceID, userID, time.Now().UTC())
+					if err == nil {
+						deliveryTracker.Remove(traceID)
+					}
+					updateCancel()
+					if err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("reply display observation error: %v", err)
 					}
 				}
 			}
@@ -297,9 +486,15 @@ func main() {
 		// Heartbeat
 		ticker := time.NewTicker(30 * time.Second)
 		defer ticker.Stop()
-		for range ticker.C {
-			if err := writer.Ping(); err != nil {
+		for {
+			select {
+			case <-connectionCtx.Done():
 				return
+			case <-ticker.C:
+				if err := writer.Ping(); err != nil {
+					connectionCancel()
+					return
+				}
 			}
 		}
 	})
@@ -312,10 +507,14 @@ func main() {
 }
 
 func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
+	return handleMatchAPIWithSources(store, traceReader, demoResetter, cfg, llmClient, promptMgr, nil)
+}
+
+func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
-		w.Header().Set("Access-Control-Allow-Origin", "*")
-		w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
-		w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+		if !applyCORS(w, r, cfg) {
+			return
+		}
 		if r.Method == http.MethodOptions {
 			w.WriteHeader(http.StatusOK)
 			return
@@ -340,6 +539,9 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 				http.Error(w, "reset is only available for local demo match ids", http.StatusBadRequest)
 				return
 			}
+			if sources != nil {
+				sources.Stop(matchID)
+			}
 			if err := store.Reset(matchID); err != nil {
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
@@ -355,6 +557,89 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 				"matchId":  matchID,
 				"snapshot": store.Snapshot(matchID),
 			})
+		case r.Method == http.MethodGet && resource == "sources" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if sources == nil {
+				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": sources.Status(matchID)})
+		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "start":
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if sources == nil {
+				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			var sourceConfig datasource.SourceConfig
+			if err := json.NewDecoder(r.Body).Decode(&sourceConfig); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			status, err := sources.Start(matchID, sourceConfig)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": status})
+		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "stop":
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if sources == nil {
+				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"status": sources.Stop(matchID)})
+		case r.Method == http.MethodPost && resource == "takeover" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if sources == nil {
+				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			status := sources.Stop(matchID)
+			policy := store.Config(matchID).Automation
+			policy.Mode = matchstate.AutomationModePaused
+			saved, err := store.SetAutomation(matchID, policy)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"policy": saved,
+				"status": status,
+			})
+		case r.Method == http.MethodGet && resource == "automation" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"policy": store.Config(matchID).Automation})
+		case r.Method == http.MethodPost && resource == "automation" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			var policy matchstate.AutomationPolicy
+			if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			saved, err := store.SetAutomation(matchID, policy)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"policy": saved})
 		case r.Method == http.MethodGet && resource == "config" && len(parts) == 2:
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"config":   store.Config(matchID),
@@ -433,12 +718,15 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			if ev.ProactiveText == "__quiet__" {
-				ev.ProactiveText = ""
-			} else if strings.TrimSpace(ev.ProactiveText) == "" {
-				ev.ProactiveText = generateProactiveText(r.Context(), llmClient, promptMgr, ev, store.Snapshot(matchID))
+			markProactiveMode(&ev)
+			var created matchstate.MatchEvent
+			var snapshot matchstate.Snapshot
+			var err error
+			if sources != nil {
+				created, snapshot, err = sources.Ingest(r.Context(), matchID, ev)
+			} else {
+				created, snapshot, err = store.Create(matchID, ev)
 			}
-			created, snapshot, err := store.Create(matchID, ev)
 			if err != nil {
 				status := http.StatusBadRequest
 				if errors.Is(err, matchstate.ErrNotFound) {
@@ -461,11 +749,7 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			if ev.ProactiveText == "__quiet__" {
-				ev.ProactiveText = ""
-			} else if strings.TrimSpace(ev.ProactiveText) == "" {
-				ev.ProactiveText = generateProactiveText(r.Context(), llmClient, promptMgr, ev, store.Snapshot(matchID))
-			}
+			markProactiveMode(&ev)
 			corrected, snapshot, err := store.Correct(matchID, parts[2], ev)
 			if err != nil {
 				status := http.StatusBadRequest
@@ -486,6 +770,10 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 }
 
 func handleVoiceSession(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time) (voiceSessionResult, error) {
+	return handleVoiceSessionWithSignalID(ctx, agent, recognizer, synthesizer, matchID, userID, text, audioB64, now, "")
+}
+
+func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time, signalID string) (voiceSessionResult, error) {
 	result := voiceSessionResult{Text: strings.TrimSpace(text)}
 	voiceMeta := &companion.VoiceTraceMetadata{}
 	if audioB64 != "" {
@@ -526,17 +814,19 @@ func handleVoiceSession(ctx context.Context, agent *companion.Agent, recognizer 
 		return result, fmt.Errorf("no usable user text")
 	}
 	response, err := agent.HandleMessage(ctx, companion.MessageRequest{
-		MatchID: matchID,
-		UserID:  userID,
-		Text:    result.Text,
-		Now:     now,
-		Voice:   nonEmptyVoiceMeta(voiceMeta),
+		SignalID: signalID,
+		MatchID:  matchID,
+		UserID:   userID,
+		Text:     result.Text,
+		Now:      now,
+		Voice:    nonEmptyVoiceMeta(voiceMeta),
 	})
 	if err != nil {
 		return result, err
 	}
 	result.Reply = response.Reply
 	result.Trace = response.Trace
+	result.Presentation = response.Presentation
 	if synthesizer != nil {
 		ttsResult, err := synthesizer.Synthesize(ctx, result.Reply, "cgSgspJ2msm6clMCkdW9")
 		if err != nil {
@@ -558,6 +848,36 @@ func handleVoiceSession(ctx context.Context, agent *companion.Agent, recognizer 
 	return result, nil
 }
 
+func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generate func(text, audio string) (voiceSessionResult, error), text, audio string) (voiceSessionResult, error) {
+	before := latestCriticalFactID(snapshot())
+	result, err := generate(text, audio)
+	if err != nil {
+		return result, err
+	}
+	after := latestCriticalFactID(snapshot())
+	if before == after || result.Text == "" {
+		return result, nil
+	}
+	refreshed, refreshErr := generate(result.Text, "")
+	if refreshErr != nil {
+		return result, nil
+	}
+	return refreshed, nil
+}
+
+func latestCriticalFactID(snapshot matchstate.Snapshot) string {
+	for _, event := range snapshot.KeyEvents {
+		if proactiveUrgency(event.EventType) != conversation.UrgencyCritical {
+			continue
+		}
+		if event.ID != "" {
+			return event.ID
+		}
+		return event.EventType + ":" + event.Clock + ":" + event.UpdatedAt
+	}
+	return ""
+}
+
 func recordVoiceTTS(ctx context.Context, agent *companion.Agent, result voiceSessionResult, mime string, byteCount int, errText string) {
 	if result.Trace.ID == "" {
 		return
@@ -577,27 +897,26 @@ func recordVoiceTTS(ctx context.Context, agent *companion.Agent, result voiceSes
 	}
 }
 
-func emitProactiveEvent(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, userID string, ev matchstate.MatchEvent, snapshot matchstate.Snapshot) {
-	response, err := agent.HandleProactiveEvent(ctx, userID, ev, snapshot)
-	if err != nil {
-		log.Printf("proactive event error: %v", err)
+func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ProactiveResponse, eventID string) {
+	if !replyContextActive(ctx) {
 		return
 	}
-	writer.SendJSON(map[string]interface{}{
+	if err := writer.SendJSON(map[string]interface{}{
 		"type":  "event",
 		"event": "qiuqiu_reply",
-		"data": map[string]interface{}{
-			"text":    response.Reply,
-			"traceId": response.Trace.ID,
-			"eventId": ev.ID,
-			"source":  "operator_proactive",
-		},
-	})
+		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "match_reaction", eventID, response.Presentation),
+	}); err != nil {
+		return
+	}
 	if ttsClient == nil {
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
 		return
 	}
 	ttsResult, err := ttsClient.Synthesize(ctx, response.Reply, "")
 	if err != nil {
+		if !replyContextActive(ctx) {
+			return
+		}
 		trace := response.Trace
 		trace.Voice = ensureVoiceMeta(trace.Voice)
 		trace.Voice.TTSStatus = "failed"
@@ -607,6 +926,10 @@ func emitProactiveEvent(ctx context.Context, writer *wsWriter, agent *companion.
 		return
 	}
 	if len(ttsResult.AudioData) == 0 {
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "empty audio"})
+		return
+	}
+	if !replyContextActive(ctx) {
 		return
 	}
 	trace := response.Trace
@@ -615,18 +938,146 @@ func emitProactiveEvent(ctx context.Context, writer *wsWriter, agent *companion.
 	trace.Voice.TTSMime = fallbackString(ttsResult.MimeType, "audio/mpeg")
 	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
 	_ = agent.UpdateTrace(ctx, trace)
-	writer.SendJSON(map[string]interface{}{"type": "voice_audio", "mime": trace.Voice.TTSMime, "traceId": response.Trace.ID})
-	writer.SendBinary(ttsResult.AudioData)
+	playback(response.Trace.ID)
+	writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": trace.Voice.TTSMime, "traceId": response.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
 }
 
-func recordPlaybackStatus(ctx context.Context, reader companion.TraceReader, agent *companion.Agent, matchID, traceID, status string) error {
+func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, matchID, userID, nickname, favoriteTeam, signalID string) {
+	response, err := agent.HandleFirstMeeting(ctx, companion.FirstMeetingRequest{
+		SignalID:     signalID,
+		MatchID:      matchID,
+		UserID:       userID,
+		Nickname:     nickname,
+		FavoriteTeam: favoriteTeam,
+		Now:          time.Now(),
+	})
+	if err != nil {
+		if !replyContextActive(ctx) {
+			return
+		}
+		log.Printf("first meeting greeting error: %v", err)
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": "greeting unavailable"})
+		return
+	}
+	if strings.TrimSpace(response.Reply) == "" {
+		return
+	}
+	if !replyContextActive(ctx) {
+		return
+	}
+	if err := writer.SendJSON(map[string]interface{}{
+		"type":  "event",
+		"event": "qiuqiu_reply",
+		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "first_meeting", "", response.Presentation),
+	}); err != nil {
+		return
+	}
+	if ttsClient == nil {
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
+		return
+	}
+	ttsResult, err := ttsClient.Synthesize(ctx, response.Reply, "")
+	if err != nil {
+		if !replyContextActive(ctx) {
+			return
+		}
+		trace := response.Trace
+		trace.Voice = ensureVoiceMeta(trace.Voice)
+		trace.Voice.TTSStatus = "failed"
+		trace.Voice.TTSError = err.Error()
+		_ = agent.UpdateTrace(ctx, trace)
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
+		return
+	}
+	if len(ttsResult.AudioData) == 0 {
+		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "empty audio"})
+		return
+	}
+	if !replyContextActive(ctx) {
+		return
+	}
+	trace := response.Trace
+	trace.Voice = ensureVoiceMeta(trace.Voice)
+	trace.Voice.TTSStatus = "ok"
+	trace.Voice.TTSMime = fallbackString(ttsResult.MimeType, "audio/mpeg")
+	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
+	_ = agent.UpdateTrace(ctx, trace)
+	playback(response.Trace.ID)
+	writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": trace.Voice.TTSMime, "traceId": response.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
+}
+
+func replyContextActive(ctx context.Context) bool {
+	return ctx != nil && ctx.Err() == nil
+}
+
+func proactiveUrgency(eventType string) conversation.Urgency {
+	switch eventType {
+	case "goal", "red_card", "penalty", "penalty_awarded", "var_check", "var_result", "goal_cancelled", "halftime", "fulltime", "match_end":
+		return conversation.UrgencyCritical
+	default:
+		return conversation.UrgencyNormal
+	}
+}
+
+func proactiveTTL(eventType string) time.Duration {
+	if proactiveUrgency(eventType) == conversation.UrgencyCritical {
+		return 45 * time.Second
+	}
+	return 12 * time.Second
+}
+
+func proactiveSchedule(decision relationship.Decision, eventType string) (conversation.Urgency, time.Duration) {
+	urgency := proactiveUrgency(eventType)
+	ttl := proactiveTTL(eventType)
+	if decision.Speech == nil {
+		return urgency, ttl
+	}
+	if decision.Speech.Delivery.Urgency == "critical" {
+		urgency = conversation.UrgencyCritical
+	} else if decision.Speech.Delivery.Urgency == "normal" {
+		urgency = conversation.UrgencyNormal
+	}
+	if decision.Speech.Delivery.TTLSeconds > 0 {
+		ttl = time.Duration(decision.Speech.Delivery.TTLSeconds) * time.Second
+	}
+	return urgency, ttl
+}
+
+func recordPlaybackStatus(ctx context.Context, reader companion.TraceReader, agent *companion.Agent, matchID, traceID, userID, status string) error {
 	trace, err := reader.GetTrace(ctx, matchID, traceID)
 	if err != nil {
 		return err
 	}
+	if userID == "" || trace.UserID != userID {
+		return fmt.Errorf("playback trace owner mismatch")
+	}
 	trace.Voice = ensureVoiceMeta(trace.Voice)
 	trace.Voice.PlaybackStatus = status
 	return agent.UpdateTrace(ctx, trace)
+}
+
+func recordDisplayedReply(ctx context.Context, reader companion.TraceReader, agent *companion.Agent, matchID, traceID, userID string, now time.Time) error {
+	trace, err := reader.GetTrace(ctx, matchID, traceID)
+	if err != nil {
+		return err
+	}
+	if userID == "" || trace.UserID != userID {
+		return fmt.Errorf("displayed reply owner mismatch")
+	}
+	purpose := "user_reply"
+	if trace.Input == "first_meeting" {
+		purpose = "first_meeting"
+	} else if trace.Reason == "operator_event_proactive_line" || trace.Reason == "relationship_match_reaction" {
+		purpose = "match_reaction"
+	}
+	decisionID := ""
+	var usedMemoryIDs []string
+	if trace.RelationshipDecision != nil {
+		decisionID = trace.RelationshipDecision.ID
+		usedMemoryIDs = trace.RelationshipDecision.UsedMemoryIDs
+	}
+	_, err = agent.ObserveDelivery(ctx, "delivery:"+traceID+":text", userID, matchID, decisionID, "text_delivered", purpose, usedMemoryIDs, now)
+	return err
 }
 
 func ensureVoiceMeta(meta *companion.VoiceTraceMetadata) *companion.VoiceTraceMetadata {
@@ -650,11 +1101,30 @@ func validAPIToken(r *http.Request, cfg *config.Config) bool {
 	if cfg.AppToken == "" {
 		return true
 	}
-	if r.URL.Query().Get("token") == cfg.AppToken {
-		return true
+	auth := strings.TrimSpace(r.Header.Get("Authorization"))
+	if !strings.HasPrefix(auth, "Bearer ") {
+		return false
 	}
-	auth := r.Header.Get("Authorization")
-	return auth == "Bearer "+cfg.AppToken
+	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
+	if len(token) != len(cfg.AppToken) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AppToken)) == 1
+}
+
+func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin != "" {
+		if !cfg.OriginAllowedForHost(origin, r.Host) {
+			http.Error(w, "origin not allowed", http.StatusForbidden)
+			return false
+		}
+		w.Header().Set("Access-Control-Allow-Origin", origin)
+		w.Header().Set("Vary", "Origin")
+	}
+	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	return true
 }
 
 func isDemoMatchID(matchID string) bool {
@@ -676,6 +1146,37 @@ func noCache(w http.ResponseWriter) {
 	w.Header().Set("Expires", "0")
 }
 
+func resolveWebAppDir() string {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("QIUQIU_WEB_DIR")),
+		"../client/build/web",
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "../client/build/web"
+}
+
+func playbackTraceStatus(state string) string {
+	switch state {
+	case "started", "ended":
+		return "ok"
+	case "skipped":
+		return "skipped"
+	case "blocked":
+		return "blocked:autoplay"
+	case "interrupted":
+		return "interrupted"
+	default:
+		return "failed:" + state
+	}
+}
+
 func generateProactiveText(ctx context.Context, llmClient *llm.Client, promptMgr *pipeline.PromptManager, ev matchstate.MatchEvent, snapshot matchstate.Snapshot) string {
 	if llmClient == nil || promptMgr == nil {
 		return fallbackProactiveText(ev)
@@ -692,10 +1193,10 @@ func generateProactiveText(ctx context.Context, llmClient *llm.Client, promptMgr
 }
 
 func newTextLLMClient(cfg *config.Config) *llm.Client {
-	if cfg == nil || strings.TrimSpace(cfg.DeepseekAPIKey) == "" {
+	if cfg == nil || strings.TrimSpace(cfg.MiMoAPIKey) == "" {
 		return nil
 	}
-	return llm.NewClient(cfg.DeepseekBaseURL, cfg.DeepseekAPIKey, cfg.DeepseekModel)
+	return llm.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)
 }
 
 func fallbackProactiveText(ev matchstate.MatchEvent) string {
@@ -718,6 +1219,41 @@ func fallbackProactiveText(ev matchstate.MatchEvent) string {
 		}
 		return "场上有新情况，我们一起看下去。"
 	}
+}
+
+func markProactiveMode(event *matchstate.MatchEvent) {
+	event.Tags = removeTagPrefix(event.Tags, "proactive=")
+	if event.ProactiveText == "__quiet__" {
+		event.ProactiveText = ""
+		event.Tags = append(event.Tags, "proactive=quiet")
+		return
+	}
+	if strings.TrimSpace(event.ProactiveText) == "" {
+		event.ProactiveText = fallbackProactiveText(*event)
+		event.Tags = append(event.Tags, "proactive=auto")
+		return
+	}
+	event.Tags = append(event.Tags, "proactive=manual")
+}
+
+func removeTagPrefix(tags []string, prefix string) []string {
+	filtered := make([]string, 0, len(tags))
+	for _, tag := range tags {
+		if strings.HasPrefix(tag, prefix) {
+			continue
+		}
+		filtered = append(filtered, tag)
+	}
+	return filtered
+}
+
+func hasEventTag(event matchstate.MatchEvent, tag string) bool {
+	for _, candidate := range event.Tags {
+		if candidate == tag {
+			return true
+		}
+	}
+	return false
 }
 
 func readFile(path string) string {
@@ -757,18 +1293,20 @@ type wsWriter struct {
 	conn *websocket.Conn
 }
 
-func (w *wsWriter) SendJSON(msg interface{}) {
+func (w *wsWriter) SendJSON(msg interface{}) error {
 	data, err := json.Marshal(msg)
 	if err != nil {
 		log.Printf("ws marshal error: %v", err)
-		return
+		return err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := w.conn.WriteMessage(websocket.TextMessage, data); err != nil {
 		log.Printf("ws write error: %v", err)
+		return err
 	}
+	return nil
 }
 
 func (w *wsWriter) SendBinary(data []byte) {
@@ -777,6 +1315,25 @@ func (w *wsWriter) SendBinary(data []byte) {
 	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := w.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		log.Printf("ws binary write error: %v", err)
+	}
+}
+
+func (w *wsWriter) SendAudio(meta interface{}, data []byte) {
+	encoded, err := json.Marshal(meta)
+	if err != nil {
+		log.Printf("ws audio metadata marshal error: %v", err)
+		return
+	}
+	w.mu.Lock()
+	defer w.mu.Unlock()
+	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := w.conn.WriteMessage(websocket.TextMessage, encoded); err != nil {
+		log.Printf("ws audio metadata write error: %v", err)
+		return
+	}
+	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
+	if err := w.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
+		log.Printf("ws audio write error: %v", err)
 	}
 }
 
@@ -800,8 +1357,8 @@ func pcmToWav(pcm []byte) []byte {
 	le32(wav[16:20], 16)    // chunk size
 	le16(wav[20:22], 1)     // PCM
 	le16(wav[22:24], 1)     // mono
-	le32(wav[24:28], 24000) // sample rate
-	le32(wav[28:32], 48000) // byte rate (24000 * 2)
+	le32(wav[24:28], 16000) // sample rate
+	le32(wav[28:32], 32000) // byte rate (16000 * 2)
 	le16(wav[32:34], 2)     // block align
 	le16(wav[34:36], 16)    // bits per sample
 	// data

@@ -2,9 +2,33 @@ package matchstate
 
 import (
 	"errors"
+	"sync"
 	"testing"
 	"time"
 )
+
+func TestUnsubscribeIsSafeDuringPublish(t *testing.T) {
+	store := NewStore()
+	const matchID = "subscription-race"
+	var wait sync.WaitGroup
+	for index := 0; index < 100; index++ {
+		_, unsubscribe := store.Subscribe(matchID)
+		wait.Add(1)
+		go func(clock string) {
+			defer wait.Done()
+			if _, _, err := store.Create(matchID, MatchEvent{
+				EventType:   "shot",
+				Clock:       clock,
+				Description: "shot",
+			}); err != nil {
+				t.Errorf("Create error: %v", err)
+			}
+		}(time.Now().Add(time.Duration(index) * time.Millisecond).Format("04:05"))
+		unsubscribe()
+		unsubscribe()
+	}
+	wait.Wait()
+}
 
 func TestEvalBaselineFullMatchFlow(t *testing.T) {
 	store := NewStore()
@@ -77,6 +101,170 @@ func TestEvalBaselineFullMatchFlow(t *testing.T) {
 	}
 }
 
+func TestGoalVARCancellationRevisesTheAuthoritativeScore(t *testing.T) {
+	store := NewStore()
+	matchID := "goal-var-cancel"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "利物浦", AwayTeam: "切尔西"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	goal, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "second_half", Clock: "78:10", TeamID: "home", Score: Score{Home: 1}, Description: "萨拉赫进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "var_result", Period: "second_half", Clock: "78:40", Score: Score{Home: 1}, Description: "VAR确认越位。", RevisionOf: goal.ID,
+	}); err != nil {
+		t.Fatalf("Create VAR result: %v", err)
+	}
+	_, snapshot, err := store.Create(matchID, MatchEvent{
+		EventType: "goal_cancelled", Period: "second_half", Clock: "78:45", TeamID: "home", Score: Score{}, Description: "进球取消。", RevisionOf: goal.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create goal cancellation: %v", err)
+	}
+	if snapshot.Score != (Score{}) {
+		t.Fatalf("score after cancellation = %+v, want 0-0", snapshot.Score)
+	}
+	if len(snapshot.KeyEvents) < 3 || snapshot.KeyEvents[0].EventType != "goal_cancelled" {
+		t.Fatalf("key events = %+v", snapshot.KeyEvents)
+	}
+}
+
+func TestExternalProviderEventIsStoredOnce(t *testing.T) {
+	store := NewStore()
+	event := MatchEvent{
+		Source:          "api-sports",
+		ProviderName:    "api-sports",
+		ProviderEventID: "fixture-42:shot:18:7",
+		EventType:       "shot",
+		Clock:           "18:00",
+		Description:     "External goal event.",
+	}
+	if _, _, err := store.Create("provider-dedupe", event); err != nil {
+		t.Fatalf("first Create error: %v", err)
+	}
+	if _, _, err := store.Create("provider-dedupe", event); !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("duplicate Create error = %v, want ErrDuplicate", err)
+	}
+	if got := store.Events("provider-dedupe"); len(got) != 1 {
+		t.Fatalf("stored events = %d, want 1", len(got))
+	}
+}
+
+func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
+	store := NewStore()
+	matchID := "cross-source-goal"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		Source:      "operator",
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "23:41",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 1, Away: 0},
+		Description: "佩德里进球。",
+	}); err != nil {
+		t.Fatalf("Create manual goal error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		Source:          "api-sports",
+		ProviderEventID: "fixture-1:goal-1",
+		EventType:       "goal",
+		Period:          "first_half",
+		Clock:           "24:00",
+		TeamID:          "home",
+		TeamName:        "西班牙",
+		PlayerName:      "佩德里",
+		Score:           Score{Home: 2, Away: 0},
+		Description:     "佩德里 goal。",
+	})
+	if !errors.Is(err, ErrDuplicate) {
+		t.Fatalf("same cross-source goal error = %v, want ErrDuplicate", err)
+	}
+
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source:          "api-sports",
+		ProviderEventID: "fixture-1:goal-2",
+		EventType:       "goal",
+		Period:          "first_half",
+		Clock:           "23:00",
+		TeamID:          "away",
+		TeamName:        "德国",
+		PlayerName:      "穆西亚拉",
+		Score:           Score{Home: 1, Away: 1},
+		Description:     "穆西亚拉 goal。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("conflicting cross-source goal error = %v, want ErrConflict", err)
+	}
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1, Away: 0}) || len(snapshot.KeyEvents) != 1 || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("cross-source duplicate changed snapshot: %+v", snapshot)
+	}
+}
+
+func TestSubscriberReceivesBurstWithoutDroppingEvents(t *testing.T) {
+	store := NewStore()
+	events, unsubscribe := store.Subscribe("burst")
+	defer unsubscribe()
+
+	const eventCount = 64
+	for index := 0; index < eventCount; index++ {
+		if _, _, err := store.Create("burst", MatchEvent{
+			EventType:   "shot",
+			Clock:       time.Date(2026, 1, 1, 0, index, 0, 0, time.UTC).Format("04:05"),
+			Description: "Burst event",
+		}); err != nil {
+			t.Fatalf("Create event %d: %v", index, err)
+		}
+	}
+
+	for index := 0; index < eventCount; index++ {
+		select {
+		case event := <-events:
+			if event.Description != "Burst event" {
+				t.Fatalf("event %d = %+v", index, event)
+			}
+		case <-time.After(time.Second):
+			t.Fatalf("subscriber received only %d/%d burst events", index, eventCount)
+		}
+	}
+}
+
+func TestAutomationPolicyPersistsAcrossMatchConfigUpdates(t *testing.T) {
+	store := NewStore()
+	matchID := "automation-policy"
+
+	policy, err := store.SetAutomation(matchID, AutomationPolicy{
+		Mode:            AutomationModePaused,
+		EventTypes:      []string{"goal", "red_card"},
+		CooldownSeconds: 12,
+	})
+	if err != nil {
+		t.Fatalf("SetAutomation error: %v", err)
+	}
+	if policy.Mode != AutomationModePaused {
+		t.Fatalf("automation mode = %q, want paused", policy.Mode)
+	}
+
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "Spain", AwayTeam: "Germany"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	got := store.Config(matchID).Automation
+	if got.Mode != AutomationModePaused || got.CooldownSeconds != 12 {
+		t.Fatalf("automation policy changed after config update: %+v", got)
+	}
+	if len(got.EventTypes) != 2 || got.EventTypes[0] != "goal" || got.EventTypes[1] != "red_card" {
+		t.Fatalf("automation event types changed: %+v", got.EventTypes)
+	}
+}
+
 func TestEvalBoundariesNormalizeAndReject(t *testing.T) {
 	store := NewStore()
 
@@ -121,6 +309,157 @@ func TestEvalBoundariesNormalizeAndReject(t *testing.T) {
 	}
 	if len(created.Participants) != 1 || created.Participants[0].Role != "shooter" || created.Participants[0].Name != "Pedri" {
 		t.Fatalf("playerName fallback participant not created: %+v", created.Participants)
+	}
+}
+
+func TestRejectsGoalBeforeKickoff(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-pre-match-goal"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	for _, period := range []string{"pre_match", "PRE-MATCH"} {
+		_, _, err := store.Create(matchID, MatchEvent{
+			EventType:   "goal",
+			Period:      period,
+			Clock:       "00:00",
+			TeamID:      "home",
+			TeamName:    "西班牙",
+			PlayerName:  "佩德里",
+			Score:       Score{Home: 1, Away: 0},
+			Description: "佩德里进球。",
+		})
+		if !errors.Is(err, ErrInvalid) {
+			t.Fatalf("pre-match period %q goal error = %v, want ErrInvalid", period, err)
+		}
+	}
+}
+
+func TestRejectsGoalWithoutSingleTeamScoreIncrement(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-goal-score"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "12:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 0, Away: 0},
+		Description: "佩德里进球。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unchanged goal score error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRejectsScoreChangeWithoutGoal(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-non-goal-score"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "shot",
+		Period:      "first_half",
+		Clock:       "08:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 1, Away: 0},
+		Description: "佩德里远射。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("non-goal score change error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRejectsScorerAssignedToWrongConfiguredTeam(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-player-team"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam:    "西班牙",
+		AwayTeam:    "德国",
+		HomePlayers: []Player{{Name: "佩德里"}},
+		AwayPlayers: []Player{{Name: "穆西亚拉"}},
+	}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "19:00",
+		TeamID:      "away",
+		TeamName:    "德国",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 0, Away: 1},
+		Description: "佩德里进球。",
+		Participants: []Participant{
+			{Role: "scorer", Name: "佩德里", TeamID: "away", TeamName: "德国"},
+		},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("wrong-team scorer error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRejectsGoalWhosePlayerNameBypassesScorerParticipants(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-player-name-team"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam:    "西班牙",
+		AwayTeam:    "德国",
+		HomePlayers: []Player{{Name: "佩德里"}},
+		AwayPlayers: []Player{{Name: "穆西亚拉"}},
+	}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "24:00",
+		TeamID:      "away",
+		TeamName:    "德国",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 0, Away: 1},
+		Description: "进球。",
+		Participants: []Participant{
+			{Role: "assist", Name: "穆西亚拉", TeamID: "away", TeamName: "德国"},
+		},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("wrong-team playerName error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestAllowsGoalBeforeScorerIsKnown(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-unknown-scorer"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	created, snapshot, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "24:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		Score:       Score{Home: 1, Away: 0},
+		Description: "主队进球，球员待确认。",
+	})
+	if err != nil {
+		t.Fatalf("Create anonymous goal error: %v", err)
+	}
+	if created.PlayerName != "" || len(created.Participants) != 0 || snapshot.Score != (Score{Home: 1, Away: 0}) {
+		t.Fatalf("anonymous goal changed unexpectedly: event=%+v snapshot=%+v", created, snapshot)
 	}
 }
 
@@ -172,6 +511,157 @@ func TestEvalCorrectionRevisesActiveSnapshot(t *testing.T) {
 	}
 }
 
+func TestRejectedCorrectionKeepsOriginalFactActive(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-rejected-correction"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	original, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "21:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 1, Away: 0},
+		Description: "佩德里进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create original error: %v", err)
+	}
+
+	_, _, err = store.Correct(matchID, original.ID, MatchEvent{
+		EventType: "var_check",
+		Period:    "first_half",
+		Clock:     "22:00",
+		Score:     Score{Home: 0, Away: 0},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("invalid correction error = %v, want ErrInvalid", err)
+	}
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1, Away: 0}) {
+		t.Fatalf("snapshot changed after rejected correction: %+v", snapshot)
+	}
+	events := store.Events(matchID)
+	if len(events) != 1 || events[0].Status != "active" {
+		t.Fatalf("original fact should remain active: %+v", events)
+	}
+}
+
+func TestCorrectionCannotRewriteScoreArbitrarily(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-correction-score"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	original, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "21:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 1, Away: 0},
+		Description: "佩德里进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create original error: %v", err)
+	}
+
+	_, _, err = store.Correct(matchID, original.ID, MatchEvent{
+		EventType:   "operator_note",
+		Period:      "first_half",
+		Clock:       "22:00",
+		Score:       Score{Home: 9, Away: 0},
+		Description: "更正进球说明。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("arbitrary score correction error = %v, want ErrInvalid", err)
+	}
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1, Away: 0}) {
+		t.Fatalf("snapshot changed after arbitrary correction: %+v", snapshot)
+	}
+}
+
+func TestCorrectionRejectsScoreChangeAfterLaterGoal(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-correction-downstream"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	first, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "10:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "佩德里",
+		Score:       Score{Home: 1, Away: 0},
+		Description: "第一球。",
+	})
+	if err != nil {
+		t.Fatalf("Create first goal error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "20:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		PlayerName:  "亚马尔",
+		Score:       Score{Home: 2, Away: 0},
+		Description: "第二球。",
+	}); err != nil {
+		t.Fatalf("Create second goal error: %v", err)
+	}
+
+	_, _, err = store.Correct(matchID, first.ID, MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "21:00",
+		TeamID:      "away",
+		TeamName:    "德国",
+		PlayerName:  "穆西亚拉",
+		Score:       Score{Home: 1, Away: 1},
+		Description: "第一球应归客队。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("downstream score correction error = %v, want ErrInvalid", err)
+	}
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 2, Away: 0}) {
+		t.Fatalf("downstream correction changed snapshot: %+v", snapshot)
+	}
+}
+
+func TestCorrectionRejectsScoreChangeAfterLaterNonGoal(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-correction-later-shot"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	goal, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", TeamName: "西班牙", PlayerName: "佩德里",
+		Score: Score{Home: 1, Away: 0}, Description: "进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1, Away: 0}, Description: "随后射门。",
+	}); err != nil {
+		t.Fatalf("Create shot error: %v", err)
+	}
+	_, _, err = store.Correct(matchID, goal.ID, MatchEvent{
+		EventType: "var_check", Period: "first_half", Clock: "12:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 0, Away: 0}, Description: "VAR取消进球。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("correction after later shot error = %v, want ErrInvalid", err)
+	}
+}
+
 func BenchmarkEvalStoreCreateGoalEvent(b *testing.B) {
 	b.ReportAllocs()
 	for i := 0; i < b.N; i++ {
@@ -200,7 +690,7 @@ func BenchmarkEvalStoreCreateGoalEvent(b *testing.B) {
 			Clock:       "23:41",
 			TeamID:      "home",
 			TeamName:    "Spain",
-			Score:       Score{Home: 1 + i, Away: 0},
+			Score:       Score{Home: 1, Away: 0},
 			Intensity:   5,
 			Description: "Pedri scores from the edge of the box.",
 			Participants: []Participant{

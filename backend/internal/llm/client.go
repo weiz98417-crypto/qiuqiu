@@ -21,7 +21,7 @@ type Client struct {
 
 func NewClient(baseURL, apiKey, model string) *Client {
 	if model == "" {
-		model = "deepseek-v4-flash"
+		model = "mimo-v2.5-pro"
 	}
 	return &Client{
 		baseURL: baseURL,

@@ -2,6 +2,7 @@ package matchstate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"fmt"
 	"os"
@@ -12,13 +13,14 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
 type PostgresStore struct {
 	pool        *pgxpool.Pool
 	mu          sync.RWMutex
-	subscribers map[string]map[chan MatchEvent]struct{}
+	subscribers map[string]map[*eventSubscription]struct{}
 }
 
 func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (*PostgresStore, error) {
@@ -38,7 +40,7 @@ func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (
 	}
 	return &PostgresStore{
 		pool:        pool,
-		subscribers: make(map[string]map[chan MatchEvent]struct{}),
+		subscribers: make(map[string]map[*eventSubscription]struct{}),
 	}, nil
 }
 
@@ -52,9 +54,14 @@ func (s *PostgresStore) SetConfig(matchID string, config MatchConfig) (MatchConf
 	if matchID == "" {
 		return MatchConfig{}, Snapshot{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
 	}
+	automationProvided := strings.TrimSpace(config.Automation.Mode) != ""
 	config = normalizeConfig(matchID, config)
 	config.MatchID = matchID
 	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	automationJSON, err := json.Marshal(config.Automation)
+	if err != nil {
+		return MatchConfig{}, Snapshot{}, err
+	}
 
 	tx, err := s.pool.Begin(ctx)
 	if err != nil {
@@ -64,15 +71,16 @@ func (s *PostgresStore) SetConfig(matchID string, config MatchConfig) (MatchConf
 
 	kickoff := parseOptionalTime(config.Kickoff)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO matches (id, home_team, away_team, competition, kickoff, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
+		INSERT INTO matches (id, home_team, away_team, competition, kickoff, automation, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
 		ON CONFLICT (id) DO UPDATE SET
 			home_team = EXCLUDED.home_team,
 			away_team = EXCLUDED.away_team,
 			competition = EXCLUDED.competition,
 			kickoff = EXCLUDED.kickoff,
+			automation = CASE WHEN $7 THEN EXCLUDED.automation ELSE matches.automation END,
 			updated_at = now()
-	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, kickoff)
+	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, kickoff, automationJSON, automationProvided)
 	if err != nil {
 		return MatchConfig{}, Snapshot{}, err
 	}
@@ -90,19 +98,49 @@ func (s *PostgresStore) SetConfig(matchID string, config MatchConfig) (MatchConf
 		return MatchConfig{}, Snapshot{}, err
 	}
 
-	return config, s.Snapshot(matchID), nil
+	return s.Config(matchID), s.Snapshot(matchID), nil
+}
+
+func (s *PostgresStore) SetAutomation(matchID string, policy AutomationPolicy) (AutomationPolicy, error) {
+	ctx := context.Background()
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return AutomationPolicy{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	if err := validateAutomationPolicy(policy); err != nil {
+		return AutomationPolicy{}, err
+	}
+	policy = normalizeAutomationPolicy(policy)
+	automationJSON, err := json.Marshal(policy)
+	if err != nil {
+		return AutomationPolicy{}, err
+	}
+	config := s.Config(matchID)
+	_, err = s.pool.Exec(ctx, `
+		INSERT INTO matches (id, home_team, away_team, competition, kickoff, automation, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, now())
+		ON CONFLICT (id) DO UPDATE SET
+			automation = EXCLUDED.automation,
+			updated_at = now()
+	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, parseOptionalTime(config.Kickoff), automationJSON)
+	if err != nil {
+		return AutomationPolicy{}, err
+	}
+	return policy, nil
 }
 
 func (s *PostgresStore) Config(matchID string) MatchConfig {
 	ctx := context.Background()
 	var config MatchConfig
 	var kickoff *time.Time
+	var automationJSON []byte
+	var integrityJSON []byte
 	var updatedAt time.Time
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, home_team, away_team, competition, kickoff, updated_at
+		SELECT id, home_team, away_team, competition, kickoff, automation, integrity, updated_at
 		FROM matches
 		WHERE id = $1
-	`, matchID).Scan(&config.MatchID, &config.HomeTeam, &config.AwayTeam, &config.Competition, &kickoff, &updatedAt)
+	`, matchID).Scan(&config.MatchID, &config.HomeTeam, &config.AwayTeam, &config.Competition, &kickoff, &automationJSON, &integrityJSON, &updatedAt)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return normalizeConfig(matchID, MatchConfig{})
 	}
@@ -111,6 +149,12 @@ func (s *PostgresStore) Config(matchID string) MatchConfig {
 	}
 	if kickoff != nil {
 		config.Kickoff = kickoff.Format(time.RFC3339)
+	}
+	if len(automationJSON) > 0 {
+		_ = json.Unmarshal(automationJSON, &config.Automation)
+	}
+	if len(integrityJSON) > 0 {
+		_ = json.Unmarshal(integrityJSON, &config.Integrity)
 	}
 	config.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
 	config.HomePlayers = s.players(ctx, matchID, "home")
@@ -150,10 +194,32 @@ func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snaps
 	}
 	defer tx.Rollback(ctx)
 
-	if err := ensureMatch(ctx, tx, matchID, s.Config(matchID)); err != nil {
+	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	config := s.Config(matchID)
+	if err := ensureMatch(ctx, tx, matchID, config); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := crossSourceEventError(s.Events(matchID), ev); err != nil {
+		if errors.Is(err, ErrConflict) {
+			if markErr := markMatchIntegrity(ctx, tx, matchID, conflictIntegrity(ev)); markErr != nil {
+				return MatchEvent{}, Snapshot{}, markErr
+			}
+			if commitErr := tx.Commit(ctx); commitErr != nil {
+				return MatchEvent{}, Snapshot{}, commitErr
+			}
+		}
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateAgainstSnapshot(ev, s.Snapshot(matchID), config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	if err := insertEvent(ctx, tx, ev); err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_match_events_provider_event" {
+			return MatchEvent{}, Snapshot{}, ErrDuplicate
+		}
 		return MatchEvent{}, Snapshot{}, err
 	}
 	if err := insertParticipants(ctx, tx, ev.ID, ev.Participants); err != nil {
@@ -182,6 +248,26 @@ func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent)
 	}
 	defer tx.Rollback(ctx)
 
+	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	original, err := activeEventByID(s.Events(matchID), eventID)
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	replacement.MatchID = matchID
+	replacement.RevisionOf = eventID
+	normalize(&replacement)
+	if err := validate(replacement); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateCorrectionTimeline(s.Events(matchID), original, replacement); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateCorrection(original, replacement, s.Snapshot(matchID), s.Config(matchID)); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+
 	tag, err := tx.Exec(ctx, `
 		UPDATE match_events
 		SET status = 'corrected', updated_at = now()
@@ -194,12 +280,6 @@ func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent)
 		return MatchEvent{}, Snapshot{}, ErrNotFound
 	}
 
-	replacement.MatchID = matchID
-	replacement.RevisionOf = eventID
-	normalize(&replacement)
-	if err := validate(replacement); err != nil {
-		return MatchEvent{}, Snapshot{}, err
-	}
 	replacement.ID = newEventID()
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	replacement.CreatedAt = now
@@ -220,6 +300,29 @@ func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent)
 	return replacement, snapshot, nil
 }
 
+func lockMatchMutation(ctx context.Context, tx pgx.Tx, matchID string) error {
+	_, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, matchID)
+	return err
+}
+
+func markMatchIntegrity(ctx context.Context, tx pgx.Tx, matchID string, integrity MatchIntegrity) error {
+	payload, err := json.Marshal(integrity)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `UPDATE matches SET integrity = $2, updated_at = now() WHERE id = $1`, matchID, payload)
+	return err
+}
+
+func activeEventByID(events []MatchEvent, eventID string) (MatchEvent, error) {
+	for _, event := range events {
+		if event.ID == eventID && event.Status == "active" {
+			return event, nil
+		}
+	}
+	return MatchEvent{}, ErrNotFound
+}
+
 func (s *PostgresStore) Events(matchID string) []MatchEvent {
 	events, err := s.events(context.Background(), matchID, false)
 	if err != nil {
@@ -237,26 +340,29 @@ func (s *PostgresStore) Snapshot(matchID string) Snapshot {
 }
 
 func (s *PostgresStore) Subscribe(matchID string) (<-chan MatchEvent, func()) {
-	ch := make(chan MatchEvent, 16)
+	subscription := newEventSubscription()
 	s.mu.Lock()
 	if s.subscribers[matchID] == nil {
-		s.subscribers[matchID] = make(map[chan MatchEvent]struct{})
+		s.subscribers[matchID] = make(map[*eventSubscription]struct{})
 	}
-	s.subscribers[matchID][ch] = struct{}{}
+	s.subscribers[matchID][subscription] = struct{}{}
 	s.mu.Unlock()
 
+	var once sync.Once
 	unsubscribe := func() {
-		s.mu.Lock()
-		if subs := s.subscribers[matchID]; subs != nil {
-			delete(subs, ch)
-			if len(subs) == 0 {
-				delete(s.subscribers, matchID)
+		once.Do(func() {
+			s.mu.Lock()
+			if subs := s.subscribers[matchID]; subs != nil {
+				delete(subs, subscription)
+				if len(subs) == 0 {
+					delete(s.subscribers, matchID)
+				}
 			}
-		}
-		close(ch)
-		s.mu.Unlock()
+			s.mu.Unlock()
+			subscription.close()
+		})
 	}
-	return ch, unsubscribe
+	return subscription.events, unsubscribe
 }
 
 func (s *PostgresStore) events(ctx context.Context, matchID string, ascending bool) ([]MatchEvent, error) {
@@ -265,8 +371,8 @@ func (s *PostgresStore) events(ctx context.Context, matchID string, ascending bo
 		order = "ASC"
 	}
 	rows, err := s.pool.Query(ctx, `
-		SELECT id, match_id, source, provider_name, operator_id, period, clock, event_type,
-			team_id, team_name, player_name, score_home, score_away, intensity, sentiment,
+		SELECT id, match_id, source, provider_name, provider_event_id, operator_id, period, clock, event_type,
+			team_id, team_name, player_name, score_home, score_away, intensity, confirmed, sentiment,
 			description, proactive_text, tags, recommended_action, visibility, revision_of,
 			status, created_at, updated_at
 		FROM match_events
@@ -347,22 +453,19 @@ func (s *PostgresStore) players(ctx context.Context, matchID, teamID string) []P
 	return players
 }
 
-func (s *PostgresStore) subscriberList(matchID string) []chan MatchEvent {
+func (s *PostgresStore) subscriberList(matchID string) []*eventSubscription {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	var subs []chan MatchEvent
-	for ch := range s.subscribers[matchID] {
-		subs = append(subs, ch)
+	var subs []*eventSubscription
+	for subscription := range s.subscribers[matchID] {
+		subs = append(subs, subscription)
 	}
 	return subs
 }
 
-func (s *PostgresStore) publish(subs []chan MatchEvent, ev MatchEvent) {
-	for _, ch := range subs {
-		select {
-		case ch <- ev:
-		default:
-		}
+func (s *PostgresStore) publish(subs []*eventSubscription, ev MatchEvent) {
+	for _, subscription := range subs {
+		subscription.enqueue(ev)
 	}
 }
 
@@ -372,16 +475,43 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 		return err
 	}
 	sort.Strings(files)
+	tx, err := pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended('qiuqiu_schema_migrations', 0))`); err != nil {
+		return fmt.Errorf("lock migrations: %w", err)
+	}
+	if _, err := tx.Exec(ctx, `
+		CREATE TABLE IF NOT EXISTS schema_migrations (
+			name TEXT PRIMARY KEY,
+			applied_at TIMESTAMPTZ NOT NULL DEFAULT now()
+		)
+	`); err != nil {
+		return fmt.Errorf("create migration history: %w", err)
+	}
 	for _, file := range files {
+		name := filepath.Base(file)
+		var applied bool
+		if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM schema_migrations WHERE name = $1)`, name).Scan(&applied); err != nil {
+			return fmt.Errorf("check migration %s: %w", name, err)
+		}
+		if applied {
+			continue
+		}
 		sql, err := os.ReadFile(file)
 		if err != nil {
 			return err
 		}
-		if _, err := pool.Exec(ctx, string(sql)); err != nil {
-			return fmt.Errorf("migration %s: %w", filepath.Base(file), err)
+		if _, err := tx.Exec(ctx, string(sql)); err != nil {
+			return fmt.Errorf("migration %s: %w", name, err)
+		}
+		if _, err := tx.Exec(ctx, `INSERT INTO schema_migrations (name) VALUES ($1)`, name); err != nil {
+			return fmt.Errorf("record migration %s: %w", name, err)
 		}
 	}
-	return nil
+	return tx.Commit(ctx)
 }
 
 func insertPlayers(ctx context.Context, tx pgx.Tx, matchID, teamID, teamName string, players []Player) error {
@@ -398,30 +528,34 @@ func insertPlayers(ctx context.Context, tx pgx.Tx, matchID, teamID, teamName str
 
 func ensureMatch(ctx context.Context, tx pgx.Tx, matchID string, config MatchConfig) error {
 	config = normalizeConfig(matchID, config)
-	_, err := tx.Exec(ctx, `
-		INSERT INTO matches (id, home_team, away_team, competition, updated_at)
-		VALUES ($1, $2, $3, $4, now())
+	automationJSON, err := json.Marshal(config.Automation)
+	if err != nil {
+		return err
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO matches (id, home_team, away_team, competition, automation, updated_at)
+		VALUES ($1, $2, $3, $4, $5, now())
 		ON CONFLICT (id) DO NOTHING
-	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition)
+	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, automationJSON)
 	return err
 }
 
 func insertEvent(ctx context.Context, tx pgx.Tx, ev MatchEvent) error {
 	_, err := tx.Exec(ctx, `
 		INSERT INTO match_events (
-			id, match_id, source, provider_name, operator_id, period, clock, event_type,
-			team_id, team_name, player_name, score_home, score_away, intensity, sentiment,
+			id, match_id, source, provider_name, provider_event_id, operator_id, period, clock, event_type,
+			team_id, team_name, player_name, score_home, score_away, intensity, confirmed, sentiment,
 			description, proactive_text, tags, recommended_action, visibility, revision_of,
 			status, created_at, updated_at
 		)
 		VALUES (
-			$1, $2, $3, $4, $5, $6, $7, $8,
-			$9, $10, $11, $12, $13, $14, $15,
-			$16, $17, $18, $19, $20, $21,
-			$22, $23, $24
+			$1, $2, $3, $4, $5, $6, $7, $8, $9,
+			$10, $11, $12, $13, $14, $15, $16, $17,
+			$18, $19, $20, $21, $22, $23,
+			$24, $25, $26
 		)
-	`, ev.ID, ev.MatchID, ev.Source, ev.ProviderName, ev.OperatorID, ev.Period, ev.Clock, ev.EventType,
-		ev.TeamID, ev.TeamName, ev.PlayerName, ev.Score.Home, ev.Score.Away, ev.Intensity, ev.Sentiment,
+	`, ev.ID, ev.MatchID, ev.Source, ev.ProviderName, ev.ProviderEventID, ev.OperatorID, ev.Period, ev.Clock, ev.EventType,
+		ev.TeamID, ev.TeamName, ev.PlayerName, ev.Score.Home, ev.Score.Away, ev.Intensity, ev.Confirmed, ev.Sentiment,
 		ev.Description, ev.ProactiveText, ev.Tags, ev.RecommendedAction, ev.Visibility, nullIfEmpty(ev.RevisionOf),
 		ev.Status, parseRequiredTime(ev.CreatedAt), parseRequiredTime(ev.UpdatedAt))
 	return err
@@ -444,8 +578,8 @@ func scanEvent(rows pgx.Rows) (MatchEvent, error) {
 	var createdAt, updatedAt time.Time
 	var revisionOf *string
 	err := rows.Scan(
-		&ev.ID, &ev.MatchID, &ev.Source, &ev.ProviderName, &ev.OperatorID, &ev.Period, &ev.Clock, &ev.EventType,
-		&ev.TeamID, &ev.TeamName, &ev.PlayerName, &ev.Score.Home, &ev.Score.Away, &ev.Intensity, &ev.Sentiment,
+		&ev.ID, &ev.MatchID, &ev.Source, &ev.ProviderName, &ev.ProviderEventID, &ev.OperatorID, &ev.Period, &ev.Clock, &ev.EventType,
+		&ev.TeamID, &ev.TeamName, &ev.PlayerName, &ev.Score.Home, &ev.Score.Away, &ev.Intensity, &ev.Confirmed, &ev.Sentiment,
 		&ev.Description, &ev.ProactiveText, &ev.Tags, &ev.RecommendedAction, &ev.Visibility, &revisionOf,
 		&ev.Status, &createdAt, &updatedAt,
 	)

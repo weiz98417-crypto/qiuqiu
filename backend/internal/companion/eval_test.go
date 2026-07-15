@@ -50,9 +50,9 @@ func TestEvalProactiveLineThenUserAsksAboutRecordedMatchMemory(t *testing.T) {
 		t.Fatalf("Create goal error: %v", err)
 	}
 
-	proactive, err := agent.HandleProactiveEvent(ctx, "user-1", goal, snapshot)
+	proactive, err := agent.HandleMatchEvent(ctx, MatchEventRequest{UserID: "user-1", Event: goal, Snapshot: snapshot, OutputAllowed: true, Critical: true})
 	if err != nil {
-		t.Fatalf("HandleProactiveEvent error: %v", err)
+		t.Fatalf("HandleMatchEvent error: %v", err)
 	}
 	assertContains(t, proactive.Reply, "佩德里")
 	assertContains(t, proactive.Reply, "进球")
@@ -135,9 +135,9 @@ func TestEvalDirectorProactiveTraceAnchorsFollowUpMemory(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Create goal error: %v", err)
 	}
-	proactive, err := agent.HandleProactiveEvent(ctx, "demo-user", goal, snapshot)
+	proactive, err := agent.HandleMatchEvent(ctx, MatchEventRequest{UserID: "demo-user", Event: goal, Snapshot: snapshot, OutputAllowed: true, Critical: true})
 	if err != nil {
-		t.Fatalf("HandleProactiveEvent error: %v", err)
+		t.Fatalf("HandleMatchEvent error: %v", err)
 	}
 	if proactive.Reply != goal.ProactiveText {
 		t.Fatalf("manual proactive line changed: got %q want %q", proactive.Reply, goal.ProactiveText)
@@ -263,6 +263,7 @@ func TestEvalUserAgentToolBoundaryForbidsOperatorMutations(t *testing.T) {
 		"match.read_snapshot",
 		"match.search_events",
 		"match.get_player_timeline",
+		"match.verify_user_claim",
 		"conversation.append_turn",
 		"trace.write_decision",
 		"response.emit_companion_reply",
@@ -287,39 +288,37 @@ func TestEvalUserAgentToolBoundaryForbidsOperatorMutations(t *testing.T) {
 	}
 }
 
-func TestEvalPolishPreservesGroundedFactsOrFallsBack(t *testing.T) {
+func TestEvalRealizerCannotOverrideGroundedFacts(t *testing.T) {
 	cases := []struct {
 		name       string
-		polisher   ReplyPolisher
+		realizer   ReplyRealizer
 		wantReply  string
 		wantReason string
 		wantError  string
 	}{
 		{
 			name:       "success",
-			polisher:   fakePolisher{reply: "刚才这球确实是法比安助攻，亚马尔参与策动，信息很清楚。"},
-			wantReply:  "刚才这球确实是法比安助攻，亚马尔参与策动，信息很清楚。",
-			wantReason: "deterministic_companion_policy",
+			realizer:   fakeRealizer{text: "刚才这球确实是法比安助攻，亚马尔参与策动，信息很清楚。"},
+			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
+			wantReason: "deterministic_fact_policy",
 		},
 		{
 			name:       "empty",
-			polisher:   fakePolisher{reply: ""},
+			realizer:   fakeRealizer{text: ""},
 			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
-			wantReason: "polish_fallback_error",
-			wantError:  "empty",
+			wantReason: "deterministic_fact_policy",
 		},
 		{
 			name:       "error",
-			polisher:   fakePolisher{err: fmt.Errorf("provider timeout")},
+			realizer:   fakeRealizer{err: fmt.Errorf("provider timeout")},
 			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
-			wantReason: "polish_fallback_error",
-			wantError:  "provider timeout",
+			wantReason: "deterministic_fact_policy",
 		},
 		{
 			name:       "anchor mismatch",
-			polisher:   fakePolisher{reply: "刚才这球是莫拉塔助攻，节奏很好。"},
+			realizer:   fakeRealizer{text: "刚才这球是莫拉塔助攻，节奏很好。"},
 			wantReply:  "刚才这球是法比安助攻，亚马尔参与策动。",
-			wantReason: "polish_fallback_anchor_mismatch",
+			wantReason: "deterministic_fact_policy",
 		},
 	}
 
@@ -328,9 +327,9 @@ func TestEvalPolishPreservesGroundedFactsOrFallsBack(t *testing.T) {
 			ctx := context.Background()
 			store := matchstate.NewStore()
 			tools := NewStoreMemoryTools(store)
-			agent := NewAgent(tools).WithPolisher(tc.polisher, time.Second)
-			matchID := "product-eval-polish-" + strings.ReplaceAll(tc.name, " ", "-")
-			seedPolishGoal(t, store, matchID)
+			agent := NewAgent(tools).WithRealizer(tc.realizer, time.Second)
+			matchID := "product-eval-realizer-" + strings.ReplaceAll(tc.name, " ", "-")
+			seedRealizerGoal(t, store, matchID)
 
 			reply, err := agent.HandleMessage(ctx, MessageRequest{
 				MatchID: matchID,
@@ -521,18 +520,7 @@ func assertToolNotCalled(t *testing.T, trace Trace, name string) {
 	}
 }
 
-type fakePolisher struct {
-	reply string
-	err   error
-}
-
-func (f fakePolisher) Polish(ctx context.Context, req PolishRequest) (string, error) {
-	_ = ctx
-	_ = req
-	return f.reply, f.err
-}
-
-func seedPolishGoal(t *testing.T, store *matchstate.Store, matchID string) {
+func seedRealizerGoal(t *testing.T, store *matchstate.Store, matchID string) {
 	t.Helper()
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)

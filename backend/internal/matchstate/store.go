@@ -4,14 +4,17 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
 )
 
 var (
-	ErrNotFound = errors.New("not found")
-	ErrInvalid  = errors.New("invalid match event")
+	ErrNotFound  = errors.New("not found")
+	ErrInvalid   = errors.New("invalid match event")
+	ErrDuplicate = errors.New("duplicate match event")
+	ErrConflict  = errors.New("conflicting match event")
 )
 
 type Score struct {
@@ -19,15 +22,34 @@ type Score struct {
 	Away int `json:"away"`
 }
 
+const (
+	AutomationModeActive = "active"
+	AutomationModePaused = "paused"
+)
+
+type AutomationPolicy struct {
+	Mode            string   `json:"mode"`
+	EventTypes      []string `json:"eventTypes"`
+	CooldownSeconds int      `json:"cooldownSeconds"`
+}
+
+type MatchIntegrity struct {
+	Status     string `json:"status"`
+	Reason     string `json:"reason,omitempty"`
+	DetectedAt string `json:"detectedAt,omitempty"`
+}
+
 type MatchConfig struct {
-	MatchID     string   `json:"matchId"`
-	HomeTeam    string   `json:"homeTeam"`
-	AwayTeam    string   `json:"awayTeam"`
-	Competition string   `json:"competition,omitempty"`
-	Kickoff     string   `json:"kickoff,omitempty"`
-	HomePlayers []Player `json:"homePlayers,omitempty"`
-	AwayPlayers []Player `json:"awayPlayers,omitempty"`
-	UpdatedAt   string   `json:"updatedAt"`
+	MatchID     string           `json:"matchId"`
+	HomeTeam    string           `json:"homeTeam"`
+	AwayTeam    string           `json:"awayTeam"`
+	Competition string           `json:"competition,omitempty"`
+	Kickoff     string           `json:"kickoff,omitempty"`
+	HomePlayers []Player         `json:"homePlayers,omitempty"`
+	AwayPlayers []Player         `json:"awayPlayers,omitempty"`
+	Automation  AutomationPolicy `json:"automation"`
+	Integrity   MatchIntegrity   `json:"integrity"`
+	UpdatedAt   string           `json:"updatedAt"`
 }
 
 type Player struct {
@@ -48,6 +70,7 @@ type MatchEvent struct {
 	MatchID           string        `json:"matchId"`
 	Source            string        `json:"source"`
 	ProviderName      string        `json:"providerName,omitempty"`
+	ProviderEventID   string        `json:"providerEventId,omitempty"`
 	OperatorID        string        `json:"operatorId,omitempty"`
 	Period            string        `json:"period"`
 	Clock             string        `json:"clock"`
@@ -58,6 +81,7 @@ type MatchEvent struct {
 	Participants      []Participant `json:"participants,omitempty"`
 	Score             Score         `json:"score"`
 	Intensity         int           `json:"intensity"`
+	Confirmed         bool          `json:"confirmed"`
 	Sentiment         string        `json:"sentiment,omitempty"`
 	Description       string        `json:"description"`
 	ProactiveText     string        `json:"proactiveText,omitempty"`
@@ -71,23 +95,25 @@ type MatchEvent struct {
 }
 
 type Snapshot struct {
-	MatchID               string       `json:"matchId"`
-	HomeTeam              string       `json:"homeTeam"`
-	AwayTeam              string       `json:"awayTeam"`
-	Score                 Score        `json:"score"`
-	Period                string       `json:"period"`
-	Clock                 string       `json:"clock"`
-	Momentum              string       `json:"momentum"`
-	EmotionalTemperature  int          `json:"emotionalTemperature"`
-	RecentEvents          []MatchEvent `json:"recentEvents"`
-	KeyEvents             []MatchEvent `json:"keyEvents"`
-	LastUpdatedAt         string       `json:"lastUpdatedAt"`
-	LastRecommendedAction string       `json:"lastRecommendedAction,omitempty"`
-	LastPublicDescription string       `json:"lastPublicDescription,omitempty"`
+	MatchID               string         `json:"matchId"`
+	HomeTeam              string         `json:"homeTeam"`
+	AwayTeam              string         `json:"awayTeam"`
+	Score                 Score          `json:"score"`
+	Period                string         `json:"period"`
+	Clock                 string         `json:"clock"`
+	Momentum              string         `json:"momentum"`
+	EmotionalTemperature  int            `json:"emotionalTemperature"`
+	RecentEvents          []MatchEvent   `json:"recentEvents"`
+	KeyEvents             []MatchEvent   `json:"keyEvents"`
+	LastUpdatedAt         string         `json:"lastUpdatedAt"`
+	LastRecommendedAction string         `json:"lastRecommendedAction,omitempty"`
+	LastPublicDescription string         `json:"lastPublicDescription,omitempty"`
+	Integrity             MatchIntegrity `json:"integrity"`
 }
 
 type Repository interface {
 	SetConfig(matchID string, config MatchConfig) (MatchConfig, Snapshot, error)
+	SetAutomation(matchID string, policy AutomationPolicy) (AutomationPolicy, error)
 	Config(matchID string) MatchConfig
 	Reset(matchID string) error
 	Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, error)
@@ -101,15 +127,94 @@ type Store struct {
 	mu          sync.RWMutex
 	events      map[string][]MatchEvent
 	configs     map[string]MatchConfig
-	subscribers map[string]map[chan MatchEvent]struct{}
+	subscribers map[string]map[*eventSubscription]struct{}
 	nextID      int64
+}
+
+type eventSubscription struct {
+	events  chan MatchEvent
+	wake    chan struct{}
+	stop    chan struct{}
+	done    chan struct{}
+	mu      sync.Mutex
+	queue   []MatchEvent
+	stopped bool
+}
+
+func newEventSubscription() *eventSubscription {
+	subscription := &eventSubscription{
+		events: make(chan MatchEvent),
+		wake:   make(chan struct{}, 1),
+		stop:   make(chan struct{}),
+		done:   make(chan struct{}),
+	}
+	go subscription.run()
+	return subscription
+}
+
+func (s *eventSubscription) enqueue(event MatchEvent) {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		return
+	}
+	s.queue = append(s.queue, event)
+	s.mu.Unlock()
+	select {
+	case s.wake <- struct{}{}:
+	default:
+	}
+}
+
+func (s *eventSubscription) close() {
+	s.mu.Lock()
+	if s.stopped {
+		s.mu.Unlock()
+		<-s.done
+		return
+	}
+	s.stopped = true
+	close(s.stop)
+	s.mu.Unlock()
+	<-s.done
+}
+
+func (s *eventSubscription) run() {
+	defer close(s.done)
+	for {
+		s.mu.Lock()
+		var next MatchEvent
+		hasEvent := len(s.queue) > 0
+		if hasEvent {
+			next = s.queue[0]
+		}
+		s.mu.Unlock()
+
+		if !hasEvent {
+			select {
+			case <-s.wake:
+				continue
+			case <-s.stop:
+				return
+			}
+		}
+
+		select {
+		case s.events <- next:
+			s.mu.Lock()
+			s.queue = s.queue[1:]
+			s.mu.Unlock()
+		case <-s.stop:
+			return
+		}
+	}
 }
 
 func NewStore() *Store {
 	return &Store{
 		events:      make(map[string][]MatchEvent),
 		configs:     make(map[string]MatchConfig),
-		subscribers: make(map[string]map[chan MatchEvent]struct{}),
+		subscribers: make(map[string]map[*eventSubscription]struct{}),
 	}
 }
 
@@ -118,17 +223,42 @@ func (s *Store) SetConfig(matchID string, config MatchConfig) (MatchConfig, Snap
 	if matchID == "" {
 		return MatchConfig{}, Snapshot{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
 	}
+	automationProvided := strings.TrimSpace(config.Automation.Mode) != ""
 	config.MatchID = matchID
 	config.HomeTeam = defaultString(config.HomeTeam, "主队")
 	config.AwayTeam = defaultString(config.AwayTeam, "客队")
 	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
 	s.mu.Lock()
+	if !automationProvided {
+		config.Automation = normalizeConfig(matchID, s.configs[matchID]).Automation
+	}
+	config.Integrity = normalizeConfig(matchID, s.configs[matchID]).Integrity
+	config.Automation = normalizeAutomationPolicy(config.Automation)
 	s.configs[matchID] = config
 	snapshot := buildSnapshot(matchID, s.events[matchID], config)
 	s.mu.Unlock()
 
 	return config, snapshot, nil
+}
+
+func (s *Store) SetAutomation(matchID string, policy AutomationPolicy) (AutomationPolicy, error) {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return AutomationPolicy{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	if err := validateAutomationPolicy(policy); err != nil {
+		return AutomationPolicy{}, err
+	}
+	policy = normalizeAutomationPolicy(policy)
+
+	s.mu.Lock()
+	config := normalizeConfig(matchID, s.configs[matchID])
+	config.Automation = policy
+	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+	s.configs[matchID] = config
+	s.mu.Unlock()
+	return policy, nil
 }
 
 func (s *Store) Config(matchID string) MatchConfig {
@@ -162,6 +292,30 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	s.mu.Lock()
+	if ev.ProviderEventID != "" {
+		for _, existing := range s.events[matchID] {
+			if existing.Source == ev.Source && existing.ProviderEventID == ev.ProviderEventID {
+				s.mu.Unlock()
+				return MatchEvent{}, Snapshot{}, ErrDuplicate
+			}
+		}
+	}
+	if err := crossSourceEventError(s.events[matchID], ev); err != nil {
+		if errors.Is(err, ErrConflict) {
+			config := normalizeConfig(matchID, s.configs[matchID])
+			config.Integrity = conflictIntegrity(ev)
+			config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
+			s.configs[matchID] = config
+		}
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
+	config := normalizeConfig(matchID, s.configs[matchID])
+	current := buildSnapshot(matchID, s.events[matchID], config)
+	if err := validateAgainstSnapshot(ev, current, config); err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
 	s.nextID++
 	ev.ID = fmt.Sprintf("evt_%d", s.nextID)
 	ev.CreatedAt = now
@@ -196,20 +350,30 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 		return MatchEvent{}, Snapshot{}, ErrNotFound
 	}
 
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	events[found].Status = "corrected"
-	events[found].UpdatedAt = now
-	s.nextID++
-	replacement.ID = fmt.Sprintf("evt_%d", s.nextID)
 	replacement.MatchID = matchID
 	replacement.RevisionOf = eventID
-	replacement.CreatedAt = now
-	replacement.UpdatedAt = now
 	normalize(&replacement)
 	if err := validate(replacement); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
+	current := buildSnapshot(matchID, events, s.configs[matchID])
+	if err := validateCorrectionTimeline(events, events[found], replacement); err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateCorrection(events[found], replacement, current, normalizeConfig(matchID, s.configs[matchID])); err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
+
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	events[found].Status = "corrected"
+	events[found].UpdatedAt = now
+	s.nextID++
+	replacement.ID = fmt.Sprintf("evt_%d", s.nextID)
+	replacement.CreatedAt = now
+	replacement.UpdatedAt = now
 	events = append(events, replacement)
 	s.events[matchID] = events
 	snapshot := buildSnapshot(matchID, events, s.configs[matchID])
@@ -237,55 +401,68 @@ func (s *Store) Snapshot(matchID string) Snapshot {
 }
 
 func (s *Store) Subscribe(matchID string) (<-chan MatchEvent, func()) {
-	ch := make(chan MatchEvent, 16)
+	subscription := newEventSubscription()
 	s.mu.Lock()
 	if s.subscribers[matchID] == nil {
-		s.subscribers[matchID] = make(map[chan MatchEvent]struct{})
+		s.subscribers[matchID] = make(map[*eventSubscription]struct{})
 	}
-	s.subscribers[matchID][ch] = struct{}{}
+	s.subscribers[matchID][subscription] = struct{}{}
 	s.mu.Unlock()
 
+	var once sync.Once
 	unsubscribe := func() {
-		s.mu.Lock()
-		if subs := s.subscribers[matchID]; subs != nil {
-			delete(subs, ch)
-			if len(subs) == 0 {
-				delete(s.subscribers, matchID)
+		once.Do(func() {
+			s.mu.Lock()
+			if subs := s.subscribers[matchID]; subs != nil {
+				delete(subs, subscription)
+				if len(subs) == 0 {
+					delete(s.subscribers, matchID)
+				}
 			}
-		}
-		close(ch)
-		s.mu.Unlock()
+			s.mu.Unlock()
+			subscription.close()
+		})
 	}
-	return ch, unsubscribe
+	return subscription.events, unsubscribe
 }
 
-func (s *Store) subscriberListLocked(matchID string) []chan MatchEvent {
-	var subs []chan MatchEvent
-	for ch := range s.subscribers[matchID] {
-		subs = append(subs, ch)
+func (s *Store) subscriberListLocked(matchID string) []*eventSubscription {
+	var subs []*eventSubscription
+	for subscription := range s.subscribers[matchID] {
+		subs = append(subs, subscription)
 	}
 	return subs
 }
 
-func (s *Store) publish(subs []chan MatchEvent, ev MatchEvent) {
-	for _, ch := range subs {
-		select {
-		case ch <- ev:
-		default:
-		}
+func (s *Store) publish(subs []*eventSubscription, ev MatchEvent) {
+	for _, subscription := range subs {
+		subscription.enqueue(ev)
 	}
 }
 
 func normalize(ev *MatchEvent) {
 	ev.Source = defaultString(ev.Source, "operator")
-	ev.Period = defaultString(ev.Period, "first_half")
+	ev.ProviderName = strings.TrimSpace(ev.ProviderName)
+	ev.ProviderEventID = strings.TrimSpace(ev.ProviderEventID)
+	ev.Period = normalizePeriod(ev.Period)
 	ev.Visibility = defaultString(ev.Visibility, "public")
 	ev.Status = defaultString(ev.Status, "active")
 	ev.EventType = strings.TrimSpace(ev.EventType)
 	ev.Clock = strings.TrimSpace(ev.Clock)
 	ev.Description = strings.TrimSpace(ev.Description)
 	ev.PlayerName = strings.TrimSpace(ev.PlayerName)
+	if ev.Tags == nil {
+		ev.Tags = []string{}
+	}
 	ev.Participants = normalizeParticipants(ev.Participants)
+	if ev.EventType == "goal" && ev.PlayerName != "" && len(participantNamesByRole(ev.Participants, "scorer")) == 0 {
+		ev.Participants = append([]Participant{{
+			Role:     "scorer",
+			Name:     ev.PlayerName,
+			TeamID:   ev.TeamID,
+			TeamName: ev.TeamName,
+		}}, ev.Participants...)
+	}
 	if len(ev.Participants) == 0 && ev.PlayerName != "" {
 		ev.Participants = []Participant{{
 			Role:     DefaultParticipantRole(ev.EventType),
@@ -308,6 +485,28 @@ func normalize(ev *MatchEvent) {
 	}
 	if ev.Sentiment == "" {
 		ev.Sentiment = DefaultSentiment(ev.EventType)
+	}
+}
+
+func normalizePeriod(period string) string {
+	period = strings.ToLower(strings.TrimSpace(period))
+	period = strings.ReplaceAll(period, "-", "_")
+	period = strings.ReplaceAll(period, " ", "_")
+	switch period {
+	case "", "firsthalf":
+		return "first_half"
+	case "prematch":
+		return "pre_match"
+	case "halftime", "half_time":
+		return "halftime"
+	case "secondhalf":
+		return "second_half"
+	case "extratime":
+		return "extra_time"
+	case "full_time", "finished":
+		return "fulltime"
+	default:
+		return period
 	}
 }
 
@@ -342,7 +541,239 @@ func validate(ev MatchEvent) error {
 	if !allowedEventTypes[ev.EventType] {
 		return fmt.Errorf("%w: unsupported eventType %q", ErrInvalid, ev.EventType)
 	}
+	if !allowedPeriods[ev.Period] {
+		return fmt.Errorf("%w: unsupported period %q", ErrInvalid, ev.Period)
+	}
+	if ev.Score.Home < 0 || ev.Score.Away < 0 {
+		return fmt.Errorf("%w: score cannot be negative", ErrInvalid)
+	}
+	if ev.EventType == "goal" && ev.Period == "pre_match" {
+		return fmt.Errorf("%w: goal cannot occur before kickoff", ErrInvalid)
+	}
+	if ev.EventType == "goal_cancelled" && ev.RevisionOf == "" {
+		return fmt.Errorf("%w: goal cancellation requires revisionOf", ErrInvalid)
+	}
 	return nil
+}
+
+func validateAgainstSnapshot(ev MatchEvent, current Snapshot, config MatchConfig) error {
+	if err := validateEventTeam(ev, config); err != nil {
+		return err
+	}
+	if ev.EventType == "goal" {
+		expected := current.Score
+		switch ev.TeamID {
+		case "home":
+			expected.Home++
+		case "away":
+			expected.Away++
+		default:
+			return fmt.Errorf("%w: goal requires home or away teamId", ErrInvalid)
+		}
+		if ev.Score != expected {
+			return fmt.Errorf("%w: goal score must move from %d-%d to %d-%d", ErrInvalid, current.Score.Home, current.Score.Away, expected.Home, expected.Away)
+		}
+		return nil
+	}
+	if ev.EventType == "goal_cancelled" {
+		expected := current.Score
+		switch ev.TeamID {
+		case "home":
+			expected.Home--
+		case "away":
+			expected.Away--
+		default:
+			return fmt.Errorf("%w: goal cancellation requires home or away teamId", ErrInvalid)
+		}
+		if expected.Home < 0 || expected.Away < 0 || ev.Score != expected {
+			return fmt.Errorf("%w: goal cancellation score must move from %d-%d to %d-%d", ErrInvalid, current.Score.Home, current.Score.Away, expected.Home, expected.Away)
+		}
+		return nil
+	}
+	if ev.Score != current.Score {
+		return fmt.Errorf("%w: %s cannot change score from %d-%d to %d-%d", ErrInvalid, ev.EventType, current.Score.Home, current.Score.Away, ev.Score.Home, ev.Score.Away)
+	}
+	return nil
+}
+
+func crossSourceEventError(events []MatchEvent, candidate MatchEvent) error {
+	if !crossSourceComparable(candidate.EventType) {
+		return nil
+	}
+	for _, existing := range events {
+		if existing.Status != "active" || existing.EventType != candidate.EventType || existing.Source == candidate.Source {
+			continue
+		}
+		if existing.Period != candidate.Period || !clocksNear(existing.Clock, candidate.Clock, 45) {
+			continue
+		}
+		playersCompatible := existing.PlayerName == "" || candidate.PlayerName == "" || strings.EqualFold(existing.PlayerName, candidate.PlayerName)
+		if existing.TeamID == candidate.TeamID && playersCompatible {
+			return ErrDuplicate
+		}
+		return ErrConflict
+	}
+	return nil
+}
+
+func crossSourceComparable(eventType string) bool {
+	switch eventType {
+	case "goal", "red_card", "var_check", "penalty":
+		return true
+	default:
+		return false
+	}
+}
+
+func clocksNear(left, right string, toleranceSeconds int) bool {
+	leftSeconds, leftOK := clockSeconds(left)
+	rightSeconds, rightOK := clockSeconds(right)
+	if !leftOK || !rightOK {
+		return strings.TrimSpace(left) == strings.TrimSpace(right)
+	}
+	difference := leftSeconds - rightSeconds
+	if difference < 0 {
+		difference = -difference
+	}
+	return difference <= toleranceSeconds
+}
+
+func clockSeconds(clock string) (int, bool) {
+	minuteText, secondText, found := strings.Cut(strings.TrimSpace(clock), ":")
+	if !found {
+		return 0, false
+	}
+	minute, minuteErr := strconv.Atoi(minuteText)
+	second, secondErr := strconv.Atoi(secondText)
+	if minuteErr != nil || secondErr != nil || minute < 0 || second < 0 || second > 59 {
+		return 0, false
+	}
+	return minute*60 + second, true
+}
+
+func validateEventTeam(ev MatchEvent, config MatchConfig) error {
+	expectedTeamName := ""
+	switch ev.TeamID {
+	case "":
+		if ev.EventType == "goal" {
+			return fmt.Errorf("%w: goal requires home or away teamId", ErrInvalid)
+		}
+		return nil
+	case "home":
+		expectedTeamName = config.HomeTeam
+	case "away":
+		expectedTeamName = config.AwayTeam
+	default:
+		return fmt.Errorf("%w: teamId must be home or away", ErrInvalid)
+	}
+	configuredTeamName := expectedTeamName != "" && expectedTeamName != "主队" && expectedTeamName != "客队"
+	if configuredTeamName && ev.TeamName != "" && !strings.EqualFold(ev.TeamName, expectedTeamName) {
+		return fmt.Errorf("%w: teamName %q does not match %s team %q", ErrInvalid, ev.TeamName, ev.TeamID, expectedTeamName)
+	}
+	if ev.EventType != "goal" {
+		return nil
+	}
+	scorers := participantNamesByRole(ev.Participants, "scorer")
+	if len(scorers) > 1 {
+		return fmt.Errorf("%w: goal cannot have multiple scorers", ErrInvalid)
+	}
+	if ev.PlayerName != "" && len(scorers) != 1 {
+		return fmt.Errorf("%w: known goal player requires one scorer", ErrInvalid)
+	}
+	if ev.PlayerName != "" && !strings.EqualFold(ev.PlayerName, scorers[0]) {
+		return fmt.Errorf("%w: playerName must match the scorer", ErrInvalid)
+	}
+	if teamID := configuredPlayerTeam(config, ev.PlayerName); teamID != "" && teamID != ev.TeamID {
+		return fmt.Errorf("%w: scorer %q belongs to %s team", ErrInvalid, ev.PlayerName, teamID)
+	}
+	for _, participant := range ev.Participants {
+		if participant.Role != "scorer" && participant.Role != "assist" && participant.Role != "pre_assist" {
+			continue
+		}
+		if participant.TeamID != "" && participant.TeamID != ev.TeamID {
+			return fmt.Errorf("%w: %s %q must belong to the scoring team", ErrInvalid, participant.Role, participant.Name)
+		}
+		if teamID := configuredPlayerTeam(config, participant.Name); teamID != "" && teamID != ev.TeamID {
+			return fmt.Errorf("%w: %s %q belongs to %s team", ErrInvalid, participant.Role, participant.Name, teamID)
+		}
+	}
+	return nil
+}
+
+func participantNamesByRole(participants []Participant, role string) []string {
+	var names []string
+	for _, participant := range participants {
+		if participant.Role == role && participant.Name != "" {
+			names = append(names, participant.Name)
+		}
+	}
+	return names
+}
+
+func validateCorrection(original, replacement MatchEvent, current Snapshot, config MatchConfig) error {
+	if err := validateEventTeam(replacement, config); err != nil {
+		return err
+	}
+	expected := current.Score
+	if original.EventType == "goal" {
+		if err := changeTeamScore(&expected, original.TeamID, -1); err != nil {
+			return err
+		}
+	}
+	if replacement.EventType == "goal" {
+		if err := changeTeamScore(&expected, replacement.TeamID, 1); err != nil {
+			return err
+		}
+	}
+	if expected.Home < 0 || expected.Away < 0 {
+		return fmt.Errorf("%w: correction produces a negative score", ErrInvalid)
+	}
+	if replacement.Score != expected {
+		return fmt.Errorf("%w: correction score must be %d-%d", ErrInvalid, expected.Home, expected.Away)
+	}
+	return nil
+}
+
+func validateCorrectionTimeline(events []MatchEvent, original, replacement MatchEvent) error {
+	changesGoalContribution := original.EventType != replacement.EventType || (original.EventType == "goal" && original.TeamID != replacement.TeamID)
+	if !changesGoalContribution {
+		return nil
+	}
+	for _, event := range events {
+		if event.ID == original.ID || event.Status != "active" {
+			continue
+		}
+		if event.CreatedAt >= original.CreatedAt {
+			return fmt.Errorf("%w: later events must be corrected before changing this event's score contribution", ErrInvalid)
+		}
+	}
+	return nil
+}
+
+func changeTeamScore(score *Score, teamID string, delta int) error {
+	switch teamID {
+	case "home":
+		score.Home += delta
+	case "away":
+		score.Away += delta
+	default:
+		return fmt.Errorf("%w: score-changing event requires home or away teamId", ErrInvalid)
+	}
+	return nil
+}
+
+func configuredPlayerTeam(config MatchConfig, name string) string {
+	for _, player := range config.HomePlayers {
+		if strings.EqualFold(player.Name, name) {
+			return "home"
+		}
+	}
+	for _, player := range config.AwayPlayers {
+		if strings.EqualFold(player.Name, name) {
+			return "away"
+		}
+	}
+	return ""
 }
 
 func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig) Snapshot {
@@ -357,6 +788,7 @@ func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig) Snap
 		Momentum:             "neutral",
 		EmotionalTemperature: 1,
 		LastUpdatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
+		Integrity:            config.Integrity,
 	}
 
 	for _, ev := range events {
@@ -400,7 +832,71 @@ func normalizeConfig(matchID string, config MatchConfig) MatchConfig {
 	config.AwayTeam = defaultString(config.AwayTeam, "客队")
 	config.HomePlayers = normalizePlayers(config.HomePlayers)
 	config.AwayPlayers = normalizePlayers(config.AwayPlayers)
+	config.Automation = normalizeAutomationPolicy(config.Automation)
+	if strings.TrimSpace(config.Integrity.Status) == "" {
+		config.Integrity = MatchIntegrity{Status: "ok"}
+	}
 	return config
+}
+
+func conflictIntegrity(event MatchEvent) MatchIntegrity {
+	return MatchIntegrity{
+		Status:     "conflict",
+		Reason:     fmt.Sprintf("conflicting %s evidence from %s at %s", event.EventType, event.Source, event.Clock),
+		DetectedAt: time.Now().UTC().Format(time.RFC3339Nano),
+	}
+}
+
+func DefaultAutomationPolicy() AutomationPolicy {
+	return AutomationPolicy{
+		Mode: AutomationModeActive,
+		EventTypes: []string{
+			"kickoff", "goal", "shot", "big_chance", "save", "miss", "foul",
+			"yellow_card", "red_card", "var_check", "var_result", "goal_cancelled",
+			"penalty", "penalty_awarded", "substitution", "injury", "tactical_shift",
+			"pressure", "halftime", "fulltime", "match_end",
+		},
+		CooldownSeconds: 90,
+	}
+}
+
+func normalizeAutomationPolicy(policy AutomationPolicy) AutomationPolicy {
+	if strings.TrimSpace(policy.Mode) == "" {
+		return DefaultAutomationPolicy()
+	}
+	policy.Mode = strings.TrimSpace(policy.Mode)
+	seen := make(map[string]struct{}, len(policy.EventTypes))
+	eventTypes := make([]string, 0, len(policy.EventTypes))
+	for _, eventType := range policy.EventTypes {
+		eventType = strings.TrimSpace(eventType)
+		if eventType == "" || !allowedEventTypes[eventType] {
+			continue
+		}
+		if _, ok := seen[eventType]; ok {
+			continue
+		}
+		seen[eventType] = struct{}{}
+		eventTypes = append(eventTypes, eventType)
+	}
+	policy.EventTypes = eventTypes
+	return policy
+}
+
+func validateAutomationPolicy(policy AutomationPolicy) error {
+	mode := strings.TrimSpace(policy.Mode)
+	if mode != AutomationModeActive && mode != AutomationModePaused {
+		return fmt.Errorf("%w: automation mode must be active or paused", ErrInvalid)
+	}
+	if policy.CooldownSeconds < 0 || policy.CooldownSeconds > 300 {
+		return fmt.Errorf("%w: cooldownSeconds must be between 0 and 300", ErrInvalid)
+	}
+	for _, eventType := range policy.EventTypes {
+		eventType = strings.TrimSpace(eventType)
+		if !allowedEventTypes[eventType] || eventType == "operator_note" {
+			return fmt.Errorf("%w: unsupported automation eventType %q", ErrInvalid, eventType)
+		}
+	}
+	return nil
 }
 
 func normalizePlayers(players []Player) []Player {
@@ -419,7 +915,7 @@ func normalizePlayers(players []Player) []Player {
 
 func isKeyEvent(t string) bool {
 	switch t {
-	case "goal", "red_card", "penalty", "var_check", "halftime", "fulltime":
+	case "goal", "red_card", "penalty", "penalty_awarded", "var_check", "var_result", "goal_cancelled", "halftime", "fulltime", "match_end":
 		return true
 	default:
 		return false
@@ -444,8 +940,10 @@ func DefaultAction(eventType string) string {
 	switch eventType {
 	case "goal":
 		return "celebrate"
-	case "big_chance", "penalty", "var_check":
+	case "big_chance", "penalty", "penalty_awarded", "var_check":
 		return "tense"
+	case "var_result", "goal_cancelled":
+		return "settle"
 	case "save":
 		return "surprise"
 	case "miss":
@@ -458,7 +956,7 @@ func DefaultAction(eventType string) string {
 		return "analysis"
 	case "pressure":
 		return "focus"
-	case "fulltime":
+	case "fulltime", "match_end":
 		return "comfort"
 	case "kickoff":
 		return "wave"
@@ -492,8 +990,10 @@ func DefaultSentiment(eventType string) string {
 	switch eventType {
 	case "goal":
 		return "celebratory"
-	case "big_chance", "penalty", "var_check", "pressure":
+	case "big_chance", "penalty", "penalty_awarded", "var_check", "pressure":
 		return "tense"
+	case "var_result", "goal_cancelled":
+		return "disappointed"
 	case "miss":
 		return "regret"
 	case "foul", "yellow_card", "red_card":
@@ -513,22 +1013,35 @@ func defaultString(value, fallback string) string {
 }
 
 var allowedEventTypes = map[string]bool{
-	"kickoff":        true,
-	"goal":           true,
-	"shot":           true,
-	"big_chance":     true,
-	"save":           true,
-	"miss":           true,
-	"foul":           true,
-	"yellow_card":    true,
-	"red_card":       true,
-	"var_check":      true,
-	"penalty":        true,
-	"substitution":   true,
-	"injury":         true,
-	"tactical_shift": true,
-	"pressure":       true,
-	"halftime":       true,
-	"fulltime":       true,
-	"operator_note":  true,
+	"kickoff":         true,
+	"goal":            true,
+	"shot":            true,
+	"big_chance":      true,
+	"save":            true,
+	"miss":            true,
+	"foul":            true,
+	"yellow_card":     true,
+	"red_card":        true,
+	"var_check":       true,
+	"var_result":      true,
+	"goal_cancelled":  true,
+	"penalty":         true,
+	"penalty_awarded": true,
+	"substitution":    true,
+	"injury":          true,
+	"tactical_shift":  true,
+	"pressure":        true,
+	"halftime":        true,
+	"fulltime":        true,
+	"match_end":       true,
+	"operator_note":   true,
+}
+
+var allowedPeriods = map[string]bool{
+	"pre_match":   true,
+	"first_half":  true,
+	"halftime":    true,
+	"second_half": true,
+	"extra_time":  true,
+	"fulltime":    true,
 }

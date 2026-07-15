@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"encoding/base64"
+	"encoding/binary"
 	"errors"
 	"strings"
 	"testing"
@@ -11,8 +12,19 @@ import (
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 )
+
+func TestPCMToWavUsesRecorderSampleRate(t *testing.T) {
+	wav := pcmToWav([]byte{0, 0, 1, 0})
+	if got := binary.LittleEndian.Uint32(wav[24:28]); got != 16000 {
+		t.Fatalf("sample rate = %d, want 16000", got)
+	}
+	if got := binary.LittleEndian.Uint32(wav[28:32]); got != 32000 {
+		t.Fatalf("byte rate = %d, want 32000", got)
+	}
+}
 
 func TestEvalVoiceSessionTextAndMockASRReachCompanion(t *testing.T) {
 	agent := seededVoiceAgent(t, "voice-session-eval")
@@ -100,7 +112,7 @@ func TestEvalVoicePlaybackStatusUpdatesTrace(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleVoiceSession error: %v", err)
 	}
-	if err := recordPlaybackStatus(context.Background(), tools, agent, matchID, result.Trace.ID, "ok"); err != nil {
+	if err := recordPlaybackStatus(context.Background(), tools, agent, matchID, result.Trace.ID, "user-1", "ok"); err != nil {
 		t.Fatalf("recordPlaybackStatus error: %v", err)
 	}
 	trace, err := tools.GetTrace(context.Background(), matchID, result.Trace.ID)
@@ -109,6 +121,112 @@ func TestEvalVoicePlaybackStatusUpdatesTrace(t *testing.T) {
 	}
 	if trace.Voice == nil || trace.Voice.TTSStatus != "ok" || trace.Voice.PlaybackStatus != "ok" {
 		t.Fatalf("expected playback metadata on trace, got %+v", trace.Voice)
+	}
+}
+
+func TestPlaybackTraceStatusKeepsMutedSkipDistinctFromFailure(t *testing.T) {
+	if got := playbackTraceStatus("skipped"); got != "skipped" {
+		t.Fatalf("skipped playback status = %q", got)
+	}
+	if got := playbackTraceStatus("blocked"); got != "blocked:autoplay" {
+		t.Fatalf("blocked playback status = %q", got)
+	}
+	if got := playbackTraceStatus("error"); got != "failed:error" {
+		t.Fatalf("error playback status = %q", got)
+	}
+}
+
+func TestPlaybackStatusRejectsDifferentUser(t *testing.T) {
+	store := matchstate.NewStore()
+	tools := companion.NewStoreMemoryTools(store)
+	agent := companion.NewAgent(tools)
+	trace := companion.Trace{
+		ID: "trace-owner-test", MatchID: "match-owner-test", UserID: "user-1", Input: "hello", Output: "hi", CreatedAt: fixedVoiceTime(),
+	}
+	if err := tools.WriteTrace(context.Background(), trace); err != nil {
+		t.Fatalf("WriteTrace: %v", err)
+	}
+	if err := recordPlaybackStatus(context.Background(), tools, agent, trace.MatchID, trace.ID, "user-2", "ok"); err == nil {
+		t.Fatal("playback update from a different user was accepted")
+	}
+	stored, err := tools.GetTrace(context.Background(), trace.MatchID, trace.ID)
+	if err != nil {
+		t.Fatalf("GetTrace: %v", err)
+	}
+	if stored.Voice != nil {
+		t.Fatalf("mismatched playback changed trace: %+v", stored.Voice)
+	}
+}
+
+func TestDisplayedFirstMeetingReplyMarksGreetingDelivered(t *testing.T) {
+	store := matchstate.NewStore()
+	tools := companion.NewStoreMemoryTools(store)
+	repository := relationship.NewMemoryRepository()
+	agent := companion.NewAgent(tools).WithDirector(relationship.NewDirector(repository))
+	trace := companion.Trace{
+		ID: "trace-first-meeting-display", MatchID: "match-1", UserID: "user-1", Input: "first_meeting", Output: "hello",
+		Reason: "first_meeting_welcome", CreatedAt: fixedVoiceTime(),
+	}
+	if err := tools.WriteTrace(context.Background(), trace); err != nil {
+		t.Fatalf("WriteTrace: %v", err)
+	}
+	if err := recordDisplayedReply(context.Background(), tools, agent, trace.MatchID, trace.ID, trace.UserID, fixedVoiceTime()); err != nil {
+		t.Fatalf("recordDisplayedReply: %v", err)
+	}
+	state, err := repository.Load(context.Background(), trace.UserID, trace.MatchID)
+	if err != nil {
+		t.Fatalf("Load: %v", err)
+	}
+	if state.Relationship.GreetingDeliveredAt == nil || state.Match.PlaybackState != "text_delivered" {
+		t.Fatalf("display acknowledgement was not persisted: %+v", state)
+	}
+}
+
+func TestReplyContextActiveRejectsCanceledTurns(t *testing.T) {
+	ctx, cancel := context.WithCancel(context.Background())
+	if !replyContextActive(ctx) {
+		t.Fatal("active context rejected")
+	}
+	cancel()
+	if replyContextActive(ctx) {
+		t.Fatal("canceled context accepted")
+	}
+}
+
+func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
+	snapshots := []matchstate.Snapshot{
+		{},
+		{KeyEvents: []matchstate.MatchEvent{{ID: "goal-1", EventType: "goal"}}},
+	}
+	snapshotCall := 0
+	generationCall := 0
+	result, err := handleVoiceTurnWithFactRefresh(
+		func() matchstate.Snapshot {
+			index := snapshotCall
+			if index >= len(snapshots) {
+				index = len(snapshots) - 1
+			}
+			snapshotCall++
+			return snapshots[index]
+		},
+		func(text, audio string) (voiceSessionResult, error) {
+			generationCall++
+			if generationCall == 1 {
+				return voiceSessionResult{Text: "刚才谁进球？", Reply: "还没有进球。"}, nil
+			}
+			if text != "刚才谁进球？" || audio != "" {
+				t.Fatalf("refresh input = %q/%q, want recognized text without audio", text, audio)
+			}
+			return voiceSessionResult{Text: text, Reply: "萨拉赫刚刚进球了。"}, nil
+		},
+		"",
+		"encoded-audio",
+	)
+	if err != nil {
+		t.Fatalf("handleVoiceTurnWithFactRefresh error: %v", err)
+	}
+	if generationCall != 2 || result.Reply != "萨拉赫刚刚进球了。" {
+		t.Fatalf("expected one refreshed answer, calls=%d result=%+v", generationCall, result)
 	}
 }
 

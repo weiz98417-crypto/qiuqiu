@@ -3,19 +3,32 @@ package datasource
 import (
 	"context"
 	"log"
-	"qiuqiu/internal/event"
 	"time"
+
+	"qiuqiu/internal/event"
 )
 
-// Poller polls api-sports.io for new match events.
+type PollReport struct {
+	At      time.Time
+	Latency time.Duration
+	Err     error
+}
+
 type Poller struct {
-	client      *Client
-	matchID     int64
-	lastEventID int64
-	eventChan   chan<- *event.StandardEvent
-	interval    time.Duration
-	homeScore   int
-	awayScore   int
+	client         EventsClient
+	matchID        int64
+	lastEventID    int64
+	eventChan      chan<- *event.StandardEvent
+	reportChan     chan<- PollReport
+	interval       time.Duration
+	homeScore      int
+	awayScore      int
+	includeInitial bool
+	initialized    bool
+}
+
+func NewPoller(client EventsClient, matchID int64, eventChan chan<- *event.StandardEvent) *Poller {
+	return &Poller{client: client, matchID: matchID, eventChan: eventChan, interval: 3 * time.Second}
 }
 
 func (p *Poller) SetScore(home, away int) {
@@ -23,78 +36,96 @@ func (p *Poller) SetScore(home, away int) {
 	p.awayScore = away
 }
 
-func NewPoller(client *Client, matchID int64, eventChan chan<- *event.StandardEvent) *Poller {
-	return &Poller{
-		client:    client,
-		matchID:   matchID,
-		eventChan: eventChan,
-		interval:  3 * time.Second,
+func (p *Poller) WithInterval(interval time.Duration) *Poller {
+	if interval > 0 {
+		p.interval = interval
 	}
+	return p
 }
 
-// Run starts the polling loop. Blocks until ctx is cancelled.
+func (p *Poller) WithInitialEvents(include bool) *Poller {
+	p.includeInitial = include
+	return p
+}
+
+func (p *Poller) WithReports(reports chan<- PollReport) *Poller {
+	p.reportChan = reports
+	return p
+}
+
 func (p *Poller) Run(ctx context.Context) {
 	ticker := time.NewTicker(p.interval)
 	defer ticker.Stop()
-
-	backoff := 1 * time.Second
+	backoff := time.Second
 	maxBackoff := 30 * time.Second
-	consecutiveErrors := 0
-
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			startedAt := time.Now()
 			events, err := p.client.GetEvents(int(p.matchID))
+			p.report(PollReport{At: time.Now().UTC(), Latency: time.Since(startedAt), Err: err})
 			if err != nil {
-				consecutiveErrors++
 				backoff = min(backoff*2, maxBackoff)
 				log.Printf("poller: error fetching events (retry in %v): %v", backoff, err)
 				ticker.Reset(backoff)
 				continue
 			}
-			backoff = 1 * time.Second
-			consecutiveErrors = 0
+			backoff = time.Second
 			ticker.Reset(p.interval)
-
+			if !p.initialized && !p.includeInitial {
+				for _, raw := range events {
+					if raw.ID() > p.lastEventID {
+						p.lastEventID = raw.ID()
+					}
+				}
+				p.initialized = true
+				continue
+			}
+			p.initialized = true
 			for _, raw := range events {
 				if raw.ID() <= p.lastEventID {
 					continue
 				}
 				p.lastEventID = raw.ID()
-				ev := raw.ToStandardEvent(p.matchID, p.homeScore, p.awayScore)
+				standardEvent := raw.ToStandardEvent(p.matchID, p.homeScore, p.awayScore)
 				select {
-				case p.eventChan <- ev:
+				case p.eventChan <- standardEvent:
 				default:
-					log.Printf("poller: event channel full, dropping event %d", ev.ID)
+					log.Printf("poller: event channel full, dropping event %d", standardEvent.ID)
 				}
 			}
 		}
 	}
 }
 
-// min returns the smaller of two durations.
-func min(a, b time.Duration) time.Duration {
-	if a < b {
-		return a
+func (p *Poller) report(report PollReport) {
+	if p.reportChan == nil {
+		return
 	}
-	return b
+	select {
+	case p.reportChan <- report:
+	default:
+	}
 }
 
-// ID returns the event ID from api-sports format.
+func min(left, right time.Duration) time.Duration {
+	if left < right {
+		return left
+	}
+	return right
+}
+
 func (e *Event) ID() int64 {
-	// api-sports events don't have a numeric ID; use elapsed time + type hash
 	return int64(e.Time.Elapsed)*100 + int64(len(e.Type))
 }
 
-// ToStandardEvent converts api-sports Event to StandardEvent.
 func (e *Event) ToStandardEvent(matchID int64, homeScore, awayScore int) *event.StandardEvent {
-	evType := normalizeType(e.Type, e.Detail)
 	return &event.StandardEvent{
 		MatchID:   matchID,
 		ID:        e.ID(),
-		Type:      evType,
+		Type:      normalizeType(e.Type, e.Detail),
 		Team:      e.Team.Name,
 		Minute:    e.Time.Elapsed,
 		Player:    event.PlayerInfo{ID: e.Player.ID, Name: e.Player.Name},
@@ -103,18 +134,20 @@ func (e *Event) ToStandardEvent(matchID int64, homeScore, awayScore int) *event.
 	}
 }
 
-func normalizeType(t, detail string) string {
-	switch t {
+func normalizeType(eventType, detail string) string {
+	switch eventType {
 	case "Goal":
 		return "goal"
 	case "Card":
-		if detail == "Red Card" {
+		if detail == "Red Card" || detail == "Second Yellow card" {
 			return "red_card"
 		}
 		return "yellow_card"
+	case "Var":
+		return "var_check"
 	case "subst":
 		return "substitution"
 	default:
-		return t
+		return eventType
 	}
 }

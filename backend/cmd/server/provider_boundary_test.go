@@ -7,26 +7,23 @@ import (
 	"qiuqiu/internal/config"
 )
 
-func TestEvalMiMoKeyDoesNotConfigureTextLLM(t *testing.T) {
+func TestEvalMiMoKeyConfiguresTextLLM(t *testing.T) {
 	cfg := &config.Config{
-		MiMoAPIKey:      "mimo-voice-key",
-		MiMoBaseURL:     "https://api.xiaomimimo.com/v1",
-		MiMoModel:       "mimo-v2.5",
-		DeepseekBaseURL: "https://api.deepseek.com/v1",
-		DeepseekModel:   "deepseek-v4-flash",
+		MiMoAPIKey:  "mimo-key",
+		MiMoBaseURL: "https://api.xiaomimimo.com/v1",
+		MiMoModel:   "mimo-v2.5-pro",
 	}
 
 	llmClient := newTextLLMClient(cfg)
-	if llmClient != nil {
-		t.Fatalf("MiMo voice key should not configure text LLM polish client")
+	if llmClient == nil {
+		t.Fatalf("expected MiMo key to configure text LLM client")
+	}
+	if !strings.Contains(llmClient.DebugString(), "xiaomimimo.com") {
+		t.Fatalf("expected text LLM client to use MiMo base URL, got %s", llmClient.DebugString())
 	}
 
-	cfg.DeepseekAPIKey = "deepseek-key"
-	llmClient = newTextLLMClient(cfg)
-	if llmClient == nil {
-		t.Fatalf("expected DeepSeek key to configure text LLM client")
-	}
-	if !strings.Contains(llmClient.DebugString(), "deepseek") {
-		t.Fatalf("expected text LLM client to use DeepSeek base URL, got %s", llmClient.DebugString())
+	cfg.MiMoAPIKey = ""
+	if newTextLLMClient(cfg) != nil {
+		t.Fatal("empty MiMo key should disable the text LLM client")
 	}
 }

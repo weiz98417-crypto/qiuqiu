@@ -59,17 +59,41 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 	}
 
 	agent := NewAgent(NewRepositoryMemoryTools(store).WithTraceWriter(traces).WithTurnReader(traces))
-	reply, err := agent.HandleMessage(ctx, MessageRequest{
-		MatchID: matchID,
-		UserID:  "pg-user",
-		Text:    "刚才谁助攻？",
-		Now:     time.Now().UTC(),
-	})
+	firstRequest := MessageRequest{
+		SignalID: "pg-turn-" + matchID,
+		MatchID:  matchID,
+		UserID:   "pg-user",
+		Text:     "刚才谁助攻？",
+		Now:      time.Now().UTC(),
+	}
+	reply, err := agent.HandleMessage(ctx, firstRequest)
 	if err != nil {
 		t.Fatalf("HandleMessage error: %v", err)
 	}
 	if !strings.Contains(strings.Join(reply.Trace.RetrievedEvent, ","), created.ID) {
 		t.Fatalf("trace did not retrieve created goal: %+v", reply.Trace)
+	}
+	if _, err := agent.HandleMessage(ctx, firstRequest); err != nil {
+		t.Fatalf("HandleMessage retry error: %v", err)
+	}
+	retriedTurns, err := traces.RecentTurns(ctx, matchID, "pg-user", 10)
+	if err != nil {
+		t.Fatalf("RecentTurns after retry error: %v", err)
+	}
+	if len(retriedTurns) != 2 {
+		t.Fatalf("retry stored %d turns, want 2", len(retriedTurns))
+	}
+	claimReply, err := agent.HandleMessage(ctx, MessageRequest{
+		MatchID: matchID,
+		UserID:  "pg-user",
+		Text:    "德国已经3比0领先了",
+		Now:     time.Now().UTC().Add(time.Millisecond),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage claim error: %v", err)
+	}
+	if claimReply.Trace.Claim == nil || claimReply.Trace.Claim.Status != ClaimStatusContradicted {
+		t.Fatalf("claim trace mismatch: %+v", claimReply.Trace)
 	}
 	if err := traces.WriteTrace(ctx, Trace{
 		ID:        "trace-other-" + matchID,
@@ -103,8 +127,18 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 	if err != nil {
 		t.Fatalf("ListTraces error: %v", err)
 	}
-	if len(traceList) == 0 || traceList[0].Intent != IntentRecentEvent {
+	if len(traceList) < 2 {
 		t.Fatalf("trace did not persist: %+v", traceList)
+	}
+	var persistedClaim *FactClaim
+	for _, trace := range traceList {
+		if trace.Intent == IntentMatchClaim {
+			persistedClaim = trace.Claim
+			break
+		}
+	}
+	if persistedClaim == nil || persistedClaim.Status != ClaimStatusContradicted {
+		t.Fatalf("claim assessment did not persist: %+v", traceList)
 	}
 	turns, err := reopenedTraces.RecentTurns(ctx, matchID, "pg-user", 10)
 	if err != nil {

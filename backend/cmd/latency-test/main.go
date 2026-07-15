@@ -25,18 +25,12 @@ type LatencyRecord struct {
 func main() {
 	cfg := config.Load()
 
-	if cfg.DeepseekAPIKey == "" {
-		log.Fatal("DEEPSEEK_API_KEY not set")
-	}
-	if cfg.ElevenLabsKey == "" {
-		log.Println("⚠ ELEVENLABS_API_KEY not set — skipping TTS")
+	if cfg.MiMoAPIKey == "" {
+		log.Fatal("MIMO_API_KEY not set")
 	}
 
-	llmClient := llm.NewClient(cfg.DeepseekBaseURL, cfg.DeepseekAPIKey, cfg.DeepseekModel)
-	var ttsClient *tts.Client
-	if cfg.ElevenLabsKey != "" {
-		ttsClient = tts.NewClient(cfg.ElevenLabsKey)
-	}
+	llmClient := llm.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)
+	ttsClient := tts.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
 
 	var records []LatencyRecord
 	ctx := context.Background()

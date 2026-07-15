@@ -1,10 +1,15 @@
 package ws
 
 import (
+	"crypto/subtle"
+	"encoding/base64"
 	"encoding/json"
 	"fmt"
 	"log"
+	"net"
 	"net/http"
+	"net/url"
+	"strings"
 	"sync"
 	"time"
 
@@ -13,27 +18,13 @@ import (
 	"github.com/gorilla/websocket"
 )
 
-// Upgrade wraps the websocket upgrader with auth and limits.
-func Upgrade(w http.ResponseWriter, r *http.Request, cfg *config.Config) (*websocket.Conn, error) {
-	token := r.URL.Query().Get("token")
-	if token != cfg.AppToken {
-		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return nil, fmt.Errorf("unauthorized")
-	}
-	return upgrader.Upgrade(w, r, nil)
-}
-
-var upgrader = websocket.Upgrader{
-	ReadBufferSize:  4096,
-	WriteBufferSize: 4096,
-	CheckOrigin:     func(r *http.Request) bool { return true },
-}
+const authProtocolPrefix = "qiuqiu-auth."
 
 type Hub struct {
-	cfg       *config.Config
-	mu        sync.Mutex
-	conns     map[*websocket.Conn]string // conn -> client IP
-	ipCounts  map[string]int
+	cfg      *config.Config
+	mu       sync.Mutex
+	conns    map[*websocket.Conn]string
+	ipCounts map[string]int
 }
 
 func NewHub(cfg *config.Config) *Hub {
@@ -44,101 +35,163 @@ func NewHub(cfg *config.Config) *Hub {
 	}
 }
 
-// HandleHealth returns 200 for liveness checks.
 func (h *Hub) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
-	w.Write([]byte("ok"))
+	_, _ = w.Write([]byte("ok"))
 }
 
-// HandleWS upgrades HTTP to WebSocket for match watching.
-func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
-	// Auth check
-	token := r.URL.Query().Get("token")
-	if token != h.cfg.AppToken {
+func (h *Hub) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), error) {
+	token, protocol := requestToken(r)
+	if h.cfg.AppToken != "" && !tokenEqual(token, h.cfg.AppToken) && !sameOriginClient(r) {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return
+		return nil, func() {}, fmt.Errorf("unauthorized")
+	}
+	if !h.cfg.OriginAllowedForHost(r.Header.Get("Origin"), r.Host) {
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return nil, func() {}, fmt.Errorf("origin not allowed")
 	}
 
-	// Per-IP connection limit
-	clientIP := r.RemoteAddr
+	clientIP := remoteIP(r.RemoteAddr)
 	h.mu.Lock()
 	if h.ipCounts[clientIP] >= h.cfg.MaxConnsPerIP() {
 		h.mu.Unlock()
 		http.Error(w, "too many connections", http.StatusTooManyRequests)
-		return
+		return nil, func() {}, fmt.Errorf("too many connections")
 	}
 	h.ipCounts[clientIP]++
 	h.mu.Unlock()
 
-	defer func() {
+	releaseCount := func() {
 		h.mu.Lock()
 		h.ipCounts[clientIP]--
 		if h.ipCounts[clientIP] <= 0 {
 			delete(h.ipCounts, clientIP)
 		}
 		h.mu.Unlock()
-	}()
+	}
 
-	conn, err := upgrader.Upgrade(w, r, nil)
+	responseHeader := http.Header{}
+	if protocol != "" {
+		responseHeader.Set("Sec-WebSocket-Protocol", protocol)
+	}
+	upgrader := websocket.Upgrader{
+		ReadBufferSize:  4096,
+		WriteBufferSize: 4096,
+		CheckOrigin: func(request *http.Request) bool {
+			return h.cfg.OriginAllowedForHost(request.Header.Get("Origin"), request.Host)
+		},
+	}
+	conn, err := upgrader.Upgrade(w, r, responseHeader)
 	if err != nil {
-		log.Printf("ws upgrade error: %v", err)
-		return
+		releaseCount()
+		return nil, func() {}, err
 	}
 
 	conn.SetReadLimit(h.cfg.WSReadLimit())
-	conn.SetReadDeadline(time.Now().Add(time.Duration(h.cfg.WSReadTimeout()) * time.Second))
+	_ = conn.SetReadDeadline(time.Now().Add(time.Duration(h.cfg.WSReadTimeout()) * time.Second))
+	conn.SetPongHandler(func(string) error {
+		return conn.SetReadDeadline(time.Now().Add(time.Duration(h.cfg.WSReadTimeout()) * time.Second))
+	})
 
 	h.mu.Lock()
 	h.conns[conn] = clientIP
 	h.mu.Unlock()
 
-	defer func() {
-		h.mu.Lock()
-		delete(h.conns, conn)
-		h.mu.Unlock()
-		conn.Close()
-	}()
+	var releaseOnce sync.Once
+	release := func() {
+		releaseOnce.Do(func() {
+			h.mu.Lock()
+			delete(h.conns, conn)
+			h.mu.Unlock()
+			releaseCount()
+		})
+	}
+	return conn, release, nil
+}
 
-	// Send welcome message
-	welcome := map[string]string{"type": "welcome", "message": "connected"}
-	data, _ := json.Marshal(welcome)
-	conn.WriteMessage(websocket.TextMessage, data)
+func sameOriginClient(r *http.Request) bool {
+	origin := strings.TrimSpace(r.Header.Get("Origin"))
+	if origin == "" {
+		return false
+	}
+	parsed, err := url.Parse(origin)
+	return err == nil && parsed.Scheme != "" && strings.EqualFold(parsed.Host, strings.TrimSpace(r.Host))
+}
 
-	// Ping-pong keepalive
-	conn.SetPongHandler(func(string) error {
-		conn.SetReadDeadline(time.Now().Add(time.Duration(h.cfg.WSReadTimeout()) * time.Second))
-		return nil
-	})
+func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
+	conn, release, err := h.Upgrade(w, r)
+	if err != nil {
+		return
+	}
+	defer release()
+	defer conn.Close()
 
-	pingTicker := time.NewTicker(30 * time.Second)
-	defer pingTicker.Stop()
+	if err := conn.WriteJSON(map[string]string{"type": "welcome", "message": "connected"}); err != nil {
+		return
+	}
 
-	// Read loop — handle client messages
+	readDone := make(chan struct{})
 	go func() {
+		defer close(readDone)
 		for {
-			_, msg, err := conn.ReadMessage()
+			_, message, err := conn.ReadMessage()
 			if err != nil {
 				return
 			}
-			var req map[string]interface{}
-			if json.Unmarshal(msg, &req) == nil {
-				if req["type"] == "ping" {
-					resp := map[string]string{"type": "pong"}
-					data, _ := json.Marshal(resp)
-					conn.WriteMessage(websocket.TextMessage, data)
+			var request map[string]interface{}
+			if json.Unmarshal(message, &request) == nil && request["type"] == "ping" {
+				if err := conn.WriteJSON(map[string]string{"type": "pong"}); err != nil {
+					return
 				}
 			}
 		}
 	}()
 
-	// Write loop — periodic ping
+	pingTicker := time.NewTicker(30 * time.Second)
+	defer pingTicker.Stop()
 	for {
 		select {
+		case <-readDone:
+			return
 		case <-pingTicker.C:
-			conn.SetWriteDeadline(time.Now().Add(time.Duration(h.cfg.WSWriteTimeout()) * time.Second))
+			_ = conn.SetWriteDeadline(time.Now().Add(time.Duration(h.cfg.WSWriteTimeout()) * time.Second))
 			if err := conn.WriteMessage(websocket.PingMessage, nil); err != nil {
+				log.Printf("ws ping error: %v", err)
 				return
 			}
 		}
 	}
+}
+
+func requestToken(r *http.Request) (string, string) {
+	authorization := strings.TrimSpace(r.Header.Get("Authorization"))
+	if strings.HasPrefix(authorization, "Bearer ") {
+		return strings.TrimSpace(strings.TrimPrefix(authorization, "Bearer ")), ""
+	}
+	for _, protocol := range websocket.Subprotocols(r) {
+		if !strings.HasPrefix(protocol, authProtocolPrefix) {
+			continue
+		}
+		encoded := strings.TrimPrefix(protocol, authProtocolPrefix)
+		decoded, err := base64.RawURLEncoding.DecodeString(encoded)
+		if err == nil {
+			return string(decoded), protocol
+		}
+	}
+	return "", ""
+}
+
+func tokenEqual(left, right string) bool {
+	if len(left) != len(right) {
+		return false
+	}
+	return subtle.ConstantTimeCompare([]byte(left), []byte(right)) == 1
+}
+
+func remoteIP(remoteAddr string) string {
+	host, _, err := net.SplitHostPort(remoteAddr)
+	if err == nil {
+		return host
+	}
+	return remoteAddr
 }

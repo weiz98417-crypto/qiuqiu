@@ -68,7 +68,21 @@ func (m *StoreMemoryTools) EventsByPlayer(ctx context.Context, matchID, playerNa
 
 func (m *StoreMemoryTools) WriteTrace(ctx context.Context, trace Trace) error {
 	m.mu.Lock()
-	m.traces = append(m.traces, trace)
+	replaced := false
+	for index := range m.traces {
+		if m.traces[index].ID == trace.ID {
+			if !sameTraceRequest(m.traces[index], trace) {
+				m.mu.Unlock()
+				return ErrTraceConflict
+			}
+			m.traces[index] = trace
+			replaced = true
+			break
+		}
+	}
+	if !replaced {
+		m.traces = append(m.traces, trace)
+	}
 	m.appendTraceTurnsLocked(trace)
 	m.mu.Unlock()
 	if m.traceWriter != nil {
@@ -175,12 +189,22 @@ func (m *StoreMemoryTools) GetTrace(ctx context.Context, matchID, traceID string
 }
 
 func (m *StoreMemoryTools) appendTraceTurnsLocked(trace Trace) {
+	if trace.ID != "" {
+		kept := m.turns[:0]
+		for _, turn := range m.turns {
+			if turn.TraceID != trace.ID || turn.MatchID != trace.MatchID || turn.UserID != trace.UserID {
+				kept = append(kept, turn)
+			}
+		}
+		m.turns = kept
+	}
 	eventID := ""
 	if len(trace.RetrievedEvent) > 0 {
 		eventID = trace.RetrievedEvent[0]
 	}
 	if strings.TrimSpace(trace.Input) != "" {
 		m.turns = append(m.turns, ConversationTurn{
+			TraceID:   trace.ID,
 			MatchID:   trace.MatchID,
 			UserID:    trace.UserID,
 			Role:      "user",
@@ -190,6 +214,7 @@ func (m *StoreMemoryTools) appendTraceTurnsLocked(trace Trace) {
 	}
 	if strings.TrimSpace(trace.Output) != "" {
 		m.turns = append(m.turns, ConversationTurn{
+			TraceID:   trace.ID,
 			MatchID:   trace.MatchID,
 			UserID:    trace.UserID,
 			Role:      "qiuqiu",
@@ -202,6 +227,10 @@ func (m *StoreMemoryTools) appendTraceTurnsLocked(trace Trace) {
 	if len(m.turns) > maxTurns {
 		m.turns = m.turns[len(m.turns)-maxTurns:]
 	}
+}
+
+func sameTraceRequest(existing, incoming Trace) bool {
+	return existing.ID == incoming.ID && existing.MatchID == incoming.MatchID && existing.UserID == incoming.UserID && existing.Input == incoming.Input
 }
 
 func (m *StoreMemoryTools) trimTracesAndTurnsLocked(matchID string) {
@@ -259,7 +288,7 @@ func mergeTurns(a, b []ConversationTurn, limit int) []ConversationTurn {
 	merged := make([]ConversationTurn, 0, len(a)+len(b))
 	for _, turns := range [][]ConversationTurn{a, b} {
 		for _, turn := range turns {
-			key := turn.MatchID + "\x00" + turn.UserID + "\x00" + turn.Role + "\x00" + turn.Text + "\x00" + turn.EventID + "\x00" + turn.CreatedAt.Format(time.RFC3339Nano)
+			key := turn.TraceID + "\x00" + turn.MatchID + "\x00" + turn.UserID + "\x00" + turn.Role + "\x00" + turn.Text + "\x00" + turn.EventID + "\x00" + turn.CreatedAt.Format(time.RFC3339Nano)
 			if seen[key] {
 				continue
 			}

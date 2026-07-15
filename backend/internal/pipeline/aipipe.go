@@ -8,6 +8,7 @@ import (
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/tts"
 	"strings"
+	"sync"
 	"time"
 )
 
@@ -18,6 +19,14 @@ type AIPipeline struct {
 	promptMgr   *PromptManager
 	recent      *RecentPhrases
 	fallbackLLM *llm.Client
+}
+
+type AIGenerationInstruction struct {
+	InstructionType string
+	Event           *event.StandardEvent
+	MatchContext    *EnrichedContext
+	Expression      string
+	Priority        int
 }
 
 func NewAIPipeline(llmClient *llm.Client, ttsClient *tts.Client, promptMgr *PromptManager) *AIPipeline {
@@ -36,6 +45,7 @@ func (p *AIPipeline) SetFallbackLLM(client *llm.Client) {
 type AIPipelineOutput struct {
 	Text         string        `json:"text"`
 	AudioData    []byte        `json:"audio,omitempty"`
+	AudioMIME    string        `json:"audio_mime,omitempty"`
 	Expression   string        `json:"expression"`
 	LLMDuration  time.Duration `json:"llm_latency_ms"`
 	TTSDuration  time.Duration `json:"tts_latency_ms"`
@@ -85,6 +95,7 @@ func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationIns
 					ttsResult, err := p.ttsClient.Synthesize(ctx, sentence, "cgSgspJ2msm6clMCkdW9")
 					if err == nil {
 						output.AudioData = ttsResult.AudioData
+						output.AudioMIME = ttsResult.MimeType
 						output.TTSDuration = ttsResult.Duration
 					}
 				}
@@ -101,6 +112,7 @@ func (p *AIPipeline) ProcessStreaming(ctx context.Context, inst *AIGenerationIns
 			ttsResult, err := p.ttsClient.Synthesize(ctx, remaining, "cgSgspJ2msm6clMCkdW9")
 			if err == nil {
 				output.AudioData = ttsResult.AudioData
+				output.AudioMIME = ttsResult.MimeType
 				output.TTSDuration = ttsResult.Duration
 			}
 		}
@@ -184,6 +196,7 @@ func (p *AIPipeline) Process(ctx context.Context, inst *AIGenerationInstruction)
 			output.Error = fmt.Errorf("tts: %w", err)
 		} else {
 			output.AudioData = ttsResult.AudioData
+			output.AudioMIME = ttsResult.MimeType
 			output.TTSDuration = ttsResult.Duration
 		}
 	}
@@ -194,7 +207,7 @@ func (p *AIPipeline) Process(ctx context.Context, inst *AIGenerationInstruction)
 func (p *AIPipeline) primaryLLM(ctx context.Context, messages []llm.Message, temp float64) (*llm.GenerateResult, error) {
 	result, err := p.llmClient.GenerateWithMessages(ctx, messages, temp)
 	if err != nil && p.fallbackLLM != nil {
-		log.Printf("ai-pipeline: Deepseek failed, falling back to Ollama")
+		log.Printf("ai-pipeline: MiMo failed, falling back to Ollama")
 		return p.fallbackLLM.GenerateWithMessages(ctx, messages, temp)
 	}
 	return result, err
@@ -216,13 +229,16 @@ var fallbackPool = map[string][]string{
 }
 
 var fallbackIdx = make(map[string]int)
+var fallbackMu sync.Mutex
 
 func templateFallback(ev *event.StandardEvent) string {
 	pool, ok := fallbackPool[ev.Type]
 	if !ok {
 		return "嗯！"
 	}
+	fallbackMu.Lock()
 	idx := fallbackIdx[ev.Type]
 	fallbackIdx[ev.Type] = (idx + 1) % len(pool)
+	fallbackMu.Unlock()
 	return pool[idx]
 }

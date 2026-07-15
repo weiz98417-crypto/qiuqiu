@@ -5,11 +5,12 @@ import "time"
 // AgentBoundaryRequest is the stable in-process DTO that can later cross a
 // process boundary if the companion agent moves out of the Go backend.
 type AgentBoundaryRequest struct {
-	MatchID string              `json:"matchId"`
-	UserID  string              `json:"userId"`
-	Text    string              `json:"text"`
-	Now     time.Time           `json:"now"`
-	Voice   *VoiceTraceMetadata `json:"voice,omitempty"`
+	SignalID string              `json:"signalId"`
+	MatchID  string              `json:"matchId"`
+	UserID   string              `json:"userId"`
+	Text     string              `json:"text"`
+	Now      time.Time           `json:"now"`
+	Voice    *VoiceTraceMetadata `json:"voice,omitempty"`
 }
 
 type AgentBoundaryResponse struct {
@@ -64,6 +65,13 @@ func CompanionToolSchemas() []ToolSchema {
 			Output:            map[string]string{"events": "[]matchstate.MatchEvent"},
 		},
 		{
+			Name:              "match.verify_user_claim",
+			Description:       "Compare a user-provided score or event claim with the current match snapshot and active events.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"kind": "string", "status": "string"},
+			Output:            map[string]string{"claim": "companion.FactClaim"},
+		},
+		{
 			Name:              "conversation.read_recent",
 			Description:       "Read the last few user and companion turns for follow-up resolution.",
 			MutatesMatchFacts: false,
@@ -76,6 +84,13 @@ func CompanionToolSchemas() []ToolSchema {
 			MutatesMatchFacts: false,
 			Input:             map[string]string{"matchId": "string", "userId": "string", "roles": "user,qiuqiu"},
 			Output:            map[string]string{"ok": "bool"},
+		},
+		{
+			Name:              "relationship.apply",
+			Description:       "Apply an idempotent relationship decision before language realization.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"signalId": "string", "userId": "string", "matchId": "string"},
+			Output:            map[string]string{"decision": "relationship.Decision"},
 		},
 		{
 			Name:              "trace.write_decision",
