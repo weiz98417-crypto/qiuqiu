@@ -8,6 +8,7 @@ backend/cmd/**/*.out
 client/build/
 client/.dart_tool/
 client/android/.gradle/
+client/android/build/
 client/android/app/build/
 client/android/local.properties
 
@@ -28,11 +29,14 @@ Thumbs.db
 
 # Flutter
 client/.pub/
-client/pubspec.lock
 
 # Screenshots
-*.png
-*.jpg
+artifacts/**/*.png
+artifacts/**/*.jpg
+artifacts/runtime/
+test-results/**/*.png
+playwright-report/**/*.png
+client/assets/live2d/operator-*-verified.png
 .gstack/
 
 # Backup / temp
@@ -40,3 +44,7 @@ client/pubspec.lock
 Textoon-main/
 .claude/
 .codex/
+artifacts/evals/
+node_modules/
+test-results/
+playwright-report/
