@@ -4,11 +4,14 @@
 <meta charset="utf-8">
 <meta name="viewport" content="width=device-width, initial-scale=1.0">
 <title>赛事直播导演控台 - 实战导演</title>
-<link rel="preconnect" href="https://fonts.googleapis.com">
-<link rel="preconnect" href="https://fonts.gstatic.com" crossorigin>
-<link href="https://fonts.googleapis.com/css2?family=Material+Symbols+Outlined:wght,FILL@100..700,0..1&display=swap" rel="stylesheet">
-<link href="https://fonts.googleapis.com/css2?family=Inter:wght@400;500;600;700;800&family=JetBrains+Mono:wght@500;700&display=swap" rel="stylesheet">
 <style>
+  @font-face {
+    font-family: "Material Symbols Outlined";
+    font-style: normal;
+    font-weight: 400;
+    font-display: block;
+    src: url("/live2d-assets/fonts/material-symbols-outlined.ttf") format("truetype");
+  }
   :root {
     --background: #051424;
     --surface: #051424;
@@ -35,6 +38,7 @@
   body { height: 100vh; overflow: hidden; display: flex; font-size: 14px; line-height: 20px; }
   button, input, select, textarea { font: inherit; }
   button { cursor: pointer; }
+  button:disabled { cursor: not-allowed; opacity: .45; filter: none; transform: none; box-shadow: none; }
   input, select, textarea {
     min-width: 0;
     border: 1px solid rgba(169, 138, 125, .22);
@@ -55,7 +59,20 @@
   ::-webkit-scrollbar-track { background: transparent; }
   ::-webkit-scrollbar-thumb { background: rgba(255, 255, 255, .12); border-radius: 999px; }
   ::selection { background: var(--primary-container); color: white; }
-  .material-symbols-outlined { font-size: 20px; line-height: 1; vertical-align: middle; }
+  .material-symbols-outlined {
+    font-family: "Material Symbols Outlined";
+    font-weight: 400;
+    font-style: normal;
+    font-size: 20px;
+    line-height: 1;
+    letter-spacing: normal;
+    text-transform: none;
+    white-space: nowrap;
+    word-wrap: normal;
+    direction: ltr;
+    font-feature-settings: "liga";
+    vertical-align: middle;
+  }
   .shell { display: flex; width: 100%; min-width: 0; }
   .side-nav {
     width: 256px;
@@ -98,7 +115,6 @@
     background: var(--primary-container);
     color: var(--on-primary-container);
     font-weight: 800;
-    box-shadow: 0 0 16px rgba(255,107,0,.28);
   }
   .quick-btn { width: calc(100% - 16px); margin: 0 8px; padding: 10px 12px; display: flex; align-items: center; justify-content: center; gap: 8px; }
   .primary-btn { width: 100%; min-height: 56px; padding: 12px; display: flex; align-items: center; justify-content: center; gap: 10px; font-size: 20px; line-height: 28px; }
@@ -387,8 +403,8 @@
   .view.active { display: grid; }
   .workspace.view.active { display: grid; }
   .scorebar.view.active { display: grid; }
-  .setup-canvas.view.active, .settings-canvas.view.active, .trace-canvas.view.active { display: block; }
-  .setup-canvas, .settings-canvas, .trace-canvas {
+  .setup-canvas.view.active, .settings-canvas.view.active, .trace-canvas.view.active, .control-canvas.view.active { display: block; }
+  .setup-canvas, .settings-canvas, .trace-canvas, .control-canvas {
     flex: 1;
     min-height: 0;
     margin-top: 64px;
@@ -495,6 +511,70 @@
     align-items: center;
   }
   .metric-value { color: var(--green); font-size: 32px; line-height: 40px; font-weight: 800; }
+  .control-grid { display: grid; grid-template-columns: minmax(0, 1.5fr) minmax(320px, .7fr); gap: 16px; align-items: start; }
+  .control-stack { display: grid; gap: 16px; }
+  .source-list { display: grid; gap: 1px; background: rgba(255,255,255,.06); }
+  .source-row {
+    background: var(--surface-container);
+    min-height: 92px;
+    padding: 14px 16px;
+    display: grid;
+    grid-template-columns: minmax(180px, .8fr) minmax(220px, 1.3fr) auto;
+    gap: 16px;
+    align-items: center;
+  }
+  .source-name { display: flex; align-items: center; gap: 10px; font-weight: 800; }
+  .source-state { color: var(--on-variant); font: 700 11px/16px "JetBrains Mono", monospace; }
+  .source-state.ok { color: var(--green); }
+  .source-state.bad { color: var(--error); }
+  .inline-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
+  .danger-btn {
+    border: 1px solid rgba(255,180,171,.5);
+    background: rgba(127,29,29,.22);
+    color: var(--error);
+    border-radius: 8px;
+    padding: 9px 12px;
+    font-weight: 800;
+  }
+  .danger-btn:hover { border-color: var(--error); background: rgba(127,29,29,.34); }
+  .mode-switch { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+  .mode-option { position: relative; }
+  .mode-option input { position: absolute; opacity: 0; pointer-events: none; }
+  .mode-option span {
+    min-height: 70px;
+    border: 1px solid rgba(169,138,125,.22);
+    background: var(--surface-lowest);
+    border-radius: 8px;
+    padding: 12px;
+    display: grid;
+    gap: 4px;
+    align-content: center;
+  }
+  .mode-option input:checked + span { border-color: var(--primary); background: rgba(255,107,0,.12); color: var(--primary); }
+  .event-toggle-grid { display: grid; grid-template-columns: repeat(3, minmax(0,1fr)); gap: 8px; }
+  .event-toggle { position: relative; }
+  .event-toggle input { position: absolute; opacity: 0; pointer-events: none; }
+  .event-toggle span {
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    min-height: 42px;
+    border: 1px solid rgba(169,138,125,.22);
+    background: var(--surface-lowest);
+    border-radius: 7px;
+    padding: 8px 10px;
+    color: var(--on-variant);
+  }
+  .event-toggle input:checked + span { border-color: rgba(255,182,147,.55); color: var(--on-surface); background: rgba(255,182,147,.08); }
+  .monitor-grid { display: grid; grid-template-columns: repeat(4, minmax(0,1fr)); gap: 1px; background: rgba(255,255,255,.06); }
+  .monitor-cell { min-height: 112px; padding: 14px; background: var(--surface-container); display: grid; align-content: space-between; gap: 8px; }
+  .monitor-label { color: var(--on-variant); font-size: 11px; line-height: 16px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+  .monitor-value { font-size: 22px; line-height: 28px; font-weight: 800; }
+  .monitor-value.ok { color: var(--green); }
+  .monitor-value.bad { color: var(--error); }
+  .activity-list { display: grid; gap: 1px; background: rgba(255,255,255,.06); }
+  .activity-row { background: var(--surface-container); padding: 10px 12px; display: grid; grid-template-columns: 80px 130px 1fr auto; gap: 10px; align-items: center; }
+  .callout { border-left: 3px solid var(--primary); background: rgba(255,182,147,.07); padding: 12px 14px; color: var(--on-variant); }
   .trace-layout { display: grid; grid-template-columns: minmax(440px, 1.2fr) minmax(360px, .8fr); gap: 16px; align-items: start; }
   .trace-toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
   .trace-filter.active { color: var(--primary); border-color: rgba(255,182,147,.55); background: rgba(255,182,147,.08); }
@@ -544,9 +624,9 @@
     .scorebar { grid-template-columns: 1fr; gap: 8px; }
     .score-side.home, .score-side.away { justify-content: center; padding: 0; }
     .workspace { padding: 10px; }
-    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .trace-layout, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview { grid-template-columns: 1fr; }
+    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .trace-layout, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview, .control-grid, .source-row, .event-toggle-grid, .monitor-grid, .activity-row { grid-template-columns: 1fr; }
     .half { grid-column: 1 / -1; }
-    .setup-canvas, .settings-canvas, .trace-canvas { padding: 16px; }
+    .setup-canvas, .settings-canvas, .trace-canvas, .control-canvas { padding: 16px; }
   }
 </style>
 </head>
@@ -557,18 +637,20 @@
         <div class="avatar"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">account_circle</span></div>
         <div>
           <div class="brand-title">导演工作台</div>
-          <div class="brand-sub">V2.4.0 稳定版</div>
+          <div class="brand-sub">赛事运行控制</div>
         </div>
       </div>
-      <button class="quick-btn" id="quickCut" type="button"><span class="material-symbols-outlined">bolt</span>快速切镜</button>
+      <button class="quick-btn" id="manualTakeover" type="button"><span class="material-symbols-outlined">pan_tool</span>人工接管</button>
       <div class="nav-stack">
-        <a class="nav-item" href="#setup" data-view-link="setup"><span class="material-symbols-outlined">settings_applications</span><span>赛前配置</span></a>
         <a class="nav-item active" href="#live" data-view-link="live"><span class="material-symbols-outlined" style="font-variation-settings:'FILL' 1">videocam</span><span>实战导演</span></a>
+        <a class="nav-item" href="#sources" data-view-link="sources"><span class="material-symbols-outlined">input</span><span>信号源</span></a>
+        <a class="nav-item" href="#automation" data-view-link="automation"><span class="material-symbols-outlined">account_tree</span><span>自动化策略</span></a>
+        <a class="nav-item" href="#monitor" data-view-link="monitor"><span class="material-symbols-outlined">monitor_heart</span><span>实时监控</span></a>
         <a class="nav-item" href="#traces" data-view-link="traces"><span class="material-symbols-outlined">fact_check</span><span>球球日志</span></a>
-        <a class="nav-item" href="#settings" data-view-link="settings"><span class="material-symbols-outlined">tune</span><span>系统设置</span></a>
       </div>
       <div class="nav-stack" style="margin-top:auto">
-        <a class="nav-item" href="#"><span class="material-symbols-outlined">help</span><span>帮助文档</span></a>
+        <a class="nav-item" href="#setup" data-view-link="setup"><span class="material-symbols-outlined">settings_applications</span><span>赛前配置</span></a>
+        <a class="nav-item" href="#settings" data-view-link="settings"><span class="material-symbols-outlined">tune</span><span>工作台设置</span></a>
       </div>
     </nav>
 
@@ -577,15 +659,15 @@
         <div style="display:flex;align-items:center;min-width:0">
           <div class="top-title">赛事直播导演控台</div>
           <nav class="top-tabs">
-            <a href="#live" data-view-link="live">实时监控</a>
-            <a href="#setup" data-view-link="setup">信号源管理</a>
-            <a class="active" href="#live" data-view-link="live">自动化流</a>
+            <a class="active" href="#live" data-view-link="live">实战导演</a>
+            <a href="#sources" data-view-link="sources">信号源</a>
+            <a href="#automation" data-view-link="automation">自动化策略</a>
+            <a href="#monitor" data-view-link="monitor">实时监控</a>
             <a href="#traces" data-view-link="traces">球球日志</a>
           </nav>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
-          <button class="icon-btn" title="通知" type="button"><span class="material-symbols-outlined">notifications</span></button>
-          <button class="icon-btn" title="账号" type="button"><span class="material-symbols-outlined">account_circle</span></button>
+          <span class="fact-pill" id="authState">正在确认权限</span>
         </div>
       </header>
 
@@ -689,6 +771,12 @@
                     <option value="5">5 爆发</option>
                   </select>
                 </label>
+                <label>事实状态
+                  <select id="confirmation">
+                    <option value="pending">等待确认</option>
+                    <option value="confirmed">已确认</option>
+                  </select>
+                </label>
                 <label>动作
                   <select id="action">
                     <option value="">自动</option>
@@ -724,7 +812,7 @@
                 </div>
                 <textarea id="contextPreview" readonly></textarea>
               </div>
-              <button class="primary-btn" type="submit"><span class="material-symbols-outlined">send</span>发布详细事件 (PUSH TO AI)</button>
+              <button class="primary-btn" type="submit"><span class="material-symbols-outlined">send</span>发布详细事件</button>
             </div>
           </form>
 
@@ -833,65 +921,214 @@
         </div>
       </section>
 
+      <section class="control-canvas view" data-view-panel="sources">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">信号源</h1>
+            <p class="page-desc">人工录入始终可用，外部数据源只在导演明确启用后接管比赛事件。</p>
+          </div>
+          <div class="inline-actions">
+            <span class="fact-pill" id="activeSourceBadge">读取中</span>
+            <button class="ghost-btn" id="refreshSources" type="button"><span class="material-symbols-outlined">refresh</span> 刷新状态</button>
+          </div>
+        </div>
+
+        <div class="control-grid">
+          <section class="settings-card">
+            <div class="settings-card-head">
+              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">input</span>可用来源</div>
+              <span class="fact-pill" id="sourceMatchId">test</span>
+            </div>
+            <div class="source-list">
+              <div class="source-row">
+                <div>
+                  <div class="source-name"><span class="material-symbols-outlined">edit_note</span>人工导演</div>
+                  <div class="muted">通过实战导演页录入和更正比赛事实</div>
+                </div>
+                <div><div class="source-state" id="manualSourceState">等待读取</div><div class="muted">不会被外部源禁用，可随时接管</div></div>
+                <div class="inline-actions"><button class="ghost-btn" id="useManualSource" type="button">切换到人工</button></div>
+              </div>
+              <div class="source-row">
+                <div>
+                  <div class="source-name"><span class="material-symbols-outlined">replay</span>回放数据</div>
+                  <div class="muted">用于联调和演示，不连接真实赛事供应商</div>
+                </div>
+                <div><div class="source-state" id="replaySourceState">等待读取</div><div class="muted">适合验证完整链路</div></div>
+                <div class="inline-actions"><button class="ghost-btn" id="useReplaySource" type="button">启用回放</button></div>
+              </div>
+              <div class="source-row">
+                <div>
+                  <div class="source-name"><span class="material-symbols-outlined">cloud_sync</span>API-Sports</div>
+                  <div class="muted">按赛事 Fixture ID 拉取外部比赛事件</div>
+                </div>
+                <div style="display:grid;grid-template-columns:1fr auto;gap:8px;align-items:end">
+                  <label>Fixture ID <input class="mono" id="sourceFixtureId" min="1" placeholder="例如 1208021" type="number"></label>
+                  <label style="display:flex;align-items:center;gap:7px;padding-bottom:8px;text-transform:none;letter-spacing:0"><input id="sourceImportHistory" type="checkbox" style="width:auto">导入历史</label>
+                </div>
+                <div class="inline-actions"><span class="source-state" id="apiSourceState">等待读取</span><button class="quick-btn" id="useApiSource" type="button" style="width:auto;margin:0">启用外部源</button></div>
+              </div>
+            </div>
+          </section>
+
+          <div class="control-stack">
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">route</span>当前接管状态</div></div>
+              <div class="settings-card-body">
+                <div class="metric-card"><span>正在使用</span><strong id="activeSourceName">读取中</strong></div>
+                <div class="metric-card"><span>最近轮询</span><span class="mono" id="sourceLastPoll">无</span></div>
+                <div class="metric-card"><span>最近事件</span><span class="mono" id="sourceLastEvent">无</span></div>
+                <div class="callout" id="sourceMessage">正在读取来源状态。</div>
+              </div>
+            </section>
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--error)">pan_tool</span>紧急处置</div></div>
+              <div class="settings-card-body">
+                <p class="page-desc">人工接管会立即停用外部源，并暂停自动播报。导演手写的话术仍可发布。</p>
+                <button class="danger-btn" id="manualTakeoverSource" type="button">人工接管并暂停自动播报</button>
+              </div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="control-canvas view" data-view-panel="automation">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">自动化策略</h1>
+            <p class="page-desc">控制哪些比赛事件会让球球主动开口。比赛事实始终立即同步，不受播报策略影响。</p>
+          </div>
+          <div class="inline-actions">
+            <span class="fact-pill" id="automationBadge">读取中</span>
+            <button class="ghost-btn" id="refreshAutomation" type="button"><span class="material-symbols-outlined">refresh</span> 重新读取</button>
+          </div>
+        </div>
+
+        <div class="control-grid">
+          <div class="control-stack">
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">toggle_on</span>运行模式</div></div>
+              <div class="settings-card-body">
+                <div class="mode-switch">
+                  <label class="mode-option"><input checked name="automationMode" type="radio" value="active"><span><strong>自动播报开启</strong><small class="muted">按事件范围与冷却时间主动互动</small></span></label>
+                  <label class="mode-option"><input name="automationMode" type="radio" value="paused"><span><strong>自动播报暂停</strong><small class="muted">只同步事实，保留导演手写话术</small></span></label>
+                </div>
+              </div>
+            </section>
+
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">event_available</span>允许主动互动的事件</div></div>
+              <div class="settings-card-body">
+                <div class="event-toggle-grid" id="automationEventTypes"></div>
+              </div>
+            </section>
+
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--tertiary)">timer</span>节奏控制</div></div>
+              <div class="settings-card-body setup-grid-2">
+                <label>普通事件冷却时间（秒）<input class="mono" id="automationCooldown" max="300" min="0" type="number" value="90"></label>
+                <div class="callout">进球、红牌、点球、VAR、中场和完场属于关键事件，可以绕过冷却，但不会打断用户正在说的话。</div>
+              </div>
+            </section>
+            <button class="primary-btn" id="saveAutomation" type="button"><span class="material-symbols-outlined">save</span>保存自动化策略</button>
+          </div>
+
+          <div class="control-stack">
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">priority_high</span>互动优先级</div></div>
+              <div class="settings-card-body">
+                <div class="metric-card"><strong>1</strong><span>用户开口时，立即打断主动播报</span></div>
+                <div class="metric-card"><strong>2</strong><span>用户回答生成和播放期间，比赛事件排队等待</span></div>
+                <div class="metric-card"><strong>3</strong><span>关键比赛事实可刷新一次用户答案</span></div>
+                <div class="metric-card"><strong>4</strong><span>播放完成后，再释放下一条主动语音</span></div>
+              </div>
+            </section>
+            <section class="settings-card">
+              <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">summarize</span>当前策略摘要</div></div>
+              <div class="settings-card-body" id="automationSummary"><div class="muted">正在读取策略。</div></div>
+            </section>
+          </div>
+        </div>
+      </section>
+
+      <section class="control-canvas view" data-view-panel="monitor">
+        <div class="page-head">
+          <div>
+            <h1 class="page-title">实时监控</h1>
+            <p class="page-desc">统一查看服务、数据源、自动化策略、比赛事实和语音播放结果。</p>
+          </div>
+          <div class="inline-actions">
+            <span class="fact-pill" id="monitorUpdatedAt">尚未刷新</span>
+            <button class="ghost-btn" id="refreshMonitor" type="button"><span class="material-symbols-outlined">refresh</span> 立即刷新</button>
+          </div>
+        </div>
+
+        <section class="settings-card" style="margin-bottom:16px">
+          <div class="monitor-grid">
+            <div class="monitor-cell"><div class="monitor-label">后端服务</div><div class="monitor-value" id="monitorHealthValue">读取中</div><div class="muted mono" id="monitorHealthMeta">/health</div></div>
+            <div class="monitor-cell"><div class="monitor-label">比赛数据源</div><div class="monitor-value" id="monitorSourceValue">读取中</div><div class="muted" id="monitorSourceMeta">等待来源状态</div></div>
+            <div class="monitor-cell"><div class="monitor-label">自动播报</div><div class="monitor-value" id="monitorAutomationValue">读取中</div><div class="muted" id="monitorAutomationMeta">等待策略状态</div></div>
+            <div class="monitor-cell"><div class="monitor-label">比赛状态</div><div class="monitor-value" id="monitorMatchValue">读取中</div><div class="muted" id="monitorMatchMeta">等待比赛事实</div></div>
+          </div>
+        </section>
+
+        <div class="control-grid">
+          <section class="settings-card">
+            <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">timeline</span>最近比赛事件</div><span class="fact-pill" id="monitorEventCount">0</span></div>
+            <div class="settings-card-body"><div class="activity-list" id="monitorEvents"><div class="muted">暂无数据。</div></div></div>
+          </section>
+          <section class="settings-card">
+            <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">graphic_eq</span>最近语音链路</div><span class="fact-pill" id="monitorTraceCount">0</span></div>
+            <div class="settings-card-body"><div class="activity-list" id="monitorVoice"><div class="muted">暂无数据。</div></div></div>
+          </section>
+        </div>
+      </section>
+
       <section class="settings-canvas view" data-view-panel="settings">
         <div class="page-head">
           <div>
-            <h1 class="page-title">系统设置中心</h1>
-            <p class="page-desc">配置模型、数字人表现、连接监控和导演工作台偏好。</p>
+            <h1 class="page-title">工作台设置</h1>
+            <p class="page-desc">只保存当前浏览器的导演台偏好。模型、语音和密钥由服务端环境配置统一管理。</p>
           </div>
-          <div class="status-strip">
-            <span class="status-dot"></span><span class="event-meta">连接正常</span>
-            <span style="width:1px;height:18px;background:rgba(255,255,255,.1)"></span>
-            <span class="event-meta mono">WS-ALPHA-01</span>
-          </div>
+          <span class="fact-pill" id="settingsAuthState">正在确认权限</span>
         </div>
 
         <div class="settings-grid">
           <div class="settings-stack">
             <section class="settings-card">
               <div class="settings-card-head">
-                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">memory</span>模型引擎配置</div>
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">dashboard_customize</span>导演台偏好</div>
               </div>
               <div class="settings-card-body">
-                <label>API Endpoint <input class="mono" id="apiEndpoint" value="https://api.deepseek.com/v1"></label>
-                <label>API Key <input class="mono" id="apiKey" type="password" value="sk-****************"></label>
                 <div class="settings-grid-2">
-                  <label>首选推理模型
-                    <select id="modelName">
-                      <option value="deepseek-v4-flash">DeepSeek V4 Flash</option>
-                      <option value="deepseek-chat">DeepSeek Chat</option>
-                      <option value="qwen-max">Qwen Max</option>
+                  <label>实时监控自动刷新
+                    <select id="monitorRefreshInterval">
+                      <option value="0">关闭</option>
+                      <option value="5" selected>每 5 秒</option>
+                      <option value="10">每 10 秒</option>
+                      <option value="30">每 30 秒</option>
                     </select>
                   </label>
-                  <label>推理温度
-                    <input id="temperature" type="range" min="0" max="1" step="0.1" value="0.3">
+                  <label>默认事件发布方式
+                    <select id="defaultPublishMode">
+                      <option value="auto">按自动化策略</option>
+                      <option value="quiet">只记事实</option>
+                    </select>
                   </label>
                 </div>
+                <button class="quick-btn" id="saveSettings" type="button" style="width:100%;margin:0"><span class="material-symbols-outlined">save</span>保存本机偏好</button>
               </div>
             </section>
 
             <section class="settings-card">
               <div class="settings-card-head">
-                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--tertiary)">face</span>数字人表现特征</div>
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--tertiary)">key</span>服务端运行配置</div>
               </div>
               <div class="settings-card-body">
-                <div class="settings-grid-2">
-                  <label>数字人渲染 ID <input class="mono" id="avatarId" value="AVATAR_SPORTS_M_01"></label>
-                  <label>主输出语言
-                    <select id="outputLanguage">
-                      <option value="zh">中文（简体）</option>
-                      <option value="en">English</option>
-                      <option value="ja">日本語</option>
-                    </select>
-                  </label>
+                <div class="callout">浏览器不保存大模型、语音合成或赛事供应商密钥。请在服务端环境变量中配置，并通过实时监控查看是否可用。</div>
+                <div class="inline-actions" style="justify-content:flex-start">
+                  <button class="ghost-btn" data-go-view="monitor" type="button">查看实时监控</button>
+                  <button class="ghost-btn" data-go-view="sources" type="button">查看数据源</button>
                 </div>
-                <label>声学模型</label>
-                <div class="radio-grid">
-                  <label class="radio-tile"><input checked name="voice" type="radio" value="calm_male"><span>沉稳男声</span></label>
-                  <label class="radio-tile"><input name="voice" type="radio" value="hype_male"><span>激情男声</span></label>
-                  <label class="radio-tile"><input name="voice" type="radio" value="pro_female"><span>专业女声</span></label>
-                </div>
-                <label>情绪表现敏感度 <input id="emotionSensitivity" type="range" min="0" max="100" value="80"></label>
               </div>
             </section>
           </div>
@@ -899,34 +1136,12 @@
           <div class="settings-stack">
             <section class="settings-card">
               <div class="settings-card-head">
-                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">wifi_tethering</span>连接与心跳</div>
-                <span class="status-dot"></span>
+                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">keyboard_command_key</span>已启用快捷键</div>
               </div>
               <div class="settings-card-body">
-                <div class="metric-card">
-                  <div><div class="event-meta">大模型 API 延迟</div><div class="muted mono">llm.core.stream</div></div>
-                  <div><span class="metric-value">12</span><span class="muted mono">ms</span></div>
-                </div>
-                <div class="metric-card">
-                  <div><div class="event-meta">直播推流服务器</div><div class="muted mono">rtmp://push.edge</div></div>
-                  <div><span class="metric-value">38</span><span class="muted mono">ms</span></div>
-                </div>
-                <div class="metric-card">
-                  <div><div class="event-meta">工作台状态</div><div class="muted mono">DIR-04_ZHAO</div></div>
-                  <div class="status ok">ONLINE</div>
-                </div>
-              </div>
-            </section>
-
-            <section class="settings-card">
-              <div class="settings-card-head">
-                <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">keyboard_command_key</span>快捷键</div>
-              </div>
-              <div class="settings-card-body">
-                <div class="metric-card"><span>循环切换待机槽位</span><span class="fact-pill">Tab</span></div>
-                <div class="metric-card"><span>强制打断数字人播报</span><span class="fact-pill" style="color:var(--error)">Esc</span></div>
-                <div class="metric-card"><span>确认发送当前指令</span><span class="fact-pill">Ctrl + Enter</span></div>
-                <button class="quick-btn" id="saveSettings" type="button" style="width:100%;margin:0"><span class="material-symbols-outlined">save</span>保存全局设置</button>
+                <div class="metric-card"><span>快速选择比赛事件</span><span class="fact-pill">1-0 / Q-W-E-R-T</span></div>
+                <div class="metric-card"><span>发布当前事件草稿</span><span class="fact-pill">Ctrl + Enter</span></div>
+                <div class="metric-card"><span>清空当前事件草稿</span><span class="fact-pill">Esc</span></div>
               </div>
             </section>
           </div>
@@ -986,7 +1201,21 @@
   <div class="toast" id="toast"></div>
 
 <script>
-const token = new URLSearchParams(location.search).get('token') || 'qiuqiu-dev-token';
+function loadOperatorToken() {
+  const url = new URL(window.location.href);
+  const queryToken = (url.searchParams.get('token') || '').trim();
+  if (queryToken) {
+    localStorage.setItem('qiuqiu.operator.token', queryToken);
+    url.searchParams.delete('token');
+    history.replaceState(null, '', `${url.pathname}${url.search}${url.hash}`);
+    return queryToken;
+  }
+  return localStorage.getItem('qiuqiu.operator.token') || '';
+}
+const token = loadOperatorToken();
+function authHeaders(headers = {}) {
+  return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
+}
 const $ = (id) => document.getElementById(id);
 
 const presets = [
@@ -1007,6 +1236,15 @@ const presets = [
   { key: 'T', type: 'operator_note', label: '备注', action: 'analysis', intensity: 2, text: '运营补充一条比赛背景。' }
 ];
 
+const automationEventOptions = [
+  ['kickoff', '开球'], ['goal', '进球'], ['shot', '射门'], ['big_chance', '绝佳机会'],
+  ['save', '扑救'], ['miss', '错失'], ['foul', '犯规'], ['yellow_card', '黄牌'],
+  ['red_card', '红牌'], ['var_check', 'VAR检查'], ['var_result', 'VAR结果'], ['goal_cancelled', '进球取消'],
+  ['penalty', '点球'], ['penalty_awarded', '点球判定'], ['substitution', '换人'],
+  ['injury', '伤停'], ['tactical_shift', '战术变化'], ['pressure', '持续压迫'],
+  ['halftime', '中场'], ['fulltime', '完场'], ['match_end', '比赛结束']
+].map(([type, label]) => ({ type, label }));
+
 const templates = [
   ['goal', '禁区内抢点破门。'], ['goal', '远射破门，门将没能碰到。'], ['goal', '反击推进后冷静推射得分。'], ['goal', '定位球机会转化成进球。'], ['goal', '补射得手，把比分改写。'],
   ['big_chance', '单刀机会出现，防线被打穿。'], ['big_chance', '门前连续混战，差点形成进球。'], ['big_chance', '反击三打二，机会非常好。'],
@@ -1017,11 +1255,13 @@ const templates = [
   ['yellow_card', '因为战术犯规吃到黄牌。'], ['yellow_card', '动作过大，裁判出示黄牌。'],
   ['red_card', '最后一名防守球员犯规，被直接罚下。'], ['red_card', '裁判出示红牌，比赛形势发生重大变化。'],
   ['var_check', 'VAR 正在检查禁区内接触。'], ['var_check', '裁判等待视频助理裁判确认进球是否有效。'], ['var_check', '主裁去场边看回放。'],
+  ['var_result', 'VAR 已经给出最终结果。'], ['goal_cancelled', 'VAR 判定越位，进球取消。'],
   ['penalty', '禁区内犯规，获得点球机会。'], ['penalty', '裁判判罚点球，比赛来到关键时刻。'],
+  ['penalty_awarded', '裁判确认点球判罚。'],
   ['substitution', '准备换人，明显是在调整节奏。'], ['substitution', '换上进攻球员，阵型可能要前压。'], ['substitution', '用防守球员换下前场球员，开始守比分。'],
   ['tactical_shift', '阵型从四后卫切到三中卫。'], ['tactical_shift', '边路压得更靠前，开始加强进攻。'], ['tactical_shift', '中场站位回收，先稳住防线。'],
   ['pressure', '连续把球压在对方半场。'], ['pressure', '这一段攻势很密集，防线压力很大。'], ['pressure', '连续获得角球和二点球机会。'],
-  ['injury', '队医进场，比赛暂时中断。'], ['operator_note', '场上节奏变慢，双方都在重新组织。'], ['operator_note', '这一段更像是在试探，不急着冒险。']
+  ['injury', '队医进场，比赛暂时中断。'], ['match_end', '比赛结束。'], ['operator_note', '场上节奏变慢，双方都在重新组织。'], ['operator_note', '这一段更像是在试探，不急着冒险。']
 ].map(([type, text]) => ({ type, text }));
 
 const roles = {
@@ -1034,7 +1274,10 @@ const roles = {
   yellow_card: [['offender', '吃牌者'], ['fouled', '对抗对象']],
   red_card: [['offender', '红牌球员'], ['fouled', '对抗对象']],
   var_check: [['subject', '被检查球员'], ['affected', '受影响球员']],
+  var_result: [['subject', '被检查球员'], ['affected', '受影响球员']],
+  goal_cancelled: [['scorer', '原进球者'], ['affected', '受影响球员']],
   penalty: [['taker', '主罚者'], ['won_by', '造点者'], ['offender', '犯规者'], ['keeper', '门将']],
+  penalty_awarded: [['won_by', '造点者'], ['offender', '犯规者']],
   substitution: [['sub_on', '上场'], ['sub_off', '下场']],
   injury: [['injured', '受伤球员'], ['challenger', '对抗球员']],
   tactical_shift: [['leader', '关键球员'], ['target', '影响球员']],
@@ -1045,6 +1288,7 @@ const roles = {
 let side = 'home';
 let focusedRole = '';
 let lastScore = { home: 0, away: 0 };
+let confirmedScore = { home: 0, away: 0 };
 let correctingId = '';
 let clockTimer = null;
 let clockRunning = false;
@@ -1052,9 +1296,12 @@ let activeView = 'live';
 let traceItems = [];
 let traceFilter = 'all';
 let activeTraceId = '';
+let monitorTimer = null;
+let latestSourceStatus = null;
+let latestAutomationPolicy = null;
 
 function setView(next) {
-  activeView = ['setup', 'live', 'settings', 'traces'].includes(next) ? next : 'live';
+  activeView = ['setup', 'live', 'sources', 'automation', 'monitor', 'settings', 'traces'].includes(next) ? next : 'live';
   document.querySelectorAll('[data-view-panel]').forEach((panel) => {
     panel.classList.toggle('active', panel.dataset.viewPanel === activeView);
   });
@@ -1062,11 +1309,15 @@ function setView(next) {
     link.classList.toggle('active', link.dataset.viewLink === activeView);
   });
   if (activeView === 'setup') syncPreFromMain();
+  if (activeView === 'sources') loadSources();
+  if (activeView === 'automation') loadAutomation();
+  if (activeView === 'monitor') loadMonitor();
   if (activeView === 'settings') loadSettings();
   if (activeView === 'traces') {
     loadMemoryPanel();
     loadTraces();
   }
+  syncMonitorTimer();
 }
 
 function value(id) { return $(id).value.trim(); }
@@ -1093,6 +1344,27 @@ function flash(el) {
   if (!el) return;
   el.classList.add('flash');
   setTimeout(() => el.classList.remove('flash'), 650);
+}
+function updateAuthState() {
+  const text = token ? '导播权限已载入' : '缺少导播口令';
+  ['authState', 'settingsAuthState'].forEach((id) => {
+    const element = $(id);
+    if (!element) return;
+    element.textContent = text;
+    element.style.color = token ? 'var(--green)' : 'var(--error)';
+  });
+}
+async function requestJSON(path, options = {}) {
+  const headers = authHeaders(options.headers || {});
+  const response = await fetch(path, { ...options, headers });
+  if (!response.ok) throw new Error((await response.text()).trim() || `请求失败 ${response.status}`);
+  return response.json();
+}
+function formatStatusTime(value) {
+  if (!value) return '无';
+  const date = new Date(value);
+  if (Number.isNaN(date.getTime())) return String(value);
+  return date.toLocaleTimeString('zh-CN', { hour12: false });
 }
 function parsePlayers(text) {
   return text.split('\n').map((line) => {
@@ -1367,12 +1639,19 @@ function syncEventTypeUI() {
   focusedRole = '';
   const preset = presets.find((p) => p.type === value('eventType'));
   if (preset && !value('action')) $('action').value = preset.action;
+  if (preset) $('confirmation').value = defaultEventConfirmed(preset.type) ? 'confirmed' : 'pending';
   renderTemplates();
   renderSlots();
   updateContextPreview();
 }
 function currentScore() {
   return { home: Number(value('homeScore') || 0), away: Number(value('awayScore') || 0) };
+}
+function defaultEventConfirmed(eventType) {
+  return eventType !== 'goal' && eventType !== 'var_check';
+}
+function selectedEventConfirmed(eventType) {
+  return eventType !== 'var_check' && value('confirmation') === 'confirmed';
 }
 function applyScore(preset, eventSide) {
   lastScore = currentScore();
@@ -1382,6 +1661,39 @@ function applyScore(preset, eventSide) {
   $('homeScore').value = next.home;
   $('awayScore').value = next.away;
   return next;
+}
+function scoreForNewEvent(preset, eventSide) {
+  const shown = currentScore();
+  if (!preset.score || !eventSide) return shown;
+  const expected = { ...confirmedScore };
+  expected[eventSide] += preset.score;
+  const matchesConfirmed = shown.home === confirmedScore.home && shown.away === confirmedScore.away;
+  const matchesExpected = shown.home === expected.home && shown.away === expected.away;
+  if (!matchesConfirmed && !matchesExpected) return shown;
+  lastScore = { ...confirmedScore };
+  $('homeScore').value = expected.home;
+  $('awayScore').value = expected.away;
+  return expected;
+}
+function applyPublishedSnapshot(result) {
+  const score = result?.snapshot?.score;
+  if (!score) return;
+  confirmedScore = { home: Number(score.home || 0), away: Number(score.away || 0) };
+  $('homeScore').value = confirmedScore.home;
+  $('awayScore').value = confirmedScore.away;
+}
+async function restoreConfirmedScore() {
+  try {
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
+    if (res.ok) {
+      const data = await res.json();
+      const score = data.snapshot?.score;
+      if (score) confirmedScore = { home: Number(score.home || 0), away: Number(score.away || 0) };
+    }
+  } catch {}
+  $('homeScore').value = confirmedScore.home;
+  $('awayScore').value = confirmedScore.away;
+  updateContextPreview();
 }
 function buildDescription(preset, eventSide) {
   const main = participants()[0]?.name || value('mainPlayer') || activePlayer(eventSide);
@@ -1411,6 +1723,7 @@ function payloadFromPreset(preset, score, eventSide) {
     participants: list,
     score,
     intensity: Number(value('intensity') || preset.intensity || 3),
+    confirmed: selectedEventConfirmed(preset.type),
     description: buildDescription(preset, eventSide),
     recommendedAction: value('action') || preset.action,
     tags: [
@@ -1420,6 +1733,35 @@ function payloadFromPreset(preset, score, eventSide) {
       `participants=${list.map((p) => `${p.role}:${p.name}`).join('|') || 'none'}`
     ],
     proactiveText: buildProactiveText(preset, eventSide)
+  };
+}
+function quickPayloadFromPreset(preset, score, eventSide) {
+  const main = activePlayer(eventSide);
+  const primaryRole = (roles[preset.type] || roles.operator_note)[0]?.[0] || 'subject';
+  const list = main ? [{ role: primaryRole, name: main, teamId: eventSide, teamName: team(eventSide) }] : [];
+  const description = main ? `${main}：${preset.text}` : preset.text;
+  return {
+    source: 'operator',
+    providerName: 'director-console',
+    eventType: preset.type,
+    period: value('period'),
+    clock: value('clock'),
+    teamId: eventSide,
+    teamName: team(eventSide),
+    playerName: main,
+    participants: list,
+    score,
+    intensity: Number(preset.intensity || 3),
+    confirmed: defaultEventConfirmed(preset.type),
+    description,
+    recommendedAction: preset.action,
+    tags: [
+      `time=${periodLabel()} ${value('clock') || '00:00'}`,
+      `score=${score.home ?? 0}-${score.away ?? 0}`,
+      `event=${eventLabel(preset.type)}`,
+      `participants=${list.map((p) => `${p.role}:${p.name}`).join('|') || 'none'}`
+    ],
+    proactiveText: value('defaultPublishMode') === 'quiet' ? '__quiet__' : ''
   };
 }
 async function saveConfig() {
@@ -1433,9 +1775,9 @@ async function saveConfig() {
     homePlayers: parsePlayers(value('homePlayers')),
     awayPlayers: parsePlayers(value('awayPlayers'))
   };
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config?token=${encodeURIComponent(token)}`, {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(body)
   });
   if (!res.ok) throw new Error(await res.text());
@@ -1459,13 +1801,8 @@ async function savePrematchConfig() {
 }
 function settingsPayload() {
   return {
-    apiEndpoint: value('apiEndpoint'),
-    modelName: value('modelName'),
-    temperature: value('temperature'),
-    avatarId: value('avatarId'),
-    outputLanguage: value('outputLanguage'),
-    emotionSensitivity: value('emotionSensitivity'),
-    voice: document.querySelector('input[name="voice"]:checked')?.value || 'calm_male'
+    monitorRefreshInterval: value('monitorRefreshInterval') || '5',
+    defaultPublishMode: value('defaultPublishMode') || 'auto'
   };
 }
 function loadSettings() {
@@ -1474,28 +1811,270 @@ function loadSettings() {
     const el = $(key);
     if (el) el.value = val;
   });
-  if (saved.voice) {
-    const radio = document.querySelector(`input[name="voice"][value="${CSS.escape(saved.voice)}"]`);
-    if (radio) radio.checked = true;
-  }
+  updateAuthState();
+  syncMonitorTimer();
 }
 function saveSettings() {
   localStorage.setItem('qiuqiu.operator.settings', JSON.stringify(settingsPayload()));
-  toast('全局设置已保存到本机工作台', 'ok');
+  if (value('mode') !== 'manual') $('mode').value = value('defaultPublishMode') || 'auto';
+  syncMonitorTimer();
+  toast('本机工作台偏好已保存', 'ok');
 }
-async function publishEvent(event) {
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events?token=${encodeURIComponent(token)}`, {
+function renderAutomationEventTypes(selected = []) {
+  const selectedTypes = new Set(selected);
+  const critical = new Set(['goal', 'red_card', 'penalty', 'penalty_awarded', 'var_check', 'var_result', 'goal_cancelled', 'halftime', 'fulltime', 'match_end']);
+  $('automationEventTypes').innerHTML = automationEventOptions.map((option) => `
+    <label class="event-toggle">
+      <input type="checkbox" value="${option.type}" ${selectedTypes.has(option.type) ? 'checked' : ''}>
+      <span><b>${escapeHTML(option.label)}</b>${critical.has(option.type) ? '<small class="event-meta">关键</small>' : ''}</span>
+    </label>
+  `).join('');
+}
+function renderAutomationSummary(policy) {
+  const host = $('automationSummary');
+  if (!policy) {
+    host.innerHTML = '<div class="muted">尚未读取到自动化策略。</div>';
+    return;
+  }
+  const labels = (policy.eventTypes || []).map((type) => automationEventOptions.find((item) => item.type === type)?.label || type);
+  host.innerHTML = `
+    <div class="metric-card"><span>运行模式</span><strong>${policy.mode === 'active' ? '自动播报开启' : '自动播报暂停'}</strong></div>
+    <div class="metric-card"><span>普通事件冷却</span><strong class="mono">${Number(policy.cooldownSeconds || 0)} 秒</strong></div>
+    <div class="trace-field"><span>已启用事件</span><div>${escapeHTML(labels.join('、') || '无')}</div></div>
+  `;
+}
+async function loadAutomation() {
+  $('automationBadge').textContent = '读取中';
+  try {
+    const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/automation`);
+    const policy = data.policy || {};
+    latestAutomationPolicy = policy;
+    const radio = document.querySelector(`input[name="automationMode"][value="${policy.mode === 'paused' ? 'paused' : 'active'}"]`);
+    if (radio) radio.checked = true;
+    $('automationCooldown').value = String(policy.cooldownSeconds ?? 90);
+    renderAutomationEventTypes(policy.eventTypes || []);
+    renderAutomationSummary(policy);
+    $('automationBadge').textContent = policy.mode === 'active' ? '自动播报开启' : '自动播报暂停';
+    $('automationBadge').style.color = policy.mode === 'active' ? 'var(--green)' : 'var(--error)';
+  } catch (error) {
+    latestAutomationPolicy = null;
+    $('automationBadge').textContent = '读取失败';
+    $('automationBadge').style.color = 'var(--error)';
+    renderAutomationSummary(null);
+    toast(error.message || '自动化策略读取失败', 'bad');
+  }
+}
+async function saveAutomation() {
+  const mode = document.querySelector('input[name="automationMode"]:checked')?.value || 'paused';
+  const eventTypes = Array.from(document.querySelectorAll('#automationEventTypes input:checked')).map((input) => input.value);
+  const cooldownSeconds = Number(value('automationCooldown') || 0);
+  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/automation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ mode, eventTypes, cooldownSeconds })
+  });
+  latestAutomationPolicy = data.policy;
+  renderAutomationSummary(data.policy);
+  $('automationBadge').textContent = mode === 'active' ? '自动播报开启' : '自动播报暂停';
+  $('automationBadge').style.color = mode === 'active' ? 'var(--green)' : 'var(--error)';
+  toast('自动化策略已保存', 'ok');
+}
+function sourceLabel(type) {
+  return ({ manual: '人工导演', replay: '回放数据', 'api-sports': 'API-Sports' })[type] || type || '未知';
+}
+function sourceStateLabel(state) {
+  return ({ ready: '可用', standby: '待命', running: '运行中', stopped: '已停止', error: '异常', unconfigured: '未配置' })[state] || state || '未知';
+}
+function renderSourceState(id, source) {
+  const element = $(id);
+  const state = source?.state || 'unknown';
+  element.textContent = sourceStateLabel(state);
+  element.className = `source-state ${['ready', 'running'].includes(state) ? 'ok' : ['error', 'unconfigured'].includes(state) ? 'bad' : ''}`;
+}
+function renderSources(status) {
+  latestSourceStatus = status;
+  const active = status?.activeSource || 'manual';
+  const sources = status?.sources || {};
+  $('sourceMatchId').textContent = status?.matchId || currentMatchId();
+  $('activeSourceBadge').textContent = `当前：${sourceLabel(active)}`;
+  $('activeSourceBadge').style.color = '';
+  $('activeSourceName').textContent = sourceLabel(active);
+  renderSourceState('manualSourceState', sources.manual);
+  renderSourceState('replaySourceState', sources.replay);
+  renderSourceState('apiSourceState', sources['api-sports']);
+  const apiAvailable = sources['api-sports']?.state !== 'unconfigured';
+  $('useApiSource').disabled = !apiAvailable;
+  $('useApiSource').title = apiAvailable ? '启用 API-Sports 数据源' : '请先在服务端配置 APISPORTS_API_KEY';
+  const activeDetail = sources[active] || {};
+  $('sourceLastPoll').textContent = formatStatusTime(activeDetail.lastPollAt);
+  $('sourceLastEvent').textContent = formatStatusTime(activeDetail.lastEventAt);
+  if (activeDetail.error) {
+    $('sourceMessage').textContent = activeDetail.error;
+    $('sourceMessage').style.borderColor = 'var(--error)';
+  } else if (active === 'api-sports') {
+    $('sourceMessage').textContent = `外部源正在接管，Fixture ID ${activeDetail.fixtureId || '未返回'}，重连 ${Number(activeDetail.reconnects || 0)} 次。`;
+    $('sourceMessage').style.borderColor = 'var(--primary)';
+  } else {
+    $('sourceMessage').textContent = active === 'manual' ? '当前由人工导演录入比赛事实。' : '当前使用回放数据进行联调。';
+    $('sourceMessage').style.borderColor = 'var(--primary)';
+  }
+}
+async function loadSources() {
+  $('activeSourceBadge').textContent = '读取中';
+  try {
+    const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/sources`);
+    renderSources(data.status || {});
+  } catch (error) {
+    latestSourceStatus = null;
+    $('activeSourceBadge').textContent = '读取失败';
+    $('activeSourceBadge').style.color = 'var(--error)';
+    $('sourceMessage').textContent = error.message || '信号源状态读取失败';
+  }
+}
+async function startSource(type) {
+  const body = { type };
+  if (type === 'api-sports') {
+    body.fixtureId = Number(value('sourceFixtureId') || 0);
+    body.importHistory = $('sourceImportHistory').checked;
+  }
+  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/sources/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body)
+  });
+  renderSources(data.status || {});
+  toast(`已切换到${sourceLabel(type)}`, 'ok');
+}
+async function takeManualControl() {
+  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/takeover`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: '{}'
+  });
+  renderSources(data.status || {});
+  latestAutomationPolicy = data.policy || null;
+  if ($('automationBadge')) {
+    $('automationBadge').textContent = '自动播报暂停';
+    $('automationBadge').style.color = 'var(--error)';
+  }
+  renderAutomationSummary(data.policy || null);
+  toast('已切换人工来源并暂停自动播报', 'ok');
+}
+function renderMonitorEvents(events) {
+  const host = $('monitorEvents');
+  $('monitorEventCount').textContent = String(events.length);
+  if (!events.length) {
+    host.innerHTML = '<div class="activity-row"><span class="muted">暂无比赛事件</span></div>';
+    return;
+  }
+  host.innerHTML = events.slice(0, 8).map((event) => `
+    <div class="activity-row">
+      <span class="mono">${escapeHTML(event.clock || '')}</span>
+      <b>${escapeHTML(eventLabel(event.eventType))}</b>
+      <span>${escapeHTML(event.description || '')}</span>
+      <span class="source-state ${event.status === 'active' ? 'ok' : ''}">${escapeHTML(event.status === 'corrected' ? '已更正' : '有效')}</span>
+    </div>
+  `).join('');
+}
+function renderMonitorVoice(traces) {
+  const voiceTraces = traces.filter((trace) => trace.voice).slice(0, 8);
+  const host = $('monitorVoice');
+  $('monitorTraceCount').textContent = String(voiceTraces.length);
+  if (!voiceTraces.length) {
+    host.innerHTML = '<div class="activity-row"><span class="muted">暂无语音链路记录</span></div>';
+    return;
+  }
+  host.innerHTML = voiceTraces.map((trace) => {
+    const voice = trace.voice || {};
+    const state = voice.playbackStatus || voice.ttsStatus || voice.asrStatus || '无状态';
+    const failed = ['failed', 'error'].includes(state) || Boolean(voice.ttsError || voice.asrError);
+    return `
+      <div class="activity-row">
+        <span class="mono">${escapeHTML(formatTraceTime(trace.createdAt))}</span>
+        <b>${escapeHTML(trace.input ? '用户回答' : '主动播报')}</b>
+        <span>${escapeHTML(trace.output || trace.input || '无文本')}</span>
+        <span class="source-state ${failed ? 'bad' : state === 'ok' ? 'ok' : ''}">${escapeHTML(state)}</span>
+      </div>
+    `;
+  }).join('');
+}
+async function loadMonitor() {
+  $('monitorUpdatedAt').textContent = '刷新中';
+  const healthStartedAt = performance.now();
+  const matchId = encodeURIComponent(currentMatchId());
+  const results = await Promise.allSettled([
+    fetch('/health').then(async (response) => {
+      if (!response.ok) throw new Error(await response.text());
+      await response.text();
+      return { latencyMs: Math.max(1, Math.round(performance.now() - healthStartedAt)) };
+    }),
+    requestJSON(`/api/matches/${matchId}/sources`),
+    requestJSON(`/api/matches/${matchId}/automation`),
+    requestJSON(`/api/matches/${matchId}/state`),
+    requestJSON(`/api/matches/${matchId}/events`),
+    requestJSON(`/api/matches/${matchId}/traces?limit=20`)
+  ]);
+  const [health, sources, automation, state, events, traces] = results;
+  $('monitorHealthValue').textContent = health.status === 'fulfilled' ? '可用' : '异常';
+  $('monitorHealthValue').className = `monitor-value ${health.status === 'fulfilled' ? 'ok' : 'bad'}`;
+  $('monitorHealthMeta').textContent = health.status === 'fulfilled' ? `健康检查 ${health.value.latencyMs}ms` : String(health.reason?.message || '请求失败');
+
+  if (sources.status === 'fulfilled') {
+    renderSources(sources.value.status || {});
+    const sourceStatus = sources.value.status || {};
+    $('monitorSourceValue').textContent = sourceLabel(sourceStatus.activeSource);
+    const active = sourceStatus.sources?.[sourceStatus.activeSource] || {};
+    $('monitorSourceMeta').textContent = active.error || `${sourceStateLabel(active.state)}${active.latencyMs ? `，轮询 ${active.latencyMs}ms` : ''}`;
+  } else {
+    $('monitorSourceValue').textContent = '读取失败';
+    $('monitorSourceMeta').textContent = sources.reason?.message || '未知错误';
+  }
+
+  if (automation.status === 'fulfilled') {
+    latestAutomationPolicy = automation.value.policy || {};
+    const policy = latestAutomationPolicy;
+    $('monitorAutomationValue').textContent = policy.mode === 'active' ? '开启' : '暂停';
+    $('monitorAutomationValue').className = `monitor-value ${policy.mode === 'active' ? 'ok' : ''}`;
+    $('monitorAutomationMeta').textContent = `${(policy.eventTypes || []).length} 类事件，普通事件冷却 ${Number(policy.cooldownSeconds || 0)} 秒`;
+  } else {
+    $('monitorAutomationValue').textContent = '读取失败';
+    $('monitorAutomationMeta').textContent = automation.reason?.message || '未知错误';
+  }
+
+  if (state.status === 'fulfilled') {
+    const snapshot = state.value.snapshot || {};
+    const score = snapshot.score || { home: 0, away: 0 };
+    $('monitorMatchValue').textContent = `${Number(score.home || 0)}-${Number(score.away || 0)}`;
+    const integrityLabel = snapshot.integrity?.status === 'conflict' ? '，来源冲突待确认' : '';
+    $('monitorMatchMeta').textContent = `${snapshot.homeTeam || '主队'} 对 ${snapshot.awayTeam || '客队'}，${periodLabel(snapshot.period || '')} ${snapshot.clock || '00:00'}${integrityLabel}`;
+  } else {
+    $('monitorMatchValue').textContent = '读取失败';
+    $('monitorMatchMeta').textContent = state.reason?.message || '未知错误';
+  }
+  renderMonitorEvents(events.status === 'fulfilled' ? (events.value.events || []) : []);
+  renderMonitorVoice(traces.status === 'fulfilled' ? (traces.value.traces || []) : []);
+  $('monitorUpdatedAt').textContent = `更新于 ${new Date().toLocaleTimeString('zh-CN', { hour12: false })}`;
+}
+function syncMonitorTimer() {
+  window.clearInterval(monitorTimer);
+  monitorTimer = null;
+  if (activeView !== 'monitor') return;
+  const seconds = Number($('monitorRefreshInterval')?.value || 0);
+  if (seconds > 0) monitorTimer = window.setInterval(loadMonitor, seconds * 1000);
+}
+async function publishEvent(event) {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`, {
+    method: 'POST',
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(event)
   });
   if (!res.ok) throw new Error(await res.text());
   return res.json();
 }
 async function correctEvent(eventId, event) {
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events/${encodeURIComponent(eventId)}/correct?token=${encodeURIComponent(token)}`, {
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events/${encodeURIComponent(eventId)}/correct`, {
     method: 'POST',
-    headers: { 'Content-Type': 'application/json' },
+    headers: authHeaders({ 'Content-Type': 'application/json' }),
     body: JSON.stringify(event)
   });
   if (!res.ok) throw new Error(await res.text());
@@ -1504,20 +2083,16 @@ async function correctEvent(eventId, event) {
 async function publishPreset(preset, eventSide = side) {
   try {
     setSide(eventSide);
-    $('eventType').value = preset.type;
-    $('action').value = preset.action;
-    $('intensity').value = String(preset.intensity || 3);
-    syncEventTypeUI();
-    const current = activePlayer(eventSide);
-    if (current && !participants().length) setSlot(roleSet()[0][0], current, eventSide);
+    if (value('period') === 'pre_match' && preset.type !== 'kickoff' && preset.type !== 'operator_note') {
+      $('period').value = 'first_half';
+    }
     await saveConfig();
     const score = applyScore(preset, eventSide);
-    await publishEvent(payloadFromPreset(preset, score, eventSide));
-  $('description').value = '';
-  $('proactive').value = '';
-  toast(`已发布：${team(eventSide)} ${preset.label}`, 'ok');
-  updateContextPreview();
-  await loadTimeline();
+    const result = await publishEvent(quickPayloadFromPreset(preset, score, eventSide));
+    applyPublishedSnapshot(result);
+    toast(`已发布：${team(eventSide)} ${preset.label}`, 'ok');
+    updateContextPreview();
+    await loadTimeline();
   } catch (err) {
     toast(err.message || '发布失败', 'bad');
   }
@@ -1535,6 +2110,10 @@ async function loadConfig() {
     if (data.config.awayPlayers?.length) $('awayPlayers').value = playersToText(data.config.awayPlayers);
   }
   if (data.snapshot) {
+	confirmedScore = {
+	  home: Number(data.snapshot.score?.home || 0),
+	  away: Number(data.snapshot.score?.away || 0)
+	};
     $('homeScore').value = data.snapshot.score?.home ?? value('homeScore') ?? 0;
     $('awayScore').value = data.snapshot.score?.away ?? value('awayScore') ?? 0;
     $('period').value = data.snapshot.period || value('period') || 'first_half';
@@ -1574,7 +2153,7 @@ async function loadTimeline() {
       <div>${escapeHTML(event.description || '')}</div>
       ${roleText ? `<div class="muted">参与人：${escapeHTML(roleText)}</div>` : ''}
       ${event.proactiveText ? `<div class="voice-line">球球主动说：${escapeHTML(event.proactiveText)}</div>` : ''}
-      <div class="muted mono">${escapeHTML(event.status || 'created')} / ${escapeHTML(event.recommendedAction || 'auto')} / ${escapeHTML(event.id || '')}</div>
+      <div class="muted mono">${event.confirmed ? '事实已确认' : '等待事实确认'} / ${escapeHTML(event.status || 'created')} / ${escapeHTML(event.recommendedAction || 'auto')} / ${escapeHTML(event.id || '')}</div>
     `;
     card.querySelector('button').onclick = () => editCorrection(event);
     host.appendChild(card);
@@ -1585,7 +2164,9 @@ async function loadTraces() {
   if (!list) return;
   list.innerHTML = '<div class="muted">正在读取球球决策日志...</div>';
   try {
-    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/traces?token=${encodeURIComponent(token)}&limit=50`);
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/traces?limit=50`, {
+      headers: authHeaders()
+    });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     traceItems = data.traces || [];
@@ -1624,9 +2205,11 @@ async function loadMemoryPanel() {
     const eventData = await eventsRes.json();
     const snapshot = state.snapshot || {};
     const score = snapshot.score || { home: 0, away: 0 };
+    const integrity = snapshot.integrity || { status: 'ok' };
     $('memoryClock').textContent = `${periodLabel(snapshot.period || '')} ${snapshot.clock || '00:00'}`;
     snapshotHost.innerHTML = `
       <div>${escapeHTML(snapshot.homeTeam || '主队')} <b>${Number(score.home || 0)}-${Number(score.away || 0)}</b> ${escapeHTML(snapshot.awayTeam || '客队')}</div>
+      <div class="muted">事实状态：${integrity.status === 'conflict' ? '来源冲突，等待人工确认' : '正常'}${integrity.reason ? ` / ${escapeHTML(integrity.reason)}` : ''}</div>
       <div class="muted">推荐动作：${escapeHTML(snapshot.lastRecommendedAction || '无')} / 情绪温度：${Number(snapshot.emotionalTemperature || 1)}/5</div>
       <div class="muted">最新描述：${escapeHTML(snapshot.lastPublicDescription || '暂无')}</div>
     `;
@@ -1698,7 +2281,9 @@ async function selectTrace(traceId) {
   const local = traceItems.find((trace) => trace.id === traceId);
   if (local) renderTraceDetail(local);
   try {
-    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/traces/${encodeURIComponent(traceId)}?token=${encodeURIComponent(token)}`);
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/traces/${encodeURIComponent(traceId)}`, {
+      headers: authHeaders()
+    });
     if (!res.ok) throw new Error(await res.text());
     const data = await res.json();
     if (data.trace) renderTraceDetail(data.trace);
@@ -1718,6 +2303,9 @@ function renderTraceDetail(trace) {
   const toolCalls = trace.toolCalls || [];
   const eventIds = trace.retrievedEventIds || [];
   const voice = trace.voice || null;
+  const claim = trace.claim || null;
+  const relationshipDecision = trace.relationshipDecision || null;
+  const relationshipMemories = relationshipDecision?.memories || [];
   host.innerHTML = `
     <div class="trace-field"><span>输入</span><div>${escapeHTML(trace.input || '[主动线] 导演台事件触发')}</div></div>
     <div class="trace-field"><span>意图</span><div>${escapeHTML(trace.intent || 'proactive')} / ${escapeHTML(traceReasonLabel(trace.reason))}</div></div>
@@ -1725,6 +2313,9 @@ function renderTraceDetail(trace) {
     <div class="trace-field"><span>性能</span><div class="mono">${Number(trace.latencyMs || 0)}ms / ${escapeHTML(formatTraceTime(trace.createdAt))}</div></div>
     ${trace.error ? `<div class="trace-field"><span>错误</span><div style="color:var(--error)">${escapeHTML(trace.error)}</div></div>` : ''}
     ${voice ? `<div class="trace-field"><span>语音链路</span><pre class="trace-json">${escapeHTML(prettyJSON(voice))}</pre></div>` : ''}
+    ${claim ? `<div class="trace-field"><span>用户赛况核验</span><pre class="trace-json">${escapeHTML(prettyJSON(claim))}</pre></div>` : ''}
+    ${relationshipDecision ? `<div class="trace-field"><span>关系决策</span><div>${escapeHTML(relationshipDecision.relationship?.stage || 'first_meeting')} / ${escapeHTML((relationshipDecision.actions || []).join(' + ') || 'silence')}</div></div>` : ''}
+    ${relationshipMemories.length ? `<div class="trace-field"><span>本轮关系记忆</span><pre class="trace-json">${escapeHTML(prettyJSON(relationshipMemories))}</pre></div>` : ''}
     <div class="trace-field">
       <span>命中事件 ID</span>
       <div>
@@ -1746,7 +2337,10 @@ function traceReasonLabel(reason) {
     proactive_event_line: '导演台主动线',
     operator_event_proactive_line: '导演台主动线',
     missing_fact_response: '缺失事实保护',
-    correction_aware_memory: '更正感知记忆'
+    correction_aware_memory: '更正感知记忆',
+    user_match_claim_confirmed: '用户赛况已核实',
+    user_match_claim_contradicted: '用户赛况与当前事实冲突',
+    user_match_claim_unverified: '用户赛况待确认'
   })[reason] || reason || '未标注策略';
 }
 function formatTraceTime(createdAt) {
@@ -1773,6 +2367,7 @@ function editCorrection(event) {
   if (event.teamId === 'away') $('awayActive').value = event.playerName || '';
   (event.participants || []).forEach((p) => setSlot(p.role, p.name, p.teamId || event.teamId || ''));
   $('intensity').value = String(event.intensity || 3);
+  $('confirmation').value = event.confirmed ? 'confirmed' : 'pending';
   $('action').value = event.recommendedAction || '';
   $('description').value = event.description || '';
   $('proactive').value = event.proactiveText || '';
@@ -1786,7 +2381,8 @@ function clearDraft() {
   $('mainPlayer').value = '';
   $('description').value = '';
   $('proactive').value = '';
-  $('mode').value = 'auto';
+  $('mode').value = $('defaultPublishMode')?.value || 'auto';
+  $('confirmation').value = defaultEventConfirmed(value('eventType')) ? 'confirmed' : 'pending';
   document.querySelectorAll('#slots input').forEach((input) => { input.value = ''; });
   updateContextPreview();
   toast('草稿已清空', 'ok');
@@ -1819,18 +2415,22 @@ $('draft').addEventListener('submit', async (event) => {
     setSide(eventSide);
     await saveConfig();
     const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
-    const payload = payloadFromPreset({ ...preset, score: 0 }, currentScore(), eventSide);
+    const score = correctingId ? currentScore() : scoreForNewEvent(preset, eventSide);
+    const payload = payloadFromPreset({ ...preset, score: 0 }, score, eventSide);
+    let result;
     if (correctingId) {
-      await correctEvent(correctingId, payload);
+      result = await correctEvent(correctingId, payload);
       toast(`已发布更正：${correctingId}`, 'ok');
       correctingId = '';
     } else {
-      await publishEvent(payload);
+      result = await publishEvent(payload);
       toast(`已发布详细事件：${preset.label}`, 'ok');
     }
+    applyPublishedSnapshot(result);
     clearDraft();
     await loadTimeline();
   } catch (err) {
+    await restoreConfirmedScore();
     toast(err.message || '发布失败', 'bad');
   }
 });
@@ -1844,7 +2444,15 @@ $('clockMinus').addEventListener('click', () => { setClock(parseClock() - 60); u
 $('clockPlus').addEventListener('click', () => { setClock(parseClock() + 60); updateContextPreview(); });
 $('scoreUndo').addEventListener('click', () => { $('homeScore').value = lastScore.home; $('awayScore').value = lastScore.away; updateContextPreview(); toast('比分已回退', 'ok'); });
 $('hint').addEventListener('click', () => { $('proactive').value = '这一下很关键，我们先看裁判和双方球员怎么反应。'; $('mode').value = 'manual'; updateContextPreview(); toast('已套用导演话术', 'ok'); });
-$('quickCut').addEventListener('click', () => toast('已标记快速切镜点', 'ok'));
+$('manualTakeover').addEventListener('click', () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')));
+$('manualTakeoverSource').addEventListener('click', () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')));
+$('refreshSources').addEventListener('click', loadSources);
+$('useManualSource').addEventListener('click', () => startSource('manual').catch((error) => toast(error.message || '切换失败', 'bad')));
+$('useReplaySource').addEventListener('click', () => startSource('replay').catch((error) => toast(error.message || '切换失败', 'bad')));
+$('useApiSource').addEventListener('click', () => startSource('api-sports').catch((error) => toast(error.message || '外部源启动失败', 'bad')));
+$('refreshAutomation').addEventListener('click', loadAutomation);
+$('saveAutomation').addEventListener('click', () => saveAutomation().catch((error) => toast(error.message || '自动化策略保存失败', 'bad')));
+$('refreshMonitor').addEventListener('click', loadMonitor);
 $('preSubmit').addEventListener('click', async () => {
   try { await savePrematchConfig(); } catch (err) { toast(err.message || '赛前配置提交失败', 'bad'); }
 });
@@ -1887,8 +2495,22 @@ document.querySelectorAll('[data-view-link]').forEach((link) => link.addEventLis
   setView(link.dataset.viewLink);
   history.replaceState(null, '', `#${link.dataset.viewLink}`);
 }));
+document.querySelectorAll('[data-go-view]').forEach((button) => button.addEventListener('click', () => {
+  setView(button.dataset.goView);
+  history.replaceState(null, '', `#${button.dataset.goView}`);
+}));
 window.addEventListener('hashchange', () => setView(location.hash.replace('#', '') || 'live'));
 document.addEventListener('keydown', (event) => {
+  if (activeView === 'live' && event.ctrlKey && event.key === 'Enter') {
+    event.preventDefault();
+    $('draft').requestSubmit();
+    return;
+  }
+  if (activeView === 'live' && event.key === 'Escape') {
+    event.preventDefault();
+    clearDraft();
+    return;
+  }
   if (['INPUT', 'TEXTAREA', 'SELECT'].includes(document.activeElement.tagName)) return;
   const preset = presets.find((p) => p.key.toLowerCase() === event.key.toLowerCase());
   if (!preset) return;
@@ -1896,6 +2518,7 @@ document.addEventListener('keydown', (event) => {
   publishPreset(preset, side);
 });
 
+updateAuthState();
 syncSelected();
 renderEventTypes();
 renderEvents('homeEvents', 'home');
@@ -1903,9 +2526,11 @@ renderEvents('awayEvents', 'away');
 renderPlayers();
 renderTemplates();
 renderSlots();
+renderAutomationEventTypes([]);
 setSide('home');
 syncPreFromMain();
 loadSettings();
+$('mode').value = value('defaultPublishMode') || 'auto';
 setView(location.hash.replace('#', '') || 'live');
 loadConfig().then(loadTimeline).catch(() => loadTimeline());
 </script>

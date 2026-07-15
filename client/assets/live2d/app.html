@@ -265,7 +265,11 @@ function connect() {
   if (ws) ws.close();
   setStatus('正在连接', false);
   const scheme = location.protocol === 'https:' ? 'wss' : 'ws';
-  ws = new WebSocket(`${scheme}://${location.host}/ws/match/test?token=qiuqiu-dev-token`);
+  const token = localStorage.getItem('qiuqiu.app.token') || '';
+  const protocol = token ? `qiuqiu-auth.${btoa(token).replaceAll('+', '-').replaceAll('/', '_').replaceAll('=', '')}` : '';
+  ws = protocol
+    ? new WebSocket(`${scheme}://${location.host}/ws/match/test`, [protocol])
+    : new WebSocket(`${scheme}://${location.host}/ws/match/test`);
   ws.onopen = () => {
     setStatus('已连接', true);
     addMessage('system', '已连接到后端');

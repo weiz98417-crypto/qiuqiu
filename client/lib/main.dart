@@ -1,5 +1,6 @@
 import 'package:flutter/material.dart';
 import 'screens/match_screen.dart';
+import 'theme/app_theme.dart';
 
 void main() {
   runApp(const QiuQiuApp());
@@ -13,13 +14,8 @@ class QiuQiuApp extends StatelessWidget {
     return MaterialApp(
       title: '球球',
       debugShowCheckedModeBanner: false,
-      theme: ThemeData(
-        colorScheme: ColorScheme.fromSeed(
-          seedColor: const Color(0xFFFF6B35),
-          brightness: Brightness.dark,
-        ),
-        scaffoldBackgroundColor: const Color(0xFF1A1A2E),
-      ),
+      theme: AppTheme.dark,
+      themeMode: ThemeMode.dark,
       home: const MatchScreen(),
     );
   }

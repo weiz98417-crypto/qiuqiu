@@ -1,4 +1,4 @@
-package com.example.qiuqiu
+package com.qiuqiu.companion
 
 import io.flutter.embedding.android.FlutterActivity
 

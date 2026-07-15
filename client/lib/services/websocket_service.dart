@@ -1,71 +1,156 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+enum SocketStatus { connecting, connected, reconnecting, disconnected, failed }
+
 class WebSocketService {
-  WebSocketChannel? _channel;
-  String? _url;
-  final _controller = StreamController<Map<String, dynamic>>.broadcast();
+  final _messageController = StreamController<Map<String, dynamic>>.broadcast();
   final _binaryController = StreamController<Uint8List>.broadcast();
+  final _statusController = StreamController<SocketStatus>.broadcast();
+
+  WebSocketChannel? _channel;
+  StreamSubscription<dynamic>? _channelSubscription;
   Timer? _pingTimer;
+  Timer? _reconnectTimer;
+  String? _url;
+  String _token = '';
   int _reconnectAttempts = 0;
-  static const int _maxReconnect = 5;
+  int _connectionGeneration = 0;
+  bool _disposed = false;
 
-  Stream<Map<String, dynamic>> get onMessage => _controller.stream;
+  static const int _maxReconnectAttempts = 5;
+
+  Stream<Map<String, dynamic>> get onMessage => _messageController.stream;
   Stream<Uint8List> get onBinary => _binaryController.stream;
+  Stream<SocketStatus> get statusStream => _statusController.stream;
 
-  void connect(String url) {
+  void connect(String url, {String token = ''}) {
+    if (_disposed) return;
     _url = url;
-    _doConnect(url);
+    _token = token;
+    _reconnectAttempts = 0;
+    _reconnectTimer?.cancel();
+    _open(url, reconnecting: false);
   }
 
-  void _doConnect(String url) {
+  Future<void> _open(String url, {required bool reconnecting}) async {
+    if (_disposed) return;
+    final generation = ++_connectionGeneration;
+    _emitStatus(
+      reconnecting ? SocketStatus.reconnecting : SocketStatus.connecting,
+    );
+
+    await _channelSubscription?.cancel();
+    await _channel?.sink.close();
+
     try {
-      final uri = Uri.parse(url);
-      _channel = WebSocketChannel.connect(uri);
-
-      _channel!.stream.listen(
-        (data) {
-          _reconnectAttempts = 0;
-          if (data is String) {
-            try {
-              final msg = jsonDecode(data) as Map<String, dynamic>;
-              _controller.add(msg);
-            } catch (_) {}
-          } else if (data is List<int>) {
-            _binaryController.add(Uint8List.fromList(data));
-          }
-        },
-        onError: (_) => _tryReconnect(),
-        onDone: () => _tryReconnect(),
+      final protocols = _token.isEmpty
+          ? null
+          : <String>['qiuqiu-auth.${_encodeToken(_token)}'];
+      final channel = WebSocketChannel.connect(
+        Uri.parse(url),
+        protocols: protocols,
       );
+      _channel = channel;
+      await channel.ready;
+      if (_disposed || generation != _connectionGeneration) {
+        await channel.sink.close();
+        return;
+      }
 
-      _pingTimer?.cancel();
-      _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
-        _channel?.sink.add(jsonEncode({'type': 'ping'}));
-      });
-    } catch (e) {
-      _tryReconnect();
+      _reconnectAttempts = 0;
+      _emitStatus(SocketStatus.connected);
+      _startHeartbeat();
+      _channelSubscription = channel.stream.listen(
+        (data) => _handleData(data, generation),
+        onError: (_) => _scheduleReconnect(generation),
+        onDone: () => _scheduleReconnect(generation),
+        cancelOnError: true,
+      );
+    } catch (_) {
+      _scheduleReconnect(generation);
     }
   }
 
-  void _tryReconnect() {
-    if (_reconnectAttempts >= _maxReconnect || _url == null) return;
-    _reconnectAttempts++;
-    final delay = Duration(seconds: (1 << (_reconnectAttempts - 1)).clamp(1, 8));
-    _controller.add({'type': 'reconnecting', 'attempt': _reconnectAttempts});
-    Future.delayed(delay, () => _doConnect(_url!));
+  String _encodeToken(String token) {
+    return base64Url.encode(utf8.encode(token)).replaceAll('=', '');
   }
 
-  void send(Map<String, dynamic> msg) {
-    _channel?.sink.add(jsonEncode(msg));
+  void _handleData(dynamic data, int generation) {
+    if (_disposed || generation != _connectionGeneration) return;
+    if (data is String) {
+      try {
+        final decoded = jsonDecode(data);
+        if (decoded is Map<String, dynamic>) {
+          _messageController.add(decoded);
+        }
+      } catch (_) {
+        return;
+      }
+    } else if (data is List<int>) {
+      _binaryController.add(Uint8List.fromList(data));
+    }
   }
 
-  void disconnect() {
+  void _startHeartbeat() {
     _pingTimer?.cancel();
-    _channel?.sink.close();
-    _controller.close();
-    _binaryController.close();
+    _pingTimer = Timer.periodic(const Duration(seconds: 25), (_) {
+      send({'type': 'ping'});
+    });
+  }
+
+  void _scheduleReconnect(int generation) {
+    if (_disposed || generation != _connectionGeneration) return;
+    _pingTimer?.cancel();
+    if (_reconnectTimer?.isActive ?? false) return;
+    final url = _url;
+    if (url == null || _reconnectAttempts >= _maxReconnectAttempts) {
+      _emitStatus(SocketStatus.failed);
+      return;
+    }
+
+    _reconnectAttempts++;
+    final seconds = (1 << (_reconnectAttempts - 1)).clamp(1, 8);
+    _emitStatus(SocketStatus.reconnecting);
+    _messageController.add({
+      'type': 'reconnecting',
+      'attempt': _reconnectAttempts,
+    });
+    _reconnectTimer = Timer(Duration(seconds: seconds), () {
+      if (_disposed || generation != _connectionGeneration) return;
+      _open(url, reconnecting: true);
+    });
+  }
+
+  bool send(Map<String, dynamic> message) {
+    if (_disposed || _channel == null) return false;
+    try {
+      _channel!.sink.add(jsonEncode(message));
+      return true;
+    } catch (_) {
+      return false;
+    }
+  }
+
+  void _emitStatus(SocketStatus status) {
+    if (!_disposed && !_statusController.isClosed) {
+      _statusController.add(status);
+    }
+  }
+
+  Future<void> dispose() async {
+    if (_disposed) return;
+    _disposed = true;
+    _connectionGeneration++;
+    _reconnectTimer?.cancel();
+    _pingTimer?.cancel();
+    await _channelSubscription?.cancel();
+    await _channel?.sink.close();
+    await _messageController.close();
+    await _binaryController.close();
+    await _statusController.close();
   }
 }

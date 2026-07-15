@@ -1,11 +1,11 @@
 {
-    "name": "qiuqiu",
-    "short_name": "qiuqiu",
+    "name": "球球 · 数字人陪看",
+    "short_name": "球球",
     "start_url": ".",
     "display": "standalone",
-    "background_color": "#0175C2",
-    "theme_color": "#0175C2",
-    "description": "A new Flutter project.",
+    "background_color": "#070B12",
+    "theme_color": "#E83A24",
+    "description": "懂比赛上下文、能连续对话的 Live2D 数字人球友。",
     "orientation": "portrait-primary",
     "prefer_related_applications": false,
     "icons": [

@@ -4,6 +4,9 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import 'live2d_bridge_stub.dart' if (dart.library.html) 'live2d_bridge_web.dart'
+    as live2d_bridge;
+
 class Live2dView extends StatefulWidget {
   final String expression;
   final bool isSpeaking;
@@ -23,6 +26,7 @@ class Live2dView extends StatefulWidget {
 class Live2dViewState extends State<Live2dView> {
   InAppWebViewController? _controller;
   bool _modelReady = false;
+  bool _loadFailed = false;
 
   void evaluateJS(String js) {
     _controller?.evaluateJavascript(source: js);
@@ -35,13 +39,45 @@ class Live2dViewState extends State<Live2dView> {
       return null;
     }
   }
+
   String? _lastExpression;
   Timer? _readyPoll;
+  Timer? _webReadyTimeout;
   int _pollCount = 0;
+
+  WebUri get _webLive2dUrl {
+    const configured = String.fromEnvironment('QIUQIU_LIVE2D_URL');
+    if (configured.isNotEmpty) return WebUri(configured);
+    return WebUri(
+      Uri.base
+          .replace(path: '/live2d.html', query: null, fragment: null)
+          .toString(),
+    );
+  }
+
+  @override
+  void initState() {
+    super.initState();
+    if (kIsWeb) {
+      _webReadyTimeout = Timer(const Duration(seconds: 8), () {
+        if (mounted && !_modelReady && !_loadFailed) {
+          _readyPoll?.cancel();
+          setState(() => _modelReady = true);
+        }
+      });
+    }
+  }
 
   @override
   void didUpdateWidget(Live2dView oldWidget) {
     super.didUpdateWidget(oldWidget);
+    if (kIsWeb &&
+        (widget.expression != oldWidget.expression ||
+            widget.isSpeaking != oldWidget.isSpeaking ||
+            widget.motion != oldWidget.motion)) {
+      _syncState();
+      return;
+    }
     if (_modelReady && _controller != null) {
       if (widget.expression != _lastExpression) {
         _lastExpression = widget.expression;
@@ -63,21 +99,55 @@ class Live2dViewState extends State<Live2dView> {
   }
 
   void _checkReady() async {
-    if (_modelReady || _controller == null) return;
+    if (_modelReady || _loadFailed || _controller == null) return;
     _pollCount++;
-    // Fallback: hide spinner after ~9 seconds (30 attempts * 300ms)
     if (_pollCount > 30) {
       _readyPoll?.cancel();
-      if (mounted) setState(() => _modelReady = true);
+      if (mounted) setState(() => _loadFailed = true);
       return;
     }
     try {
-      final result = await _controller!.evaluateJavascript(source: 'window.modelReady');
-      if (result == 'true') {
+      final result = await _controller!.evaluateJavascript(
+        source: 'window.modelReady',
+      );
+      if (result == true || result == 'true') {
         _readyPoll?.cancel();
-        if (mounted) setState(() => _modelReady = true);
+        if (mounted) {
+          setState(() => _modelReady = true);
+          _syncState();
+        }
       }
     } catch (_) {}
+  }
+
+  void _syncState() {
+    if (kIsWeb) {
+      live2d_bridge.sendLive2dState(
+        expression: widget.expression,
+        speaking: widget.isSpeaking,
+        motion: widget.motion,
+      );
+      return;
+    }
+    final controller = _controller;
+    if (!_modelReady || controller == null) return;
+    controller.evaluateJavascript(
+      source: "setExpression('${widget.expression}')",
+    );
+    controller.evaluateJavascript(source: 'setSpeaking(${widget.isSpeaking})');
+    if (widget.motion != null) {
+      controller.evaluateJavascript(source: "playMotion('${widget.motion}')");
+    }
+  }
+
+  void _retry() {
+    _readyPoll?.cancel();
+    setState(() {
+      _modelReady = false;
+      _loadFailed = false;
+      _pollCount = 0;
+    });
+    _controller?.reload();
   }
 
   @override
@@ -85,33 +155,40 @@ class Live2dViewState extends State<Live2dView> {
     return Stack(
       children: [
         InAppWebView(
-          initialUrlRequest: kIsWeb
-              ? URLRequest(url: WebUri('http://localhost:8080/live2d.html'))
-              : null,
+          initialUrlRequest: kIsWeb ? URLRequest(url: _webLive2dUrl) : null,
           initialData: kIsWeb
               ? null
               : InAppWebViewInitialData(
                   data: _htmlContent,
                   mimeType: 'text/html',
                   encoding: 'utf8',
-                  baseUrl: WebUri('http://qiuqiu.local/'),
+                  baseUrl: WebUri('qiuqiu://asset/'),
                 ),
           initialSettings: InAppWebViewSettings(
             transparentBackground: true,
             javaScriptEnabled: true,
+            resourceCustomSchemes: const ['qiuqiu'],
+            disableContextMenu: true,
+            supportZoom: false,
           ),
           onLoadStop: (controller, url) {
-            if (kIsWeb && !_modelReady) {
+            if (!_modelReady) {
               _readyPoll?.cancel();
-              _readyPoll = Timer.periodic(const Duration(milliseconds: 300), (_) => _checkReady());
+              _readyPoll = Timer.periodic(
+                const Duration(milliseconds: 300),
+                (_) => _checkReady(),
+              );
             }
           },
           onLoadResourceWithCustomScheme: kIsWeb
               ? null
               : (controller, url) async {
                   final urlStr = url.toString();
-                  if (!urlStr.contains('qiuqiu.local/') || urlStr.contains('..')) return null;
-                  final assetPath = urlStr.split('qiuqiu.local/').last;
+                  if (!urlStr.startsWith('qiuqiu://asset/') ||
+                      urlStr.contains('..')) {
+                    return null;
+                  }
+                  final assetPath = urlStr.split('qiuqiu://asset/').last;
                   final ext = assetPath.split('.').last.toLowerCase();
                   const mimeMap = {
                     'json': 'application/json',
@@ -122,7 +199,9 @@ class Live2dViewState extends State<Live2dView> {
                     'js': 'application/javascript',
                   };
                   try {
-                    final data = await rootBundle.load('assets/live2d/$assetPath');
+                    final data = await rootBundle.load(
+                      'assets/live2d/$assetPath',
+                    );
                     return CustomSchemeResponse(
                       data: data.buffer.asUint8List(),
                       contentType: mimeMap[ext] ?? 'application/octet-stream',
@@ -137,13 +216,26 @@ class Live2dViewState extends State<Live2dView> {
               controller.addJavaScriptHandler(
                 handlerName: 'onModelReady',
                 callback: (args) {
-                  if (mounted) setState(() => _modelReady = true);
+                  _readyPoll?.cancel();
+                  if (mounted) {
+                    setState(() {
+                      _modelReady = true;
+                      _loadFailed = false;
+                    });
+                  }
+                },
+              );
+              controller.addJavaScriptHandler(
+                handlerName: 'onModelError',
+                callback: (args) {
+                  _readyPoll?.cancel();
+                  if (mounted) setState(() => _loadFailed = true);
                 },
               );
             } else {
-              // Web: all async callbacks are unreliable. Hard timeout.
-              Timer(const Duration(seconds: 8), () {
-                if (!_modelReady && mounted) {
+              _webReadyTimeout?.cancel();
+              _webReadyTimeout = Timer(const Duration(seconds: 8), () {
+                if (mounted && !_modelReady && !_loadFailed) {
                   _readyPoll?.cancel();
                   setState(() => _modelReady = true);
                 }
@@ -151,8 +243,41 @@ class Live2dViewState extends State<Live2dView> {
             }
           },
         ),
-        if (!_modelReady)
-          const Center(child: CircularProgressIndicator(color: Colors.orange)),
+        if (!kIsWeb && !_modelReady && !_loadFailed)
+          Center(
+            child: Semantics(
+              liveRegion: true,
+              label: '球球正在入场',
+              child: const Column(
+                mainAxisSize: MainAxisSize.min,
+                children: [
+                  SizedBox(
+                    width: 120,
+                    child: LinearProgressIndicator(
+                      color: Color(0xFFFF6B35),
+                      backgroundColor: Color(0xFF253142),
+                    ),
+                  ),
+                  SizedBox(height: 12),
+                  Text(
+                    '球球正在入场…',
+                    style: TextStyle(color: Color(0xFFAAB4C0), fontSize: 14),
+                  ),
+                ],
+              ),
+            ),
+          ),
+        if (!kIsWeb && _loadFailed)
+          Center(
+            child: Semantics(
+              liveRegion: true,
+              child: FilledButton.tonalIcon(
+                onPressed: _retry,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('重新请球球入场'),
+              ),
+            ),
+          ),
       ],
     );
   }
@@ -160,6 +285,7 @@ class Live2dViewState extends State<Live2dView> {
   @override
   void dispose() {
     _readyPoll?.cancel();
+    _webReadyTimeout?.cancel();
     super.dispose();
   }
 
@@ -174,9 +300,9 @@ class Live2dViewState extends State<Live2dView> {
   html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
   canvas { display:block; width:100%; height:100%; }
 </style>
-<script src="http://qiuqiu.local/cubismcore/live2dcubismcore.min.js"></script>
-<script src="http://qiuqiu.local/live2d.min.js"></script>
-<script src="http://qiuqiu.local/pixi.min.js"></script>
+<script src="qiuqiu://asset/cubismcore/live2dcubismcore.min.js"></script>
+<script src="qiuqiu://asset/live2d.min.js"></script>
+<script src="qiuqiu://asset/pixi.min.js"></script>
 </head>
 <body>
 <canvas id="live2d"></canvas>
@@ -191,27 +317,29 @@ var app = new PIXI.Application({
 var model = null;
 var speaking = false;
 var mouthValue = 0;
-var exprMap = { idle:0, listening:0, confused:0, excited:1, chat:3, tease:3, happy:3, nervous:4, sad:4, surprised:5, angry:6 };
+window.modelReady = false;
+var exprMap = { idle:0, listening:0, focus:2, thinking:2, confused:2, excited:1, chat:3, tease:3, happy:3, nervous:4, sad:4, surprised:5, angry:6 };
 
 function resizeModel() {
     if (!model) return;
     model.anchor.set(0.5);
     model.x = app.screen.width / 2;
     model.y = app.screen.height * 0.38;
-    var s = Math.min(app.screen.width / 700, app.screen.height / 1000);
-    model.scale.set(s * 0.7);
+    var s = Math.min(app.screen.width / 650, app.screen.height / 820);
+    model.scale.set(s * 0.92);
 }
 
 async function loadModel() {
     try {
         var L2D = window.Live2DModel || Live2DModel;
         model = await L2D.from(
-            'http://qiuqiu.local/models/qiuqiu/female_01Arkit_6.model3.json',
+            'qiuqiu://asset/models/qiuqiu/female_01Arkit_6.model3.json',
             { autoUpdate: true, autoInteract: false }
         );
         app.stage.addChild(model);
         resizeModel();
         window.addEventListener('resize', resizeModel);
+        window.modelReady = true;
 
         if (window.flutter_inappwebview) {
             window.flutter_inappwebview.callHandler('onModelReady');
@@ -219,7 +347,7 @@ async function loadModel() {
     } catch(e) {
         console.error('Live2D load error:', e);
         if (window.flutter_inappwebview) {
-            window.flutter_inappwebview.callHandler('onModelReady');
+            window.flutter_inappwebview.callHandler('onModelError', String(e));
         }
     }
 }
@@ -231,7 +359,7 @@ function setExpression(name) {
 
 function playMotion(name) {
     if (!model) return;
-    var map = {hello:['hello',0],cheer:['idle',1],idle:['idle',0],listen:['listen',0],speak:['speak',0],think:['think',0]};
+    var map = {hello:['hello',0],cheer:['celebrate',0],idle:['idle',0],listen:['listen',0],focus:['listen',1],speak:['speak',0],think:['think',0]};
     var m = map[name];
     if (m) try { model.motion(m[0], m[1], 3); } catch(e) {}
 }

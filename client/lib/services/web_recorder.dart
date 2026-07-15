@@ -1,112 +1,147 @@
 import 'dart:async';
 import 'dart:convert';
-import 'dart:html' as html;
-import 'dart:typed_data';
+
 import 'package:flutter/foundation.dart';
+import 'package:web/web.dart' as web;
 
 enum VADMode { pushToTalk, freeTalk }
 
 @immutable
 class VADEvent {
   final VADState state;
-  const VADEvent({required this.state});
-  const VADEvent.listening() : state = VADState.listening;
-  const VADEvent.speaking() : state = VADState.speaking;
-  const VADEvent.sentenceEnd() : state = VADState.sentenceEnd;
-  const VADEvent.idle() : state = VADState.idle;
+  final String? message;
+
+  const VADEvent({required this.state, this.message});
+  const VADEvent.listening() : this(state: VADState.listening);
+  const VADEvent.speaking() : this(state: VADState.speaking);
+  const VADEvent.sentenceEnd() : this(state: VADState.sentenceEnd);
+  const VADEvent.idle() : this(state: VADState.idle);
+  const VADEvent.permissionDenied() : this(state: VADState.permissionDenied);
+  const VADEvent.failure(String message)
+      : this(state: VADState.failure, message: message);
 }
 
-enum VADState { listening, speaking, sentenceEnd, idle }
-
-void _runJS(String code) {
-  final s = html.ScriptElement()..text = code;
-  final head = html.document.querySelector('head');
-  if (head != null) {
-    head.append(s);
-    s.remove();
-  }
+enum VADState {
+  listening,
+  speaking,
+  sentenceEnd,
+  idle,
+  permissionDenied,
+  failure,
 }
 
-String? _readVAD() {
-  final div = html.document.getElementById('__qDiv');
-  if (div == null) return null;
-  final raw = div.text;
+void _runJavaScript(String code) {
+  final script = web.HTMLScriptElement()..text = code;
+  final head = web.document.head;
+  if (head == null) return;
+  head.appendChild(script);
+  script.remove();
+}
+
+String? _readRecorderEvent() {
+  final bridge = web.document.getElementById('__qDiv');
+  if (bridge == null) return null;
+  final raw = bridge.textContent;
   if (raw == null || raw.isEmpty || raw == 'null') return null;
-  _runJS("document.getElementById('__qDiv').textContent='null'");
+  _runJavaScript("document.getElementById('__qDiv').textContent='null'");
   return raw;
 }
 
 class VADService {
-  final _controller = StreamController<VADEvent>.broadcast();
+  final _eventController = StreamController<VADEvent>.broadcast();
   final _audioBuffer = <Uint8List>[];
-  bool _isListening = false;
+  Timer? _eventPoll;
   VADMode _mode = VADMode.pushToTalk;
-  Timer? _vadPoll;
+  bool _sessionActive = false;
+  bool _captureActive = false;
+  bool _disposed = false;
 
-  Stream<VADEvent> get events => _controller.stream;
-  bool get isListening => _isListening;
+  Stream<VADEvent> get events => _eventController.stream;
+  bool get isListening => _sessionActive;
   VADMode get mode => _mode;
+  String get debugInfo => '';
 
   Future<bool> hasPermission() async => true;
 
   Future<void> startListening(VADMode mode) async {
-    if (_isListening) return;
+    if (_disposed || (_sessionActive && _captureActive && _mode == mode)) {
+      return;
+    }
     _mode = mode;
-    _isListening = true;
+    _sessionActive = true;
     _audioBuffer.clear();
-    _controller.add(const VADEvent.listening());
-    _vadPoll?.cancel();
-    _vadPoll = Timer.periodic(const Duration(milliseconds: 100), (_) => _checkVAD());
-    _runJS('window.__qRecStart()');
+    _startBrowserCapture();
   }
 
-  int _pollCount = 0;
-  String get debugInfo => 'poll:$_pollCount rec:$_isListening buf:${_audioBuffer.length}';
+  void _startBrowserCapture() {
+    if (_disposed || !_sessionActive || _captureActive) return;
+    _captureActive = true;
+    _eventPoll ??= Timer.periodic(
+      const Duration(milliseconds: 80),
+      (_) => _checkRecorderEvent(),
+    );
+    _runJavaScript('window.__qRecStart()');
+    _emit(const VADEvent.listening());
+  }
 
-  void _checkVAD() {
-    _pollCount++;
-    final raw = _readVAD();
+  void _checkRecorderEvent() {
+    final raw = _readRecorderEvent();
     if (raw == null) return;
     try {
       final data = jsonDecode(raw) as Map<String, dynamic>;
       final event = data['e'] as String?;
       final audio = data['a'] as String?;
       if (event == 'speaking') {
-        _controller.add(const VADEvent.speaking());
+        _emit(const VADEvent.speaking());
       } else if (event == 'sentenceEnd') {
-        if (audio != null) {
+        _captureActive = false;
+        if (audio != null && audio.isNotEmpty) {
           _audioBuffer.add(base64Decode(audio));
         }
-        _controller.add(const VADEvent.sentenceEnd());
-        if (_mode == VADMode.pushToTalk) _isListening = false;
-        if (_mode == VADMode.freeTalk && _isListening) {
-          Future.delayed(const Duration(milliseconds: 200), () {
-            if (_isListening) startListening(VADMode.freeTalk);
-          });
+        _emit(const VADEvent.sentenceEnd());
+        if (_mode == VADMode.pushToTalk) {
+          _sessionActive = false;
+        } else if (_sessionActive) {
+          Timer(const Duration(milliseconds: 160), _startBrowserCapture);
         }
+      } else if (event == 'permissionDenied') {
+        _captureActive = false;
+        _sessionActive = false;
+        _emit(const VADEvent.permissionDenied());
+      } else if (event == 'error') {
+        _captureActive = false;
+        _sessionActive = false;
+        _emit(
+          VADEvent.failure(data['message']?.toString() ?? 'recording failed'),
+        );
       }
-    } catch (_) {}
+    } catch (error) {
+      _emit(VADEvent.failure(error.toString()));
+    }
   }
 
   void stopListening() {
-    _isListening = false;
-    _vadPoll?.cancel();
-    _runJS('if(window.__qRec)window.__qRec()');
-    _controller.add(const VADEvent.idle());
+    if (!_sessionActive && !_captureActive) return;
+    _sessionActive = false;
+    _captureActive = false;
+    _runJavaScript('if(window.__qRec)window.__qRec(false)');
+    _emit(const VADEvent.idle());
   }
 
   void onManualStop() {
-    _isListening = false;
-    _vadPoll?.cancel();
-    _runJS('if(window.__qRec)window.__qRec()');
-    _controller.add(const VADEvent.sentenceEnd());
+    if (!_sessionActive) return;
+    _captureActive = false;
+    _runJavaScript('if(window.__qRec)window.__qRec(true)');
   }
 
   Uint8List? drainAudio() {
     if (_audioBuffer.isEmpty) return null;
-    final totalLen = _audioBuffer.fold<int>(0, (s, b) => s + b.length);
-    final result = Uint8List(totalLen);
-    int offset = 0;
+    final totalLength = _audioBuffer.fold<int>(
+      0,
+      (length, chunk) => length + chunk.length,
+    );
+    final result = Uint8List(totalLength);
+    var offset = 0;
     for (final chunk in _audioBuffer) {
       result.setRange(offset, offset + chunk.length, chunk);
       offset += chunk.length;
@@ -116,21 +151,28 @@ class VADService {
   }
 
   void onSpeechDetected() {
-    if (!_isListening) return;
-    _controller.add(const VADEvent.speaking());
+    if (_sessionActive) _emit(const VADEvent.speaking());
   }
 
   void onSilenceTimeout() {
     if (_mode == VADMode.freeTalk) {
-      _controller.add(const VADEvent.sentenceEnd());
+      _runJavaScript('if(window.__qRec)window.__qRec(true)');
     }
   }
 
   void onAudioData(Uint8List pcm) {}
 
+  void _emit(VADEvent event) {
+    if (!_disposed && !_eventController.isClosed) {
+      _eventController.add(event);
+    }
+  }
+
   void dispose() {
-    _vadPoll?.cancel();
+    if (_disposed) return;
     stopListening();
-    _controller.close();
+    _disposed = true;
+    _eventPoll?.cancel();
+    unawaited(_eventController.close());
   }
 }

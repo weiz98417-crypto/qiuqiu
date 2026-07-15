@@ -18,18 +18,19 @@
 
   <meta charset="UTF-8">
   <meta content="IE=Edge" http-equiv="X-UA-Compatible">
-  <meta name="description" content="A new Flutter project.">
+  <meta name="description" content="球球是懂比赛上下文、能连续对话的 Live2D 数字人球友。">
+  <meta name="theme-color" content="#070B12">
 
   <!-- iOS meta tags & icons -->
   <meta name="mobile-web-app-capable" content="yes">
   <meta name="apple-mobile-web-app-status-bar-style" content="black">
-  <meta name="apple-mobile-web-app-title" content="qiuqiu">
+  <meta name="apple-mobile-web-app-title" content="球球">
   <link rel="apple-touch-icon" href="icons/Icon-192.png">
 
   <!-- Favicon -->
   <link rel="icon" type="image/png" href="favicon.png"/>
 
-  <title>qiuqiu</title>
+  <title>球球 · 数字人陪看</title>
   <link rel="manifest" href="manifest.json">
 </head>
 <body>
@@ -41,37 +42,70 @@
     __qDiv.textContent = 'null';
 
     window.__qRecStart = function() {
-      if (window.__qRec) window.__qRec();
-      var s=null,c=null,p=null,chunks=[],speaking=false,st=null,sf=0;
-      navigator.mediaDevices.getUserMedia({audio:true}).then(function(stream){
-        s=stream; c=new(window.AudioContext||window.webkitAudioContext)();
-        var src=c.createMediaStreamSource(stream);
-        p=c.createScriptProcessor(4096,1,1);
-        src.connect(p);p.connect(c.destination);
-        p.onaudioprocess=function(e){
-          var input=e.inputBuffer.getChannelData(0);
-          var pcm=new Int16Array(input.length);var sum=0;
-          for(var i=0;i<input.length;i++){var v=Math.max(-1,Math.min(1,input[i]));pcm[i]=v*32767;sum+=v*v}
+      if (window.__qRec) window.__qRec(false);
+      var stream=null,context=null,processor=null,chunks=[],speaking=false,silenceTimer=null,speechFrames=0,finished=false;
+      function encodeBase64(bytes){
+        var binary='';
+        for(var offset=0;offset<bytes.length;offset+=8192){
+          binary+=String.fromCharCode.apply(null,bytes.subarray(offset,Math.min(offset+8192,bytes.length)));
+        }
+        return btoa(binary);
+      }
+      function to16k(input,sourceRate){
+        var ratio=sourceRate/16000;
+        var length=Math.max(1,Math.floor(input.length/ratio));
+        var pcm=new Int16Array(length);
+        for(var index=0;index<length;index++){
+          var sourceIndex=Math.min(input.length-1,Math.floor(index*ratio));
+          var value=Math.max(-1,Math.min(1,input[sourceIndex]));
+          pcm[index]=value<0?value*32768:value*32767;
+        }
+        return new Uint8Array(pcm.buffer);
+      }
+      function cleanup(){
+        if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null;}
+        if(processor){processor.onaudioprocess=null;processor.disconnect();processor=null;}
+        if(stream){stream.getTracks().forEach(function(track){track.stop();});stream=null;}
+        if(context&&context.state!=='closed'){context.close();}
+      }
+      function finish(emitAudio){
+        if(finished)return;
+        finished=true;
+        cleanup();
+        if(emitAudio&&chunks.length){
+          var total=chunks.reduce(function(sum,chunk){return sum+chunk.length;},0);
+          var bytes=new Uint8Array(total),offset=0;
+          chunks.forEach(function(chunk){bytes.set(chunk,offset);offset+=chunk.length;});
+          __qDiv.textContent=JSON.stringify({e:'sentenceEnd',a:encodeBase64(bytes)});
+        }
+        chunks=[];
+      }
+      window.__qRec=function(flush){finish(flush===true);};
+      navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}}).then(function(mediaStream){
+        stream=mediaStream;
+        context=new(window.AudioContext||window.webkitAudioContext)();
+        var source=context.createMediaStreamSource(stream);
+        processor=context.createScriptProcessor(4096,1,1);
+        source.connect(processor);processor.connect(context.destination);
+        processor.onaudioprocess=function(event){
+          if(finished)return;
+          var input=event.inputBuffer.getChannelData(0),sum=0;
+          for(var index=0;index<input.length;index++){sum+=input[index]*input[index];}
           var rms=Math.sqrt(sum/input.length);
-          chunks.push(new Uint8Array(pcm.buffer));
-          if(rms>0.02){sf++;if(sf===5&&!speaking){speaking=true;__qDiv.textContent=JSON.stringify({e:"speaking"})}}
-          else if(speaking){
-            st=setTimeout(function(){
-              var tl=0;chunks.forEach(function(x){tl+=x.length});
-              var b=new Int16Array(tl),o=0;chunks.forEach(function(x){b.set(new Int16Array(x.buffer),o);o+=x.length});
-              var bytes=new Uint8Array(b.buffer),b64="";
-              for(var i=0;i<bytes.length;i++)b64+=String.fromCharCode(bytes[i]);
-              __qDiv.textContent=JSON.stringify({e:"sentenceEnd",a:btoa(b64)});
-              speaking=false;chunks=[];sf=0;st=null;
-              p.disconnect();s.getTracks().forEach(function(t){t.stop()});if(c.state!=='closed')c.close();
-            },800);
+          chunks.push(to16k(input,context.sampleRate));
+          if(rms>0.02){
+            speechFrames++;
+            if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null;}
+            if(speechFrames===4&&!speaking){speaking=true;__qDiv.textContent=JSON.stringify({e:'speaking'});}
+          }else if(speaking&&!silenceTimer){
+            silenceTimer=setTimeout(function(){finish(true);},760);
           }
         };
-      }).catch(function(e){__qDiv.textContent=JSON.stringify({e:"error"});console.error(e)});
-      window.__qRec=function(){
-        if(p)p.disconnect();if(s)s.getTracks().forEach(function(t){t.stop()});if(c&&c.state!=='closed')c.close();
-        speaking=false;chunks=[];sf=0;
-      };
+      }).catch(function(error){
+        var denied=error&&error.name==='NotAllowedError';
+        __qDiv.textContent=JSON.stringify({e:denied?'permissionDenied':'error',message:String(error)});
+        cleanup();
+      });
     };
   </script>
 </body>

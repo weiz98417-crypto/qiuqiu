@@ -4,7 +4,7 @@ publish_to: 'none'
 version: 0.1.0
 
 environment:
-  sdk: '>=3.4.0 <4.0.0'
+  sdk: '>=3.5.0 <4.0.0'
 
 dependencies:
   flutter:
@@ -12,10 +12,11 @@ dependencies:
   flutter_inappwebview: ^6.1.0
   web_socket_channel: ^3.0.0
   shared_preferences: ^2.3.0
-  flutter_soloud: ^2.1.0
+  flutter_soloud: ^4.0.12
   audio_session: ^0.1.21
   share_plus: ^10.0.0
-  record: ^5.2.0
+  record: ^6.2.1
+  web: ^1.1.1
 
 dev_dependencies:
   flutter_test:
@@ -31,3 +32,13 @@ flutter:
     - assets/live2d/models/qiuqiu/motions/
     - assets/live2d/models/qiuqiu/female_01Arkit_6.4096/
     - assets/live2d/cubismcore/
+  fonts:
+    - family: Noto Sans SC
+      fonts:
+        - asset: assets/fonts/NotoSansSC-VF.ttf
+    - family: Barlow Condensed
+      fonts:
+        - asset: assets/fonts/BarlowCondensed-Regular.ttf
+          weight: 400
+        - asset: assets/fonts/BarlowCondensed-Bold.ttf
+          weight: 700

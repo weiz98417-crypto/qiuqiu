@@ -8,8 +8,8 @@
   html, body { width:100%; height:100%; overflow:hidden; background:transparent; }
   canvas { display:block; width:100%; height:100%; }
 </style>
-<script src="/assets/cubismcore/live2dcubismcore.min.js"></script>
-<script src="/assets/live2d-display-bundle.js"></script>
+<script src="/live2d-assets/cubismcore/live2dcubismcore.min.js"></script>
+<script src="/live2d-assets/live2d-display-bundle.js"></script>
 </head>
 <body>
 <canvas id="live2d"></canvas>
@@ -109,7 +109,7 @@ async function loadModel() {
     try {
         var L2D = window.Live2DModel || Live2DModel;
         model = await L2D.from(
-            '/assets/models/qiuqiu/female_01Arkit_6.model3.json?v=motionpack1',
+            '/live2d-assets/models/qiuqiu/female_01Arkit_6.model3.json?v=motionpack1',
             { autoUpdate: true, autoInteract: false }
         );
         app.stage.addChild(model);
@@ -599,6 +599,9 @@ function performAction(action) {
     var config = actionMap[action] || actionMap.idle;
     if (!canInterrupt(config.priority)) return;
     currentMode = config.mode;
+    document.body.dataset.mode = currentMode;
+    document.body.dataset.motion = config.motion;
+    document.body.dataset.mood = config.mood;
     modeUntil = Date.now() + config.ms;
     setMood(config.mood);
     playMotionGroup(config.motion, config.priority);
@@ -619,6 +622,7 @@ function scheduleIdle() {
 
 function setSpeaking(v) {
     speaking = v;
+    document.body.dataset.speaking = v ? 'true' : 'false';
     if (v) {
         currentMode = 'speak';
         modeUntil = Date.now() + 3000;
@@ -629,6 +633,18 @@ function setSpeaking(v) {
         scheduleIdle();
     }
 }
+
+window.addEventListener('message', function(event) {
+    if (event.source !== window.parent) return;
+    var data = event.data;
+    if (!data || data.type !== 'qiuqiu-live2d-state') return;
+    if (data.expression) setExpression(data.expression);
+    if (data.motion) {
+        if (actionMap[data.motion]) performAction(data.motion);
+        else playMotion(data.motion);
+    }
+    setSpeaking(data.speaking === true);
+});
 
 setInterval(function() {
     if (!model) return;
