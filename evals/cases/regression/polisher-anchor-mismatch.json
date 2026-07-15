@@ -1,0 +1,36 @@
+{
+  "version": "2026-07",
+  "id": "regression.realizer-fact-bypass",
+  "suite": "regression",
+  "tags": ["llm", "grounding", "fallback", "blocker"],
+  "summary": "润色模型试图改写比赛事实时，事实路径必须完全绕过自由润色。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "realizer": {"reply": "刚才这球是莫拉塔助攻，节奏很不错。"},
+  "events": [
+    {
+      "key": "goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "24:10",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {"home": 1, "away": 0},
+        "intensity": 5,
+        "description": "佩德里破门。",
+        "visibility": "public",
+        "participants": [{"role": "assist", "name": "法比安"}, {"role": "pre_assist", "name": "亚马尔"}]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "realizer-bypass-assist",
+      "userId": "fan-6",
+      "text": "刚才谁助攻？",
+      "expect": {"intent": "recent_event_question", "mustMention": ["法比安", "亚马尔"], "mustNotMention": ["莫拉塔"], "reason": "deterministic_fact_policy", "requiredTools": ["match.search_events"], "retrievedEventKeys": ["goal"]}
+    }
+  ],
+  "final": {"score": {"home": 1, "away": 0}, "minimumTraces": 1}
+}

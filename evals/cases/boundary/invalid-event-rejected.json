@@ -1,0 +1,16 @@
+{
+  "version": "2026-07",
+  "id": "boundary.invalid-event-rejected",
+  "suite": "boundary",
+  "tags": ["operator", "validation", "blocker"],
+  "summary": "缺失事件类型的导演数据必须在事实层被拒绝，不能进入记忆。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "events": [
+    {
+      "key": "missing-type",
+      "expectError": true,
+      "event": {"clock": "10:00", "description": "不完整事件", "score": {"home": 0, "away": 0}}
+    }
+  ],
+  "final": {"score": {"home": 0, "away": 0}, "minimumTraces": 0}
+}

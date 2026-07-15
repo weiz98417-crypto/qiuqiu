@@ -1,0 +1,71 @@
+{
+  "version": "2026-07",
+  "id": "boundary.user-claim-conflicts",
+  "suite": "boundary",
+  "tags": ["claim-safety", "truth", "realizer-boundary"],
+  "summary": "用户错误比分和进球者不能覆盖比赛事实，玩笑不能被升级为事实主张。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [{"name": "佩德里"}],
+    "awayPlayers": [{"name": "穆西亚拉"}]
+  },
+  "events": [
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {"home": 1, "away": 0},
+        "description": "佩德里进球。",
+        "participants": [{"role": "scorer", "name": "佩德里", "teamId": "home", "teamName": "西班牙"}]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "false-score",
+      "userId": "fan-1",
+      "text": "德国已经3比0领先了",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": ["西班牙", "1-0", "德国"],
+        "mustNotMention": ["3比0"],
+        "reason": "user_match_claim_contradicted",
+        "requiredTools": ["match.read_snapshot", "match.search_events", "match.verify_user_claim"],
+        "claimKind": "score",
+        "claimStatus": "contradicted",
+        "claimCertainty": "asserted"
+      }
+    },
+    {
+      "id": "wrong-scorer",
+      "userId": "fan-1",
+      "text": "刚才哈兰德进球了",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": ["不是哈兰德", "佩德里"],
+        "reason": "user_match_claim_contradicted",
+        "requiredTools": ["match.search_events", "match.verify_user_claim"],
+        "retrievedEventKeys": ["pedri-goal"],
+        "claimKind": "event",
+        "claimStatus": "contradicted"
+      }
+    },
+    {
+      "id": "joke-score",
+      "userId": "fan-1",
+      "text": "开玩笑，德国3比0了",
+      "expect": {
+        "intent": "smalltalk",
+        "forbiddenTools": ["match.verify_user_claim"],
+        "forbidClaim": true
+      }
+    }
+  ],
+  "final": {"score": {"home": 1, "away": 0}, "minimumTraces": 3}
+}

@@ -1,0 +1,56 @@
+{
+  "version": "2026-07",
+  "id": "boundary.correction-revokes-old-facts",
+  "suite": "boundary",
+  "tags": ["authority", "correction", "memory", "blocker"],
+  "summary": "VAR 更正取消进球后，比分和助攻问题均不得泄漏旧事件事实。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "events": [
+    {
+      "key": "cancelled-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "12:00",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {"home": 1, "away": 0},
+        "intensity": 5,
+        "description": "佩德里破门。",
+        "visibility": "public",
+        "participants": [{"role": "assist", "name": "法比安"}]
+      }
+    },
+    {
+      "key": "var-correction",
+      "corrects": "cancelled-goal",
+      "event": {
+        "eventType": "var_check",
+        "period": "first_half",
+        "clock": "13:10",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "score": {"home": 0, "away": 0},
+        "intensity": 4,
+        "description": "VAR 取消这粒进球。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "corrected-score",
+      "userId": "fan-3",
+      "text": "现在几比几？",
+      "expect": {"intent": "match_status_question", "mustMention": ["0-0"], "mustNotMention": ["1-0"], "requiredTools": ["match.read_snapshot"]}
+    },
+    {
+      "id": "corrected-assist",
+      "userId": "fan-3",
+      "text": "刚才谁助攻？",
+      "expect": {"intent": "recent_event_question", "mustMention": ["还没看到"], "mustNotMention": ["法比安"], "requiredTools": ["match.search_events"], "forbiddenTools": ["operator.correct_event"]}
+    }
+  ],
+  "final": {"score": {"home": 0, "away": 0}, "minimumTraces": 2}
+}

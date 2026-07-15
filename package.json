@@ -1,0 +1,14 @@
+{
+  "name": "qiuqiu-evals",
+  "private": true,
+  "type": "module",
+  "scripts": {
+    "eval:offline": "node scripts/evals/run.mjs --tier offline",
+    "eval:pr": "node scripts/evals/run.mjs --tier pr",
+    "eval:nightly": "node scripts/evals/run.mjs --tier nightly",
+    "eval:release": "node scripts/evals/run.mjs --tier release"
+  },
+  "devDependencies": {
+    "@playwright/test": "1.61.1"
+  }
+}

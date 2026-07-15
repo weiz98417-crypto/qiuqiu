@@ -1,0 +1,42 @@
+{
+  "version": "2026-07",
+  "id": "regression.manual-proactive-line",
+  "suite": "regression",
+  "tags": ["proactive", "manual-copy", "trace"],
+  "summary": "导演手写的主动话术不得被球球改写。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "events": [
+    {
+      "key": "manual-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "24:10",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {"home": 1, "away": 0},
+        "intensity": 5,
+        "description": "佩德里禁区内抢点破门。",
+        "proactiveText": "佩德里这一下太关键了，法比安的助攻也很漂亮。",
+        "visibility": "public",
+        "participants": [{"role": "assist", "name": "法比安"}, {"role": "pre_assist", "name": "亚马尔"}]
+      },
+      "proactive": {
+        "userId": "fan-5",
+        "exact": "佩德里这一下太关键了，法比安的助攻也很漂亮。",
+        "reason": "relationship_match_reaction",
+        "retrievedEventKeys": ["manual-goal"]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "follow-up",
+      "userId": "fan-5",
+      "text": "谁策动的？",
+      "expect": {"intent": "follow_up_question", "mustMention": ["亚马尔"], "requiredTools": ["conversation.read_recent", "match.search_events"], "retrievedEventKeys": ["manual-goal"]}
+    }
+  ],
+  "final": {"score": {"home": 1, "away": 0}, "minimumTraces": 2}
+}

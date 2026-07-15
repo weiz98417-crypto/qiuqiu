@@ -1,0 +1,83 @@
+{
+  "version": "2026-07",
+  "id": "baseline.goal-assist-follow-up",
+  "suite": "baseline",
+  "tags": ["authority", "proactive", "memory", "trace"],
+  "summary": "导演发布进球后，主动线、助攻追问、策动追问与比分回答都引用同一条有效事件。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {"number": "10", "name": "佩德里", "position": "CM"},
+      {"number": "8", "name": "法比安", "position": "CM"},
+      {"number": "19", "name": "亚马尔", "position": "RW"}
+    ],
+    "awayPlayers": [{"number": "10", "name": "穆西亚拉", "position": "AM"}]
+  },
+  "events": [
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {"home": 1, "away": 0},
+        "intensity": 5,
+        "description": "佩德里禁区前沿推射破门。",
+        "proactiveText": "佩德里进球了，法比安这次助攻很漂亮。",
+        "visibility": "public",
+        "participants": [
+          {"role": "scorer", "name": "佩德里", "teamId": "home", "teamName": "西班牙"},
+          {"role": "assist", "name": "法比安", "teamId": "home", "teamName": "西班牙"},
+          {"role": "pre_assist", "name": "亚马尔", "teamId": "home", "teamName": "西班牙"}
+        ]
+      },
+      "proactive": {
+        "userId": "fan-1",
+        "mustMention": ["佩德里", "法比安"],
+        "reason": "relationship_match_reaction",
+        "requiredTools": ["response.emit_companion_reply"],
+        "retrievedEventKeys": ["pedri-goal"]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "ask-assist",
+      "userId": "fan-1",
+      "text": "刚才谁助攻？",
+      "expect": {
+        "intent": "recent_event_question",
+        "mustMention": ["法比安", "亚马尔"],
+        "requiredTools": ["match.search_events", "conversation.append_turn", "trace.write_decision", "response.emit_companion_reply"],
+        "forbiddenTools": ["operator.create_event", "operator.correct_event"],
+        "retrievedEventKeys": ["pedri-goal"]
+      }
+    },
+    {
+      "id": "ask-pre-assist",
+      "userId": "fan-1",
+      "text": "谁策动的？",
+      "expect": {
+        "intent": "follow_up_question",
+        "mustMention": ["亚马尔"],
+        "requiredTools": ["conversation.read_recent", "match.search_events"],
+        "retrievedEventKeys": ["pedri-goal"]
+      }
+    },
+    {
+      "id": "ask-score",
+      "userId": "fan-1",
+      "text": "现在几比几？",
+      "expect": {
+        "intent": "match_status_question",
+        "mustMention": ["西班牙", "1-0", "德国", "23:41"],
+        "requiredTools": ["match.read_snapshot"]
+      }
+    }
+  ],
+  "final": {"score": {"home": 1, "away": 0}, "minimumTraces": 4}
+}

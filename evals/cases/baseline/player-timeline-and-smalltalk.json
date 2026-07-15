@@ -1,0 +1,50 @@
+{
+  "version": "2026-07",
+  "id": "baseline.player-timeline-and-smalltalk",
+  "suite": "baseline",
+  "tags": ["player", "smalltalk", "authority"],
+  "summary": "球员问题读取球员时间线；普通闲聊不伪装成实时赛况检索。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国", "awayPlayers": [{"number": "10", "name": "穆西亚拉", "position": "AM"}]},
+  "events": [
+    {
+      "key": "musiala-shot",
+      "event": {
+        "eventType": "shot",
+        "period": "first_half",
+        "clock": "31:05",
+        "teamId": "away",
+        "teamName": "德国",
+        "playerName": "穆西亚拉",
+        "score": {"home": 0, "away": 0},
+        "intensity": 3,
+        "description": "穆西亚拉禁区外射门被封堵。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "ask-player",
+      "userId": "fan-2",
+      "text": "穆西亚拉进球了吗？",
+      "expect": {
+        "intent": "player_question",
+        "mustMention": ["穆西亚拉", "没有看到"],
+        "mustNotMention": ["有进球记录"],
+        "requiredTools": ["match.get_player_timeline"],
+        "retrievedEventKeys": ["musiala-shot"]
+      }
+    },
+    {
+      "id": "smalltalk",
+      "userId": "fan-2",
+      "text": "陪我看会儿吧",
+      "expect": {
+        "intent": "smalltalk",
+        "requiredTools": ["conversation.append_turn", "trace.write_decision"],
+        "forbiddenTools": ["match.read_snapshot", "match.search_events", "match.get_player_timeline"]
+      }
+    }
+  ],
+  "final": {"score": {"home": 0, "away": 0}, "minimumTraces": 2}
+}

@@ -1,0 +1,26 @@
+{
+  "version": "2026-07",
+  "id": "boundary.user-claim-unverified",
+  "suite": "boundary",
+  "tags": ["claim-safety", "latency", "uncertainty"],
+  "summary": "没有比赛证据时，用户报告的进球必须保持待确认。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "turns": [
+    {
+      "id": "unconfirmed-goal",
+      "userId": "fan-1",
+      "text": "佩德里刚刚进球了吧",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": ["还没跟上"],
+        "mustNotMention": ["对，佩德里"],
+        "reason": "user_match_claim_unverified",
+        "requiredTools": ["match.read_snapshot", "match.search_events", "match.verify_user_claim"],
+        "claimKind": "event",
+        "claimStatus": "unverified",
+        "claimCertainty": "uncertain"
+      }
+    }
+  ],
+  "final": {"score": {"home": 0, "away": 0}, "minimumTraces": 1}
+}
