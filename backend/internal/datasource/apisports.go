@@ -1,24 +1,39 @@
 package datasource
 
 import (
+	"bytes"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net/http"
+	"strings"
 	"time"
 )
 
-const baseURL = "https://v3.football.api-sports.io"
+const (
+	baseURL                 = "https://v3.football.api-sports.io"
+	maxAPIErrorMessageBytes = 4096
+)
 
 type Client struct {
 	apiKey     string
+	baseURL    string
 	httpClient *http.Client
 }
 
 func NewClient(apiKey string) *Client {
 	return &Client{
 		apiKey:     apiKey,
+		baseURL:    baseURL,
 		httpClient: &http.Client{Timeout: 10 * time.Second},
 	}
+}
+
+func (c *Client) WithBaseURL(url string) *Client {
+	if value := strings.TrimRight(strings.TrimSpace(url), "/"); value != "" {
+		c.baseURL = value
+	}
+	return c
 }
 
 // --- Response wrapper ---
@@ -26,7 +41,7 @@ func NewClient(apiKey string) *Client {
 type apiResponse struct {
 	Get      string          `json:"get"`
 	Results  int             `json:"results"`
-	Errors   interface{}     `json:"errors"`
+	Errors   json.RawMessage `json:"errors"`
 	Response json.RawMessage `json:"response"`
 }
 
@@ -103,13 +118,13 @@ func (fw FixtureWrapper) ToFixture() Fixture {
 // --- Event types ---
 
 type Event struct {
-	Time     EventTime  `json:"time"`
-	Team     TeamRef    `json:"team"`
-	Player   PlayerRef  `json:"player"`
-	Assist   PlayerRef  `json:"assist"`
-	Type     string     `json:"type"`
-	Detail   string     `json:"detail"`
-	Comments *string    `json:"comments"`
+	Time     EventTime `json:"time"`
+	Team     TeamRef   `json:"team"`
+	Player   PlayerRef `json:"player"`
+	Assist   PlayerRef `json:"assist"`
+	Type     string    `json:"type"`
+	Detail   string    `json:"detail"`
+	Comments *string   `json:"comments"`
 }
 
 type EventTime struct {
@@ -159,7 +174,7 @@ func (c *Client) GetEvents(fixtureID int) ([]Event, error) {
 }
 
 func (c *Client) doRequest(path string, result interface{}) error {
-	req, err := http.NewRequest("GET", baseURL+path, nil)
+	req, err := http.NewRequest("GET", c.baseURL+path, nil)
 	if err != nil {
 		return err
 	}
@@ -171,10 +186,20 @@ func (c *Client) doRequest(path string, result interface{}) error {
 		return fmt.Errorf("api request failed: %w", err)
 	}
 	defer resp.Body.Close()
+	if resp.StatusCode < http.StatusOK || resp.StatusCode >= http.StatusMultipleChoices {
+		body, readErr := io.ReadAll(io.LimitReader(resp.Body, maxAPIErrorMessageBytes+1))
+		if readErr != nil {
+			return fmt.Errorf("api request failed with status %d: read error body: %w", resp.StatusCode, readErr)
+		}
+		return fmt.Errorf("api request failed with status %d: %s", resp.StatusCode, boundedAPIErrorText(body))
+	}
 
 	var wrapper apiResponse
 	if err := json.NewDecoder(resp.Body).Decode(&wrapper); err != nil {
 		return fmt.Errorf("decode response: %w", err)
+	}
+	if message := apiResponseError(wrapper.Errors); message != "" {
+		return fmt.Errorf("api response error: %s", message)
 	}
 
 	if wrapper.Results == 0 {
@@ -182,4 +207,35 @@ func (c *Client) doRequest(path string, result interface{}) error {
 	}
 
 	return json.Unmarshal(wrapper.Response, result)
+}
+
+func apiResponseError(raw json.RawMessage) string {
+	trimmed := strings.TrimSpace(string(raw))
+	if trimmed == "" || trimmed == "null" || trimmed == "{}" || trimmed == "[]" || trimmed == `""` {
+		return ""
+	}
+	var message string
+	if json.Unmarshal(raw, &message) == nil {
+		return boundedAPIErrorText([]byte(message))
+	}
+	var compact bytes.Buffer
+	if json.Compact(&compact, raw) == nil {
+		return boundedAPIErrorText([]byte(compact.String()))
+	}
+	return boundedAPIErrorText(raw)
+}
+
+func boundedAPIErrorText(body []byte) string {
+	truncated := len(body) > maxAPIErrorMessageBytes
+	if truncated {
+		body = body[:maxAPIErrorMessageBytes]
+	}
+	message := strings.TrimSpace(string(body))
+	if message == "" {
+		message = http.StatusText(http.StatusBadGateway)
+	}
+	if truncated {
+		message += "…"
+	}
+	return message
 }

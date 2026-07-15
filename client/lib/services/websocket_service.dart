@@ -19,6 +19,7 @@ class WebSocketService {
   String _token = '';
   int _reconnectAttempts = 0;
   int _connectionGeneration = 0;
+  bool _connected = false;
   bool _disposed = false;
 
   static const int _maxReconnectAttempts = 5;
@@ -39,6 +40,7 @@ class WebSocketService {
   Future<void> _open(String url, {required bool reconnecting}) async {
     if (_disposed) return;
     final generation = ++_connectionGeneration;
+    _connected = false;
     _emitStatus(
       reconnecting ? SocketStatus.reconnecting : SocketStatus.connecting,
     );
@@ -62,6 +64,7 @@ class WebSocketService {
       }
 
       _reconnectAttempts = 0;
+      _connected = true;
       _emitStatus(SocketStatus.connected);
       _startHeartbeat();
       _channelSubscription = channel.stream.listen(
@@ -104,6 +107,7 @@ class WebSocketService {
 
   void _scheduleReconnect(int generation) {
     if (_disposed || generation != _connectionGeneration) return;
+    _connected = false;
     _pingTimer?.cancel();
     if (_reconnectTimer?.isActive ?? false) return;
     final url = _url;
@@ -126,7 +130,7 @@ class WebSocketService {
   }
 
   bool send(Map<String, dynamic> message) {
-    if (_disposed || _channel == null) return false;
+    if (_disposed || !_connected || _channel == null) return false;
     try {
       _channel!.sink.add(jsonEncode(message));
       return true;
@@ -144,6 +148,7 @@ class WebSocketService {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _connected = false;
     _connectionGeneration++;
     _reconnectTimer?.cancel();
     _pingTimer?.cancel();

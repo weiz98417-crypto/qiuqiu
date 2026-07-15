@@ -175,18 +175,11 @@ func main() {
 		noCache(w)
 		http.ServeFile(w, r, "../client/assets/live2d/live2d.html")
 	})
-	mux.HandleFunc("/test-expressions.html", func(w http.ResponseWriter, r *http.Request) {
-		noCache(w)
-		http.ServeFile(w, r, "../client/assets/live2d/test-expressions.html")
-	})
 	mux.HandleFunc("/operator.html", func(w http.ResponseWriter, r *http.Request) {
 		noCache(w)
 		http.ServeFile(w, r, "../client/assets/live2d/operator.html")
 	})
-	mux.HandleFunc("/director-prototype.html", func(w http.ResponseWriter, r *http.Request) {
-		noCache(w)
-		http.ServeFile(w, r, "../client/assets/live2d/director-prototype.html")
-	})
+	registerDevelopmentPages(mux, cfg.Environment, "../client/assets/live2d")
 	webApp := http.FileServer(http.Dir(resolveWebAppDir()))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app.html" {
@@ -501,8 +494,32 @@ func main() {
 
 	addr := ":" + cfg.Port
 	log.Printf("qiuqiu server starting on %s", addr)
-	if err := http.ListenAndServe(addr, mux); err != nil {
+	if err := newHTTPServer(addr, mux).ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
+	}
+}
+
+func registerDevelopmentPages(mux *http.ServeMux, environment, assetsDir string) {
+	if strings.EqualFold(strings.TrimSpace(environment), "production") {
+		return
+	}
+	for _, name := range []string{"test-expressions.html", "director-prototype.html"} {
+		path := "/" + name
+		file := filepath.Join(assetsDir, name)
+		mux.HandleFunc(path, func(w http.ResponseWriter, r *http.Request) {
+			noCache(w)
+			http.ServeFile(w, r, file)
+		})
+	}
+}
+
+func newHTTPServer(addr string, handler http.Handler) *http.Server {
+	return &http.Server{
+		Addr:              addr,
+		Handler:           handler,
+		ReadHeaderTimeout: 10 * time.Second,
+		IdleTimeout:       2 * time.Minute,
+		MaxHeaderBytes:    1 << 20,
 	}
 }
 

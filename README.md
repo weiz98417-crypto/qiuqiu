@@ -86,7 +86,7 @@ docker compose up -d --build
 ```bash
 cd backend
 cp .env.example .env   # 本地可不设置 APP_TOKEN；生产环境必须设置
-go run cmd/server/main.go
+go run ./cmd/server
 ```
 
 **客户端:**

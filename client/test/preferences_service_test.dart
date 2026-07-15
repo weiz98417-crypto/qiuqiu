@@ -21,4 +21,34 @@ void main() {
       ),
     );
   });
+
+  test('legacy preferences cannot disable both sound and subtitles', () async {
+    SharedPreferences.setMockInitialValues({
+      'sound': false,
+      'subtitles': false,
+    });
+
+    final profile = await PreferencesService().load();
+
+    expect(profile.soundEnabled, isFalse);
+    expect(profile.subtitlesEnabled, isTrue);
+  });
+
+  test('turning off one output keeps the other available', () {
+    const silent = UserProfile(
+      nickname: '',
+      favoriteTeam: '',
+      talkativeness: 'normal',
+      soundEnabled: false,
+    );
+    const hidden = UserProfile(
+      nickname: '',
+      favoriteTeam: '',
+      talkativeness: 'normal',
+      subtitlesEnabled: false,
+    );
+
+    expect(silent.withSubtitlesEnabled(false).soundEnabled, isTrue);
+    expect(hidden.withSoundEnabled(false).subtitlesEnabled, isTrue);
+  });
 }

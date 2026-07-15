@@ -31,11 +31,12 @@ class PreferencesService {
       continuousConversation: prefs.getBool(_keyContinuousConversation) ?? true,
       subtitlesEnabled: prefs.getBool(_keySubtitles) ?? true,
       soundEnabled: prefs.getBool(_keySound) ?? true,
-    );
+    ).ensureOutputAvailable();
   }
 
   Future<void> save(UserProfile profile) async {
     final prefs = await SharedPreferences.getInstance();
+    profile = profile.ensureOutputAvailable();
     await prefs.setString(_keyNickname, profile.nickname);
     if (profile.favoriteTeam.isNotEmpty) {
       await prefs.setString(_keyFavoriteTeam, profile.favoriteTeam);
@@ -90,6 +91,25 @@ class UserProfile {
   });
 
   bool get hasProfile => nickname.isNotEmpty;
+
+  UserProfile withSubtitlesEnabled(bool enabled) {
+    return copyWith(
+      subtitlesEnabled: enabled,
+      soundEnabled: enabled ? soundEnabled : true,
+    );
+  }
+
+  UserProfile withSoundEnabled(bool enabled) {
+    return copyWith(
+      soundEnabled: enabled,
+      subtitlesEnabled: enabled ? subtitlesEnabled : true,
+    );
+  }
+
+  UserProfile ensureOutputAvailable() {
+    if (subtitlesEnabled || soundEnabled) return this;
+    return copyWith(subtitlesEnabled: true);
+  }
 
   UserProfile copyWith({
     String? nickname,

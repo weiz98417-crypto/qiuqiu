@@ -40,7 +40,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
   Future<void> _save() async {
     if (_saving) return;
     setState(() => _saving = true);
-    final profile = _draft.copyWith(nickname: _nicknameController.text.trim());
+    final profile = _draft
+        .copyWith(nickname: _nicknameController.text.trim())
+        .ensureOutputAvailable();
     await widget.onSave(profile);
     if (!mounted) return;
     Navigator.pop(context, profile);
@@ -123,7 +125,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: _draft.subtitlesEnabled,
                   onChanged: (value) {
                     setState(() {
-                      _draft = _draft.copyWith(subtitlesEnabled: value);
+                      _draft = _draft.withSubtitlesEnabled(value);
                     });
                   },
                 ),
@@ -134,7 +136,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   value: _draft.soundEnabled,
                   onChanged: (value) {
                     setState(() {
-                      _draft = _draft.copyWith(soundEnabled: value);
+                      _draft = _draft.withSoundEnabled(value);
                     });
                   },
                 ),

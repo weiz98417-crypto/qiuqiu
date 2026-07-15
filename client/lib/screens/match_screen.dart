@@ -60,6 +60,7 @@ class _MatchScreenState extends State<MatchScreen> {
   bool _isHoldingToTalk = false;
   bool _firstMeetingCompleted = false;
   bool _awaitingFirstMeetingGreeting = false;
+  bool _forceSubtitleFallback = false;
   String _userId = '';
   int _signalSequence = 0;
   String _expression = 'idle';
@@ -205,12 +206,15 @@ class _MatchScreenState extends State<MatchScreen> {
         break;
       case 'interrupt':
         _pendingAudio.clear();
-        unawaited(_audio.pause(notify: false));
+        unawaited(_audio.pause());
         setState(() {
           _clearPresentationFields();
-          _phase = ConversationPhase.listening;
-          _expression = 'listening';
-          _motion = 'listen';
+          final nextPhase = phaseAfterInterrupt(_phase);
+          if (nextPhase != _phase) {
+            _expression = 'listening';
+            _motion = 'listen';
+          }
+          _phase = nextPhase;
         });
         break;
       case 'reconnecting':
@@ -230,6 +234,7 @@ class _MatchScreenState extends State<MatchScreen> {
       final presentation = CompanionPresentation.fromReplyData(data);
       final parts = splitReplyForDisplay(reply.trim());
       setState(() {
+        _forceSubtitleFallback = false;
         _qiuqiuLine = parts.$1;
         _qiuqiuDetail = parts.$2;
         _phase = isFirstMeeting
@@ -276,6 +281,7 @@ class _MatchScreenState extends State<MatchScreen> {
         _notice = '这句没听清，已经用文字继续。';
       } else if (state == 'tts_fallback') {
         _notice = '声音暂时没出来，回答已显示在字幕里。';
+        _forceSubtitleFallback = true;
         _phase = _continuousEnabled
             ? ConversationPhase.listening
             : ConversationPhase.idle;
@@ -436,18 +442,18 @@ class _MatchScreenState extends State<MatchScreen> {
         _finishFirstMeetingGreeting();
         break;
       case AudioPlaybackStatus.interrupted:
-        if (traceId != null) {
-          _socket.send({
-            'type': 'voice_playback',
-            'traceId': traceId,
-            'state': 'interrupted',
-          });
+        final receipt = interruptedPlaybackReceipt(traceId);
+        if (receipt != null) {
+          _socket.send(receipt);
         }
         setState(() {
           _clearPresentationFields();
-          _phase = ConversationPhase.listening;
-          _expression = 'listening';
-          _motion = 'listen';
+          final nextPhase = phaseAfterInterrupt(_phase);
+          if (nextPhase != _phase) {
+            _expression = 'listening';
+            _motion = 'listen';
+          }
+          _phase = nextPhase;
         });
         break;
       case AudioPlaybackStatus.blocked:
@@ -460,6 +466,7 @@ class _MatchScreenState extends State<MatchScreen> {
         }
         setState(() {
           _notice = '轻触一下屏幕，我就能开口。';
+          _forceSubtitleFallback = true;
           _phase = _continuousEnabled
               ? ConversationPhase.listening
               : ConversationPhase.idle;
@@ -478,6 +485,7 @@ class _MatchScreenState extends State<MatchScreen> {
         }
         setState(() {
           _notice = '声音暂时没播放出来，字幕还在。';
+          _forceSubtitleFallback = true;
           _phase = _continuousEnabled
               ? ConversationPhase.listening
               : ConversationPhase.idle;
@@ -575,7 +583,7 @@ class _MatchScreenState extends State<MatchScreen> {
         _clearPresentationFields();
         _expression = 'thinking';
         _motion = 'think';
-        _textController.clear();
+        if (shouldClearTextInput(sent)) _textController.clear();
       } else {
         _notice = '现在还没连上，文字没有发出去。';
       }
@@ -717,7 +725,10 @@ class _MatchScreenState extends State<MatchScreen> {
                       phase: _phase,
                       socketStatus: _socketStatus,
                       continuousEnabled: _continuousEnabled,
-                      subtitlesEnabled: _profile.subtitlesEnabled,
+                      subtitlesEnabled: shouldShowReplyText(
+                        subtitlesEnabled: _profile.subtitlesEnabled,
+                        playbackFallback: _forceSubtitleFallback,
+                      ),
                       qiuqiuLine: _qiuqiuLine,
                       qiuqiuDetail: _qiuqiuDetail,
                       userLine: _userLine,
@@ -1737,6 +1748,32 @@ Map<String, dynamic>? mutedPlaybackReceipt(PendingAudio metadata) {
   };
 }
 
+Map<String, dynamic>? interruptedPlaybackReceipt(String? traceId) {
+  if (traceId == null || traceId.trim().isEmpty) return null;
+  return {
+    'type': 'voice_playback',
+    'traceId': traceId,
+    'state': 'interrupted',
+  };
+}
+
+ConversationPhase phaseAfterInterrupt(ConversationPhase current) {
+  if (current == ConversationPhase.userSpeaking ||
+      current == ConversationPhase.understanding) {
+    return current;
+  }
+  return ConversationPhase.listening;
+}
+
+bool shouldClearTextInput(bool sent) => sent;
+
+bool shouldShowReplyText({
+  required bool subtitlesEnabled,
+  required bool playbackFallback,
+}) {
+  return subtitlesEnabled || playbackFallback;
+}
+
 class PendingAudioQueue {
   final Queue<PendingAudio> _items = Queue<PendingAudio>();
 
@@ -1757,16 +1794,18 @@ class MatchViewData {
   final String period;
   final String clock;
   final List<String> recentEventLabels;
+  final bool hasMatchInfo;
 
   const MatchViewData({
-    this.homeTeam = '利物浦',
-    this.awayTeam = '切尔西',
-    this.homeScore = 2,
-    this.awayScore = 1,
-    this.competition = '欧冠',
-    this.period = '下半场',
-    this.clock = "78'",
+    this.homeTeam = '主队',
+    this.awayTeam = '客队',
+    this.homeScore = 0,
+    this.awayScore = 0,
+    this.competition = '',
+    this.period = '',
+    this.clock = '',
     this.recentEventLabels = const [],
+    this.hasMatchInfo = false,
   });
 
   String get liveLabel => switch (period.trim().toLowerCase()) {
@@ -1778,6 +1817,7 @@ class MatchViewData {
   String get eventLabel => statusCarouselItems.first;
 
   List<String> get statusCarouselItems {
+    if (!hasMatchInfo) return const ['等待比赛信息'];
     final items = <String>[];
     for (final event in recentEventLabels) {
       final normalized = event.trim();
@@ -1820,6 +1860,7 @@ class MatchViewData {
       period: snapshot['period'] as String?,
       clock: snapshot['clock'] as String?,
       recentEventLabels: eventLabels,
+      hasMatchInfo: true,
     );
   }
 
@@ -1836,6 +1877,7 @@ class MatchViewData {
       period: event['period'] as String?,
       clock: event['clock'] as String?,
       recentEventLabels: eventLabels,
+      hasMatchInfo: true,
     );
   }
 
@@ -1857,6 +1899,7 @@ class MatchViewData {
     String? period,
     String? clock,
     List<String>? recentEventLabels,
+    bool? hasMatchInfo,
   }) {
     return MatchViewData(
       homeTeam: homeTeam?.trim().isNotEmpty == true ? homeTeam! : this.homeTeam,
@@ -1867,6 +1910,7 @@ class MatchViewData {
       period: period?.trim().isNotEmpty == true ? period! : this.period,
       clock: clock?.trim().isNotEmpty == true ? clock! : this.clock,
       recentEventLabels: recentEventLabels ?? this.recentEventLabels,
+      hasMatchInfo: hasMatchInfo ?? this.hasMatchInfo,
     );
   }
 }

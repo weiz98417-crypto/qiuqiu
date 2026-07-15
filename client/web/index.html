@@ -43,7 +43,9 @@
 
     window.__qRecStart = function() {
       if (window.__qRec) window.__qRec(false);
-      var stream=null,context=null,processor=null,chunks=[],speaking=false,silenceTimer=null,speechFrames=0,finished=false;
+      var stream=null,context=null,processor=null,chunks=[],preRoll=[],preRollBytes=0,recordedBytes=0,speaking=false,silenceTimer=null,speechFrames=0,finished=false;
+      var maxPreRollBytes=16000*2;
+      var maxRecordingBytes=16000*2*30;
       function encodeBase64(bytes){
         var binary='';
         for(var offset=0;offset<bytes.length;offset+=8192){
@@ -78,7 +80,7 @@
           chunks.forEach(function(chunk){bytes.set(chunk,offset);offset+=chunk.length;});
           __qDiv.textContent=JSON.stringify({e:'sentenceEnd',a:encodeBase64(bytes)});
         }
-        chunks=[];
+          chunks=[];preRoll=[];preRollBytes=0;recordedBytes=0;
       }
       window.__qRec=function(flush){finish(flush===true);};
       navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}}).then(function(mediaStream){
@@ -92,13 +94,25 @@
           var input=event.inputBuffer.getChannelData(0),sum=0;
           for(var index=0;index<input.length;index++){sum+=input[index]*input[index];}
           var rms=Math.sqrt(sum/input.length);
-          chunks.push(to16k(input,context.sampleRate));
+          var frame=to16k(input,context.sampleRate);
+          if(!speaking){
+            preRoll.push(frame);preRollBytes+=frame.length;
+            while(preRollBytes>maxPreRollBytes&&preRoll.length>1){preRollBytes-=preRoll.shift().length;}
+          }else{
+            chunks.push(frame);recordedBytes+=frame.length;
+            if(recordedBytes>=maxRecordingBytes){finish(true);return;}
+          }
           if(rms>0.02){
             speechFrames++;
             if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null;}
-            if(speechFrames===4&&!speaking){speaking=true;__qDiv.textContent=JSON.stringify({e:'speaking'});}
+            if(speechFrames>=4&&!speaking){
+              speaking=true;chunks=preRoll;recordedBytes=preRollBytes;preRoll=[];preRollBytes=0;
+              __qDiv.textContent=JSON.stringify({e:'speaking'});
+            }
           }else if(speaking&&!silenceTimer){
             silenceTimer=setTimeout(function(){finish(true);},760);
+          }else if(!speaking){
+            speechFrames=0;
           }
         };
       }).catch(function(error){

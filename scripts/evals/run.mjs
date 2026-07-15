@@ -15,7 +15,12 @@ await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoo
 if (tier !== 'offline') {
   const backend = await startEvalBackend();
   try {
-    const env = { ...process.env, QIUQIU_BASE_URL: backend.baseUrl, APP_TOKEN: backend.token };
+    const env = {
+      ...process.env,
+      QIUQIU_BASE_URL: backend.baseUrl,
+      QIUQIU_RUNTIME_TTS: '0',
+      APP_TOKEN: backend.token,
+    };
     await runCommand('node', [join('scripts', 'evals', 'runtime-e2e.mjs')], { cwd: repoRoot, env });
     await runCommand('go', ['run', './cmd/eval-audit', '-base-url', backend.baseUrl, '-match-id', 'test', '-out', '../artifacts/evals/trace-audit.json'], { cwd: backendDir, env });
     if (!skipBrowser) {

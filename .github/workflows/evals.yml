@@ -32,7 +32,7 @@ jobs:
         working-directory: client
       - run: flutter test
         working-directory: client
-      - run: flutter build web --release
+      - run: flutter build web --release --dart-define=QIUQIU_APP_TOKEN=qiuqiu-dev-token
         working-directory: client
       - run: npx playwright install --with-deps chromium
       - run: node scripts/evals/run.mjs --tier pr

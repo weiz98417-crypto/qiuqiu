@@ -27,4 +27,35 @@ void main() {
       isNull,
     );
   });
+
+  test('打断播放会保留用户当前交流阶段并生成回执', () {
+    expect(
+      phaseAfterInterrupt(ConversationPhase.userSpeaking),
+      ConversationPhase.userSpeaking,
+    );
+    expect(
+      phaseAfterInterrupt(ConversationPhase.understanding),
+      ConversationPhase.understanding,
+    );
+    expect(
+      phaseAfterInterrupt(ConversationPhase.speaking),
+      ConversationPhase.listening,
+    );
+    expect(interruptedPlaybackReceipt('trace-interrupted'), {
+      'type': 'voice_playback',
+      'traceId': 'trace-interrupted',
+      'state': 'interrupted',
+    });
+  });
+
+  test('播放失败时文字兜底仍然可见', () {
+    expect(
+      shouldShowReplyText(
+        subtitlesEnabled: false,
+        playbackFallback: true,
+      ),
+      isTrue,
+    );
+    expect(shouldClearTextInput(false), isFalse);
+  });
 }

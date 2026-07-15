@@ -4,6 +4,14 @@ import 'package:qiuqiu/services/preferences_service.dart';
 import 'package:shared_preferences/shared_preferences.dart';
 
 void main() {
+  test('default match card waits for real match information', () {
+    const match = MatchViewData();
+
+    expect(match.statusCarouselItems, const ['等待比赛信息']);
+    expect(match.homeTeam, isNot('利物浦'));
+    expect(match.awayTeam, isNot('切尔西'));
+  });
+
   test('match snapshot updates the user-facing scoreboard', () {
     const initial = MatchViewData();
 
