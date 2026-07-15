@@ -17,8 +17,8 @@
 │  Flutter Client  │ ◄──────────────► │   Go Backend     │
 │  (Live2D + VAD)  │    Audio stream   │  (Pipeline)      │
 └─────────────────┘                    │  ├─ ASR          │
-                                       │  ├─ LLM (DeepSeek)│
-                                       │  └─ TTS (ElevenLabs)│
+                                       │  ├─ LLM (MiMo)    │
+                                       │  └─ TTS (MiMo)    │
                                        └────────┬────────┘
                                                 │
                                           ┌─────┴─────┐
@@ -68,14 +68,15 @@ qiuqiu/
 
 ```bash
 # 1. 配置环境变量
-cp .env.example .env
+cp backend/.env.example .env
 # 编辑 .env 填入:
-#   - DEEPSEEK_API_KEY: DeepSeek API 密钥
-#   - DEEPSEEK_BASE_URL: DeepSeek API 地址
-#   - ELEVENLABS_API_KEY: ElevenLabs TTS 密钥
+#   - APP_TOKEN: 随机生成的服务访问口令（生产环境必填）
+#   - ALLOWED_ORIGINS: 用户端和企业控制台的 HTTPS 来源
+#   - POSTGRES_PASSWORD: 独立的数据库强密码
+#   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
 
-# 2. 启动服务
-docker-compose up -d
+# 2. 构建并启动服务（镜像内会自行编译 Flutter Web）
+docker compose up -d --build
 ```
 
 ### 本地开发
@@ -84,7 +85,7 @@ docker-compose up -d
 
 ```bash
 cd backend
-cp .env.example .env   # 编辑填入 API 密钥
+cp .env.example .env   # 本地可不设置 APP_TOKEN；生产环境必须设置
 go run cmd/server/main.go
 ```
 
@@ -93,8 +94,12 @@ go run cmd/server/main.go
 ```bash
 cd client
 flutter pub get
-flutter run
+flutter run \
+  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test \
+  --dart-define=QIUQIU_APP_TOKEN=你的服务访问口令
 ```
+
+由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。用户端不会显示服务端口令或模型配置；企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
 
 ## 对话管道
 
@@ -103,8 +108,8 @@ flutter run
 1. **VAD (Voice Activity Detection)** — 检测用户是否在说话
 2. **ASR (Automatic Speech Recognition)** — 将语音转为文字
 3. **事件引擎 (Event Engine)** — 融合比赛上下文和用户输入
-4. **LLM 生成** — 调用 DeepSeek 生成自然的陪看回应
-5. **TTS 合成** — 通过 ElevenLabs 将文字转为语音
+4. **LLM 生成** — 调用 MiMo 生成自然的陪看回应
+5. **TTS 合成** — 通过 MiMo 将文字转为语音
 6. **表情动作** — 根据对话内容触发 Live2D 表情和动作
 
 ## 话痨调节

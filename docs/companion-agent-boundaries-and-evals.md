@@ -6,7 +6,7 @@ This document defines the first reliable architecture boundary for QiuQiu as a m
 
 QiuQiu is a companion, not a professional broadcaster and not an autonomous sports-data oracle.
 
-The live match source of truth is the director console plus persisted match memory. The agent may be warm, reactive, and emotionally present, but it must not invent goals, assists, score changes, cards, VAR outcomes, or player events that are not present in match memory.
+The live match source of truth is semantically validated director/provider data plus persisted match memory. User messages are claims to verify, never match facts. The agent may be warm, reactive, and emotionally present, but it must not invent goals, assists, score changes, cards, VAR outcomes, or player events that are not present in match memory.
 
 ## Storage direction
 
@@ -39,6 +39,7 @@ The companion agent gets tools, not database access. Tool outputs are trusted fa
 | `match.read_snapshot` | Go/Postgres fact layer | Read score, clock, period, current teams, recent events | No |
 | `match.search_events` | Go/Postgres fact layer | Read recent/key events by type, time, team, or role | No |
 | `match.get_player_timeline` | Go/Postgres fact layer | Read events involving one player | No |
+| `match.verify_user_claim` | Companion policy | Compare a user score/event claim with validated match memory | No |
 | `conversation.append_turn` | Agent service | Store user/QiuQiu dialog turns | No match facts |
 | `trace.write_decision` | Agent service | Store intent, retrieval, model output, action, latency | No match facts |
 | `response.emit_companion_reply` | Client delivery layer | Send text/audio/action to user side | No |
@@ -46,6 +47,14 @@ The companion agent gets tools, not database access. Tool outputs are trusted fa
 | `operator.correct_event` | Director backend only | Correct or supersede match facts | Yes |
 
 Hard rule: the user-facing agent cannot call `operator.create_event` or `operator.correct_event`.
+
+Score and event claims are classified as `confirmed`, `contradicted`, or `unverified`. A contradiction may be corrected naturally only when the current snapshot is internally consistent. Missing or conflicting evidence must stay unverified, and the ReplyRealizer is bypassed so it cannot turn uncertainty into a new fact.
+
+Every user-facing fact path bypasses free-form realization: match status, recent events, follow-up questions, player questions, and user match claims. ReplyRealizer is limited to planned non-factual conversation.
+
+The fact layer rejects impossible transitions before persistence, including pre-match goals, goals that do not add exactly one point to the scoring team, non-goal events that change the score, and configured scorers assigned to the wrong team.
+
+Events from different sources are checked against the same effective match state. An incompatible provider event is rejected and sets `snapshot.integrity.status` to `conflict`; while that status is active, QiuQiu must not confidently confirm the disputed score or event. The current implementation clears this sticky conflict only through a match reset. There is not yet an explicit reconcile/resolve-conflict API, so production operations still need that workflow before automatic source ingestion is considered complete.
 
 ## Operator trace viewer
 
@@ -59,6 +68,7 @@ Operators use this view to inspect why QiuQiu answered or spoke:
 - `retrievedEventIds`: match event IDs used as factual grounding
 - `output`: the final user-facing QiuQiu line
 - `reason`: policy label, for example deterministic companion policy or proactive event line
+- `claim`: structured user-claim assessment, including certainty, claimed fact, current fact, status, and integrity reason
 - `latencyMs` and `error`: operational diagnostics
 
 The trace viewer is deliberately read-only. If a trace reveals a wrong fact, the operator should correct the underlying match event through the live director timeline, then re-check the next QiuQiu decision trace.
@@ -113,6 +123,11 @@ Boundary evals:
 - Corrected events must not remain active in snapshot answers.
 - Quiet proactive mode must record the event but emit no speech.
 - Manual proactive mode must preserve the director's written line.
+- False user score/scorer/team claims must not be echoed as facts.
+- Plausible claims without match evidence must remain unverified.
+- Hypothetical scores must remain ordinary conversation rather than becoming match facts.
+- Inconsistent persisted snapshots must not be used to overrule the user confidently.
+- Conflicting artificial/provider events must set match integrity to `conflict` and pause factual confirmation.
 
 Current executable coverage:
 

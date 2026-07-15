@@ -118,7 +118,7 @@ The trace panel is the customer-facing proof that QiuQiu is grounded:
 - `toolCalls`: memory tools used, such as `match.search_events`.
 - `retrievedEventIds`: exact director events used.
 - `output`: final QiuQiu reply.
-- `reason`: deterministic policy, proactive line, polish fallback, or missing-fact policy.
+- `reason`: deterministic policy, proactive line, realization fallback, or missing-fact policy.
 - `voice`: ASR/TTS status, transcript, mime type, and byte count when available.
 
 Trace payloads must not display API keys, authorization headers, raw environment values, or raw audio.
