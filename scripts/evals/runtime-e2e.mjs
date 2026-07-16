@@ -148,6 +148,7 @@ async function post(path, body) {
     method: 'POST',
     headers: {
       'content-type': 'application/json',
+      'Idempotency-Key': `runtime-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),

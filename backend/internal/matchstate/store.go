@@ -1,6 +1,7 @@
 package matchstate
 
 import (
+	"context"
 	"errors"
 	"fmt"
 	"sort"
@@ -161,6 +162,14 @@ type Repository interface {
 	ReconcileFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error)
 	FactRevisions(matchID, factID string) []FactRevision
 	Subscribe(matchID string) (<-chan MatchEvent, func())
+}
+
+type OperatorTransactionRepository interface {
+	CreateOperator(context.Context, string, MatchEvent) (MatchEvent, Snapshot, error)
+	CorrectOperator(context.Context, string, string, MatchEvent) (MatchEvent, Snapshot, error)
+	ConfirmFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
+	RevokeFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
+	ReconcileFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
 }
 
 type Store struct {

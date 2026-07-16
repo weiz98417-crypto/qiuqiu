@@ -11,6 +11,7 @@ async function request(path, options = {}) {
     ...options,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
+      ...(options.method === 'POST' ? { 'Idempotency-Key': `seed-${Date.now()}-${Math.random().toString(16).slice(2)}` } : {}),
       ...(options.headers || {}),
     },
   });

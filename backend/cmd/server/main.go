@@ -25,6 +25,7 @@ import (
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/pipeline"
 	"qiuqiu/internal/privacy"
 	"qiuqiu/internal/relationship"
@@ -140,6 +141,11 @@ func main() {
 	} else {
 		log.Printf("match store: memory")
 	}
+	outboxCtx, outboxCancel := context.WithCancel(context.Background())
+	defer outboxCancel()
+	if runner, ok := matchStore.(interface{ RunOutbox(context.Context) }); ok {
+		go runner.RunOutbox(outboxCtx)
+	}
 	var privacyStore privacy.Store = privacy.NewMemoryStore()
 	var privacyStoreCloser func()
 	if cfg.DatabaseURL != "" {
@@ -157,6 +163,15 @@ func main() {
 	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
 	defer cleanupCancel()
 	go runPrivacyCleanup(cleanupCtx, privacyService)
+	operatorWrites := operatorwrite.NewMemoryService()
+	if cfg.DatabaseURL != "" {
+		postgresOperatorWrites, err := operatorwrite.OpenPostgresService(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres operator idempotency store: %v", err)
+		}
+		operatorWrites = postgresOperatorWrites
+	}
+	defer operatorWrites.Close()
 	var sportsClient datasource.EventsClient
 	if cfg.APISportsAPIKey != "" {
 		sportsClient = datasource.NewClient(cfg.APISportsAPIKey)
@@ -199,7 +214,7 @@ func main() {
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
-	mux.HandleFunc("/api/matches/", handleMatchAPIWithSources(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager))
+	mux.HandleFunc("/api/matches/", handleMatchAPIWithSources(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, operatorWrites))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -620,7 +635,8 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 	return handleMatchAPIWithSources(store, traceReader, demoResetter, cfg, llmClient, promptMgr, nil)
 }
 
-func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager) http.HandlerFunc {
+func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+	operatorWrites := selectedOperatorWriteService(writeServices)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !applyCORS(w, r, cfg) {
 			return
@@ -649,23 +665,23 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				http.Error(w, "reset is only available for local demo match ids", http.StatusBadRequest)
 				return
 			}
-			if sources != nil {
-				sources.Stop(matchID)
-			}
-			if err := store.Reset(matchID); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if demoResetter != nil {
-				if err := demoResetter.Reset(matchID); err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
+			executeOperatorWrite(w, r, operatorWrites, matchID, "match.reset", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
+				if sources != nil {
+					sources.Stop(matchID)
 				}
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"ok":       true,
-				"matchId":  matchID,
-				"snapshot": store.PublicSnapshot(matchID),
+				if err := store.Reset(matchID); err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				if demoResetter != nil {
+					if err := demoResetter.Reset(matchID); err != nil {
+						return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+					}
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"ok":       true,
+					"matchId":  matchID,
+					"snapshot": store.PublicSnapshot(matchID),
+				})
 			})
 		case r.Method == http.MethodGet && resource == "sources" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
@@ -687,16 +703,18 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			var sourceConfig datasource.SourceConfig
-			if err := json.NewDecoder(r.Body).Decode(&sourceConfig); err != nil {
+			body, err := decodeOperatorJSON(w, r, &sourceConfig)
+			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			status, err := sources.Start(matchID, sourceConfig)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"status": status})
+			executeOperatorWrite(w, r, operatorWrites, matchID, "sources.start", body, func(_ context.Context) (operatorwrite.Response, error) {
+				status, err := sources.Start(matchID, sourceConfig)
+				if err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": status})
+			})
 		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "stop":
 			if !validAPIToken(r, cfg) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -706,7 +724,9 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"status": sources.Stop(matchID)})
+			executeOperatorWrite(w, r, operatorWrites, matchID, "sources.stop", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": sources.Stop(matchID)})
+			})
 		case r.Method == http.MethodPost && resource == "takeover" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -716,17 +736,18 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
 				return
 			}
-			status := sources.Stop(matchID)
-			policy := store.Config(matchID).Automation
-			policy.Mode = matchstate.AutomationModePaused
-			saved, err := store.SetAutomation(matchID, policy)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"policy": saved,
-				"status": status,
+			executeOperatorWrite(w, r, operatorWrites, matchID, "match.takeover", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
+				status := sources.Stop(matchID)
+				policy := store.Config(matchID).Automation
+				policy.Mode = matchstate.AutomationModePaused
+				saved, err := store.SetAutomation(matchID, policy)
+				if err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"policy": saved,
+					"status": status,
+				})
 			})
 		case r.Method == http.MethodGet && resource == "automation" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
@@ -740,47 +761,65 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			var policy matchstate.AutomationPolicy
-			if err := json.NewDecoder(r.Body).Decode(&policy); err != nil {
+			body, err := decodeOperatorJSON(w, r, &policy)
+			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			saved, err := store.SetAutomation(matchID, policy)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"policy": saved})
+			executeOperatorWrite(w, r, operatorWrites, matchID, "automation.set", body, func(_ context.Context) (operatorwrite.Response, error) {
+				saved, err := store.SetAutomation(matchID, policy)
+				if err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"policy": saved})
+			})
 		case r.Method == http.MethodPost && resource == "facts" && len(parts) == 4:
 			operator, authorized := operatorClaims(r, cfg)
 			if !authorized {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			var changed matchstate.MatchEvent
-			var snapshot matchstate.Snapshot
-			var err error
-			switch parts[3] {
-			case "confirm":
-				changed, snapshot, err = store.ConfirmFact(matchID, parts[2], operator.Subject)
-			case "revoke":
-				changed, snapshot, err = store.RevokeFact(matchID, parts[2], operator.Subject)
-			case "reconcile":
-				changed, snapshot, err = store.ReconcileFact(matchID, parts[2], operator.Subject)
-			default:
+			action := parts[3]
+			if action != "confirm" && action != "revoke" && action != "reconcile" {
 				http.NotFound(w, r)
 				return
 			}
-			if err != nil {
-				status := http.StatusBadRequest
-				if errors.Is(err, matchstate.ErrNotFound) {
-					status = http.StatusNotFound
-				} else if errors.Is(err, matchstate.ErrConflict) {
-					status = http.StatusConflict
+			executeOperatorWrite(w, r, operatorWrites, matchID, "facts."+action, []byte("{}"), func(operationCtx context.Context) (operatorwrite.Response, error) {
+				var changed matchstate.MatchEvent
+				var snapshot matchstate.Snapshot
+				var err error
+				transactionalStore, transactional := store.(matchstate.OperatorTransactionRepository)
+				switch action {
+				case "confirm":
+					if transactional {
+						changed, snapshot, err = transactionalStore.ConfirmFactOperator(operationCtx, matchID, parts[2], operator.Subject)
+					} else {
+						changed, snapshot, err = store.ConfirmFact(matchID, parts[2], operator.Subject)
+					}
+				case "revoke":
+					if transactional {
+						changed, snapshot, err = transactionalStore.RevokeFactOperator(operationCtx, matchID, parts[2], operator.Subject)
+					} else {
+						changed, snapshot, err = store.RevokeFact(matchID, parts[2], operator.Subject)
+					}
+				case "reconcile":
+					if transactional {
+						changed, snapshot, err = transactionalStore.ReconcileFactOperator(operationCtx, matchID, parts[2], operator.Subject)
+					} else {
+						changed, snapshot, err = store.ReconcileFact(matchID, parts[2], operator.Subject)
+					}
 				}
-				http.Error(w, err.Error(), status)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrNotFound) {
+						status = http.StatusNotFound
+					} else if errors.Is(err, matchstate.ErrConflict) {
+						status = http.StatusConflict
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
+			})
 		case r.Method == http.MethodGet && resource == "facts" && len(parts) == 4 && parts[3] == "revisions":
 			if _, authorized := operatorClaims(r, cfg); !authorized {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -800,18 +839,20 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			var config matchstate.MatchConfig
-			if err := json.NewDecoder(r.Body).Decode(&config); err != nil {
+			body, err := decodeOperatorJSON(w, r, &config)
+			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			saved, snapshot, err := store.SetConfig(matchID, config)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"config":   saved,
-				"snapshot": snapshot,
+			executeOperatorWrite(w, r, operatorWrites, matchID, "config.set", body, func(_ context.Context) (operatorwrite.Response, error) {
+				saved, snapshot, err := store.SetConfig(matchID, config)
+				if err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"config":   saved,
+					"snapshot": snapshot,
+				})
 			})
 		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
 			events := store.PublicEvents(matchID)
@@ -866,33 +907,40 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			var ev matchstate.MatchEvent
-			if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+			body, err := decodeOperatorJSON(w, r, &ev)
+			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
 			ev.OperatorID = operator.Subject
 			applyRequestedFactStatus(&ev)
 			markProactiveMode(&ev)
-			var created matchstate.MatchEvent
-			var err error
-			if sources != nil {
-				created, _, err = sources.Ingest(r.Context(), matchID, ev)
-			} else {
-				created, _, err = store.Create(matchID, ev)
-			}
-			if err != nil {
-				status := http.StatusBadRequest
-				if errors.Is(err, matchstate.ErrNotFound) {
-					status = http.StatusNotFound
-				} else if errors.Is(err, matchstate.ErrConflict) {
-					status = http.StatusConflict
+			executeOperatorWrite(w, r, operatorWrites, matchID, "events.create", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+				var created matchstate.MatchEvent
+				var snapshot matchstate.Snapshot
+				var err error
+				if sources != nil {
+					created, snapshot, err = sources.Ingest(operationCtx, matchID, ev)
+				} else {
+					if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
+						created, snapshot, err = transactionalStore.CreateOperator(operationCtx, matchID, ev)
+					} else {
+						created, snapshot, err = store.Create(matchID, ev)
+					}
 				}
-				http.Error(w, err.Error(), status)
-				return
-			}
-			writeJSON(w, http.StatusCreated, map[string]interface{}{
-				"event":    created,
-				"snapshot": store.PublicSnapshot(matchID),
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrNotFound) {
+						status = http.StatusNotFound
+					} else if errors.Is(err, matchstate.ErrConflict) {
+						status = http.StatusConflict
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{
+					"event":    created,
+					"snapshot": snapshot,
+				})
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 4 && parts[3] == "correct":
 			operator, authorized := operatorClaims(r, cfg)
@@ -901,25 +949,34 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			var ev matchstate.MatchEvent
-			if err := json.NewDecoder(r.Body).Decode(&ev); err != nil {
+			body, err := decodeOperatorJSON(w, r, &ev)
+			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
 			ev.OperatorID = operator.Subject
 			applyRequestedFactStatus(&ev)
 			markProactiveMode(&ev)
-			corrected, _, err := store.Correct(matchID, parts[2], ev)
-			if err != nil {
-				status := http.StatusBadRequest
-				if errors.Is(err, matchstate.ErrNotFound) {
-					status = http.StatusNotFound
+			executeOperatorWrite(w, r, operatorWrites, matchID, "events.correct", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+				var corrected matchstate.MatchEvent
+				var snapshot matchstate.Snapshot
+				var err error
+				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
+					corrected, snapshot, err = transactionalStore.CorrectOperator(operationCtx, matchID, parts[2], ev)
+				} else {
+					corrected, snapshot, err = store.Correct(matchID, parts[2], ev)
 				}
-				http.Error(w, err.Error(), status)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"event":    corrected,
-				"snapshot": store.PublicSnapshot(matchID),
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrNotFound) {
+						status = http.StatusNotFound
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"event":    corrected,
+					"snapshot": snapshot,
+				})
 			})
 		default:
 			http.NotFound(w, r)
@@ -1301,7 +1358,7 @@ func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool 
 		w.Header().Set("Vary", "Origin")
 	}
 	w.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
-	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
+	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
 	return true
 }
 

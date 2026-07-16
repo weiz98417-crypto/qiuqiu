@@ -36,6 +36,27 @@ test('快捷事件只使用当前球员事实，不复用详细草稿', async ({
   await expect(page.locator('#description')).toHaveValue('佩德里推射破门。');
 });
 
+test('快捷事件双击只提交一次并携带幂等键', async ({ page, request }) => {
+  const eventKeys = [];
+  page.on('request', (outgoing) => {
+    if (outgoing.method() === 'POST' && /\/api\/matches\/test\/events$/.test(new URL(outgoing.url()).pathname)) {
+      eventKeys.push(outgoing.headers()['idempotency-key'] || '');
+    }
+  });
+  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
+  const goal = page.locator('#homeEvents .event-btn').filter({ hasText: '进球' });
+  await goal.evaluate((button) => {
+    button.click();
+    button.click();
+  });
+  await expect(page.locator('#toast')).toContainText('已发布：西班牙 进球');
+  const timeline = await apiGet(request, `/api/matches/${matchId}/events`);
+  expect(timeline.events.filter((event) => event.eventType === 'goal')).toHaveLength(1);
+  expect(eventKeys).toHaveLength(1);
+  expect(eventKeys[0]).not.toBe('');
+});
+
 test('详细进球事件按当前比分自动增加一分', async ({ page, request }) => {
   await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
   await page.locator('#eventType').selectOption('goal');
@@ -148,7 +169,7 @@ test('实时监控展示真实服务状态和比赛事件', async ({ page, reque
 async function apiPost(request, path, body) {
   const response = await request.post(path, {
     data: body,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
   });
   if (!response.ok()) {
     throw new Error(`POST ${path} failed: ${response.status()} ${await response.text()}`);
@@ -162,4 +183,8 @@ async function apiGet(request, path) {
   });
   expect(response.ok()).toBeTruthy();
   return response.json();
+}
+
+function testIdempotencyKey() {
+  return `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

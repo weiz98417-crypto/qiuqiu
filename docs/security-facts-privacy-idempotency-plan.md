@@ -218,7 +218,8 @@ Idempotency-Key: op_01J...
 服务端保存：
 
 ```text
-(match_id, idempotency_key, payload_hash, result_event_id, status, expires_at)
+(match_id, idempotency_key, operation, payload_hash, result_event_id,
+ response, status_code, status, expires_at)
 ```
 
 行为约定：
@@ -238,6 +239,8 @@ Idempotency-Key: op_01J...
 修订事件、确认事件、撤销事件和配置变更都使用同一套幂等协议。
 
 前端仍然增加 in-flight 锁和按钮状态，但前端锁只是体验优化，不能作为安全保证。
+
+当前实现同时覆盖事件录入、更正、事实确认/撤销/调和、比赛配置、自动化策略、信号源切换、人工接管和演示重置。事件类操作会把幂等记录、事实变更和 Outbox 放入同一事务；Outbox 默认最多重试 10 次，并记录尝试次数与最后错误。
 
 ## 8. 实施阶段
 
@@ -277,10 +280,10 @@ Idempotency-Key: op_01J...
 
 ### 阶段 4：导播幂等与 Outbox
 
-- 给所有导播写接口增加幂等记录和唯一约束。
-- 将事件写入和广播拆成事务 + Outbox。
-- 导播前端增加提交锁、失败重试和冲突提示。
-- 外部来源继续按来源事件 ID 去重。
+- [x] 给所有导播写接口增加幂等记录和唯一约束。
+- [x] 将事件写入和广播拆成事务 + Outbox。
+- [x] 导播前端增加提交锁、失败重试和冲突提示。
+- [x] 外部来源继续按来源事件 ID 去重。
 
 ### 阶段 5：端到端验证与灰度
 

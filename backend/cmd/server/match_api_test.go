@@ -6,7 +6,9 @@ import (
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
+	"strconv"
 	"strings"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -16,6 +18,8 @@ import (
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/pipeline"
 )
+
+var testIdempotencyCounter atomic.Uint64
 
 func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	store := matchstate.NewStore()
@@ -152,6 +156,47 @@ func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
 	}
 	if len(operatorEnvelope.Events) != 1 || operatorEnvelope.Events[0].FactStatus != matchstate.FactStatusProvisional {
 		t.Fatalf("operator ledger events = %+v", operatorEnvelope.Events)
+	}
+}
+
+func TestOperatorWritesRequireAndReplayIdempotencyKey(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	payload := []byte(`{"eventType":"shot","period":"first_half","clock":"10:00","score":{"home":0,"away":0},"description":"shot"}`)
+
+	missing := httptest.NewRequest(http.MethodPost, "/api/matches/idempotent/events", bytes.NewReader(payload))
+	missing.Header.Set("Authorization", "Bearer eval-token")
+	missing.Header.Set("Content-Type", "application/json")
+	missingResponse := httptest.NewRecorder()
+	handler.ServeHTTP(missingResponse, missing)
+	if missingResponse.Code != http.StatusBadRequest {
+		t.Fatalf("missing key status=%d body=%s", missingResponse.Code, missingResponse.Body.String())
+	}
+
+	request := func(body []byte) *httptest.ResponseRecorder {
+		req := httptest.NewRequest(http.MethodPost, "/api/matches/idempotent/events", bytes.NewReader(body))
+		req.Header.Set("Authorization", "Bearer eval-token")
+		req.Header.Set("Content-Type", "application/json")
+		req.Header.Set("Idempotency-Key", "event-key-1")
+		response := httptest.NewRecorder()
+		handler.ServeHTTP(response, req)
+		return response
+	}
+	first := request(payload)
+	second := request(payload)
+	if first.Code != http.StatusCreated || second.Code != http.StatusCreated {
+		t.Fatalf("replay statuses=%d,%d bodies=%s / %s", first.Code, second.Code, first.Body.String(), second.Body.String())
+	}
+	if second.Header().Get("Idempotency-Replayed") != "true" {
+		t.Fatalf("replay header = %q", second.Header().Get("Idempotency-Replayed"))
+	}
+	if got := len(store.Events("idempotent")); got != 1 {
+		t.Fatalf("stored events = %d, want 1", got)
+	}
+	conflict := request([]byte(`{"eventType":"shot","period":"first_half","clock":"11:00","score":{"home":0,"away":0},"description":"different"}`))
+	if conflict.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflict.Code, conflict.Body.String())
 	}
 }
 
@@ -566,6 +611,9 @@ func doJSON(t *testing.T, handler http.HandlerFunc, method, target string, body 
 		req.URL.RawQuery = query.Encode()
 	}
 	req.Header.Set("Content-Type", "application/json")
+	if method == http.MethodPost {
+		req.Header.Set("Idempotency-Key", t.Name()+"-"+strconv.FormatUint(testIdempotencyCounter.Add(1), 10))
+	}
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr

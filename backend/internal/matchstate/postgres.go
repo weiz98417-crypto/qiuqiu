@@ -8,9 +8,12 @@ import (
 	"os"
 	"path/filepath"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
+
+	"qiuqiu/internal/operatorwrite"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgconn"
@@ -18,9 +21,10 @@ import (
 )
 
 type PostgresStore struct {
-	pool        *pgxpool.Pool
-	mu          sync.RWMutex
-	subscribers map[string]map[*eventSubscription]struct{}
+	pool            *pgxpool.Pool
+	mu              sync.RWMutex
+	subscribers     map[string]map[*eventSubscription]struct{}
+	outboxPublisher func(MatchEvent) error
 }
 
 func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (*PostgresStore, error) {
@@ -38,14 +42,156 @@ func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (
 			return nil, err
 		}
 	}
-	return &PostgresStore{
+	store := &PostgresStore{
 		pool:        pool,
 		subscribers: make(map[string]map[*eventSubscription]struct{}),
-	}, nil
+	}
+	store.outboxPublisher = func(event MatchEvent) error {
+		store.publish(store.subscriberList(event.MatchID), event)
+		return nil
+	}
+	return store, nil
 }
 
 func (s *PostgresStore) Close() {
 	s.pool.Close()
+}
+
+func (s *PostgresStore) beginMutation(ctx context.Context) (pgx.Tx, bool, error) {
+	if tx, ok := operatorwrite.Transaction(ctx); ok {
+		return tx, false, nil
+	}
+	tx, err := s.pool.Begin(ctx)
+	return tx, true, err
+}
+
+func rollbackOwnedMutation(ctx context.Context, tx pgx.Tx, owned bool) {
+	if owned {
+		_ = tx.Rollback(ctx)
+	}
+}
+
+func commitOwnedMutation(ctx context.Context, tx pgx.Tx, owned bool) error {
+	if !owned {
+		return nil
+	}
+	return tx.Commit(ctx)
+}
+
+func (s *PostgresStore) RunOutbox(ctx context.Context) {
+	ticker := time.NewTicker(250 * time.Millisecond)
+	defer ticker.Stop()
+	for {
+		for {
+			published, err := s.publishOutboxOnce(ctx)
+			if err != nil || !published {
+				break
+			}
+		}
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+		}
+	}
+}
+
+func (s *PostgresStore) publishOutboxOnce(ctx context.Context) (bool, error) {
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return false, err
+	}
+	defer tx.Rollback(ctx)
+	var id int64
+	var payload []byte
+	var attempts int
+	err = tx.QueryRow(ctx, `
+		SELECT id, payload, attempts
+		FROM outbox_messages
+		WHERE status = 'pending' AND next_attempt_at <= now()
+		ORDER BY created_at ASC, id ASC
+		FOR UPDATE SKIP LOCKED
+		LIMIT 1
+	`).Scan(&id, &payload, &attempts)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return false, nil
+	}
+	if err != nil {
+		return false, err
+	}
+	attempts++
+	leaseUntil := time.Now().UTC().Add(30 * time.Second)
+	if _, err := tx.Exec(ctx, `
+		UPDATE outbox_messages
+		SET attempts = $2, next_attempt_at = $3, updated_at = now()
+		WHERE id = $1
+	`, id, attempts, leaseUntil); err != nil {
+		return false, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return false, err
+	}
+	var event MatchEvent
+	if err := json.Unmarshal(payload, &event); err != nil {
+		_, updateErr := s.pool.Exec(ctx, `
+			UPDATE outbox_messages
+			SET status = 'failed', last_error = $2, updated_at = now()
+			WHERE id = $1
+		`, id, err.Error())
+		if updateErr != nil {
+			return true, updateErr
+		}
+		return true, err
+	}
+	if err := s.outboxPublisher(event); err != nil {
+		delay := time.Duration(1<<min(attempts-1, 6)) * time.Second
+		status := "pending"
+		if attempts >= 10 {
+			status = "failed"
+		}
+		_, updateErr := s.pool.Exec(ctx, `
+			UPDATE outbox_messages
+			SET status = $2, next_attempt_at = $3, last_error = $4, updated_at = now()
+			WHERE id = $1
+		`, id, status, time.Now().UTC().Add(delay), truncateOutboxError(err.Error()))
+		if updateErr != nil {
+			return true, updateErr
+		}
+		return true, err
+	}
+	_, err = s.pool.Exec(ctx, `
+		UPDATE outbox_messages
+		SET status = 'published', published_at = now(), last_error = '', updated_at = now()
+		WHERE id = $1
+	`, id)
+	return true, err
+}
+
+func (s *PostgresStore) kickOutbox() {
+	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
+	defer cancel()
+	_, _ = s.publishOutboxOnce(ctx)
+}
+
+func enqueueMatchEvent(ctx context.Context, tx pgx.Tx, event MatchEvent) error {
+	payload, err := json.Marshal(event)
+	if err != nil {
+		return err
+	}
+	aggregateID := event.ID + ":" + strconv.Itoa(event.FactRevision) + ":" + string(event.FactStatus)
+	_, err = tx.Exec(ctx, `
+		INSERT INTO outbox_messages (aggregate_type, aggregate_id, event_type, payload, status, next_attempt_at, created_at, updated_at)
+		VALUES ('match_event', $1, 'match_event.changed', $2, 'pending', now(), now(), now())
+		ON CONFLICT (aggregate_type, aggregate_id) DO NOTHING
+	`, aggregateID, payload)
+	return err
+}
+
+func truncateOutboxError(value string) string {
+	if len(value) > 2048 {
+		return value[:2048]
+	}
+	return value
 }
 
 func (s *PostgresStore) SetConfig(matchID string, config MatchConfig) (MatchConfig, Snapshot, error) {
@@ -220,7 +366,14 @@ func (s *PostgresStore) SetSourceCursor(matchID, sourceType, sourceKey string, c
 }
 
 func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {
-	ctx := context.Background()
+	return s.create(context.Background(), matchID, ev, false)
+}
+
+func (s *PostgresStore) CreateOperator(ctx context.Context, matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {
+	return s.create(ctx, matchID, ev, true)
+}
+
+func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEvent, publicResult bool) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	if matchID == "" {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
@@ -238,11 +391,11 @@ func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snaps
 	ev.CreatedAt = now
 	ev.UpdatedAt = now
 
-	tx, err := s.pool.Begin(ctx)
+	tx, owned, err := s.beginMutation(ctx)
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackOwnedMutation(ctx, tx, owned)
 
 	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
 		return MatchEvent{}, Snapshot{}, err
@@ -251,7 +404,10 @@ func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snaps
 	if err := ensureMatch(ctx, tx, matchID, config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	existingEvents := s.Events(matchID)
+	existingEvents, err := s.events(ctx, matchID, true)
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
 	if err := crossSourceEventError(existingEvents, ev); err != nil {
 		if errors.Is(err, ErrConflict) {
 			if markErr := markMatchIntegrity(ctx, tx, matchID, conflictIntegrity(ev)); markErr != nil {
@@ -289,10 +445,15 @@ func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snaps
 			if err := insertFactRevision(ctx, tx, ev); err != nil {
 				return MatchEvent{}, Snapshot{}, err
 			}
-			if commitErr := tx.Commit(ctx); commitErr != nil {
+			if err := enqueueMatchEvent(ctx, tx, ev); err != nil {
+				return MatchEvent{}, Snapshot{}, err
+			}
+			if commitErr := commitOwnedMutation(ctx, tx, owned); commitErr != nil {
 				return MatchEvent{}, Snapshot{}, commitErr
 			}
-			s.publish(s.subscriberList(matchID), ev)
+			if owned {
+				s.kickOutbox()
+			}
 		}
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -312,33 +473,52 @@ func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snaps
 	if err := insertFactRevision(ctx, tx, ev); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := enqueueMatchEvent(ctx, tx, ev); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-
-	snapshot := s.Snapshot(matchID)
-	s.publish(s.subscriberList(matchID), ev)
+	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	updatedEvents := append(append([]MatchEvent(nil), existingEvents...), ev)
+	if publicResult {
+		updatedEvents = filterPublicFacts(updatedEvents)
+	}
+	snapshot := buildSnapshot(matchID, updatedEvents, config)
+	if owned {
+		s.kickOutbox()
+	}
 	return ev, snapshot, nil
 }
 
 func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error) {
-	ctx := context.Background()
+	return s.correct(context.Background(), matchID, eventID, replacement, false)
+}
+
+func (s *PostgresStore) CorrectOperator(ctx context.Context, matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error) {
+	return s.correct(ctx, matchID, eventID, replacement, true)
+}
+
+func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, replacement MatchEvent, publicResult bool) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	eventID = strings.TrimSpace(eventID)
 	if matchID == "" || eventID == "" {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId and event id are required", ErrInvalid)
 	}
 
-	tx, err := s.pool.Begin(ctx)
+	tx, owned, err := s.beginMutation(ctx)
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackOwnedMutation(ctx, tx, owned)
 
 	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	original, err := activeEventByID(s.Events(matchID), eventID)
+	events, err := s.events(ctx, matchID, true)
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	original, err := activeEventByID(events, eventID)
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -353,7 +533,7 @@ func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent)
 	if err := validate(replacement); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := validateCorrectionTimeline(s.Events(matchID), original, replacement); err != nil {
+	if err := validateCorrectionTimeline(events, original, replacement); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	if err := validateCorrection(original, replacement, s.Snapshot(matchID), s.Config(matchID)); err != nil {
@@ -390,12 +570,27 @@ func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent)
 	if err := insertFactRevision(ctx, tx, replacement); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := enqueueMatchEvent(ctx, tx, replacement); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-
-	snapshot := s.Snapshot(matchID)
-	s.publish(s.subscriberList(matchID), replacement)
+	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	updatedEvents := make([]MatchEvent, 0, len(events)+1)
+	for _, event := range events {
+		if event.ID == eventID {
+			event.Status = "corrected"
+		}
+		updatedEvents = append(updatedEvents, event)
+	}
+	updatedEvents = append(updatedEvents, replacement)
+	if publicResult {
+		updatedEvents = filterPublicFacts(updatedEvents)
+	}
+	snapshot := buildSnapshot(matchID, updatedEvents, s.Config(matchID))
+	if owned {
+		s.kickOutbox()
+	}
 	return replacement, snapshot, nil
 }
 
@@ -458,18 +653,25 @@ func (s *PostgresStore) PublicSnapshot(matchID string) Snapshot {
 }
 
 func (s *PostgresStore) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	ctx := context.Background()
+	return s.confirmFact(context.Background(), matchID, factID, operatorID, true)
+}
+
+func (s *PostgresStore) ConfirmFactOperator(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
+	return s.confirmFact(ctx, matchID, factID, operatorID, true)
+}
+
+func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operatorID string, publicResult bool) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	factID = strings.TrimSpace(factID)
 	operatorID = strings.TrimSpace(operatorID)
 	if matchID == "" || factID == "" || operatorID == "" {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, factId and operatorId are required", ErrInvalid)
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, owned, err := s.beginMutation(ctx)
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackOwnedMutation(ctx, tx, owned)
 	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -516,20 +718,37 @@ func (s *PostgresStore) ConfirmFact(matchID, factID, operatorID string) (MatchEv
 	if err := insertFactRevision(ctx, tx, events[found]); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := enqueueMatchEvent(ctx, tx, events[found]); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	snapshot := s.PublicSnapshot(matchID)
-	s.publish(s.subscriberList(matchID), events[found])
+	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	snapshotEvents := events
+	if publicResult {
+		snapshotEvents = filterPublicFacts(events)
+	}
+	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID))
+	if owned {
+		s.kickOutbox()
+	}
 	return events[found], snapshot, nil
 }
 
 func (s *PostgresStore) RevokeFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.transitionFact(matchID, factID, operatorID, FactStatusRevoked)
+	return s.transitionFact(context.Background(), matchID, factID, operatorID, FactStatusRevoked, true)
 }
 
 func (s *PostgresStore) ReconcileFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.transitionFact(matchID, factID, operatorID, FactStatusReconciled)
+	return s.transitionFact(context.Background(), matchID, factID, operatorID, FactStatusReconciled, true)
+}
+
+func (s *PostgresStore) RevokeFactOperator(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
+	return s.transitionFact(ctx, matchID, factID, operatorID, FactStatusRevoked, true)
+}
+
+func (s *PostgresStore) ReconcileFactOperator(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
+	return s.transitionFact(ctx, matchID, factID, operatorID, FactStatusReconciled, true)
 }
 
 func (s *PostgresStore) FactRevisions(matchID, factID string) []FactRevision {
@@ -571,19 +790,18 @@ func (s *PostgresStore) FactRevisions(matchID, factID string) []FactRevision {
 	return revisions
 }
 
-func (s *PostgresStore) transitionFact(matchID, factID, operatorID string, status FactStatus) (MatchEvent, Snapshot, error) {
-	ctx := context.Background()
+func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, operatorID string, status FactStatus, publicResult bool) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	factID = strings.TrimSpace(factID)
 	operatorID = strings.TrimSpace(operatorID)
 	if matchID == "" || factID == "" || operatorID == "" {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, factId and operatorId are required", ErrInvalid)
 	}
-	tx, err := s.pool.Begin(ctx)
+	tx, owned, err := s.beginMutation(ctx)
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	defer tx.Rollback(ctx)
+	defer rollbackOwnedMutation(ctx, tx, owned)
 	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -660,12 +878,21 @@ func (s *PostgresStore) transitionFact(matchID, factID, operatorID string, statu
 			return MatchEvent{}, Snapshot{}, err
 		}
 	}
-	if err := tx.Commit(ctx); err != nil {
+	if err := enqueueMatchEvent(ctx, tx, events[found]); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	changed := events[found]
-	snapshot := s.PublicSnapshot(matchID)
-	s.publish(s.subscriberList(matchID), changed)
+	snapshotEvents := events
+	if publicResult {
+		snapshotEvents = filterPublicFacts(events)
+	}
+	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID))
+	if owned {
+		s.kickOutbox()
+	}
 	return changed, snapshot, nil
 }
 

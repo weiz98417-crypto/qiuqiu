@@ -7,6 +7,8 @@ import (
 	"strconv"
 	"testing"
 	"time"
+
+	"qiuqiu/internal/operatorwrite"
 )
 
 func TestPostgresStoreIntegration(t *testing.T) {
@@ -79,6 +81,141 @@ func TestPostgresStoreIntegration(t *testing.T) {
 		}
 	case <-time.After(time.Second):
 		t.Fatal("subscriber did not receive created event")
+	}
+}
+
+func TestPostgresOutboxRetriesFailedMatchEventPublication(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	store, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	matchID := "pg-outbox-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	var attempts int
+	published := make(chan MatchEvent, 1)
+	store.outboxPublisher = func(event MatchEvent) error {
+		attempts++
+		if attempts == 1 {
+			return errors.New("temporary publish failure")
+		}
+		published <- event
+		return nil
+	}
+	created, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "shot",
+		Period:      "first_half",
+		Clock:       "10:00",
+		Score:       Score{},
+		Description: "shot",
+		Confirmed:   true,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	var status string
+	var storedAttempts int
+	if err := store.pool.QueryRow(ctx, `
+		SELECT status, attempts FROM outbox_messages
+		WHERE aggregate_type = 'match_event' AND aggregate_id = $1
+	`, created.ID+":1:confirmed").Scan(&status, &storedAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "pending" || storedAttempts != 1 {
+		t.Fatalf("outbox after failure = status %s attempts %d", status, storedAttempts)
+	}
+	if _, err := store.pool.Exec(ctx, `
+		UPDATE outbox_messages SET next_attempt_at = now()
+		WHERE aggregate_type = 'match_event' AND aggregate_id = $1
+	`, created.ID+":1:confirmed"); err != nil {
+		t.Fatal(err)
+	}
+	processed, err := store.publishOutboxOnce(ctx)
+	if err != nil || !processed {
+		t.Fatalf("outbox retry processed=%v err=%v", processed, err)
+	}
+	select {
+	case event := <-published:
+		if event.ID != created.ID {
+			t.Fatalf("published event = %+v", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("retried outbox event was not published")
+	}
+	if err := store.pool.QueryRow(ctx, `
+		SELECT status, attempts FROM outbox_messages
+		WHERE aggregate_type = 'match_event' AND aggregate_id = $1
+	`, created.ID+":1:confirmed").Scan(&status, &storedAttempts); err != nil {
+		t.Fatal(err)
+	}
+	if status != "published" || storedAttempts != 2 {
+		t.Fatalf("outbox after retry = status %s attempts %d", status, storedAttempts)
+	}
+}
+
+func TestPostgresOperatorTransactionAtomicallyCommitsEventIdempotencyAndOutbox(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	store, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service, err := operatorwrite.OpenPostgresService(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	matchID := "pg-operator-atomic-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	request := operatorwrite.Request{MatchID: matchID, Key: "atomic-key", PayloadHash: "atomic-hash", Operation: "events.create"}
+	event := MatchEvent{EventType: "shot", Period: "first_half", Clock: "12:00", Score: Score{}, Description: "atomic shot", Confirmed: true}
+	_, _, err = service.Execute(ctx, request, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		if _, _, err := store.CreateOperator(operationCtx, matchID, event); err != nil {
+			return operatorwrite.Response{}, err
+		}
+		return operatorwrite.Response{}, errors.New("fail after event mutation")
+	})
+	if err == nil {
+		t.Fatal("expected transaction failure")
+	}
+	if events := store.Events(matchID); len(events) != 0 {
+		t.Fatalf("rolled back events = %+v", events)
+	}
+	var count int
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM idempotency_records WHERE match_id = $1`, matchID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled back idempotency count=%d err=%v", count, err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_messages WHERE payload->>'matchId' = $1`, matchID).Scan(&count); err != nil || count != 0 {
+		t.Fatalf("rolled back outbox count=%d err=%v", count, err)
+	}
+
+	response, replayed, err := service.Execute(ctx, request, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		created, snapshot, err := store.CreateOperator(operationCtx, matchID, event)
+		if err != nil {
+			return operatorwrite.Response{}, err
+		}
+		return operatorwrite.JSONResponse(201, map[string]any{"event": created, "snapshot": snapshot})
+	})
+	if err != nil || replayed || response.StatusCode != 201 {
+		t.Fatalf("committed response status=%d replayed=%v err=%v", response.StatusCode, replayed, err)
+	}
+	if events := store.Events(matchID); len(events) != 1 {
+		t.Fatalf("committed events = %+v", events)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM idempotency_records WHERE match_id = $1 AND status = 'completed'`, matchID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("committed idempotency count=%d err=%v", count, err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM outbox_messages WHERE aggregate_type = 'match_event' AND payload->>'matchId' = $1`, matchID).Scan(&count); err != nil || count != 1 {
+		t.Fatalf("committed outbox count=%d err=%v", count, err)
 	}
 }
 

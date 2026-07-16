@@ -140,9 +140,9 @@ test('人工与外部源冲突时，球球暂停确认赛况', async ({ page, re
       score: { home: 1, away: 1 },
       description: '穆西亚拉进球。',
     },
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
   });
-  expect(conflictResponse.status()).toBe(400);
+  expect(conflictResponse.status()).toBe(409);
   const state = await apiGet(request, `/api/matches/${matchId}/state`);
   expect(state.snapshot.integrity.status).toBe('conflict');
 
@@ -214,7 +214,7 @@ async function sendText(page, text) {
 async function apiPost(request, path, body) {
   const response = await request.post(path, {
     data: body,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
   });
   if (!response.ok()) {
     throw new Error(`POST ${path} failed: ${response.status()} ${await response.text()}`);
@@ -228,4 +228,8 @@ async function apiGet(request, path) {
   });
   expect(response.ok()).toBeTruthy();
   return response.json();
+}
+
+function testIdempotencyKey() {
+  return `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
 }

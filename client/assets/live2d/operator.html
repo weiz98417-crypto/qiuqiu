@@ -1360,6 +1360,60 @@ async function requestJSON(path, options = {}) {
   if (!response.ok) throw new Error((await response.text()).trim() || `请求失败 ${response.status}`);
   return response.json();
 }
+const operatorInflight = new Map();
+const operatorActionInflight = new Map();
+async function runOperatorAction(key, action) {
+  if (operatorActionInflight.has(key)) return operatorActionInflight.get(key);
+  const promise = Promise.resolve().then(action);
+  operatorActionInflight.set(key, promise);
+  try {
+    return await promise;
+  } finally {
+    operatorActionInflight.delete(key);
+  }
+}
+function newIdempotencyKey() {
+  if (window.crypto?.randomUUID) return window.crypto.randomUUID();
+  return `operator-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+async function operatorRequestJSON(path, options = {}) {
+  const method = options.method || 'POST';
+  const body = options.body || '{}';
+  const inflightKey = options.inflightKey || `${method}:${path}:${body}`;
+  if (operatorInflight.has(inflightKey)) return operatorInflight.get(inflightKey);
+  const idempotencyKey = newIdempotencyKey();
+  const request = (async () => {
+    let lastError;
+    for (let attempt = 0; attempt < 2; attempt += 1) {
+      try {
+        const headers = authHeaders({ ...(options.headers || {}), 'Idempotency-Key': idempotencyKey });
+        const response = await fetch(path, { ...options, method, body, headers });
+        if (response.ok) {
+          const data = await response.json();
+          data.idempotencyReplayed = response.headers.get('Idempotency-Replayed') === 'true';
+          return data;
+        }
+        const rawMessage = (await response.text()).trim();
+        let message = rawMessage;
+        try { message = JSON.parse(rawMessage).error || rawMessage; } catch {}
+        if (response.status === 409) throw new Error(`提交内容冲突：${message || '请刷新后重试'}`);
+        if (response.status < 500 || attempt > 0) throw new Error(message || `请求失败 ${response.status}`);
+        lastError = new Error(message || `请求失败 ${response.status}`);
+      } catch (error) {
+        lastError = error;
+        if (attempt > 0 || String(error?.message || '').startsWith('提交内容冲突')) throw error;
+      }
+      await new Promise((resolve) => setTimeout(resolve, 250));
+    }
+    throw lastError || new Error('提交失败');
+  })();
+  operatorInflight.set(inflightKey, request);
+  try {
+    return await request;
+  } finally {
+    operatorInflight.delete(inflightKey);
+  }
+}
 function formatStatusTime(value) {
   if (!value) return '无';
   const date = new Date(value);
@@ -1777,13 +1831,12 @@ async function saveConfig() {
     homePlayers: parsePlayers(value('homePlayers')),
     awayPlayers: parsePlayers(value('awayPlayers'))
   };
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, {
+  return operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(body)
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    inflightKey: `config:${currentMatchId()}:${JSON.stringify(body)}`
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
 }
 async function savePrematchConfig() {
   syncMainFromPre();
@@ -1870,10 +1923,11 @@ async function saveAutomation() {
   const mode = document.querySelector('input[name="automationMode"]:checked')?.value || 'paused';
   const eventTypes = Array.from(document.querySelectorAll('#automationEventTypes input:checked')).map((input) => input.value);
   const cooldownSeconds = Number(value('automationCooldown') || 0);
-  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/automation`, {
+  const data = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/automation`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify({ mode, eventTypes, cooldownSeconds })
+    body: JSON.stringify({ mode, eventTypes, cooldownSeconds }),
+    inflightKey: `automation:${currentMatchId()}`
   });
   latestAutomationPolicy = data.policy;
   renderAutomationSummary(data.policy);
@@ -1939,19 +1993,21 @@ async function startSource(type) {
     body.fixtureId = Number(value('sourceFixtureId') || 0);
     body.importHistory = $('sourceImportHistory').checked;
   }
-  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/sources/start`, {
+  const data = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/sources/start`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: JSON.stringify(body)
+    body: JSON.stringify(body),
+    inflightKey: `source:${currentMatchId()}:${type}`
   });
   renderSources(data.status || {});
   toast(`已切换到${sourceLabel(type)}`, 'ok');
 }
 async function takeManualControl() {
-  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/takeover`, {
+  const data = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/takeover`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
-    body: '{}'
+    body: '{}',
+    inflightKey: `takeover:${currentMatchId()}`
   });
   renderSources(data.status || {});
   latestAutomationPolicy = data.policy || null;
@@ -2065,39 +2121,39 @@ function syncMonitorTimer() {
   if (seconds > 0) monitorTimer = window.setInterval(loadMonitor, seconds * 1000);
 }
 async function publishEvent(event) {
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`, {
+  return operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/events`, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(event)
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(event),
+    inflightKey: `event:${currentMatchId()}:${JSON.stringify(event)}`
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
 }
 async function correctEvent(eventId, event) {
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events/${encodeURIComponent(eventId)}/correct`, {
+  return operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/events/${encodeURIComponent(eventId)}/correct`, {
     method: 'POST',
-    headers: authHeaders({ 'Content-Type': 'application/json' }),
-    body: JSON.stringify(event)
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(event),
+    inflightKey: `correction:${currentMatchId()}:${eventId}:${JSON.stringify(event)}`
   });
-  if (!res.ok) throw new Error(await res.text());
-  return res.json();
 }
 async function publishPreset(preset, eventSide = side) {
-  try {
-    setSide(eventSide);
-    if (value('period') === 'pre_match' && preset.type !== 'kickoff' && preset.type !== 'operator_note') {
-      $('period').value = 'first_half';
+  return runOperatorAction(`preset:${currentMatchId()}:${preset.type}:${eventSide}`, async () => {
+    try {
+      setSide(eventSide);
+      if (value('period') === 'pre_match' && preset.type !== 'kickoff' && preset.type !== 'operator_note') {
+        $('period').value = 'first_half';
+      }
+      await saveConfig();
+      const score = applyScore(preset, eventSide);
+      const result = await publishEvent(quickPayloadFromPreset(preset, score, eventSide));
+      applyPublishedSnapshot(result);
+      toast(`已发布：${team(eventSide)} ${preset.label}`, 'ok');
+      updateContextPreview();
+      await loadTimeline();
+    } catch (err) {
+      toast(err.message || '发布失败', 'bad');
     }
-    await saveConfig();
-    const score = applyScore(preset, eventSide);
-    const result = await publishEvent(quickPayloadFromPreset(preset, score, eventSide));
-    applyPublishedSnapshot(result);
-    toast(`已发布：${team(eventSide)} ${preset.label}`, 'ok');
-    updateContextPreview();
-    await loadTimeline();
-  } catch (err) {
-    toast(err.message || '发布失败', 'bad');
-  }
+  });
 }
 async function loadConfig() {
   const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
@@ -2138,12 +2194,10 @@ function factActionButtons(event) {
 async function transitionFact(event, action) {
   if (!event.factId) return;
   try {
-    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(event.factId)}/${action}`, {
+    const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(event.factId)}/${action}`, {
       method: 'POST',
-      headers: authHeaders()
+      inflightKey: `fact:${currentMatchId()}:${event.factId}:${action}`
     });
-    if (!res.ok) throw new Error(await res.text());
-    const result = await res.json();
     applyPublishedSnapshot(result);
     updateContextPreview();
     await loadTimeline();
@@ -2446,29 +2500,31 @@ function escapeHTML(text) {
 
 $('draft').addEventListener('submit', async (event) => {
   event.preventDefault();
-  try {
-    const eventSide = value('sideSelect') || side;
-    setSide(eventSide);
-    await saveConfig();
-    const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
-    const score = correctingId ? currentScore() : scoreForNewEvent(preset, eventSide);
-    const payload = payloadFromPreset({ ...preset, score: 0 }, score, eventSide);
-    let result;
-    if (correctingId) {
-      result = await correctEvent(correctingId, payload);
-      toast(`已发布更正：${correctingId}`, 'ok');
-      correctingId = '';
-    } else {
-      result = await publishEvent(payload);
-      toast(`已发布详细事件：${preset.label}`, 'ok');
+  await runOperatorAction(`draft:${currentMatchId()}`, async () => {
+    try {
+      const eventSide = value('sideSelect') || side;
+      setSide(eventSide);
+      await saveConfig();
+      const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
+      const score = correctingId ? currentScore() : scoreForNewEvent(preset, eventSide);
+      const payload = payloadFromPreset({ ...preset, score: 0 }, score, eventSide);
+      let result;
+      if (correctingId) {
+        result = await correctEvent(correctingId, payload);
+        toast(`已发布更正：${correctingId}`, 'ok');
+        correctingId = '';
+      } else {
+        result = await publishEvent(payload);
+        toast(`已发布详细事件：${preset.label}`, 'ok');
+      }
+      applyPublishedSnapshot(result);
+      clearDraft();
+      await loadTimeline();
+    } catch (err) {
+      await restoreConfirmedScore();
+      toast(err.message || '发布失败', 'bad');
     }
-    applyPublishedSnapshot(result);
-    clearDraft();
-    await loadTimeline();
-  } catch (err) {
-    await restoreConfirmedScore();
-    toast(err.message || '发布失败', 'bad');
-  }
+  });
 });
 $('saveConfig').addEventListener('click', async () => {
   try { await saveConfig(); toast('赛前配置已保存', 'ok'); } catch (err) { toast(err.message || '保存失败', 'bad'); }

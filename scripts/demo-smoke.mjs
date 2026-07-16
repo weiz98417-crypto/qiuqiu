@@ -29,6 +29,7 @@ async function postJSON(path, body) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
+      'Idempotency-Key': `smoke-${Date.now()}-${Math.random().toString(16).slice(2)}`,
       ...(token ? { Authorization: `Bearer ${token}` } : {}),
     },
     body: JSON.stringify(body),

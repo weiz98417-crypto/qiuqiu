@@ -134,10 +134,14 @@ async function findTrace(request, input) {
   return traces.find((item) => item.input === input) || null;
 }
 
+function testIdempotencyKey() {
+  return `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
 async function apiPost(request, path, data) {
   const response = await request.post(`${backend}${path}`, {
     data,
-    headers: { Authorization: `Bearer ${token}` },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
   });
   if (!response.ok()) {
     throw new Error(`POST ${path} failed: ${response.status()} ${await response.text()}`);

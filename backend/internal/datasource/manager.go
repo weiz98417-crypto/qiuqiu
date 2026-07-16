@@ -230,6 +230,9 @@ func (m *Manager) Ingest(ctx context.Context, matchID string, matchEvent matchst
 		return matchstate.MatchEvent{}, matchstate.Snapshot{}, ctx.Err()
 	default:
 	}
+	if repository, ok := m.store.(matchstate.OperatorTransactionRepository); ok {
+		return repository.CreateOperator(ctx, matchID, matchEvent)
+	}
 	return m.store.Create(matchID, matchEvent)
 }
 
