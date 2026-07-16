@@ -124,6 +124,12 @@ flutter run \
 | 7-9 | 活泼 — 频繁互动和吐槽 |
 | 10 | 话痨 — 几乎不间断评论 |
 
+## 核心可信链改造方案
+
+已确认的鉴权、比赛事实、隐私生命周期和导播幂等改造方案见：
+
+- [核心可信链改造方案](docs/security-facts-privacy-idempotency-plan.md)
+
 ## License
 
 MIT
