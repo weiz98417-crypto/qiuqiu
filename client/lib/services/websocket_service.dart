@@ -21,8 +21,13 @@ class WebSocketService {
   int _connectionGeneration = 0;
   bool _connected = false;
   bool _disposed = false;
+  Future<String?> Function()? _refreshToken;
 
   static const int _maxReconnectAttempts = 5;
+
+  void setRefreshTokenCallback(Future<String?> Function()? callback) {
+    _refreshToken = callback;
+  }
 
   Stream<Map<String, dynamic>> get onMessage => _messageController.stream;
   Stream<Uint8List> get onBinary => _binaryController.stream;
@@ -44,6 +49,21 @@ class WebSocketService {
     _emitStatus(
       reconnecting ? SocketStatus.reconnecting : SocketStatus.connecting,
     );
+
+    if (reconnecting && _refreshToken != null) {
+      try {
+        final refreshedToken = await _refreshToken!();
+        if (_disposed || generation != _connectionGeneration) return;
+        if (refreshedToken == null || refreshedToken.trim().isEmpty) {
+          _scheduleReconnect(generation);
+          return;
+        }
+        _token = refreshedToken;
+      } catch (_) {
+        _scheduleReconnect(generation);
+        return;
+      }
+    }
 
     await _channelSubscription?.cancel();
     await _channel?.sink.close();

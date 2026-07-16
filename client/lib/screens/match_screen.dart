@@ -72,6 +72,7 @@ class _MatchScreenState extends State<MatchScreen> {
   String _qiuqiuDetail = '我会跟着比赛节奏回应，不打断你看球。';
   String _userLine = '';
   String? _notice;
+  String _deviceId = '';
 
   bool get _continuousEnabled => _profile.continuousConversation;
   bool get _isSpeaking => _phase == ConversationPhase.speaking;
@@ -90,6 +91,7 @@ class _MatchScreenState extends State<MatchScreen> {
   }
 
   void _bindServices() {
+    _socket.setRefreshTokenCallback(_refreshSessionToken);
     _subscriptions.addAll([
       _socket.onMessage.listen(_handleSocketMessage),
       _socket.onBinary.listen(_handleAudioBytes),
@@ -118,6 +120,7 @@ class _MatchScreenState extends State<MatchScreen> {
   Future<void> _initialize() async {
     final profile = await _preferences.load();
     final deviceId = await _preferences.loadOrCreateAnonymousUserId();
+    _deviceId = deviceId;
     final firstMeetingCompleted = await _preferences.hasCompletedFirstMeeting();
     await _audio.setMuted(!profile.soundEnabled);
     if (!mounted) return;
@@ -140,6 +143,22 @@ class _MatchScreenState extends State<MatchScreen> {
         _phase = ConversationPhase.offline;
         _notice = '暂时无法建立安全会话，请稍后再试。';
       });
+    }
+  }
+
+  Future<String?> _refreshSessionToken() async {
+    if (_deviceId.isEmpty) return null;
+    try {
+      final session = await _sessions.ensureSession(
+        baseUrl: normalizeAPIBaseURL(_socketUrl()),
+        deviceId: _deviceId,
+      );
+      if (mounted) {
+        setState(() => _userId = session.userId);
+      }
+      return session.accessToken;
+    } catch (_) {
+      return null;
     }
   }
 
