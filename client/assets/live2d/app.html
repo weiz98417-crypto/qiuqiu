@@ -132,6 +132,26 @@ let vadPoll = null;
 let audioUnlocked = false;
 let pendingAudioMime = 'audio/mpeg';
 let pendingAudioTraceId = '';
+const seenMatchEventIds = new Set();
+const seenReactionEventIds = new Set();
+const seenPresentationDeliveryIds = new Set();
+const seenAudioDeliveryIds = new Set();
+let skipNextAudioBlob = false;
+
+function rememberDeliveryId(seen, eventId) {
+  const normalized = String(eventId || '').trim();
+  if (!normalized) return true;
+  if (seen.has(normalized)) return false;
+  seen.add(normalized);
+  if (seen.size > 256) seen.delete(seen.values().next().value);
+  return true;
+}
+
+function matchEventDeliveryKey(eventData) {
+  const eventId = String(eventData?.id || '').trim();
+  if (!eventId) return '';
+  return `${eventId}:${eventData?.factRevision || 0}:${eventData?.factStatus || ''}`;
+}
 
 function addMessage(kind, text) {
   const el = document.createElement('div');
@@ -181,6 +201,12 @@ async function unlockAudio() {
 
 function playAudioBlob(data, mime) {
   const traceId = pendingAudioTraceId;
+  if (skipNextAudioBlob) {
+    skipNextAudioBlob = false;
+    pendingAudioTraceId = '';
+    reportVoicePlayback(traceId, 'skipped');
+    return;
+  }
   pendingAudioTraceId = '';
   const blob = new Blob([data], { type: mime || pendingAudioMime || 'audio/mpeg' });
   const url = URL.createObjectURL(blob);
@@ -297,7 +323,17 @@ function connect() {
       return;
     }
     if (msg.type === 'match_event') {
-      handleMatchEvent(msg.data, msg.snapshot);
+      if (msg.snapshot) match.textContent = formatMatchSnapshot(msg.snapshot);
+      if (rememberDeliveryId(seenMatchEventIds, msg.deliveryKey || matchEventDeliveryKey(msg.data))) {
+        handleMatchEvent(msg.data, null);
+      }
+      return;
+    }
+    if (msg.type === 'presentation') {
+      if (msg.source === 'match_reaction' && !rememberDeliveryId(seenPresentationDeliveryIds, msg.deliveryKey || msg.eventId)) return;
+      const presentation = msg.data || {};
+      liveCall('setMood', presentation.expression || 'idle');
+      liveCall('performAction', presentation.motion || presentation.expression || 'focus');
       return;
     }
     if (msg.type === 'expression') {
@@ -312,8 +348,10 @@ function connect() {
       return;
     }
     if (msg.type === 'voice_audio') {
+      skipNextAudioBlob = msg.source === 'match_reaction' && !rememberDeliveryId(seenAudioDeliveryIds, msg.deliveryKey || msg.eventId);
       pendingAudioMime = msg.mime || 'audio/mpeg';
       pendingAudioTraceId = msg.traceId || '';
+      if (skipNextAudioBlob) return;
       setVoiceStatus('正在播放球球语音回复。', 'replying');
       return;
     }
@@ -323,7 +361,9 @@ function connect() {
       return;
     }
     if (msg.type === 'event' && msg.event === 'qiuqiu_reply') {
-      const text = (msg.data && msg.data.text) || '';
+      const replyData = msg.data || {};
+      if (replyData.source === 'match_reaction' && !rememberDeliveryId(seenReactionEventIds, replyData.deliveryKey || replyData.eventId)) return;
+      const text = replyData.text || '';
       addMessage('bot', text || '我刚刚有点走神，再说一遍？');
       speakFor(text);
       setVoiceStatus('可以继续说或打字。', 'idle');

@@ -166,6 +166,24 @@ test('实时监控展示真实服务状态和比赛事件', async ({ page, reque
   await expect(page.locator('#monitorHealthMeta')).toContainText('健康检查');
 });
 
+test('operator write buttons expose a busy state while submission is pending', async ({ page }) => {
+  await page.route('**/api/matches/test/config', async (route) => {
+    if (route.request().method() === 'POST') {
+      await new Promise((resolve) => setTimeout(resolve, 400));
+    }
+    await route.continue();
+  });
+  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  const saveButton = page.locator('#saveConfig');
+  await saveButton.click();
+  await expect(saveButton).toBeDisabled();
+  await expect(saveButton).toHaveAttribute('aria-busy', 'true');
+  await expect(saveButton).toContainText('提交中');
+  await expect(saveButton).toBeEnabled();
+  await expect(saveButton).not.toHaveAttribute('aria-busy', 'true');
+  await expect(saveButton).toContainText('保存配置');
+});
+
 async function apiPost(request, path, body) {
   const response = await request.post(path, {
     data: body,

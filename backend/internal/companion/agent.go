@@ -564,8 +564,9 @@ func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		req.Now = time.Now().UTC()
 	}
 	start := time.Now()
+	deliveryKey := matchstate.DeliveryKey(req.Event)
 	trace := Trace{
-		ID:             stableTraceID(req.UserID, req.Event.MatchID, "match:"+req.Event.ID),
+		ID:             stableTraceID(req.UserID, req.Event.MatchID, "match:"+deliveryKey),
 		MatchID:        req.Event.MatchID,
 		UserID:         req.UserID,
 		Input:          req.Event.Description,
@@ -600,7 +601,7 @@ func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	reply := ""
 	if req.OutputAllowed && (decision.ID == "" || decision.Speech != nil) {
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
-			"eventId": req.Event.ID, "eventType": req.Event.EventType, "clock": req.Event.Clock,
+			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "clock": req.Event.Clock,
 		}})
 		reply = req.Event.ProactiveText
 		if strings.TrimSpace(reply) == "" {
@@ -609,7 +610,7 @@ func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	} else {
 		trace.Reason = "relationship_match_observed_silent"
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
-			"eventId": req.Event.ID, "eventType": req.Event.EventType, "mode": "silence",
+			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "mode": "silence",
 		}})
 	}
 	trace.Output = reply
@@ -632,15 +633,16 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
+	deliveryKey := matchstate.DeliveryKey(ev)
 	return a.director.Apply(ctx, relationship.Signal{
-		ID:           "match:" + userID + ":" + ev.ID,
-		TraceID:      stableTraceID(userID, ev.MatchID, "match:"+ev.ID),
+		ID:           "match:" + userID + ":" + deliveryKey,
+		TraceID:      stableTraceID(userID, ev.MatchID, "match:"+deliveryKey),
 		Kind:         relationship.SignalMatchEvent,
 		UserID:       userID,
 		MatchID:      ev.MatchID,
 		OccurredAt:   now,
 		ReceivedAt:   time.Now().UTC(),
-		FactRevision: ev.ID,
+		FactRevision: deliveryKey,
 		Match: &relationship.MatchSignal{
 			EventID:               ev.ID,
 			EventType:             ev.EventType,

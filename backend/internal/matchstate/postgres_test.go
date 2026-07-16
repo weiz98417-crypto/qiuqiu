@@ -176,7 +176,7 @@ func TestPostgresOperatorTransactionAtomicallyCommitsEventIdempotencyAndOutbox(t
 	defer service.Close()
 	matchID := "pg-operator-atomic-" + time.Now().UTC().Format("20060102150405.000000000")
 	defer store.Reset(matchID)
-	request := operatorwrite.Request{MatchID: matchID, Key: "atomic-key", PayloadHash: "atomic-hash", Operation: "events.create"}
+	request := operatorwrite.Request{MatchID: matchID, Key: "atomic-key", PayloadHash: "atomic-hash", Operation: "events.create", Atomic: true}
 	event := MatchEvent{EventType: "shot", Period: "first_half", Clock: "12:00", Score: Score{}, Description: "atomic shot", Confirmed: true}
 	_, _, err = service.Execute(ctx, request, func(operationCtx context.Context) (operatorwrite.Response, error) {
 		if _, _, err := store.CreateOperator(operationCtx, matchID, event); err != nil {

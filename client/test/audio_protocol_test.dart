@@ -12,6 +12,38 @@ void main() {
     expect(queue.take(), isNull);
   });
 
+  test('delivery dedupe preserves fact revisions and skips exact repeats', () {
+    final deduplicator = DeliveryDeduplicator(capacity: 2);
+    expect(deduplicator.remember('event-1:1:confirmed'), isTrue);
+    expect(deduplicator.remember('event-1:1:confirmed'), isFalse);
+    expect(deduplicator.remember('event-1:2:reconciled'), isTrue);
+    expect(
+      matchEventDeliveryKey({
+        'id': 'event-1',
+        'factRevision': 2,
+        'factStatus': 'reconciled',
+      }),
+      'event-1:2:reconciled',
+    );
+  });
+
+  test('duplicate audio metadata consumes its binary frame without playback',
+      () {
+    final queue = PendingAudioQueue();
+    const duplicate = PendingAudio(
+      mime: 'audio/mpeg',
+      traceId: 'trace-duplicate',
+      skip: true,
+    );
+    queue.add(duplicate);
+    expect(queue.take()?.skip, isTrue);
+    expect(mutedPlaybackReceipt(duplicate), {
+      'type': 'voice_playback',
+      'traceId': 'trace-duplicate',
+      'state': 'skipped',
+    });
+  });
+
   test('静音跳过音频时仍生成终态回执', () {
     final receipt = mutedPlaybackReceipt(
       const PendingAudio(mime: 'audio/mpeg', traceId: 'trace-muted'),

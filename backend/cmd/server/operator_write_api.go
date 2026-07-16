@@ -55,6 +55,7 @@ func executeOperatorWrite(w http.ResponseWriter, r *http.Request, service *opera
 		Key:         key,
 		PayloadHash: payloadHash,
 		Operation:   operation,
+		Atomic:      operatorWriteIsAtomic(operation),
 	}, func(operationCtx context.Context) (operatorwrite.Response, error) {
 		response, operationErr := callback(operationCtx)
 		var httpErr *operatorHTTPError
@@ -80,6 +81,15 @@ func executeOperatorWrite(w http.ResponseWriter, r *http.Request, service *opera
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
 	w.WriteHeader(response.StatusCode)
 	_, _ = w.Write(response.Body)
+}
+
+func operatorWriteIsAtomic(operation string) bool {
+	switch operation {
+	case "events.create", "events.correct", "facts.confirm", "facts.revoke", "facts.reconcile":
+		return true
+	default:
+		return false
+	}
 }
 
 func operatorError(status int, err error) error {

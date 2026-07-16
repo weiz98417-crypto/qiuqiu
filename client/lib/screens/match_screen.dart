@@ -56,6 +56,10 @@ class _MatchScreenState extends State<MatchScreen> {
   SocketStatus _socketStatus = SocketStatus.connecting;
   ConversationPhase _phase = ConversationPhase.idle;
   final PendingAudioQueue _pendingAudio = PendingAudioQueue();
+  final DeliveryDeduplicator _seenMatchEvents = DeliveryDeduplicator();
+  final DeliveryDeduplicator _seenReactions = DeliveryDeduplicator();
+  final DeliveryDeduplicator _seenPresentations = DeliveryDeduplicator();
+  final DeliveryDeduplicator _seenAudio = DeliveryDeduplicator();
   bool _insideMatch = true;
   bool _textMode = false;
   bool _isHoldingToTalk = false;
@@ -202,14 +206,21 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'match_event':
         final event = _map(message['data']);
         final snapshot = _map(message['snapshot']);
+        final deliveryKey =
+            message['deliveryKey']?.toString() ?? matchEventDeliveryKey(event);
+        final isNewEvent = _seenMatchEvents.remember(deliveryKey);
         setState(() {
           if (snapshot != null) _match = _match.withSnapshot(snapshot);
-          if (event != null) {
+          if (event != null && isNewEvent) {
             _match = _match.withEvent(event);
           }
         });
         break;
       case 'presentation':
+        if (message['source'] == 'match_reaction' &&
+            !_seenPresentations.remember(message['deliveryKey']?.toString())) {
+          break;
+        }
         final presentation = CompanionPresentation.fromReplyData({
           'presentation': _map(message['data']),
         });
@@ -229,10 +240,13 @@ class _MatchScreenState extends State<MatchScreen> {
         });
         break;
       case 'voice_audio':
+        final duplicateAudio = message['source'] == 'match_reaction' &&
+            !_seenAudio.remember(message['deliveryKey']?.toString());
         _pendingAudio.add(PendingAudio(
           mime: message['mime'] as String? ?? 'audio/wav',
           traceId: message['traceId'] as String?,
           byteLength: _integer(message['byteLength']),
+          skip: duplicateAudio,
         ));
         break;
       case 'voice_status':
@@ -263,6 +277,11 @@ class _MatchScreenState extends State<MatchScreen> {
     if (eventType == 'qiuqiu_reply') {
       final reply = data?['text'] as String?;
       if (reply == null || reply.trim().isEmpty) return;
+      if (data?['source'] == 'match_reaction' &&
+          !_seenReactions.remember(data?['deliveryKey']?.toString() ??
+              data?['eventId']?.toString())) {
+        return;
+      }
       final traceId = data?['traceId'] as String?;
       final isFirstMeeting = data?['source'] == 'first_meeting';
       final presentation = CompanionPresentation.fromReplyData(data);
@@ -333,6 +352,13 @@ class _MatchScreenState extends State<MatchScreen> {
   void _handleAudioBytes(Uint8List audioBytes) {
     final metadata =
         _pendingAudio.take() ?? const PendingAudio(mime: 'audio/wav');
+    if (metadata.skip) {
+      final receipt = mutedPlaybackReceipt(metadata);
+      if (receipt != null) {
+        _socket.send(receipt);
+      }
+      return;
+    }
     if (!_profile.soundEnabled) {
       final receipt = mutedPlaybackReceipt(metadata);
       if (receipt != null) {
@@ -1769,8 +1795,39 @@ class PendingAudio {
   final String mime;
   final String? traceId;
   final int? byteLength;
+  final bool skip;
 
-  const PendingAudio({required this.mime, this.traceId, this.byteLength});
+  const PendingAudio({
+    required this.mime,
+    this.traceId,
+    this.byteLength,
+    this.skip = false,
+  });
+}
+
+class DeliveryDeduplicator {
+  final int capacity;
+  final LinkedHashSet<String> _seen = LinkedHashSet<String>();
+
+  DeliveryDeduplicator({this.capacity = 256});
+
+  bool remember(String? deliveryKey) {
+    final normalized = deliveryKey?.trim() ?? '';
+    if (normalized.isEmpty) return true;
+    if (!_seen.add(normalized)) return false;
+    if (_seen.length > capacity) {
+      _seen.remove(_seen.first);
+    }
+    return true;
+  }
+}
+
+String? matchEventDeliveryKey(Map<String, dynamic>? event) {
+  final eventId = event?['id']?.toString().trim() ?? '';
+  if (eventId.isEmpty) return null;
+  final revision = event?['factRevision']?.toString() ?? '0';
+  final status = event?['factStatus']?.toString() ?? '';
+  return '$eventId:$revision:$status';
 }
 
 Map<String, dynamic>? mutedPlaybackReceipt(PendingAudio metadata) {

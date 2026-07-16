@@ -5,6 +5,7 @@ import (
 	"testing"
 
 	"qiuqiu/internal/conversation"
+	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
 )
 
@@ -14,6 +15,7 @@ func TestQiuqiuReplyDataCarriesDirectorPresentation(t *testing.T) {
 		"trace-1",
 		"match_reaction",
 		"event-1",
+		"event-1:2:reconciled",
 		relationship.PresentationPlan{
 			Expression:  "deflated",
 			Motion:      "settle",
@@ -39,13 +41,20 @@ func TestQiuqiuReplyDataCarriesDirectorPresentation(t *testing.T) {
 	if presentation["expression"] != "deflated" || presentation["motion"] != "settle" || presentation["returnMode"] != "decay_to_focus" {
 		t.Fatalf("presentation = %+v", presentation)
 	}
-	if decoded["source"] != "match_reaction" || decoded["eventId"] != "event-1" {
+	if decoded["source"] != "match_reaction" || decoded["eventId"] != "event-1" || decoded["deliveryKey"] != "event-1:2:reconciled" {
 		t.Fatalf("client source contract = %+v", decoded)
 	}
 	for _, internalKey := range []string{"decisionId", "operatorId", "trace"} {
 		if _, exists := decoded[internalKey]; exists {
 			t.Fatalf("internal key %q leaked in payload: %+v", internalKey, decoded)
 		}
+	}
+}
+
+func TestMatchEventDeliveryKeyIncludesFactRevisionAndStatus(t *testing.T) {
+	event := matchstate.MatchEvent{ID: "event-1", FactRevision: 2, FactStatus: matchstate.FactStatusReconciled}
+	if got := matchstate.DeliveryKey(event); got != "event-1:2:reconciled" {
+		t.Fatalf("delivery key = %q", got)
 	}
 }
 

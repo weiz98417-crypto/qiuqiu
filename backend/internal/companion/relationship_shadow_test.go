@@ -164,6 +164,42 @@ func TestAgentHandlesAllowedMatchEventAsOnePlannedTurn(t *testing.T) {
 	}
 }
 
+func TestAgentTreatsFactRevisionsAsDistinctMatchSignals(t *testing.T) {
+	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithDirector(
+		relationship.NewDirector(relationship.NewMemoryRepository()),
+	)
+	event := matchstate.MatchEvent{
+		ID:           "goal-revision-1",
+		MatchID:      "match-1",
+		EventType:    "goal",
+		Intensity:    5,
+		FactRevision: 1,
+		FactStatus:   matchstate.FactStatusConfirmed,
+	}
+	first, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
+		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
+		Now: time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.FactRevision = 2
+	event.FactStatus = matchstate.FactStatusReconciled
+	second, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
+		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
+		Now: time.Date(2026, 7, 15, 20, 0, 1, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Trace.ID == second.Trace.ID || first.Decision.ID == second.Decision.ID {
+		t.Fatalf("fact revisions reused trace or decision: first=%+v second=%+v", first.Trace, second.Trace)
+	}
+	if second.Decision.SignalID != "match:user-1:goal-revision-1:2:reconciled" {
+		t.Fatalf("second signal id = %q", second.Decision.SignalID)
+	}
+}
+
 func TestAgentSignalRetryDoesNotDuplicateTraceOrConversationTurns(t *testing.T) {
 	store := matchstate.NewStore()
 	tools := NewStoreMemoryTools(store)

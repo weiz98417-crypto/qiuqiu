@@ -812,7 +812,7 @@
                 </div>
                 <textarea id="contextPreview" readonly></textarea>
               </div>
-              <button class="primary-btn" type="submit"><span class="material-symbols-outlined">send</span>发布详细事件</button>
+              <button class="primary-btn" id="draftSubmit" type="submit" data-busy-label="发布中…"><span class="material-symbols-outlined">send</span>发布详细事件</button>
             </div>
           </form>
 
@@ -1362,14 +1362,32 @@ async function requestJSON(path, options = {}) {
 }
 const operatorInflight = new Map();
 const operatorActionInflight = new Map();
-async function runOperatorAction(key, action) {
+function setActionBusy(element, busy) {
+  if (!element) return;
+  if (busy) {
+    element.dataset.idleHtml = element.innerHTML;
+    element.dataset.wasDisabled = element.disabled ? 'true' : 'false';
+    element.disabled = true;
+    element.setAttribute('aria-busy', 'true');
+    element.innerHTML = `<span class="material-symbols-outlined">progress_activity</span>${escapeHTML(element.dataset.busyLabel || '提交中…')}`;
+    return;
+  }
+  if (element.dataset.idleHtml) element.innerHTML = element.dataset.idleHtml;
+  element.disabled = element.dataset.wasDisabled === 'true';
+  element.removeAttribute('aria-busy');
+  delete element.dataset.idleHtml;
+  delete element.dataset.wasDisabled;
+}
+async function runOperatorAction(key, action, element) {
   if (operatorActionInflight.has(key)) return operatorActionInflight.get(key);
+  setActionBusy(element, true);
   const promise = Promise.resolve().then(action);
   operatorActionInflight.set(key, promise);
   try {
     return await promise;
   } finally {
     operatorActionInflight.delete(key);
+    setActionBusy(element, false);
   }
 }
 function newIdempotencyKey() {
@@ -1532,10 +1550,11 @@ function renderEvents(id, eventSide) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `event-btn ${preset.level || ''}`;
+    btn.dataset.busyLabel = '发布中…';
     btn.innerHTML = `<span class="event-label">${preset.key} ${preset.label}</span><span class="event-meta">${preset.action} / ${preset.intensity}</span>`;
     btn.onclick = () => {
       flash(btn);
-      publishPreset(preset, eventSide);
+      publishPreset(preset, eventSide, btn);
     };
     host.appendChild(btn);
   });
@@ -2136,7 +2155,7 @@ async function correctEvent(eventId, event) {
     inflightKey: `correction:${currentMatchId()}:${eventId}:${JSON.stringify(event)}`
   });
 }
-async function publishPreset(preset, eventSide = side) {
+async function publishPreset(preset, eventSide = side, triggerElement) {
   return runOperatorAction(`preset:${currentMatchId()}:${preset.type}:${eventSide}`, async () => {
     try {
       setSide(eventSide);
@@ -2153,7 +2172,7 @@ async function publishPreset(preset, eventSide = side) {
     } catch (err) {
       toast(err.message || '发布失败', 'bad');
     }
-  });
+  }, triggerElement);
 }
 async function loadConfig() {
   const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
@@ -2191,20 +2210,22 @@ function factActionButtons(event) {
   return actions.map(([action, label]) => `<button class="small-btn" type="button" data-fact-action="${action}">${label}</button>`).join('');
 }
 
-async function transitionFact(event, action) {
+async function transitionFact(event, action, triggerElement) {
   if (!event.factId) return;
-  try {
-    const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(event.factId)}/${action}`, {
-      method: 'POST',
-      inflightKey: `fact:${currentMatchId()}:${event.factId}:${action}`
-    });
-    applyPublishedSnapshot(result);
-    updateContextPreview();
-    await loadTimeline();
-    toast(action === 'reconcile' ? '已选为公开事实' : action === 'confirm' ? '事实已确认' : '事实已撤销', 'ok');
-  } catch (error) {
-    toast(error.message || '事实状态更新失败', 'bad');
-  }
+  return runOperatorAction(`fact:${currentMatchId()}:${event.factId}:${action}`, async () => {
+    try {
+      const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(event.factId)}/${action}`, {
+        method: 'POST',
+        inflightKey: `fact:${currentMatchId()}:${event.factId}:${action}`
+      });
+      applyPublishedSnapshot(result);
+      updateContextPreview();
+      await loadTimeline();
+      toast(action === 'reconcile' ? '已选为公开事实' : action === 'confirm' ? '事实已确认' : '事实已撤销', 'ok');
+    } catch (error) {
+      toast(error.message || '事实状态更新失败', 'bad');
+    }
+  }, triggerElement);
 }
 
 async function loadTimeline() {
@@ -2244,7 +2265,8 @@ async function loadTimeline() {
     const actionHost = card.querySelector('.event-top > div:last-child');
     actionHost.insertAdjacentHTML('afterbegin', factActionButtons(event));
     card.querySelectorAll('[data-fact-action]').forEach((button) => {
-      button.onclick = () => transitionFact(event, button.dataset.factAction);
+      button.dataset.busyLabel = '处理中…';
+      button.onclick = () => transitionFact(event, button.dataset.factAction, button);
     });
     host.appendChild(card);
   });
@@ -2524,10 +2546,12 @@ $('draft').addEventListener('submit', async (event) => {
       await restoreConfirmedScore();
       toast(err.message || '发布失败', 'bad');
     }
-  });
+  }, event.submitter || $('draftSubmit'));
 });
 $('saveConfig').addEventListener('click', async () => {
-  try { await saveConfig(); toast('赛前配置已保存', 'ok'); } catch (err) { toast(err.message || '保存失败', 'bad'); }
+  await runOperatorAction(`save-config:${currentMatchId()}`, async () => {
+    try { await saveConfig(); toast('赛前配置已保存', 'ok'); } catch (err) { toast(err.message || '保存失败', 'bad'); }
+  }, $('saveConfig'));
 });
 $('reload').addEventListener('click', async () => { await loadConfig(); await loadTimeline(); toast('已刷新', 'ok'); });
 $('clearDraft').addEventListener('click', clearDraft);
@@ -2536,17 +2560,19 @@ $('clockMinus').addEventListener('click', () => { setClock(parseClock() - 60); u
 $('clockPlus').addEventListener('click', () => { setClock(parseClock() + 60); updateContextPreview(); });
 $('scoreUndo').addEventListener('click', () => { $('homeScore').value = lastScore.home; $('awayScore').value = lastScore.away; updateContextPreview(); toast('比分已回退', 'ok'); });
 $('hint').addEventListener('click', () => { $('proactive').value = '这一下很关键，我们先看裁判和双方球员怎么反应。'; $('mode').value = 'manual'; updateContextPreview(); toast('已套用导演话术', 'ok'); });
-$('manualTakeover').addEventListener('click', () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')));
-$('manualTakeoverSource').addEventListener('click', () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')));
+$('manualTakeover').addEventListener('click', () => runOperatorAction(`takeover:${currentMatchId()}`, () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')), $('manualTakeover')));
+$('manualTakeoverSource').addEventListener('click', () => runOperatorAction(`takeover:${currentMatchId()}`, () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')), $('manualTakeoverSource')));
 $('refreshSources').addEventListener('click', loadSources);
-$('useManualSource').addEventListener('click', () => startSource('manual').catch((error) => toast(error.message || '切换失败', 'bad')));
-$('useReplaySource').addEventListener('click', () => startSource('replay').catch((error) => toast(error.message || '切换失败', 'bad')));
-$('useApiSource').addEventListener('click', () => startSource('api-sports').catch((error) => toast(error.message || '外部源启动失败', 'bad')));
+$('useManualSource').addEventListener('click', () => runOperatorAction(`source:${currentMatchId()}:manual`, () => startSource('manual').catch((error) => toast(error.message || '切换失败', 'bad')), $('useManualSource')));
+$('useReplaySource').addEventListener('click', () => runOperatorAction(`source:${currentMatchId()}:replay`, () => startSource('replay').catch((error) => toast(error.message || '切换失败', 'bad')), $('useReplaySource')));
+$('useApiSource').addEventListener('click', () => runOperatorAction(`source:${currentMatchId()}:api-sports`, () => startSource('api-sports').catch((error) => toast(error.message || '外部源启动失败', 'bad')), $('useApiSource')));
 $('refreshAutomation').addEventListener('click', loadAutomation);
-$('saveAutomation').addEventListener('click', () => saveAutomation().catch((error) => toast(error.message || '自动化策略保存失败', 'bad')));
+$('saveAutomation').addEventListener('click', () => runOperatorAction(`automation:${currentMatchId()}`, () => saveAutomation().catch((error) => toast(error.message || '自动化策略保存失败', 'bad')), $('saveAutomation')));
 $('refreshMonitor').addEventListener('click', loadMonitor);
 $('preSubmit').addEventListener('click', async () => {
-  try { await savePrematchConfig(); } catch (err) { toast(err.message || '赛前配置提交失败', 'bad'); }
+  await runOperatorAction(`prematch-config:${currentMatchId()}`, async () => {
+    try { await savePrematchConfig(); } catch (err) { toast(err.message || '赛前配置提交失败', 'bad'); }
+  }, $('preSubmit'));
 });
 $('saveSettings').addEventListener('click', saveSettings);
 if ($('refreshTraces')) $('refreshTraces').addEventListener('click', () => {

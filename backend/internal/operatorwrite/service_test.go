@@ -6,6 +6,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"time"
 )
 
 func TestMemoryServiceExecutesConcurrentDuplicateOnce(t *testing.T) {
@@ -54,6 +55,49 @@ func TestMemoryServiceRejectsPayloadConflict(t *testing.T) {
 		return JSONResponse(201, map[string]bool{"ok": false})
 	}); !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflict error = %v", err)
+	}
+}
+
+func TestMemoryServiceExpiresCompletedKeys(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	service := newMemoryService(5*time.Minute, func() time.Time { return now })
+	request := Request{MatchID: "match-1", Key: "key-1", PayloadHash: "hash-1", Operation: "config.set"}
+	var calls atomic.Int32
+	operation := func(context.Context) (Response, error) {
+		calls.Add(1)
+		return JSONResponse(200, map[string]bool{"ok": true})
+	}
+
+	if _, replayed, err := service.Execute(context.Background(), request, operation); err != nil || replayed {
+		t.Fatalf("first execute replayed=%v err=%v", replayed, err)
+	}
+	now = now.Add(6 * time.Minute)
+	if _, replayed, err := service.Execute(context.Background(), request, operation); err != nil || replayed {
+		t.Fatalf("expired execute replayed=%v err=%v", replayed, err)
+	}
+	if calls.Load() != 2 {
+		t.Fatalf("operation calls = %d, want 2", calls.Load())
+	}
+}
+
+func TestMemoryServiceCleansExpiredUnrelatedKeys(t *testing.T) {
+	now := time.Date(2026, time.July, 16, 12, 0, 0, 0, time.UTC)
+	service := newMemoryService(5*time.Minute, func() time.Time { return now })
+	executor := service.executor.(*memoryExecutor)
+	operation := func(context.Context) (Response, error) {
+		return JSONResponse(200, map[string]bool{"ok": true})
+	}
+	first := Request{MatchID: "match-1", Key: "key-1", PayloadHash: "hash-1", Operation: "config.set"}
+	if _, _, err := service.Execute(context.Background(), first, operation); err != nil {
+		t.Fatal(err)
+	}
+	now = now.Add(6 * time.Minute)
+	second := Request{MatchID: "match-1", Key: "key-2", PayloadHash: "hash-2", Operation: "config.set"}
+	if _, _, err := service.Execute(context.Background(), second, operation); err != nil {
+		t.Fatal(err)
+	}
+	if len(executor.records) != 1 {
+		t.Fatalf("memory records = %d, want only the unexpired key", len(executor.records))
 	}
 }
 

@@ -55,7 +55,7 @@ type voiceSessionResult struct {
 	TTSError     string
 }
 
-func qiuqiuReplyData(text, traceID, source, eventID string, presentation relationship.PresentationPlan) map[string]interface{} {
+func qiuqiuReplyData(text, traceID, source, eventID, deliveryKey string, presentation relationship.PresentationPlan) map[string]interface{} {
 	data := map[string]interface{}{
 		"text":    text,
 		"traceId": traceID,
@@ -63,6 +63,9 @@ func qiuqiuReplyData(text, traceID, source, eventID string, presentation relatio
 	}
 	if eventID != "" {
 		data["eventId"] = eventID
+	}
+	if deliveryKey != "" {
+		data["deliveryKey"] = deliveryKey
 	}
 	if presentation.Expression != "" || presentation.Motion != "" || presentation.VoiceStyle != "" {
 		data["presentation"] = presentation
@@ -143,7 +146,7 @@ func main() {
 	}
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	defer outboxCancel()
-	if runner, ok := matchStore.(interface{ RunOutbox(context.Context) }); ok {
+	if runner, ok := matchStore.(matchstate.OutboxRunner); ok {
 		go runner.RunOutbox(outboxCtx)
 	}
 	var privacyStore privacy.Store = privacy.NewMemoryStore()
@@ -283,11 +286,23 @@ func main() {
 			"data": matchStore.PublicSnapshot(matchIDStr),
 		})
 		go func() {
+			deliveredEventKeys := make(map[string]struct{})
+			deliveredEventOrder := make([]string, 0, 512)
 			for {
 				select {
 				case <-connectionCtx.Done():
 					return
 				case ev := <-matchEvents:
+					eventKey := matchstate.DeliveryKey(ev)
+					if _, duplicate := deliveredEventKeys[eventKey]; duplicate {
+						continue
+					}
+					deliveredEventKeys[eventKey] = struct{}{}
+					deliveredEventOrder = append(deliveredEventOrder, eventKey)
+					if len(deliveredEventOrder) > 512 {
+						delete(deliveredEventKeys, deliveredEventOrder[0])
+						deliveredEventOrder = deliveredEventOrder[1:]
+					}
 					snapshot := matchStore.PublicSnapshot(matchIDStr)
 					if !matchstate.IsPublicFact(ev) {
 						writer.SendJSON(map[string]interface{}{
@@ -297,9 +312,10 @@ func main() {
 						continue
 					}
 					writer.SendJSON(map[string]interface{}{
-						"type":     "match_event",
-						"data":     ev,
-						"snapshot": snapshot,
+						"type":        "match_event",
+						"data":        ev,
+						"snapshot":    snapshot,
+						"deliveryKey": eventKey,
 					})
 					if ev.Visibility == "public" && ev.Status == "active" {
 						userID := identity.Get()
@@ -332,18 +348,19 @@ func main() {
 						}
 						if response.Presentation.Expression != "" {
 							writer.SendJSON(map[string]interface{}{
-								"type":    "presentation",
-								"data":    response.Presentation,
-								"eventId": ev.ID,
-								"source":  "match_reaction",
+								"type":        "presentation",
+								"data":        response.Presentation,
+								"eventId":     ev.ID,
+								"deliveryKey": eventKey,
+								"source":      "match_reaction",
 							})
 						}
 						if strings.TrimSpace(response.Reply) == "" {
 							continue
 						}
 						urgency, ttl := proactiveSchedule(response.Decision, ev.EventType)
-						conversationScheduler.SubmitProactive(ev.ID, urgency, ttl, func(replyCtx context.Context, playback conversation.Playback) {
-							emitProactiveResponse(replyCtx, writer, companionAgent, ttsClient, playback, response, ev.ID)
+						conversationScheduler.SubmitProactive(eventKey, urgency, ttl, func(replyCtx context.Context, playback conversation.Playback) {
+							emitProactiveResponse(replyCtx, writer, companionAgent, ttsClient, playback, response, ev.ID, eventKey)
 						})
 					}
 				}
@@ -490,7 +507,7 @@ func main() {
 						if err := writer.SendJSON(map[string]interface{}{
 							"type":  "event",
 							"event": "qiuqiu_reply",
-							"data":  qiuqiuReplyData(result.Reply, result.Trace.ID, "conversation", "", result.Presentation),
+							"data":  qiuqiuReplyData(result.Reply, result.Trace.ID, "conversation", "", "", result.Presentation),
 						}); err != nil {
 							deliveryTracker.Remove(result.Trace.ID)
 							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -1112,14 +1129,14 @@ func recordVoiceTTS(ctx context.Context, agent *companion.Agent, result voiceSes
 	}
 }
 
-func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ProactiveResponse, eventID string) {
+func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ProactiveResponse, eventID, deliveryKey string) {
 	if !replyContextActive(ctx) {
 		return
 	}
 	if err := writer.SendJSON(map[string]interface{}{
 		"type":  "event",
 		"event": "qiuqiu_reply",
-		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "match_reaction", eventID, response.Presentation),
+		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "match_reaction", eventID, deliveryKey, response.Presentation),
 	}); err != nil {
 		return
 	}
@@ -1154,7 +1171,15 @@ func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *compani
 	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
 	_ = agent.UpdateTrace(ctx, trace)
 	playback(response.Trace.ID)
-	writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": trace.Voice.TTSMime, "traceId": response.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
+	writer.SendAudio(map[string]interface{}{
+		"type":        "voice_audio",
+		"mime":        trace.Voice.TTSMime,
+		"traceId":     response.Trace.ID,
+		"byteLength":  len(ttsResult.AudioData),
+		"eventId":     eventID,
+		"deliveryKey": deliveryKey,
+		"source":      "match_reaction",
+	}, ttsResult.AudioData)
 }
 
 func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, matchID, userID, nickname, favoriteTeam, signalID string) {
@@ -1183,7 +1208,7 @@ func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Ag
 	if err := writer.SendJSON(map[string]interface{}{
 		"type":  "event",
 		"event": "qiuqiu_reply",
-		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "first_meeting", "", response.Presentation),
+		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "first_meeting", "", "", response.Presentation),
 	}); err != nil {
 		return
 	}

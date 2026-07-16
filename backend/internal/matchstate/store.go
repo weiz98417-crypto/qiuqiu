@@ -129,6 +129,10 @@ type MatchEvent struct {
 	PublicAt          string         `json:"publicAt,omitempty"`
 }
 
+func DeliveryKey(event MatchEvent) string {
+	return fmt.Sprintf("%s:%d:%s", event.ID, event.FactRevision, event.FactStatus)
+}
+
 type Snapshot struct {
 	MatchID               string         `json:"matchId"`
 	HomeTeam              string         `json:"homeTeam"`
@@ -170,6 +174,10 @@ type OperatorTransactionRepository interface {
 	ConfirmFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
 	RevokeFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
 	ReconcileFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
+}
+
+type OutboxRunner interface {
+	RunOutbox(context.Context)
 }
 
 type Store struct {
