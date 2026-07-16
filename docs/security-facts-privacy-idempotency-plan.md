@@ -193,7 +193,7 @@ DELETE /api/me/data
 
 - `GET /api/me/export` 返回当前用户的结构化 JSON，包括会话、偏好和关系记忆；不导出内部密钥、其他用户数据或运营令牌。
 - `DELETE /api/me/data` 必须幂等，删除对话、转写、Trace、关系记忆和设备会话。
-- 删除任务异步执行，返回 `jobId`，可通过隐私状态接口查询进度。
+- 删除任务异步执行，返回随机不可猜测的 `jobId`；会话被删除后，客户端可用 `jobId` 查询隐私状态，不返回用户 ID。
 - 删除完成后写入不可逆的删除审计记录，但不保留被删除正文。
 
 ### 6.3 清理与防回写
@@ -312,7 +312,7 @@ outbox_messages
   status, attempts, next_attempt_at, published_at
 
 privacy_tombstones
-  user_id, requested_at, completed_at, scope, reason
+  user_id, job_id, requested_at, completed_at, updated_at, scope, reason, status, error
 ```
 
 关键约束：

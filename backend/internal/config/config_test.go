@@ -71,3 +71,13 @@ func TestLoadReadsAPISportsKey(t *testing.T) {
 		t.Fatalf("APISportsAPIKey = %q, want configured key", got)
 	}
 }
+
+func TestLoadReadsPrivacyRetentionDays(t *testing.T) {
+	t.Setenv("PRIVACY_RETENTION_DAYS", "45")
+	if got := Load().PrivacyRetentionDays; got != 45 {
+		t.Fatalf("PrivacyRetentionDays = %d, want 45", got)
+	}
+	if err := (&Config{PrivacyRetentionDays: -1}).Validate(); err == nil {
+		t.Fatal("negative privacy retention should fail validation")
+	}
+}

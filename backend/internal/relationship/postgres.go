@@ -6,6 +6,8 @@ import (
 	"errors"
 	"fmt"
 
+	"qiuqiu/internal/privacy"
+
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
@@ -49,6 +51,9 @@ func (r *PostgresRepository) ResetMatch(matchID string) error {
 }
 
 func (r *PostgresRepository) Load(ctx context.Context, userID, matchID string) (StateBundle, error) {
+	if err := privacy.CheckDeletion(ctx, r.pool, userID); err != nil {
+		return StateBundle{}, err
+	}
 	relationshipState := RelationshipState{UserID: userID, Stage: StageFirstMeeting}
 	var relationshipJSON []byte
 	var relationshipVersion int64
@@ -56,6 +61,7 @@ func (r *PostgresRepository) Load(ctx context.Context, userID, matchID string) (
 		SELECT state, version
 		FROM relationship_states
 		WHERE user_id = $1
+		  AND deleted_at IS NULL
 	`, userID).Scan(&relationshipJSON, &relationshipVersion)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return StateBundle{}, err
@@ -77,6 +83,7 @@ func (r *PostgresRepository) Load(ctx context.Context, userID, matchID string) (
 		SELECT state, version
 		FROM match_companion_states
 		WHERE user_id = $1 AND match_id = $2
+		  AND deleted_at IS NULL
 	`, userID, matchID).Scan(&matchJSON, &matchVersion)
 	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
 		return StateBundle{}, err
@@ -92,7 +99,8 @@ func (r *PostgresRepository) Load(ctx context.Context, userID, matchID string) (
 		SELECT id, user_id, match_id, kind, payload, confidence, source_trace_id, status,
 		       created_at, last_used_at, expires_at, pending_decision_ids
 		FROM relationship_memories
-		WHERE user_id = $1
+		WHERE user_id = $1 AND deleted_at IS NULL
+		  AND (expires_at IS NULL OR expires_at > now())
 		ORDER BY created_at DESC
 		LIMIT 128
 	`, userID)
@@ -125,6 +133,12 @@ func (r *PostgresRepository) CompareAndSwap(ctx context.Context, expected Expect
 	}
 	defer tx.Rollback(ctx)
 	if _, err := tx.Exec(ctx, `SELECT pg_advisory_xact_lock(hashtextextended($1, 0))`, update.Relationship.UserID); err != nil {
+		return err
+	}
+	if err := privacy.LockUserTx(ctx, tx, update.Relationship.UserID); err != nil {
+		return err
+	}
+	if err := privacy.CheckDeletionTx(ctx, tx, update.Relationship.UserID); err != nil {
 		return err
 	}
 

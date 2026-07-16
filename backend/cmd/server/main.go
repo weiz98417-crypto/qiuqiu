@@ -26,6 +26,7 @@ import (
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/pipeline"
+	"qiuqiu/internal/privacy"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 	"qiuqiu/internal/ws"
@@ -91,6 +92,7 @@ func main() {
 	if err := cfg.Validate(); err != nil {
 		log.Fatal(err)
 	}
+	privacy.SetRetentionDays(cfg.PrivacyRetentionDays)
 
 	// Prompt manager
 	promptMgr := pipeline.NewPromptManager()
@@ -138,6 +140,23 @@ func main() {
 	} else {
 		log.Printf("match store: memory")
 	}
+	var privacyStore privacy.Store = privacy.NewMemoryStore()
+	var privacyStoreCloser func()
+	if cfg.DatabaseURL != "" {
+		postgresPrivacyStore, err := privacy.OpenPostgresStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres privacy store: %v", err)
+		}
+		privacyStore = postgresPrivacyStore
+		privacyStoreCloser = postgresPrivacyStore.Close
+	}
+	if privacyStoreCloser != nil {
+		defer privacyStoreCloser()
+	}
+	privacyService := privacy.NewService(privacyStore)
+	cleanupCtx, cleanupCancel := context.WithCancel(context.Background())
+	defer cleanupCancel()
+	go runPrivacyCleanup(cleanupCtx, privacyService)
 	var sportsClient datasource.EventsClient
 	if cfg.APISportsAPIKey != "" {
 		sportsClient = datasource.NewClient(cfg.APISportsAPIKey)
@@ -179,6 +198,7 @@ func main() {
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
+	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
 	mux.HandleFunc("/api/matches/", handleMatchAPIWithSources(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
@@ -572,6 +592,27 @@ func newHTTPServer(addr string, handler http.Handler) *http.Server {
 		ReadHeaderTimeout: 10 * time.Second,
 		IdleTimeout:       2 * time.Minute,
 		MaxHeaderBytes:    1 << 20,
+	}
+}
+
+func runPrivacyCleanup(ctx context.Context, service *privacy.Service) {
+	cleanup := func() {
+		cleanupCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if err := service.CleanupExpired(cleanupCtx); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("privacy cleanup error: %v", err)
+		}
+	}
+	cleanup()
+	ticker := time.NewTicker(6 * time.Hour)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			cleanup()
+		}
 	}
 }
 
@@ -1259,7 +1300,7 @@ func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool 
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 	}
-	w.Header().Set("Access-Control-Allow-Methods", "GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization")
 	return true
 }

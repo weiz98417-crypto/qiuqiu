@@ -11,19 +11,20 @@ import (
 )
 
 type Config struct {
-	Port              string
-	Environment       string
-	AppToken          string
-	AuthMode          string
-	SessionSigningKey string
-	AllowedOrigins    []string
-	DatabaseURL       string
-	RedisAddr         string
-	MiMoAPIKey        string
-	MiMoBaseURL       string
-	MiMoModel         string
-	MiMoVoice         string
-	APISportsAPIKey   string
+	Port                 string
+	Environment          string
+	AppToken             string
+	AuthMode             string
+	SessionSigningKey    string
+	AllowedOrigins       []string
+	DatabaseURL          string
+	RedisAddr            string
+	MiMoAPIKey           string
+	MiMoBaseURL          string
+	MiMoModel            string
+	MiMoVoice            string
+	APISportsAPIKey      string
+	PrivacyRetentionDays int
 }
 
 func Load() *Config {
@@ -41,19 +42,20 @@ func Load() *Config {
 		sessionSigningKey = developmentSessionSigningKey()
 	}
 	return &Config{
-		Port:              getEnv("PORT", "8080"),
-		Environment:       environment,
-		AppToken:          strings.TrimSpace(os.Getenv("APP_TOKEN")),
-		AuthMode:          authMode,
-		SessionSigningKey: sessionSigningKey,
-		AllowedOrigins:    splitCSV(os.Getenv("ALLOWED_ORIGINS")),
-		DatabaseURL:       getEnv("DATABASE_URL", ""),
-		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
-		MiMoAPIKey:        getEnv("MIMO_API_KEY", ""),
-		MiMoBaseURL:       getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-		MiMoModel:         getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
-		MiMoVoice:         getEnv("MIMO_VOICE", "Chloe"),
-		APISportsAPIKey:   strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		Port:                 getEnv("PORT", "8080"),
+		Environment:          environment,
+		AppToken:             strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		AuthMode:             authMode,
+		SessionSigningKey:    sessionSigningKey,
+		AllowedOrigins:       splitCSV(os.Getenv("ALLOWED_ORIGINS")),
+		DatabaseURL:          getEnv("DATABASE_URL", ""),
+		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
+		MiMoAPIKey:           getEnv("MIMO_API_KEY", ""),
+		MiMoBaseURL:          getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		MiMoModel:            getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		MiMoVoice:            getEnv("MIMO_VOICE", "Chloe"),
+		APISportsAPIKey:      strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		PrivacyRetentionDays: getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 	}
 }
 
@@ -78,6 +80,12 @@ func (c *Config) MaxConnsPerIP() int {
 }
 
 func (c *Config) Validate() error {
+	if c.PrivacyRetentionDays == 0 {
+		c.PrivacyRetentionDays = 30
+	}
+	if c.PrivacyRetentionDays < 0 {
+		return fmt.Errorf("PRIVACY_RETENTION_DAYS must be greater than zero")
+	}
 	if strings.EqualFold(c.Environment, "production") {
 		if strings.TrimSpace(c.AppToken) == "" {
 			return fmt.Errorf("APP_TOKEN is required when APP_ENV=production")
