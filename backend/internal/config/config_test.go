@@ -26,7 +26,7 @@ func TestAuthModeDefaultsAndProductionRequirement(t *testing.T) {
 		t.Fatalf("development auth defaults = mode %q required=%v", development.AuthMode, development.SessionAuthRequired())
 	}
 
-	production := &Config{Environment: "production", AuthMode: "session"}
+	production := &Config{Environment: "production", AuthMode: "dual"}
 	if production.LegacyAuthAllowed() || !production.SessionAuthRequired() {
 		t.Fatal("production session mode should reject legacy auth")
 	}

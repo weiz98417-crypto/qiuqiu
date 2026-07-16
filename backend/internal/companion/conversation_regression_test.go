@@ -6,6 +6,7 @@ import (
 	"testing"
 
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/relationship"
 )
 
 func TestDirectorGoalQuestionsUseRecentMatchFacts(t *testing.T) {
@@ -30,6 +31,30 @@ func TestDirectorGoalQuestionsUseRecentMatchFacts(t *testing.T) {
 	}
 	if len(ids) != 1 || ids[0] != "evt-goal" {
 		t.Fatalf("retrieved ids = %v, want latest goal", ids)
+	}
+}
+
+func TestDisbeliefReactionGetsARealConversationTurn(t *testing.T) {
+	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithDirector(
+		relationship.NewDirector(relationship.NewMemoryRepository()),
+	)
+	response, err := agent.HandleMessage(context.Background(), MessageRequest{
+		SignalID: "disbelief-turn-1",
+		MatchID:  "match-disbelief",
+		UserID:   "user-1",
+		Text:     "真的假的",
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage: %v", err)
+	}
+	if response.Intent != IntentEmotionReaction {
+		t.Fatalf("intent = %q, want %q", response.Intent, IntentEmotionReaction)
+	}
+	if response.Reply == "嗯，我在。" {
+		t.Fatal("disbelief reaction fell back to presence acknowledgement")
+	}
+	if !strings.Contains(response.Reply, "真的假的") || !strings.Contains(response.Reply, "刚刚") {
+		t.Fatalf("reply = %q, want disbelief acknowledgement with a contextual follow-up", response.Reply)
 	}
 }
 

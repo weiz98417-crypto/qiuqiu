@@ -1,5 +1,6 @@
 import 'dart:convert';
 
+import 'package:flutter_secure_storage/flutter_secure_storage.dart';
 import 'package:http/http.dart' as http;
 import 'package:shared_preferences/shared_preferences.dart';
 
@@ -47,8 +48,11 @@ class SessionService {
   static const _expiresAtKey = 'session_expires_at';
 
   final http.Client _client;
+  final SessionSecretStore _secretStorage;
 
-  SessionService({http.Client? client}) : _client = client ?? http.Client();
+  SessionService({http.Client? client, SessionSecretStore? secretStorage})
+      : _client = client ?? http.Client(),
+        _secretStorage = secretStorage ?? FlutterSessionSecretStore();
 
   Future<SessionCredentials> ensureSession({
     required String baseUrl,
@@ -58,7 +62,11 @@ class SessionService {
     if (stored != null && stored.refreshToken.isNotEmpty) {
       try {
         return await _refresh(baseUrl, stored.refreshToken);
-      } catch (_) {
+      } catch (error) {
+        if (error is SessionException && error.statusCode == 401) {
+          await _clear();
+          return _anonymous(baseUrl, deviceId);
+        }
         if (stored.isUsable) return stored;
       }
     }
@@ -97,7 +105,10 @@ class SessionService {
         )
         .timeout(const Duration(seconds: 10));
     if (response.statusCode < 200 || response.statusCode >= 300) {
-      throw SessionException('session request failed: ${response.statusCode}');
+      throw SessionException(
+        'session request failed: ${response.statusCode}',
+        statusCode: response.statusCode,
+      );
     }
     final decoded = jsonDecode(response.body);
     if (decoded is! Map<String, dynamic>) {
@@ -114,11 +125,13 @@ class SessionService {
   Future<SessionCredentials?> _load() async {
     final prefs = await SharedPreferences.getInstance();
     final expiresAt = DateTime.tryParse(prefs.getString(_expiresAtKey) ?? '');
+    final storedAccess = await _readSecret(_accessTokenKey, prefs);
+    final storedRefresh = await _readSecret(_refreshTokenKey, prefs);
     final credentials = SessionCredentials(
       userId: prefs.getString(_userIdKey) ?? '',
       sessionId: prefs.getString(_sessionIdKey) ?? '',
-      accessToken: prefs.getString(_accessTokenKey) ?? '',
-      refreshToken: prefs.getString(_refreshTokenKey) ?? '',
+      accessToken: storedAccess,
+      refreshToken: storedRefresh,
       expiresAt: expiresAt?.toUtc() ??
           DateTime.fromMillisecondsSinceEpoch(0, isUtc: true),
     );
@@ -132,10 +145,34 @@ class SessionService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_userIdKey, credentials.userId);
     await prefs.setString(_sessionIdKey, credentials.sessionId);
-    await prefs.setString(_accessTokenKey, credentials.accessToken);
-    await prefs.setString(_refreshTokenKey, credentials.refreshToken);
+    await _secretStorage.write(_accessTokenKey, credentials.accessToken);
+    await _secretStorage.write(_refreshTokenKey, credentials.refreshToken);
+    await prefs.remove(_accessTokenKey);
+    await prefs.remove(_refreshTokenKey);
     await prefs.setString(
         _expiresAtKey, credentials.expiresAt.toIso8601String());
+  }
+
+  Future<String> _readSecret(String key, SharedPreferences prefs) async {
+    final secureValue = await _secretStorage.read(key);
+    if (secureValue != null && secureValue.isNotEmpty) return secureValue;
+    final legacyValue = prefs.getString(key) ?? '';
+    if (legacyValue.isNotEmpty) {
+      await _secretStorage.write(key, legacyValue);
+      await prefs.remove(key);
+    }
+    return legacyValue;
+  }
+
+  Future<void> _clear() async {
+    final prefs = await SharedPreferences.getInstance();
+    await _secretStorage.delete(_accessTokenKey);
+    await _secretStorage.delete(_refreshTokenKey);
+    await prefs.remove(_userIdKey);
+    await prefs.remove(_sessionIdKey);
+    await prefs.remove(_expiresAtKey);
+    await prefs.remove(_accessTokenKey);
+    await prefs.remove(_refreshTokenKey);
   }
 
   void close() {
@@ -158,9 +195,32 @@ String normalizeAPIBaseURL(String value) {
 
 class SessionException implements Exception {
   final String message;
+  final int? statusCode;
 
-  const SessionException(this.message);
+  const SessionException(this.message, {this.statusCode});
 
   @override
   String toString() => message;
+}
+
+abstract interface class SessionSecretStore {
+  Future<String?> read(String key);
+
+  Future<void> write(String key, String value);
+
+  Future<void> delete(String key);
+}
+
+class FlutterSessionSecretStore implements SessionSecretStore {
+  static const _storage = FlutterSecureStorage();
+
+  @override
+  Future<String?> read(String key) => _storage.read(key: key);
+
+  @override
+  Future<void> write(String key, String value) =>
+      _storage.write(key: key, value: value);
+
+  @override
+  Future<void> delete(String key) => _storage.delete(key: key);
 }

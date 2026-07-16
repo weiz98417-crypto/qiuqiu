@@ -1,6 +1,8 @@
 package config
 
 import (
+	"crypto/rand"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
@@ -36,7 +38,7 @@ func Load() *Config {
 	}
 	sessionSigningKey := strings.TrimSpace(os.Getenv("SESSION_SIGNING_KEY"))
 	if sessionSigningKey == "" && !strings.EqualFold(environment, "production") {
-		sessionSigningKey = "qiuqiu-development-session-signing-key-rotate-me"
+		sessionSigningKey = developmentSessionSigningKey()
 	}
 	return &Config{
 		Port:              getEnv("PORT", "8080"),
@@ -94,16 +96,30 @@ func (c *Config) Validate() error {
 }
 
 func (c *Config) SessionAuthRequired() bool {
+	if strings.EqualFold(c.Environment, "production") {
+		return true
+	}
 	mode := strings.ToLower(strings.TrimSpace(c.AuthMode))
-	return mode == "session" || (mode == "" && strings.EqualFold(c.Environment, "production"))
+	return mode == "session"
 }
 
 func (c *Config) LegacyAuthAllowed() bool {
+	if strings.EqualFold(c.Environment, "production") {
+		return false
+	}
 	mode := strings.ToLower(strings.TrimSpace(c.AuthMode))
 	if mode == "legacy" || mode == "dual" {
 		return true
 	}
-	return mode == "" && !strings.EqualFold(c.Environment, "production")
+	return mode == ""
+}
+
+func developmentSessionSigningKey() string {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err == nil {
+		return base64.RawURLEncoding.EncodeToString(key)
+	}
+	return ""
 }
 
 func (c *Config) OriginAllowed(origin string) bool {

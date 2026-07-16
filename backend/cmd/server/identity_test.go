@@ -22,17 +22,20 @@ func TestStableUserIDNeverFallsBackToRemoteAddress(t *testing.T) {
 func TestConnectionUserIDOnlyAcceptsMessageIdentityInLegacyMode(t *testing.T) {
 	requested := "anon_12345678-1234-4123-8123-123456789abc"
 	secure := newConnectionIdentity("")
-	if got := connectionUserID(secure, &config.Config{Environment: "production", AuthMode: "session"}, requested); got != "" {
+	if got, ok := connectionUserID(secure, &config.Config{Environment: "production", AuthMode: "session"}, requested); got != "" || !ok {
 		t.Fatalf("session mode accepted client identity %q", got)
 	}
 
 	legacy := newConnectionIdentity("")
-	if got := connectionUserID(legacy, &config.Config{Environment: "development", AuthMode: "dual"}, requested); got != requested {
+	if got, ok := connectionUserID(legacy, &config.Config{Environment: "development", AuthMode: "dual"}, requested); got != requested || !ok {
 		t.Fatalf("dual mode compatibility identity = %q", got)
 	}
 
 	bound := newConnectionIdentity("usr_server_bound")
-	if got := connectionUserID(bound, &config.Config{Environment: "production", AuthMode: "session"}, requested); got != "usr_server_bound" {
+	if got, ok := connectionUserID(bound, &config.Config{Environment: "production", AuthMode: "session"}, requested); got != "" || ok {
+		t.Fatalf("server-bound identity accepted mismatch: got=%q ok=%v", got, ok)
+	}
+	if got, ok := connectionUserID(bound, &config.Config{Environment: "production", AuthMode: "session"}, "usr_server_bound"); got != "usr_server_bound" || !ok {
 		t.Fatalf("server-bound identity changed to %q", got)
 	}
 }

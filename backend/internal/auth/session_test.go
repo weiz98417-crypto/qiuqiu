@@ -68,6 +68,9 @@ func TestRefreshTokenRotatesAndCannotBeReused(t *testing.T) {
 	if _, err := manager.Authenticate(context.Background(), rotated.AccessToken); !errors.Is(err, ErrRevoked) {
 		t.Fatalf("revoked access token error = %v", err)
 	}
+	if err := manager.ValidateClaims(context.Background(), rotated.Claims); !errors.Is(err, ErrRevoked) {
+		t.Fatalf("revoked claims validation error = %v", err)
+	}
 }
 
 func TestBearerTokenParserDoesNotAcceptOtherSchemes(t *testing.T) {

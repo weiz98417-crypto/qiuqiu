@@ -41,7 +41,11 @@ void main() {
         headers: {'content-type': 'application/json'},
       );
     });
-    final service = SessionService(client: client);
+    final secretStorage = MemorySessionSecretStore();
+    final service = SessionService(
+      client: client,
+      secretStorage: secretStorage,
+    );
 
     final credentials = await service.ensureSession(
       baseUrl: 'ws://127.0.0.1:8080/ws/match/test',
@@ -51,7 +55,8 @@ void main() {
     expect(requestCount, 1);
     expect(credentials.userId, 'usr_server');
     final prefs = await SharedPreferences.getInstance();
-    expect(prefs.getString('session_access_token'), 'access_token');
+    expect(secretStorage.values['session_access_token'], 'access_token');
+    expect(prefs.getString('session_access_token'), isNull);
   });
 
   test('uses the server user id instead of a client supplied identity', () {
@@ -68,4 +73,62 @@ void main() {
 
     expect(credentials.userId, 'usr_server_bound');
   });
+
+  test('discarded sessions are replaced after refresh returns unauthorized',
+      () async {
+    SharedPreferences.setMockInitialValues({
+      'session_access_token': 'old_access',
+      'session_refresh_token': 'old_refresh',
+      'session_user_id': 'usr_old',
+      'session_id': 'ses_old',
+      'session_expires_at': DateTime.now()
+          .toUtc()
+          .add(const Duration(minutes: 15))
+          .toIso8601String(),
+    });
+    final client = MockClient((request) async {
+      if (request.url.path == '/api/sessions/refresh') {
+        return http.Response('unauthorized', 401);
+      }
+      return http.Response(
+        jsonEncode({
+          'userId': 'usr_new',
+          'sessionId': 'ses_new',
+          'accessToken': 'new_access',
+          'refreshToken': 'new_refresh',
+          'expiresAt': DateTime.now()
+              .toUtc()
+              .add(const Duration(minutes: 15))
+              .toIso8601String(),
+        }),
+        201,
+      );
+    });
+    final credentials = await SessionService(
+      client: client,
+      secretStorage: MemorySessionSecretStore({
+        'session_access_token': 'old_access',
+        'session_refresh_token': 'old_refresh',
+      }),
+    ).ensureSession(baseUrl: 'https://qiuqiu.example', deviceId: 'device_123');
+
+    expect(credentials.userId, 'usr_new');
+    expect(credentials.accessToken, 'new_access');
+  });
+}
+
+class MemorySessionSecretStore implements SessionSecretStore {
+  final Map<String, String> values;
+
+  MemorySessionSecretStore([Map<String, String>? values])
+      : values = values ?? <String, String>{};
+
+  @override
+  Future<String?> read(String key) async => values[key];
+
+  @override
+  Future<void> write(String key, String value) async => values[key] = value;
+
+  @override
+  Future<void> delete(String key) async => values.remove(key);
 }

@@ -324,13 +324,22 @@ func main() {
 				case "ping":
 					writer.SendJSON(map[string]string{"type": "pong"})
 				case "identify":
+					requested := strings.TrimSpace(str(req, "userId"))
+					if cfg.SessionAuthRequired() && requested != "" && requested != identity.Get() {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "user identity does not match session"})
+						return
+					}
 					if cfg.LegacyAuthAllowed() {
 						identity.Set(str(req, "userId"))
 					}
 				case "user_activity":
 					userSpeaking.Store(str(req, "state") == "speaking")
 				case "session_opened":
-					userID := connectionUserID(identity, cfg, str(req, "userId"))
+					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
+					if !identityMatches {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "user identity does not match session"})
+						return
+					}
 					if userID == "" {
 						continue
 					}
@@ -339,7 +348,11 @@ func main() {
 					}
 
 				case "first_meeting":
-					userID := connectionUserID(identity, cfg, str(req, "userId"))
+					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
+					if !identityMatches {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "user identity does not match session"})
+						return
+					}
 					if userID == "" {
 						continue
 					}
@@ -372,7 +385,11 @@ func main() {
 				case "user_speech":
 					text := str(req, "text")
 					audioB64 := str(req, "audio")
-					userID := connectionUserID(identity, cfg, str(req, "userId"))
+					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
+					if !identityMatches {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "user identity does not match session"})
+						return
+					}
 					if userID == "" {
 						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": "identity required"})
 						continue
@@ -505,6 +522,13 @@ func main() {
 			case <-connectionCtx.Done():
 				return
 			case <-ticker.C:
+				if claims.Subject != "" {
+					if err := sessionManager.ValidateClaims(connectionCtx, claims); err != nil {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "session expired or revoked"})
+						connectionCancel()
+						return
+					}
+				}
 				if err := writer.Ping(); err != nil {
 					connectionCancel()
 					return
@@ -747,7 +771,8 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				"trace": trace,
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
+			operator, authorized := operatorClaims(r, cfg)
+			if !authorized {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -756,6 +781,7 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
+			ev.OperatorID = operator.Subject
 			markProactiveMode(&ev)
 			var created matchstate.MatchEvent
 			var snapshot matchstate.Snapshot
@@ -778,7 +804,8 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 4 && parts[3] == "correct":
-			if !validAPIToken(r, cfg) {
+			operator, authorized := operatorClaims(r, cfg)
+			if !authorized {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -787,6 +814,7 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
+			ev.OperatorID = operator.Subject
 			markProactiveMode(&ev)
 			corrected, snapshot, err := store.Correct(matchID, parts[2], ev)
 			if err != nil {
@@ -1136,18 +1164,38 @@ func nonEmptyVoiceMeta(meta *companion.VoiceTraceMetadata) *companion.VoiceTrace
 }
 
 func validAPIToken(r *http.Request, cfg *config.Config) bool {
-	if cfg.AppToken == "" {
-		return true
+	_, ok := operatorClaims(r, cfg)
+	return ok
+}
+
+func operatorClaims(r *http.Request, cfg *config.Config) (auth.Claims, bool) {
+	if cfg == nil {
+		return auth.Claims{}, false
 	}
-	auth := strings.TrimSpace(r.Header.Get("Authorization"))
-	if !strings.HasPrefix(auth, "Bearer ") {
-		return false
+	if cfg.AppToken == "" && !strings.EqualFold(cfg.Environment, "production") {
+		return auth.Claims{
+			Subject: "operator:development",
+			Scopes: []string{
+				auth.ScopeOperatorMatchWrite,
+				auth.ScopeOperatorFactConfirm,
+				auth.ScopeOperatorFactCorrect,
+				auth.ScopeOperatorTraceRead,
+			},
+		}, true
 	}
-	token := strings.TrimSpace(strings.TrimPrefix(auth, "Bearer "))
-	if len(token) != len(cfg.AppToken) {
-		return false
+	token := auth.BearerToken(r.Header.Get("Authorization"))
+	if token == "" || len(token) != len(cfg.AppToken) || subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AppToken)) != 1 {
+		return auth.Claims{}, false
 	}
-	return subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AppToken)) == 1
+	return auth.Claims{
+		Subject: "operator:default",
+		Scopes: []string{
+			auth.ScopeOperatorMatchWrite,
+			auth.ScopeOperatorFactConfirm,
+			auth.ScopeOperatorFactCorrect,
+			auth.ScopeOperatorTraceRead,
+		},
+	}, true
 }
 
 func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool {

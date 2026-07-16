@@ -23,6 +23,9 @@ func TestSessionAPIIssuesRefreshesAndRevokesAnonymousSession(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
 	}
+	if created.Header().Get("Cache-Control") != "no-store" {
+		t.Fatalf("session response cache-control = %q", created.Header().Get("Cache-Control"))
+	}
 	var first map[string]interface{}
 	if err := json.Unmarshal(created.Body.Bytes(), &first); err != nil {
 		t.Fatal(err)

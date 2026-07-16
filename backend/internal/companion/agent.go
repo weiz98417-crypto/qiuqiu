@@ -355,7 +355,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	case IntentControlCommand:
 		reply = "收到，我会少说一点，关键变化再提醒你。"
 	case IntentEmotionReaction:
-		reply = "哈哈我也有点上头，但我会按已经确认的比赛信息来，不乱说。"
+		reply = emotionReactionReply(req.Text)
 	case IntentSmalltalk:
 		reply = "我在，陪你看。你想聊比赛我就跟着场上节奏走，想闲聊也行。"
 	default:
@@ -435,16 +435,7 @@ func reliableFallbackForDecision(input string, intent Intent, original string, d
 		return "这点我记住。你更吃哪一点？"
 	}
 	if intent == IntentEmotionReaction {
-		switch {
-		case containsAny(input, "紧张", "悬", "绷"):
-			return "这一下是真绷着。先看这波。"
-		case containsAny(input, "漂亮", "舒服"):
-			return "嗯，这一下真漂亮。"
-		case containsAny(input, "牛", "太激动", "上头"):
-			return "这下确实顶。"
-		default:
-			return "嗯，这一下有感觉。"
-		}
+		return emotionReactionReply(input)
 	}
 	if intent == IntentSmalltalk {
 		switch {
@@ -459,6 +450,21 @@ func reliableFallbackForDecision(input string, intent Intent, original string, d
 		}
 	}
 	return original
+}
+
+func emotionReactionReply(input string) string {
+	switch {
+	case containsAny(input, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧"):
+		return "真的假的？你是说刚刚那一下吗？"
+	case containsAny(input, "紧张", "悬", "绷"):
+		return "这一下是真绷着。先看这波。"
+	case containsAny(input, "漂亮", "舒服"):
+		return "嗯，这一下真漂亮。"
+	case containsAny(input, "牛", "太激动", "上头"):
+		return "这下确实顶。"
+	default:
+		return "嗯，这一下有感觉。"
+	}
 }
 
 func shouldRealizeUserTurn(intent Intent, decision relationship.Decision) bool {
@@ -801,6 +807,9 @@ func Classify(text string) Intent {
 	}
 	if containsAny(lower, "别说", "少说", "闭嘴", "安静", "别播报") {
 		return IntentControlCommand
+	}
+	if containsAny(lower, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧") {
+		return IntentEmotionReaction
 	}
 	if containsAny(lower, "哈哈", "太激动", "紧张", "舒服", "漂亮", "牛") {
 		return IntentEmotionReaction

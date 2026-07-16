@@ -62,6 +62,11 @@ func (h *Hub) UpgradeWithIdentity(w http.ResponseWriter, r *http.Request) (*webs
 }
 
 func (h *Hub) upgradeWithIdentity(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), auth.Claims, error) {
+	if !h.cfg.OriginAllowedForHost(r.Header.Get("Origin"), r.Host) {
+		http.Error(w, "origin not allowed", http.StatusForbidden)
+		return nil, func() {}, auth.Claims{}, fmt.Errorf("origin not allowed")
+	}
+
 	token, protocol := requestToken(r)
 	claims, sessionAuthenticated := h.authenticateSession(r, token)
 	if h.cfg.SessionAuthRequired() && !sessionAuthenticated {
@@ -72,11 +77,6 @@ func (h *Hub) upgradeWithIdentity(w http.ResponseWriter, r *http.Request) (*webs
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
 		return nil, func() {}, auth.Claims{}, fmt.Errorf("unauthorized")
 	}
-	if !h.cfg.OriginAllowedForHost(r.Header.Get("Origin"), r.Host) {
-		http.Error(w, "origin not allowed", http.StatusForbidden)
-		return nil, func() {}, auth.Claims{}, fmt.Errorf("origin not allowed")
-	}
-
 	clientIP := remoteIP(r.RemoteAddr)
 	h.mu.Lock()
 	if h.ipCounts[clientIP] >= h.cfg.MaxConnsPerIP() {
@@ -140,7 +140,7 @@ func (h *Hub) authenticateSession(r *http.Request, token string) (auth.Claims, b
 		return auth.Claims{}, false
 	}
 	claims, err := h.sessionAuthenticator.Authenticate(r.Context(), token)
-	if err != nil {
+	if err != nil || !claims.HasScope(auth.ScopeUserChat) {
 		return auth.Claims{}, false
 	}
 	return claims, true

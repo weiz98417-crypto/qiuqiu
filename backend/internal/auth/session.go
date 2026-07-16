@@ -158,6 +158,29 @@ func (manager *Manager) Authenticate(ctx context.Context, token string) (Claims,
 	return claims, nil
 }
 
+func (manager *Manager) ValidateClaims(ctx context.Context, claims Claims) error {
+	if claims.Subject == "" || claims.SessionID == "" || claims.DeviceID == "" {
+		return ErrInvalidToken
+	}
+	if !claims.ExpiresAt.After(manager.now()) {
+		return ErrExpiredToken
+	}
+	record, err := manager.store.Get(ctx, claims.SessionID)
+	if err != nil {
+		if errors.Is(err, ErrNotFound) {
+			return ErrInvalidToken
+		}
+		return err
+	}
+	if record.RevokedAt != nil {
+		return ErrRevoked
+	}
+	if !record.ExpiresAt.After(manager.now()) || record.UserID != claims.Subject || record.DeviceID != claims.DeviceID {
+		return ErrInvalidToken
+	}
+	return nil
+}
+
 func (manager *Manager) Refresh(ctx context.Context, refreshToken string) (Session, error) {
 	if strings.TrimSpace(refreshToken) == "" {
 		return Session{}, ErrInvalidToken

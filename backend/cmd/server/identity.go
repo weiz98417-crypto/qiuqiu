@@ -15,14 +15,18 @@ type connectionIdentity struct {
 	once   sync.Once
 }
 
-func connectionUserID(identity *connectionIdentity, cfg *config.Config, requested string) string {
+func connectionUserID(identity *connectionIdentity, cfg *config.Config, requested string) (string, bool) {
 	if current := identity.Get(); current != "" {
-		return current
+		requested = stableUserID(requested, "")
+		if cfg != nil && cfg.SessionAuthRequired() && requested != "" && requested != current {
+			return "", false
+		}
+		return current, true
 	}
 	if cfg != nil && cfg.LegacyAuthAllowed() {
-		return identity.Set(requested)
+		return identity.Set(requested), true
 	}
-	return ""
+	return "", true
 }
 
 func newConnectionIdentity(fallback string) *connectionIdentity {
