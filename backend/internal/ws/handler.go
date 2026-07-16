@@ -1,6 +1,7 @@
 package ws
 
 import (
+	"context"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -13,6 +14,7 @@ import (
 	"sync"
 	"time"
 
+	"qiuqiu/internal/auth"
 	"qiuqiu/internal/config"
 
 	"github.com/gorilla/websocket"
@@ -21,10 +23,15 @@ import (
 const authProtocolPrefix = "qiuqiu-auth."
 
 type Hub struct {
-	cfg      *config.Config
-	mu       sync.Mutex
-	conns    map[*websocket.Conn]string
-	ipCounts map[string]int
+	cfg                  *config.Config
+	sessionAuthenticator sessionAuthenticator
+	mu                   sync.Mutex
+	conns                map[*websocket.Conn]string
+	ipCounts             map[string]int
+}
+
+type sessionAuthenticator interface {
+	Authenticate(context.Context, string) (auth.Claims, error)
 }
 
 func NewHub(cfg *config.Config) *Hub {
@@ -35,20 +42,39 @@ func NewHub(cfg *config.Config) *Hub {
 	}
 }
 
+func (h *Hub) WithSessionAuthenticator(authenticator sessionAuthenticator) *Hub {
+	h.sessionAuthenticator = authenticator
+	return h
+}
+
 func (h *Hub) HandleHealth(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("ok"))
 }
 
 func (h *Hub) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), error) {
+	conn, release, _, err := h.upgradeWithIdentity(w, r)
+	return conn, release, err
+}
+
+func (h *Hub) UpgradeWithIdentity(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), auth.Claims, error) {
+	return h.upgradeWithIdentity(w, r)
+}
+
+func (h *Hub) upgradeWithIdentity(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), auth.Claims, error) {
 	token, protocol := requestToken(r)
-	if h.cfg.AppToken != "" && !tokenEqual(token, h.cfg.AppToken) && !sameOriginClient(r) {
+	claims, sessionAuthenticated := h.authenticateSession(r, token)
+	if h.cfg.SessionAuthRequired() && !sessionAuthenticated {
 		http.Error(w, "unauthorized", http.StatusUnauthorized)
-		return nil, func() {}, fmt.Errorf("unauthorized")
+		return nil, func() {}, auth.Claims{}, fmt.Errorf("unauthorized")
+	}
+	if !sessionAuthenticated && !h.allowLegacyConnection(r, token) {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return nil, func() {}, auth.Claims{}, fmt.Errorf("unauthorized")
 	}
 	if !h.cfg.OriginAllowedForHost(r.Header.Get("Origin"), r.Host) {
 		http.Error(w, "origin not allowed", http.StatusForbidden)
-		return nil, func() {}, fmt.Errorf("origin not allowed")
+		return nil, func() {}, auth.Claims{}, fmt.Errorf("origin not allowed")
 	}
 
 	clientIP := remoteIP(r.RemoteAddr)
@@ -56,7 +82,7 @@ func (h *Hub) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.Conn, 
 	if h.ipCounts[clientIP] >= h.cfg.MaxConnsPerIP() {
 		h.mu.Unlock()
 		http.Error(w, "too many connections", http.StatusTooManyRequests)
-		return nil, func() {}, fmt.Errorf("too many connections")
+		return nil, func() {}, auth.Claims{}, fmt.Errorf("too many connections")
 	}
 	h.ipCounts[clientIP]++
 	h.mu.Unlock()
@@ -84,7 +110,7 @@ func (h *Hub) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.Conn, 
 	conn, err := upgrader.Upgrade(w, r, responseHeader)
 	if err != nil {
 		releaseCount()
-		return nil, func() {}, err
+		return nil, func() {}, auth.Claims{}, err
 	}
 
 	conn.SetReadLimit(h.cfg.WSReadLimit())
@@ -106,7 +132,31 @@ func (h *Hub) Upgrade(w http.ResponseWriter, r *http.Request) (*websocket.Conn, 
 			releaseCount()
 		})
 	}
-	return conn, release, nil
+	return conn, release, claims, nil
+}
+
+func (h *Hub) authenticateSession(r *http.Request, token string) (auth.Claims, bool) {
+	if h.sessionAuthenticator == nil || strings.TrimSpace(token) == "" {
+		return auth.Claims{}, false
+	}
+	claims, err := h.sessionAuthenticator.Authenticate(r.Context(), token)
+	if err != nil {
+		return auth.Claims{}, false
+	}
+	return claims, true
+}
+
+func (h *Hub) allowLegacyConnection(r *http.Request, token string) bool {
+	if !h.cfg.LegacyAuthAllowed() {
+		return false
+	}
+	if token != "" {
+		return h.cfg.AppToken != "" && tokenEqual(token, h.cfg.AppToken)
+	}
+	if strings.EqualFold(h.cfg.Environment, "production") {
+		return false
+	}
+	return h.cfg.AppToken == "" || sameOriginClient(r)
 }
 
 func sameOriginClient(r *http.Request) bool {

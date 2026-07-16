@@ -70,7 +70,8 @@ qiuqiu/
 # 1. 配置环境变量
 cp backend/.env.example .env
 # 编辑 .env 填入:
-#   - APP_TOKEN: 随机生成的服务访问口令（生产环境必填）
+#   - APP_TOKEN: 随机生成的导播台运营口令（生产环境必填）
+#   - SESSION_SIGNING_KEY: 至少 32 位的用户会话签名密钥（生产环境必填）
 #   - ALLOWED_ORIGINS: 用户端和企业控制台的 HTTPS 来源
 #   - POSTGRES_PASSWORD: 独立的数据库强密码
 #   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
@@ -95,11 +96,10 @@ go run ./cmd/server
 cd client
 flutter pub get
 flutter run \
-  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test \
-  --dart-define=QIUQIU_APP_TOKEN=你的服务访问口令
+  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test
 ```
 
-由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。用户端不会显示服务端口令或模型配置；企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
+客户端启动时会向后端申请短期匿名会话，服务端把用户身份绑定在会话令牌上，客户端不再编译服务端口令。由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
 
 ## 对话管道
 

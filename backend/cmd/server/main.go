@@ -18,6 +18,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/asr"
+	"qiuqiu/internal/auth"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
@@ -107,7 +108,24 @@ func main() {
 	}
 	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
 
-	hub := ws.NewHub(cfg)
+	var sessionStore auth.Store = auth.NewMemoryStore()
+	var sessionStoreCloser func()
+	if cfg.DatabaseURL != "" {
+		postgresSessionStore, err := auth.OpenPostgresStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres session store: %v", err)
+		}
+		sessionStore = postgresSessionStore
+		sessionStoreCloser = postgresSessionStore.Close
+	}
+	sessionManager, err := auth.NewManager(sessionStore, cfg.SessionSigningKey)
+	if err != nil {
+		log.Fatalf("session manager: %v", err)
+	}
+	if sessionStoreCloser != nil {
+		defer sessionStoreCloser()
+	}
+	hub := ws.NewHub(cfg).WithSessionAuthenticator(sessionManager)
 	var matchStore matchstate.Repository = matchstate.NewStore()
 	if cfg.DatabaseURL != "" {
 		postgresStore, err := matchstate.OpenPostgresStore(context.Background(), cfg.DatabaseURL, "migrations")
@@ -160,6 +178,7 @@ func main() {
 
 	mux := http.NewServeMux()
 	mux.HandleFunc("/health", hub.HandleHealth)
+	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/matches/", handleMatchAPIWithSources(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
@@ -193,14 +212,14 @@ func main() {
 	})
 
 	mux.HandleFunc("/ws/match/", func(w http.ResponseWriter, r *http.Request) {
-		conn, release, err := hub.Upgrade(w, r)
+		conn, release, claims, err := hub.UpgradeWithIdentity(w, r)
 		if err != nil {
 			return
 		}
 		defer release()
 		defer conn.Close()
 		writer := &wsWriter{conn: conn}
-		identity := newConnectionIdentity("")
+		identity := newConnectionIdentity(claims.Subject)
 
 		matchIDStr := r.URL.Path[len("/ws/match/"):]
 		matchEvents, unsubscribe := matchStore.Subscribe(matchIDStr)
@@ -305,11 +324,13 @@ func main() {
 				case "ping":
 					writer.SendJSON(map[string]string{"type": "pong"})
 				case "identify":
-					identity.Set(str(req, "userId"))
+					if cfg.LegacyAuthAllowed() {
+						identity.Set(str(req, "userId"))
+					}
 				case "user_activity":
 					userSpeaking.Store(str(req, "state") == "speaking")
 				case "session_opened":
-					userID := identity.Set(str(req, "userId"))
+					userID := connectionUserID(identity, cfg, str(req, "userId"))
 					if userID == "" {
 						continue
 					}
@@ -318,7 +339,7 @@ func main() {
 					}
 
 				case "first_meeting":
-					userID := identity.Set(str(req, "userId"))
+					userID := connectionUserID(identity, cfg, str(req, "userId"))
 					if userID == "" {
 						continue
 					}
@@ -351,7 +372,7 @@ func main() {
 				case "user_speech":
 					text := str(req, "text")
 					audioB64 := str(req, "audio")
-					userID := identity.Set(str(req, "userId"))
+					userID := connectionUserID(identity, cfg, str(req, "userId"))
 					if userID == "" {
 						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": "identity required"})
 						continue

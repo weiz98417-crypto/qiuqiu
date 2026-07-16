@@ -9,32 +9,49 @@ import (
 )
 
 type Config struct {
-	Port            string
-	Environment     string
-	AppToken        string
-	AllowedOrigins  []string
-	DatabaseURL     string
-	RedisAddr       string
-	MiMoAPIKey      string
-	MiMoBaseURL     string
-	MiMoModel       string
-	MiMoVoice       string
-	APISportsAPIKey string
+	Port              string
+	Environment       string
+	AppToken          string
+	AuthMode          string
+	SessionSigningKey string
+	AllowedOrigins    []string
+	DatabaseURL       string
+	RedisAddr         string
+	MiMoAPIKey        string
+	MiMoBaseURL       string
+	MiMoModel         string
+	MiMoVoice         string
+	APISportsAPIKey   string
 }
 
 func Load() *Config {
+	environment := getEnv("APP_ENV", "development")
+	authMode := strings.TrimSpace(os.Getenv("AUTH_MODE"))
+	if authMode == "" {
+		if strings.EqualFold(environment, "production") {
+			authMode = "session"
+		} else {
+			authMode = "dual"
+		}
+	}
+	sessionSigningKey := strings.TrimSpace(os.Getenv("SESSION_SIGNING_KEY"))
+	if sessionSigningKey == "" && !strings.EqualFold(environment, "production") {
+		sessionSigningKey = "qiuqiu-development-session-signing-key-rotate-me"
+	}
 	return &Config{
-		Port:            getEnv("PORT", "8080"),
-		Environment:     getEnv("APP_ENV", "development"),
-		AppToken:        strings.TrimSpace(os.Getenv("APP_TOKEN")),
-		AllowedOrigins:  splitCSV(os.Getenv("ALLOWED_ORIGINS")),
-		DatabaseURL:     getEnv("DATABASE_URL", ""),
-		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
-		MiMoAPIKey:      getEnv("MIMO_API_KEY", ""),
-		MiMoBaseURL:     getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-		MiMoModel:       getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
-		MiMoVoice:       getEnv("MIMO_VOICE", "Chloe"),
-		APISportsAPIKey: strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		Port:              getEnv("PORT", "8080"),
+		Environment:       environment,
+		AppToken:          strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		AuthMode:          authMode,
+		SessionSigningKey: sessionSigningKey,
+		AllowedOrigins:    splitCSV(os.Getenv("ALLOWED_ORIGINS")),
+		DatabaseURL:       getEnv("DATABASE_URL", ""),
+		RedisAddr:         getEnv("REDIS_ADDR", "localhost:6379"),
+		MiMoAPIKey:        getEnv("MIMO_API_KEY", ""),
+		MiMoBaseURL:       getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		MiMoModel:         getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		MiMoVoice:         getEnv("MIMO_VOICE", "Chloe"),
+		APISportsAPIKey:   strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
 	}
 }
 
@@ -66,8 +83,27 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.MiMoAPIKey) == "" {
 			return fmt.Errorf("MIMO_API_KEY is required when APP_ENV=production")
 		}
+		if strings.TrimSpace(c.SessionSigningKey) == "" {
+			return fmt.Errorf("SESSION_SIGNING_KEY is required when APP_ENV=production")
+		}
+		if len(strings.TrimSpace(c.SessionSigningKey)) < 32 {
+			return fmt.Errorf("SESSION_SIGNING_KEY must be at least 32 characters")
+		}
 	}
 	return nil
+}
+
+func (c *Config) SessionAuthRequired() bool {
+	mode := strings.ToLower(strings.TrimSpace(c.AuthMode))
+	return mode == "session" || (mode == "" && strings.EqualFold(c.Environment, "production"))
+}
+
+func (c *Config) LegacyAuthAllowed() bool {
+	mode := strings.ToLower(strings.TrimSpace(c.AuthMode))
+	if mode == "legacy" || mode == "dual" {
+		return true
+	}
+	return mode == "" && !strings.EqualFold(c.Environment, "production")
 }
 
 func (c *Config) OriginAllowed(origin string) bool {

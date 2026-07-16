@@ -9,6 +9,8 @@ services:
       - PORT=8080
       - APP_ENV=production
       - APP_TOKEN=${APP_TOKEN:?APP_TOKEN is required}
+      - AUTH_MODE=session
+      - SESSION_SIGNING_KEY=${SESSION_SIGNING_KEY:?SESSION_SIGNING_KEY is required}
       - ALLOWED_ORIGINS=${ALLOWED_ORIGINS:?ALLOWED_ORIGINS is required}
       - DATABASE_URL=postgres://qiuqiu:${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}@postgres:5432/qiuqiu?sslmode=disable
       - REDIS_ADDR=redis:6379

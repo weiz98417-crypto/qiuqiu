@@ -15,8 +15,8 @@
 
 ## Follow-up implementation
 
-- [ ] 实现会话签发、刷新、撤销和统一身份中间件
-- [ ] 将用户 WebSocket 身份绑定到令牌 `sub`
+- [x] 实现会话签发、刷新、撤销和统一身份中间件
+- [x] 将用户 WebSocket 身份绑定到令牌 `sub`
 - [ ] 将比赛读路径切换到 `PublicFactView`
 - [ ] 实现事实确认、撤销、冲突调和和版本查询
 - [ ] 实现用户导出、删除、清理任务和 tombstone 检查

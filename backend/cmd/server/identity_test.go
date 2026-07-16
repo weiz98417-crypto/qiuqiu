@@ -3,6 +3,8 @@ package main
 import (
 	"context"
 	"testing"
+
+	"qiuqiu/internal/config"
 )
 
 func TestStableUserIDNeverFallsBackToRemoteAddress(t *testing.T) {
@@ -14,6 +16,24 @@ func TestStableUserIDNeverFallsBackToRemoteAddress(t *testing.T) {
 	}
 	if got := stableUserID("anon_12345678-1234-4123-8123-123456789abc", ""); got == "" {
 		t.Fatal("valid anonymous identity was rejected")
+	}
+}
+
+func TestConnectionUserIDOnlyAcceptsMessageIdentityInLegacyMode(t *testing.T) {
+	requested := "anon_12345678-1234-4123-8123-123456789abc"
+	secure := newConnectionIdentity("")
+	if got := connectionUserID(secure, &config.Config{Environment: "production", AuthMode: "session"}, requested); got != "" {
+		t.Fatalf("session mode accepted client identity %q", got)
+	}
+
+	legacy := newConnectionIdentity("")
+	if got := connectionUserID(legacy, &config.Config{Environment: "development", AuthMode: "dual"}, requested); got != requested {
+		t.Fatalf("dual mode compatibility identity = %q", got)
+	}
+
+	bound := newConnectionIdentity("usr_server_bound")
+	if got := connectionUserID(bound, &config.Config{Environment: "production", AuthMode: "session"}, requested); got != "usr_server_bound" {
+		t.Fatalf("server-bound identity changed to %q", got)
 	}
 }
 

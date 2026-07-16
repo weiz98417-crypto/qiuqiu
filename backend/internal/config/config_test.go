@@ -12,8 +12,26 @@ func TestProductionRequiresCredentials(t *testing.T) {
 		t.Fatal("production config without MIMO_API_KEY should fail")
 	}
 	cfg.MiMoAPIKey = "mimo-key"
+	cfg.SessionSigningKey = "production-session-signing-key-0123456789"
 	if err := cfg.Validate(); err != nil {
 		t.Fatalf("production config with credentials should pass: %v", err)
+	}
+}
+
+func TestAuthModeDefaultsAndProductionRequirement(t *testing.T) {
+	t.Setenv("APP_ENV", "development")
+	t.Setenv("AUTH_MODE", "")
+	development := Load()
+	if development.AuthMode != "dual" || development.SessionAuthRequired() {
+		t.Fatalf("development auth defaults = mode %q required=%v", development.AuthMode, development.SessionAuthRequired())
+	}
+
+	production := &Config{Environment: "production", AuthMode: "session"}
+	if production.LegacyAuthAllowed() || !production.SessionAuthRequired() {
+		t.Fatal("production session mode should reject legacy auth")
+	}
+	if err := production.Validate(); err == nil {
+		t.Fatal("production without session signing key should fail")
 	}
 }
 

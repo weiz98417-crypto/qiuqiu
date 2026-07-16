@@ -4,6 +4,8 @@ import (
 	"context"
 	"strings"
 	"sync"
+
+	"qiuqiu/internal/config"
 )
 
 type connectionIdentity struct {
@@ -11,6 +13,16 @@ type connectionIdentity struct {
 	userID string
 	ready  chan struct{}
 	once   sync.Once
+}
+
+func connectionUserID(identity *connectionIdentity, cfg *config.Config, requested string) string {
+	if current := identity.Get(); current != "" {
+		return current
+	}
+	if cfg != nil && cfg.LegacyAuthAllowed() {
+		return identity.Set(requested)
+	}
+	return ""
 }
 
 func newConnectionIdentity(fallback string) *connectionIdentity {

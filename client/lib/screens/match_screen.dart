@@ -8,6 +8,7 @@ import 'package:flutter/material.dart';
 import '../services/audio_player.dart';
 import '../services/preferences_service.dart';
 import '../services/recorder_stub.dart';
+import '../services/session_service.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
@@ -35,11 +36,11 @@ class MatchScreen extends StatefulWidget {
 
 class _MatchScreenState extends State<MatchScreen> {
   static const _configuredSocketUrl = String.fromEnvironment('QIUQIU_WS_URL');
-  static const _configuredToken = String.fromEnvironment('QIUQIU_APP_TOKEN');
 
   final WebSocketService _socket = WebSocketService();
   final AudioPlayerService _audio = AudioPlayerService();
   final PreferencesService _preferences = PreferencesService();
+  final SessionService _sessions = SessionService();
   final VADService _vad = VADService();
   final TextEditingController _textController = TextEditingController();
   final GlobalKey<Live2dViewState> _live2dKey = GlobalKey<Live2dViewState>();
@@ -84,9 +85,8 @@ class _MatchScreenState extends State<MatchScreen> {
   void initState() {
     super.initState();
     _bindServices();
-    _profileLoad = _loadProfile();
+    _profileLoad = _initialize();
     unawaited(_profileLoad);
-    _socket.connect(_socketUrl(), token: _configuredToken);
   }
 
   void _bindServices() {
@@ -115,17 +115,32 @@ class _MatchScreenState extends State<MatchScreen> {
     return 'ws://10.0.2.2:8080/ws/match/test';
   }
 
-  Future<void> _loadProfile() async {
+  Future<void> _initialize() async {
     final profile = await _preferences.load();
-    final userId = await _preferences.loadOrCreateAnonymousUserId();
+    final deviceId = await _preferences.loadOrCreateAnonymousUserId();
     final firstMeetingCompleted = await _preferences.hasCompletedFirstMeeting();
     await _audio.setMuted(!profile.soundEnabled);
     if (!mounted) return;
     setState(() {
       _profile = profile;
-      _userId = userId;
       _firstMeetingCompleted = firstMeetingCompleted;
     });
+    try {
+      final session = await _sessions.ensureSession(
+        baseUrl: normalizeAPIBaseURL(_socketUrl()),
+        deviceId: deviceId,
+      );
+      if (!mounted) return;
+      setState(() => _userId = session.userId);
+      _socket.connect(_socketUrl(), token: session.accessToken);
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _socketStatus = SocketStatus.failed;
+        _phase = ConversationPhase.offline;
+        _notice = '暂时无法建立安全会话，请稍后再试。';
+      });
+    }
   }
 
   void _handleSocketStatus(SocketStatus status) {
@@ -701,6 +716,7 @@ class _MatchScreenState extends State<MatchScreen> {
     _vad.dispose();
     unawaited(_audio.dispose());
     unawaited(_socket.dispose());
+    _sessions.close();
     super.dispose();
   }
 

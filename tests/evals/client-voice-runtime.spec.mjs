@@ -110,7 +110,7 @@ async function waitForDelivery(request, input) {
   await expect
     .poll(async () => {
       const trace = await findTrace(request, input);
-      return trace?.reply || '';
+      return trace?.output || '';
     }, { timeout: 30_000 })
     .not.toBe('');
 }
