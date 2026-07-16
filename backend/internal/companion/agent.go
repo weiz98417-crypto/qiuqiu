@@ -454,7 +454,7 @@ func reliableFallbackForDecision(input string, intent Intent, original string, d
 
 func emotionReactionReply(input string) string {
 	switch {
-	case containsAny(input, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧"):
+	case isDisbeliefReaction(input):
 		return "真的假的？你是说刚刚那一下吗？"
 	case containsAny(input, "紧张", "悬", "绷"):
 		return "这一下是真绷着。先看这波。"
@@ -465,6 +465,10 @@ func emotionReactionReply(input string) string {
 	default:
 		return "嗯，这一下有感觉。"
 	}
+}
+
+func isDisbeliefReaction(input string) bool {
+	return containsAny(input, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧")
 }
 
 func shouldRealizeUserTurn(intent Intent, decision relationship.Decision) bool {
@@ -808,7 +812,7 @@ func Classify(text string) Intent {
 	if containsAny(lower, "别说", "少说", "闭嘴", "安静", "别播报") {
 		return IntentControlCommand
 	}
-	if containsAny(lower, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧") {
+	if isDisbeliefReaction(lower) {
 		return IntentEmotionReaction
 	}
 	if containsAny(lower, "哈哈", "太激动", "紧张", "舒服", "漂亮", "牛") {
@@ -1239,9 +1243,32 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
 		return reliable
 	}
+	if err := validateRealizedConversationTurn(req.Text, intent, realized.Text); err != nil {
+		trace.Reason = "realize_fallback_policy"
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
+		return reliable
+	}
 	trace.Reason = "relationship_plan_realized"
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized"}})
 	return strings.TrimSpace(realized.Text)
+}
+
+func validateRealizedConversationTurn(input string, intent Intent, text string) error {
+	if intent != IntentEmotionReaction || !isDisbeliefReaction(input) {
+		return nil
+	}
+	if isPresenceOnlyReply(text) {
+		return fmt.Errorf("realized disbelief reaction became a presence acknowledgement")
+	}
+	if !containsAny(text, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧", "刚刚", "那一下", "这一下", "这球") {
+		return fmt.Errorf("realized disbelief reaction dropped its conversational context")
+	}
+	return nil
+}
+
+func isPresenceOnlyReply(text string) bool {
+	normalized := strings.NewReplacer("，", "", "。", "", "！", "", "？", "", "!", "", "?", "", " ", "").Replace(strings.TrimSpace(text))
+	return len([]rune(normalized)) <= 8 && containsAny(normalized, "我在", "在呢", "在呀", "在的", "看着呢")
 }
 
 func validateRealizedText(text, allowedSource string, decision relationship.Decision) error {

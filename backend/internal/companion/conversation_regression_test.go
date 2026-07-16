@@ -4,6 +4,7 @@ import (
 	"context"
 	"strings"
 	"testing"
+	"time"
 
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
@@ -37,7 +38,7 @@ func TestDirectorGoalQuestionsUseRecentMatchFacts(t *testing.T) {
 func TestDisbeliefReactionGetsARealConversationTurn(t *testing.T) {
 	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithDirector(
 		relationship.NewDirector(relationship.NewMemoryRepository()),
-	)
+	).WithRealizer(fakeRealizer{text: "嗯，我在呢。"}, time.Second)
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
 		SignalID: "disbelief-turn-1",
 		MatchID:  "match-disbelief",
