@@ -36,6 +36,11 @@ type EventsClient interface {
 	GetEvents(fixtureID int) ([]Event, error)
 }
 
+type sourceCursorStore interface {
+	SourceCursor(matchID, sourceType, sourceKey string) (int64, error)
+	SetSourceCursor(matchID, sourceType, sourceKey string, cursor int64) error
+}
+
 type ManagerConfig struct {
 	PollInterval time.Duration
 }
@@ -147,6 +152,21 @@ func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus,
 			return MatchSourceStatus{}, fmt.Errorf("fixtureId is required for api-sports")
 		}
 	}
+	sourceKey := strconv.Itoa(config.FixtureID)
+	sourceCursor := int64(0)
+	var commitCursor func(int64) error
+	if config.Type == SourceAPISports {
+		if cursorStore, ok := m.store.(sourceCursorStore); ok {
+			cursor, err := cursorStore.SourceCursor(matchID, string(SourceAPISports), sourceKey)
+			if err != nil {
+				return MatchSourceStatus{}, fmt.Errorf("load source cursor: %w", err)
+			}
+			sourceCursor = cursor
+			commitCursor = func(cursor int64) error {
+				return cursorStore.SetSourceCursor(matchID, string(SourceAPISports), sourceKey, cursor)
+			}
+		}
+	}
 
 	m.controlMu.Lock()
 	defer m.controlMu.Unlock()
@@ -171,13 +191,15 @@ func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus,
 	m.active[matchID] = SourceAPISports
 	m.mu.Unlock()
 
-	events := make(chan *event.StandardEvent, 32)
+	events := make(chan PollDelivery, 32)
 	reports := make(chan PollReport, 8)
 	snapshot := m.store.Snapshot(matchID)
 	poller := NewPoller(m.client, int64(config.FixtureID), events).
 		WithInterval(m.config.PollInterval).
 		WithInitialEvents(config.ImportHistory).
-		WithReports(reports)
+		WithReports(reports).
+		WithCursor(sourceCursor).
+		WithCursorCommit(commitCursor)
 	poller.SetScore(snapshot.Score.Home, snapshot.Score.Away)
 	m.wg.Add(2)
 	run.wait.Add(2)
@@ -225,23 +247,24 @@ func (m *Manager) stopAndWait(matchID string) {
 	}
 }
 
-func (m *Manager) consumeAPISports(ctx context.Context, matchID string, fixtureID int, events <-chan *event.StandardEvent, reports <-chan PollReport) {
+func (m *Manager) consumeAPISports(ctx context.Context, matchID string, fixtureID int, events <-chan PollDelivery, reports <-chan PollReport) {
 	for {
 		select {
 		case <-ctx.Done():
 			return
 		case report := <-reports:
 			m.updatePollStatus(matchID, report)
-		case standardEvent := <-events:
+		case delivery := <-events:
+			standardEvent := delivery.Event
 			if standardEvent == nil {
+				delivery.Acknowledge(false)
 				continue
 			}
 			matchEvent := apiSportsMatchEvent(matchID, fixtureID, standardEvent, m.store.Snapshot(matchID))
 			_, _, err := m.Ingest(ctx, matchID, matchEvent)
-			if errors.Is(err, matchstate.ErrDuplicate) {
-				continue
-			}
-			if err != nil {
+			persisted := err == nil || errors.Is(err, matchstate.ErrDuplicate) || errors.Is(err, matchstate.ErrConflict)
+			delivery.Acknowledge(persisted)
+			if !persisted {
 				m.updateSourceError(matchID, err)
 				continue
 			}
@@ -328,7 +351,7 @@ func apiSportsMatchEvent(matchID string, fixtureID int, source *event.StandardEv
 		PlayerName:      playerName,
 		Score:           score,
 		Intensity:       3,
-		Confirmed:       eventType != "goal",
+		FactStatus:      matchstate.FactStatusProvisional,
 		Description:     description,
 		Tags:            []string{"provider=api-sports", "fixture=" + strconv.Itoa(fixtureID)},
 		Visibility:      "public",

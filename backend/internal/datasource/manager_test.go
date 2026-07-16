@@ -102,6 +102,68 @@ func TestNormalizeAPISportsEventTypes(t *testing.T) {
 	}
 }
 
+func TestPollerRetriesUntilDeliveryIsPersisted(t *testing.T) {
+	events := make(chan PollDelivery, 2)
+	client := &repeatingEventsClient{events: []Event{{
+		Time:   EventTime{Elapsed: 12},
+		Team:   TeamRef{ID: 1, Name: "Arsenal"},
+		Player: PlayerRef{ID: 7, Name: "Saka"},
+		Type:   "Goal",
+	}}}
+	poller := NewPoller(client, 42, events).WithInterval(5 * time.Millisecond).WithInitialEvents(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go poller.Run(ctx)
+
+	var first PollDelivery
+	select {
+	case first = <-events:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first provider event")
+	}
+	first.Acknowledge(false)
+	select {
+	case second := <-events:
+		if second.Event.ID != first.Event.ID {
+			t.Fatalf("retried event id = %d, want %d", second.Event.ID, first.Event.ID)
+		}
+		second.Acknowledge(true)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retried provider event")
+	}
+}
+
+func TestAPISportsSourceResumesFromPersistedCursor(t *testing.T) {
+	store := matchstate.NewStore()
+	if _, _, err := store.SetConfig("match-resume", matchstate.MatchConfig{HomeTeam: "Arsenal", AwayTeam: "Liverpool"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	historical := Event{Time: EventTime{Elapsed: 12}, Team: TeamRef{ID: 1, Name: "Arsenal"}, Player: PlayerRef{ID: 7, Name: "Saka"}, Type: "Goal", Detail: "Normal Goal"}
+	firstClient := &repeatingEventsClient{events: []Event{historical}}
+	firstManager := NewManager(context.Background(), store, firstClient, ManagerConfig{PollInterval: 5 * time.Millisecond})
+	if _, err := firstManager.Start("match-resume", SourceConfig{Type: SourceAPISports, FixtureID: 42}); err != nil {
+		t.Fatalf("first Start error: %v", err)
+	}
+	waitFor(t, time.Second, func() bool {
+		cursor, err := store.SourceCursor("match-resume", string(SourceAPISports), "42")
+		return err == nil && cursor == historical.ID()
+	})
+	firstManager.Close()
+
+	newEvent := Event{Time: EventTime{Elapsed: 30}, Team: TeamRef{ID: 2, Name: "Liverpool"}, Player: PlayerRef{ID: 9, Name: "Nunez"}, Type: "Goal", Detail: "Normal Goal"}
+	secondClient := &repeatingEventsClient{events: []Event{historical, newEvent}}
+	secondManager := NewManager(context.Background(), store, secondClient, ManagerConfig{PollInterval: 5 * time.Millisecond})
+	t.Cleanup(secondManager.Close)
+	if _, err := secondManager.Start("match-resume", SourceConfig{Type: SourceAPISports, FixtureID: 42}); err != nil {
+		t.Fatalf("second Start error: %v", err)
+	}
+	waitFor(t, time.Second, func() bool { return len(store.Events("match-resume")) == 1 })
+	events := store.Events("match-resume")
+	if events[0].PlayerName != "Nunez" {
+		t.Fatalf("resumed event = %+v", events[0])
+	}
+}
+
 func TestStopWaitsForExternalSourceWorkersToExit(t *testing.T) {
 	client := &blockingEventsClient{
 		started: make(chan struct{}),

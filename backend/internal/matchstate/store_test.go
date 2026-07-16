@@ -30,6 +30,69 @@ func TestUnsubscribeIsSafeDuringPublish(t *testing.T) {
 	wait.Wait()
 }
 
+func TestPublicFactViewHidesProvisionalEvents(t *testing.T) {
+	store := NewStore()
+	if _, _, err := store.SetConfig("public-facts", MatchConfig{HomeTeam: "Arsenal", AwayTeam: "Liverpool"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	created, _, err := store.Create("public-facts", MatchEvent{
+		Source:      "api-sports",
+		Period:      "first_half",
+		Clock:       "12:00",
+		EventType:   "goal",
+		TeamID:      "home",
+		TeamName:    "Arsenal",
+		PlayerName:  "Saka",
+		Score:       Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if created.FactStatus != FactStatusProvisional {
+		t.Fatalf("fact status = %q, want %q", created.FactStatus, FactStatusProvisional)
+	}
+	if snapshot := store.PublicSnapshot("public-facts"); snapshot.Score != (Score{}) || len(snapshot.RecentEvents) != 0 {
+		t.Fatalf("public snapshot exposed provisional fact: %+v", snapshot)
+	}
+	if events := store.PublicEvents("public-facts"); len(events) != 0 {
+		t.Fatalf("public events = %+v, want none", events)
+	}
+}
+
+func TestConfirmFactPublishesProvisionalEvent(t *testing.T) {
+	store := NewStore()
+	created, _, err := store.Create("confirm-fact", MatchEvent{
+		Source:      "api-sports",
+		Period:      "first_half",
+		Clock:       "12:00",
+		EventType:   "goal",
+		TeamID:      "home",
+		PlayerName:  "Saka",
+		Score:       Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+	})
+	if err != nil {
+		t.Fatalf("Create provisional event: %v", err)
+	}
+	confirmed, snapshot, err := store.ConfirmFact("confirm-fact", created.FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("ConfirmFact: %v", err)
+	}
+	if confirmed.FactStatus != FactStatusConfirmed || !confirmed.Confirmed || confirmed.ConfirmedBy != "operator-1" || confirmed.PublicAt == "" {
+		t.Fatalf("confirmed fact = %+v", confirmed)
+	}
+	if snapshot.Score != (Score{Home: 1}) || len(snapshot.RecentEvents) != 1 {
+		t.Fatalf("public snapshot after confirmation = %+v", snapshot)
+	}
+	revisions := store.FactRevisions("confirm-fact", created.FactID)
+	if len(revisions) != 2 || revisions[0].Status != FactStatusProvisional || revisions[1].Status != FactStatusConfirmed {
+		t.Fatalf("fact revisions = %+v", revisions)
+	}
+}
+
 func TestEvalBaselineFullMatchFlow(t *testing.T) {
 	store := NewStore()
 	matchID := "eval-baseline"
@@ -161,6 +224,7 @@ func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
 	}
 	if _, _, err := store.Create(matchID, MatchEvent{
 		Source:      "operator",
+		FactID:      "manual-fact",
 		EventType:   "goal",
 		Period:      "first_half",
 		Clock:       "23:41",
@@ -204,8 +268,17 @@ func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflicting cross-source goal error = %v, want ErrConflict", err)
 	}
-	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1, Away: 0}) || len(snapshot.KeyEvents) != 1 || snapshot.Integrity.Status != "conflict" {
-		t.Fatalf("cross-source duplicate changed snapshot: %+v", snapshot)
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{}) || len(snapshot.KeyEvents) != 0 || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("cross-source conflict should leave no authoritative score: %+v", snapshot)
+	}
+	events := store.Events(matchID)
+	if len(events) != 2 || events[0].FactStatus != FactStatusConflict || events[1].FactStatus != FactStatusConflict {
+		t.Fatalf("conflict candidates = %+v", events)
+	}
+	for _, event := range events {
+		if event.Source == "operator" && event.FactID != "manual-fact" {
+			t.Fatalf("manual fact id changed on conflict: %+v", event)
+		}
 	}
 }
 
@@ -280,6 +353,8 @@ func TestEvalBoundariesNormalizeAndReject(t *testing.T) {
 		{name: "missing clock", ev: MatchEvent{EventType: "goal", Description: "x"}},
 		{name: "missing description", ev: MatchEvent{EventType: "goal", Clock: "01:00"}},
 		{name: "unsupported event", ev: MatchEvent{EventType: "alien_invasion", Clock: "01:00", Description: "x"}},
+		{name: "unsupported fact status", ev: MatchEvent{EventType: "shot", Clock: "01:00", Description: "x", FactStatus: "unknown"}},
+		{name: "confidence out of range", ev: MatchEvent{EventType: "shot", Clock: "01:00", Description: "x", Confidence: 1.1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {

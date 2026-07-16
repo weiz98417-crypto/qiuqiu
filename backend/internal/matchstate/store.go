@@ -22,6 +22,33 @@ type Score struct {
 	Away int `json:"away"`
 }
 
+type FactStatus string
+
+const (
+	FactStatusProvisional FactStatus = "provisional"
+	FactStatusConfirmed   FactStatus = "confirmed"
+	FactStatusRevoked     FactStatus = "revoked"
+	FactStatusConflict    FactStatus = "conflict"
+	FactStatusReconciled  FactStatus = "reconciled"
+)
+
+type FactRevision struct {
+	FactID        string         `json:"factId"`
+	Revision      int            `json:"revision"`
+	MatchID       string         `json:"matchId"`
+	EventID       string         `json:"eventId,omitempty"`
+	Status        FactStatus     `json:"status"`
+	SourceType    string         `json:"sourceType"`
+	SourceEventID string         `json:"sourceEventId,omitempty"`
+	Confidence    float64        `json:"confidence"`
+	Evidence      map[string]any `json:"evidence,omitempty"`
+	ConfirmedBy   string         `json:"confirmedBy,omitempty"`
+	RevisionOf    string         `json:"revisionOf,omitempty"`
+	OccurredAt    string         `json:"occurredAt,omitempty"`
+	RecordedAt    string         `json:"recordedAt"`
+	PublicAt      string         `json:"publicAt,omitempty"`
+}
+
 const (
 	AutomationModeActive = "active"
 	AutomationModePaused = "paused"
@@ -66,32 +93,39 @@ type Participant struct {
 }
 
 type MatchEvent struct {
-	ID                string        `json:"id"`
-	MatchID           string        `json:"matchId"`
-	Source            string        `json:"source"`
-	ProviderName      string        `json:"providerName,omitempty"`
-	ProviderEventID   string        `json:"providerEventId,omitempty"`
-	OperatorID        string        `json:"operatorId,omitempty"`
-	Period            string        `json:"period"`
-	Clock             string        `json:"clock"`
-	EventType         string        `json:"eventType"`
-	TeamID            string        `json:"teamId,omitempty"`
-	TeamName          string        `json:"teamName,omitempty"`
-	PlayerName        string        `json:"playerName,omitempty"`
-	Participants      []Participant `json:"participants,omitempty"`
-	Score             Score         `json:"score"`
-	Intensity         int           `json:"intensity"`
-	Confirmed         bool          `json:"confirmed"`
-	Sentiment         string        `json:"sentiment,omitempty"`
-	Description       string        `json:"description"`
-	ProactiveText     string        `json:"proactiveText,omitempty"`
-	Tags              []string      `json:"tags,omitempty"`
-	RecommendedAction string        `json:"recommendedAction,omitempty"`
-	Visibility        string        `json:"visibility"`
-	CreatedAt         string        `json:"createdAt"`
-	UpdatedAt         string        `json:"updatedAt"`
-	RevisionOf        string        `json:"revisionOf,omitempty"`
-	Status            string        `json:"status"`
+	ID                string         `json:"id"`
+	MatchID           string         `json:"matchId"`
+	Source            string         `json:"source"`
+	ProviderName      string         `json:"providerName,omitempty"`
+	ProviderEventID   string         `json:"providerEventId,omitempty"`
+	OperatorID        string         `json:"operatorId,omitempty"`
+	Period            string         `json:"period"`
+	Clock             string         `json:"clock"`
+	EventType         string         `json:"eventType"`
+	TeamID            string         `json:"teamId,omitempty"`
+	TeamName          string         `json:"teamName,omitempty"`
+	PlayerName        string         `json:"playerName,omitempty"`
+	Participants      []Participant  `json:"participants,omitempty"`
+	Score             Score          `json:"score"`
+	Intensity         int            `json:"intensity"`
+	Confirmed         bool           `json:"confirmed"`
+	Sentiment         string         `json:"sentiment,omitempty"`
+	Description       string         `json:"description"`
+	ProactiveText     string         `json:"proactiveText,omitempty"`
+	Tags              []string       `json:"tags,omitempty"`
+	RecommendedAction string         `json:"recommendedAction,omitempty"`
+	Visibility        string         `json:"visibility"`
+	CreatedAt         string         `json:"createdAt"`
+	UpdatedAt         string         `json:"updatedAt"`
+	RevisionOf        string         `json:"revisionOf,omitempty"`
+	Status            string         `json:"status"`
+	FactID            string         `json:"factId"`
+	FactRevision      int            `json:"factRevision"`
+	FactStatus        FactStatus     `json:"factStatus"`
+	Confidence        float64        `json:"confidence"`
+	Evidence          map[string]any `json:"evidence,omitempty"`
+	ConfirmedBy       string         `json:"confirmedBy,omitempty"`
+	PublicAt          string         `json:"publicAt,omitempty"`
 }
 
 type Snapshot struct {
@@ -120,15 +154,23 @@ type Repository interface {
 	Correct(matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error)
 	Events(matchID string) []MatchEvent
 	Snapshot(matchID string) Snapshot
+	PublicEvents(matchID string) []MatchEvent
+	PublicSnapshot(matchID string) Snapshot
+	ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error)
+	RevokeFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error)
+	ReconcileFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error)
+	FactRevisions(matchID, factID string) []FactRevision
 	Subscribe(matchID string) (<-chan MatchEvent, func())
 }
 
 type Store struct {
-	mu          sync.RWMutex
-	events      map[string][]MatchEvent
-	configs     map[string]MatchConfig
-	subscribers map[string]map[*eventSubscription]struct{}
-	nextID      int64
+	mu           sync.RWMutex
+	events       map[string][]MatchEvent
+	configs      map[string]MatchConfig
+	factHistory  map[string][]FactRevision
+	sourceCursor map[string]int64
+	subscribers  map[string]map[*eventSubscription]struct{}
+	nextID       int64
 }
 
 type eventSubscription struct {
@@ -212,9 +254,11 @@ func (s *eventSubscription) run() {
 
 func NewStore() *Store {
 	return &Store{
-		events:      make(map[string][]MatchEvent),
-		configs:     make(map[string]MatchConfig),
-		subscribers: make(map[string]map[*eventSubscription]struct{}),
+		events:       make(map[string][]MatchEvent),
+		configs:      make(map[string]MatchConfig),
+		factHistory:  make(map[string][]FactRevision),
+		sourceCursor: make(map[string]int64),
+		subscribers:  make(map[string]map[*eventSubscription]struct{}),
 	}
 }
 
@@ -275,6 +319,42 @@ func (s *Store) Reset(matchID string) error {
 	s.mu.Lock()
 	delete(s.events, matchID)
 	delete(s.configs, matchID)
+	for key := range s.factHistory {
+		if strings.HasPrefix(key, matchID+"\x00") {
+			delete(s.factHistory, key)
+		}
+	}
+	for key := range s.sourceCursor {
+		if strings.HasPrefix(key, matchID+"\x00") {
+			delete(s.sourceCursor, key)
+		}
+	}
+	s.mu.Unlock()
+	return nil
+}
+
+func (s *Store) SourceCursor(matchID, sourceType, sourceKey string) (int64, error) {
+	key, err := sourceCursorKey(matchID, sourceType, sourceKey)
+	if err != nil {
+		return 0, err
+	}
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return s.sourceCursor[key], nil
+}
+
+func (s *Store) SetSourceCursor(matchID, sourceType, sourceKey string, cursor int64) error {
+	key, err := sourceCursorKey(matchID, sourceType, sourceKey)
+	if err != nil {
+		return err
+	}
+	if cursor < 0 {
+		return fmt.Errorf("%w: source cursor cannot be negative", ErrInvalid)
+	}
+	s.mu.Lock()
+	if cursor > s.sourceCursor[key] {
+		s.sourceCursor[key] = cursor
+	}
 	s.mu.Unlock()
 	return nil
 }
@@ -306,6 +386,29 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 			config.Integrity = conflictIntegrity(ev)
 			config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 			s.configs[matchID] = config
+			s.nextID++
+			ev.ID = fmt.Sprintf("evt_%d", s.nextID)
+			if ev.FactID == "" {
+				ev.FactID = ev.ID
+			}
+			ev.FactStatus = FactStatusConflict
+			ev.Confirmed = false
+			ev.CreatedAt = now
+			ev.UpdatedAt = now
+			for _, index := range crossSourceConflictIndices(s.events[matchID], ev) {
+				s.events[matchID][index].FactStatus = FactStatusConflict
+				s.events[matchID][index].Confirmed = false
+				s.events[matchID][index].PublicAt = ""
+				s.events[matchID][index].FactRevision++
+				s.events[matchID][index].UpdatedAt = now
+				s.recordFactRevisionLocked(matchID, s.events[matchID][index])
+			}
+			s.events[matchID] = append(s.events[matchID], ev)
+			s.recordFactRevisionLocked(matchID, ev)
+			subs := s.subscriberListLocked(matchID)
+			s.mu.Unlock()
+			s.publish(subs, ev)
+			return MatchEvent{}, Snapshot{}, ErrConflict
 		}
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
@@ -318,9 +421,13 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 	}
 	s.nextID++
 	ev.ID = fmt.Sprintf("evt_%d", s.nextID)
+	if ev.FactID == "" {
+		ev.FactID = ev.ID
+	}
 	ev.CreatedAt = now
 	ev.UpdatedAt = now
 	s.events[matchID] = append(s.events[matchID], ev)
+	s.recordFactRevisionLocked(matchID, ev)
 	snapshot := buildSnapshot(matchID, s.events[matchID], s.configs[matchID])
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
@@ -352,7 +459,12 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 
 	replacement.MatchID = matchID
 	replacement.RevisionOf = eventID
+	requestedFactStatus := replacement.FactStatus
 	normalize(&replacement)
+	if requestedFactStatus == "" {
+		replacement.FactStatus = events[found].FactStatus
+		replacement.Confirmed = replacement.FactStatus == FactStatusConfirmed || replacement.FactStatus == FactStatusReconciled
+	}
 	if err := validate(replacement); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
@@ -372,9 +484,14 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 	events[found].UpdatedAt = now
 	s.nextID++
 	replacement.ID = fmt.Sprintf("evt_%d", s.nextID)
+	if replacement.FactID == "" {
+		replacement.FactID = events[found].FactID
+	}
+	replacement.FactRevision = events[found].FactRevision + 1
 	replacement.CreatedAt = now
 	replacement.UpdatedAt = now
 	events = append(events, replacement)
+	s.recordFactRevisionLocked(matchID, replacement)
 	s.events[matchID] = events
 	snapshot := buildSnapshot(matchID, events, s.configs[matchID])
 	subs := s.subscriberListLocked(matchID)
@@ -398,6 +515,204 @@ func (s *Store) Snapshot(matchID string) Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
 	return buildSnapshot(matchID, s.events[matchID], s.configs[matchID])
+}
+
+func (s *Store) PublicEvents(matchID string) []MatchEvent {
+	events := s.Events(matchID)
+	public := make([]MatchEvent, 0, len(events))
+	for _, event := range events {
+		if IsPublicFact(event) {
+			public = append(public, event)
+		}
+	}
+	return public
+}
+
+func (s *Store) PublicSnapshot(matchID string) Snapshot {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return buildSnapshot(matchID, filterPublicFacts(s.events[matchID]), s.configs[matchID])
+}
+
+func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
+	matchID = strings.TrimSpace(matchID)
+	factID = strings.TrimSpace(factID)
+	operatorID = strings.TrimSpace(operatorID)
+	if matchID == "" || factID == "" || operatorID == "" {
+		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, factId and operatorId are required", ErrInvalid)
+	}
+
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := s.events[matchID]
+	found := -1
+	for index := range events {
+		if events[index].FactID == factID && events[index].Status == "active" {
+			found = index
+			break
+		}
+	}
+	if found == -1 {
+		return MatchEvent{}, Snapshot{}, ErrNotFound
+	}
+	if events[found].FactStatus != FactStatusProvisional {
+		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: fact is not provisional", ErrInvalid)
+	}
+	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID])
+	if err := validateAgainstSnapshot(events[found], publicSnapshot, normalizeConfig(matchID, s.configs[matchID])); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	events[found].FactStatus = FactStatusConfirmed
+	events[found].Confirmed = true
+	events[found].ConfirmedBy = operatorID
+	events[found].PublicAt = now
+	events[found].FactRevision++
+	events[found].UpdatedAt = now
+	s.events[matchID] = events
+	s.recordFactRevisionLocked(matchID, events[found])
+	confirmed := events[found]
+	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID])
+	subs := s.subscriberListLocked(matchID)
+	s.mu.Unlock()
+	s.publish(subs, confirmed)
+	s.mu.Lock()
+	return confirmed, snapshot, nil
+}
+
+func (s *Store) RevokeFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
+	return s.transitionFact(matchID, factID, operatorID, FactStatusRevoked)
+}
+
+func (s *Store) ReconcileFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
+	return s.transitionFact(matchID, factID, operatorID, FactStatusReconciled)
+}
+
+func (s *Store) FactRevisions(matchID, factID string) []FactRevision {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	key := factHistoryKey(matchID, factID)
+	return append([]FactRevision(nil), s.factHistory[key]...)
+}
+
+func (s *Store) transitionFact(matchID, factID, operatorID string, status FactStatus) (MatchEvent, Snapshot, error) {
+	matchID = strings.TrimSpace(matchID)
+	factID = strings.TrimSpace(factID)
+	operatorID = strings.TrimSpace(operatorID)
+	if matchID == "" || factID == "" || operatorID == "" {
+		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, factId and operatorId are required", ErrInvalid)
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	events := s.events[matchID]
+	found := -1
+	for index := range events {
+		if events[index].FactID == factID && events[index].Status == "active" {
+			found = index
+			break
+		}
+	}
+	if found == -1 {
+		return MatchEvent{}, Snapshot{}, ErrNotFound
+	}
+	if err := validateFactTransition(events[found].FactStatus, status); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	now := time.Now().UTC().Format(time.RFC3339Nano)
+	events[found].FactStatus = status
+	events[found].Confirmed = status == FactStatusReconciled
+	events[found].ConfirmedBy = operatorID
+	events[found].PublicAt = ""
+	if events[found].Confirmed {
+		events[found].PublicAt = now
+	}
+	events[found].FactRevision++
+	events[found].UpdatedAt = now
+	if status == FactStatusReconciled {
+		for index := range events {
+			if index == found || events[index].Status != "active" || events[index].FactStatus != FactStatusConflict {
+				continue
+			}
+			if events[index].EventType == events[found].EventType && events[index].Period == events[found].Period && clocksNear(events[index].Clock, events[found].Clock, 45) {
+				events[index].FactStatus = FactStatusRevoked
+				events[index].Confirmed = false
+				events[index].ConfirmedBy = operatorID
+				events[index].FactRevision++
+				events[index].UpdatedAt = now
+				s.recordFactRevisionLocked(matchID, events[index])
+			}
+		}
+		config := normalizeConfig(matchID, s.configs[matchID])
+		config.Integrity = MatchIntegrity{Status: "ok"}
+		config.UpdatedAt = now
+		s.configs[matchID] = config
+	}
+	s.events[matchID] = events
+	s.recordFactRevisionLocked(matchID, events[found])
+	changed := events[found]
+	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID])
+	subs := s.subscriberListLocked(matchID)
+	s.mu.Unlock()
+	s.publish(subs, changed)
+	s.mu.Lock()
+	return changed, snapshot, nil
+}
+
+func (s *Store) recordFactRevisionLocked(matchID string, event MatchEvent) {
+	key := factHistoryKey(matchID, event.FactID)
+	revision := FactRevision{
+		FactID:        event.FactID,
+		Revision:      event.FactRevision,
+		MatchID:       matchID,
+		EventID:       event.ID,
+		Status:        event.FactStatus,
+		SourceType:    factSourceType(event.Source),
+		SourceEventID: event.ProviderEventID,
+		Confidence:    event.Confidence,
+		Evidence:      cloneEvidence(event.Evidence),
+		ConfirmedBy:   event.ConfirmedBy,
+		RevisionOf:    event.RevisionOf,
+		OccurredAt:    event.CreatedAt,
+		RecordedAt:    event.UpdatedAt,
+		PublicAt:      event.PublicAt,
+	}
+	s.factHistory[key] = append(s.factHistory[key], revision)
+}
+
+func factHistoryKey(matchID, factID string) string {
+	return strings.TrimSpace(matchID) + "\x00" + strings.TrimSpace(factID)
+}
+
+func sourceCursorKey(matchID, sourceType, sourceKey string) (string, error) {
+	matchID = strings.TrimSpace(matchID)
+	sourceType = strings.TrimSpace(sourceType)
+	sourceKey = strings.TrimSpace(sourceKey)
+	if matchID == "" || sourceType == "" || sourceKey == "" {
+		return "", fmt.Errorf("%w: matchId, sourceType and sourceKey are required", ErrInvalid)
+	}
+	return matchID + "\x00" + sourceType + "\x00" + sourceKey, nil
+}
+
+func factSourceType(source string) string {
+	switch strings.ToLower(strings.TrimSpace(source)) {
+	case "api-sports", "provider", "replay":
+		return "provider"
+	case "system":
+		return "system"
+	default:
+		return "operator"
+	}
+}
+
+func cloneEvidence(evidence map[string]any) map[string]any {
+	if evidence == nil {
+		return map[string]any{}
+	}
+	cloned := make(map[string]any, len(evidence))
+	for key, value := range evidence {
+		cloned[key] = value
+	}
+	return cloned
 }
 
 func (s *Store) Subscribe(matchID string) (<-chan MatchEvent, func()) {
@@ -447,6 +762,7 @@ func normalize(ev *MatchEvent) {
 	ev.Period = normalizePeriod(ev.Period)
 	ev.Visibility = defaultString(ev.Visibility, "public")
 	ev.Status = defaultString(ev.Status, "active")
+	normalizeFactMetadata(ev)
 	ev.EventType = strings.TrimSpace(ev.EventType)
 	ev.Clock = strings.TrimSpace(ev.Clock)
 	ev.Description = strings.TrimSpace(ev.Description)
@@ -486,6 +802,45 @@ func normalize(ev *MatchEvent) {
 	if ev.Sentiment == "" {
 		ev.Sentiment = DefaultSentiment(ev.EventType)
 	}
+}
+
+func normalizeFactMetadata(event *MatchEvent) {
+	if event.FactStatus == "" {
+		source := strings.ToLower(strings.TrimSpace(event.Source))
+		operatorSource := source == "" || source == "operator" || source == "manual" || source == "system"
+		if event.Confirmed || operatorSource {
+			event.FactStatus = FactStatusConfirmed
+		} else {
+			event.FactStatus = FactStatusProvisional
+		}
+	}
+	event.Confirmed = event.FactStatus == FactStatusConfirmed || event.FactStatus == FactStatusReconciled
+	if event.FactRevision < 1 {
+		event.FactRevision = 1
+	}
+	if event.Confidence == 0 && event.Confirmed {
+		event.Confidence = 1
+	}
+	if event.Evidence == nil {
+		event.Evidence = map[string]any{}
+	}
+}
+
+func IsPublicFact(event MatchEvent) bool {
+	if event.Status != "active" || event.Visibility != "public" {
+		return false
+	}
+	return event.FactStatus == FactStatusConfirmed || event.FactStatus == FactStatusReconciled
+}
+
+func filterPublicFacts(events []MatchEvent) []MatchEvent {
+	public := make([]MatchEvent, 0, len(events))
+	for _, event := range events {
+		if IsPublicFact(event) {
+			public = append(public, event)
+		}
+	}
+	return public
 }
 
 func normalizePeriod(period string) string {
@@ -547,6 +902,12 @@ func validate(ev MatchEvent) error {
 	if ev.Score.Home < 0 || ev.Score.Away < 0 {
 		return fmt.Errorf("%w: score cannot be negative", ErrInvalid)
 	}
+	if !validFactStatus(ev.FactStatus) {
+		return fmt.Errorf("%w: unsupported factStatus %q", ErrInvalid, ev.FactStatus)
+	}
+	if ev.Confidence < 0 || ev.Confidence > 1 {
+		return fmt.Errorf("%w: confidence must be between 0 and 1", ErrInvalid)
+	}
 	if ev.EventType == "goal" && ev.Period == "pre_match" {
 		return fmt.Errorf("%w: goal cannot occur before kickoff", ErrInvalid)
 	}
@@ -554,6 +915,29 @@ func validate(ev MatchEvent) error {
 		return fmt.Errorf("%w: goal cancellation requires revisionOf", ErrInvalid)
 	}
 	return nil
+}
+
+func validFactStatus(status FactStatus) bool {
+	switch status {
+	case FactStatusProvisional, FactStatusConfirmed, FactStatusRevoked, FactStatusConflict, FactStatusReconciled:
+		return true
+	default:
+		return false
+	}
+}
+
+func validateFactTransition(current, target FactStatus) error {
+	switch target {
+	case FactStatusRevoked:
+		if current == FactStatusProvisional || current == FactStatusConfirmed || current == FactStatusConflict || current == FactStatusReconciled {
+			return nil
+		}
+	case FactStatusReconciled:
+		if current == FactStatusConflict {
+			return nil
+		}
+	}
+	return fmt.Errorf("%w: fact cannot transition from %s to %s", ErrInvalid, current, target)
 }
 
 func validateAgainstSnapshot(ev MatchEvent, current Snapshot, config MatchConfig) error {
@@ -597,6 +981,9 @@ func validateAgainstSnapshot(ev MatchEvent, current Snapshot, config MatchConfig
 }
 
 func crossSourceEventError(events []MatchEvent, candidate MatchEvent) error {
+	if len(crossSourceConflictIndices(events, candidate)) > 0 {
+		return ErrConflict
+	}
 	if !crossSourceComparable(candidate.EventType) {
 		return nil
 	}
@@ -611,9 +998,37 @@ func crossSourceEventError(events []MatchEvent, candidate MatchEvent) error {
 		if existing.TeamID == candidate.TeamID && playersCompatible {
 			return ErrDuplicate
 		}
-		return ErrConflict
 	}
 	return nil
+}
+
+func crossSourceConflictIndices(events []MatchEvent, candidate MatchEvent) []int {
+	if !crossSourceComparable(candidate.EventType) {
+		return nil
+	}
+	var conflicts []int
+	for index, existing := range events {
+		if existing.Status != "active" || existing.EventType != candidate.EventType || existing.Source == candidate.Source {
+			continue
+		}
+		if existing.Period != candidate.Period || !clocksNear(existing.Clock, candidate.Clock, 45) {
+			continue
+		}
+		playersCompatible := existing.PlayerName == "" || candidate.PlayerName == "" || strings.EqualFold(existing.PlayerName, candidate.PlayerName)
+		if existing.TeamID != candidate.TeamID || !playersCompatible {
+			conflicts = append(conflicts, index)
+		}
+	}
+	return conflicts
+}
+
+func conflictingEventIDs(events []MatchEvent, candidate MatchEvent) []string {
+	indices := crossSourceConflictIndices(events, candidate)
+	ids := make([]string, 0, len(indices))
+	for _, index := range indices {
+		ids = append(ids, events[index].ID)
+	}
+	return ids
 }
 
 func crossSourceComparable(eventType string) bool {
@@ -715,7 +1130,7 @@ func validateCorrection(original, replacement MatchEvent, current Snapshot, conf
 		return err
 	}
 	expected := current.Score
-	if original.EventType == "goal" {
+	if original.EventType == "goal" && original.FactStatus != FactStatusConflict && original.FactStatus != FactStatusRevoked {
 		if err := changeTeamScore(&expected, original.TeamID, -1); err != nil {
 			return err
 		}
@@ -792,7 +1207,7 @@ func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig) Snap
 	}
 
 	for _, ev := range events {
-		if ev.Status != "active" {
+		if ev.Status != "active" || ev.FactStatus == FactStatusConflict || ev.FactStatus == FactStatusRevoked {
 			continue
 		}
 		if ev.TeamName != "" {

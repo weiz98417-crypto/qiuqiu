@@ -1724,6 +1724,7 @@ function payloadFromPreset(preset, score, eventSide) {
     score,
     intensity: Number(value('intensity') || preset.intensity || 3),
     confirmed: selectedEventConfirmed(preset.type),
+    factStatus: selectedEventConfirmed(preset.type) ? 'confirmed' : 'provisional',
     description: buildDescription(preset, eventSide),
     recommendedAction: value('action') || preset.action,
     tags: [
@@ -1753,6 +1754,7 @@ function quickPayloadFromPreset(preset, score, eventSide) {
     score,
     intensity: Number(preset.intensity || 3),
     confirmed: defaultEventConfirmed(preset.type),
+    factStatus: defaultEventConfirmed(preset.type) ? 'confirmed' : 'provisional',
     description,
     recommendedAction: preset.action,
     tags: [
@@ -2124,8 +2126,35 @@ async function loadConfig() {
   syncPreFromMain();
   updateContextPreview();
 }
+function factActionButtons(event) {
+  const status = event.factStatus || (event.confirmed ? 'confirmed' : 'provisional');
+  const actions = [];
+  if (status === 'provisional') actions.push(['confirm', '确认']);
+  if (status === 'conflict') actions.push(['reconcile', '选为事实']);
+  if (['provisional', 'confirmed', 'conflict', 'reconciled'].includes(status)) actions.push(['revoke', '撤销']);
+  return actions.map(([action, label]) => `<button class="small-btn" type="button" data-fact-action="${action}">${label}</button>`).join('');
+}
+
+async function transitionFact(event, action) {
+  if (!event.factId) return;
+  try {
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(event.factId)}/${action}`, {
+      method: 'POST',
+      headers: authHeaders()
+    });
+    if (!res.ok) throw new Error(await res.text());
+    const result = await res.json();
+    applyPublishedSnapshot(result);
+    updateContextPreview();
+    await loadTimeline();
+    toast(action === 'reconcile' ? '已选为公开事实' : action === 'confirm' ? '事实已确认' : '事实已撤销', 'ok');
+  } catch (error) {
+    toast(error.message || '事实状态更新失败', 'bad');
+  }
+}
+
 async function loadTimeline() {
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`);
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`, { headers: authHeaders() });
   if (!res.ok) return;
   const data = await res.json();
   const host = $('timeline');
@@ -2155,7 +2184,14 @@ async function loadTimeline() {
       ${event.proactiveText ? `<div class="voice-line">球球主动说：${escapeHTML(event.proactiveText)}</div>` : ''}
       <div class="muted mono">${event.confirmed ? '事实已确认' : '等待事实确认'} / ${escapeHTML(event.status || 'created')} / ${escapeHTML(event.recommendedAction || 'auto')} / ${escapeHTML(event.id || '')}</div>
     `;
-    card.querySelector('button').onclick = () => editCorrection(event);
+    const correctionButton = card.querySelector('button');
+    correctionButton.dataset.action = 'correct';
+    correctionButton.onclick = () => editCorrection(event);
+    const actionHost = card.querySelector('.event-top > div:last-child');
+    actionHost.insertAdjacentHTML('afterbegin', factActionButtons(event));
+    card.querySelectorAll('[data-fact-action]').forEach((button) => {
+      button.onclick = () => transitionFact(event, button.dataset.factAction);
+    });
     host.appendChild(card);
   });
 }
@@ -2197,7 +2233,7 @@ async function loadMemoryPanel() {
   try {
     const [stateRes, eventsRes] = await Promise.all([
       fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/state`),
-      fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`)
+      fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`, { headers: authHeaders() })
     ]);
     if (!stateRes.ok) throw new Error(await stateRes.text());
     if (!eventsRes.ok) throw new Error(await eventsRes.text());

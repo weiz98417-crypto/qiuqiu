@@ -99,6 +99,140 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	}
 }
 
+func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+
+	created := doJSON(t, handler, http.MethodPost, "/api/matches/public-api/events?token=eval-token", matchstate.MatchEvent{
+		Source:      "api-sports",
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "12:00",
+		TeamID:      "home",
+		PlayerName:  "Saka",
+		Score:       matchstate.Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+		Confirmed:   false,
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+
+	state := doJSON(t, handler, http.MethodGet, "/api/matches/public-api/state", nil)
+	var stateEnvelope struct {
+		Snapshot matchstate.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(state.Body.Bytes(), &stateEnvelope); err != nil {
+		t.Fatalf("decode public state: %v", err)
+	}
+	if stateEnvelope.Snapshot.Score != (matchstate.Score{}) || len(stateEnvelope.Snapshot.RecentEvents) != 0 {
+		t.Fatalf("public state exposed provisional fact: %+v", stateEnvelope.Snapshot)
+	}
+
+	publicEvents := doJSON(t, handler, http.MethodGet, "/api/matches/public-api/events", nil)
+	var publicEnvelope struct {
+		Events []matchstate.MatchEvent `json:"events"`
+	}
+	if err := json.Unmarshal(publicEvents.Body.Bytes(), &publicEnvelope); err != nil {
+		t.Fatalf("decode public events: %v", err)
+	}
+	if len(publicEnvelope.Events) != 0 {
+		t.Fatalf("public events exposed provisional fact: %+v", publicEnvelope.Events)
+	}
+
+	operatorEvents := doJSON(t, handler, http.MethodGet, "/api/matches/public-api/events?token=eval-token", nil)
+	var operatorEnvelope struct {
+		Events []matchstate.MatchEvent `json:"events"`
+	}
+	if err := json.Unmarshal(operatorEvents.Body.Bytes(), &operatorEnvelope); err != nil {
+		t.Fatalf("decode operator events: %v", err)
+	}
+	if len(operatorEnvelope.Events) != 1 || operatorEnvelope.Events[0].FactStatus != matchstate.FactStatusProvisional {
+		t.Fatalf("operator ledger events = %+v", operatorEnvelope.Events)
+	}
+}
+
+func TestManualMatchAPIEventsDefaultToConfirmedFacts(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+
+	created := doJSON(t, handler, http.MethodPost, "/api/matches/manual-default/events?token=eval-token", matchstate.MatchEvent{
+		Source:      "operator",
+		EventType:   "shot",
+		Period:      "first_half",
+		Clock:       "05:00",
+		Score:       matchstate.Score{},
+		Description: "Manual shot note",
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	event := decodeEvent(t, created)
+	if event.FactStatus != matchstate.FactStatusConfirmed || !event.Confirmed {
+		t.Fatalf("manual event fact status = %+v", event)
+	}
+	public := doJSON(t, handler, http.MethodGet, "/api/matches/manual-default/events", nil)
+	var envelope struct {
+		Events []matchstate.MatchEvent `json:"events"`
+	}
+	if err := json.Unmarshal(public.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode public events: %v", err)
+	}
+	if len(envelope.Events) != 1 || envelope.Events[0].FactID != event.FactID {
+		t.Fatalf("manual public events = %+v", envelope.Events)
+	}
+}
+
+func TestFactConfirmationAndRevocationAreOperatorBound(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+
+	created := doJSON(t, handler, http.MethodPost, "/api/matches/fact-api/events?token=eval-token", matchstate.MatchEvent{
+		Source:      "api-sports",
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "12:00",
+		TeamID:      "home",
+		PlayerName:  "Saka",
+		Score:       matchstate.Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+	})
+	if created.Code != http.StatusCreated {
+		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
+	}
+	event := decodeEvent(t, created)
+
+	unauthorized := doJSON(t, handler, http.MethodPost, "/api/matches/fact-api/facts/"+event.FactID+"/confirm", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized confirmation status=%d", unauthorized.Code)
+	}
+	confirmed := doJSON(t, handler, http.MethodPost, "/api/matches/fact-api/facts/"+event.FactID+"/confirm?token=eval-token", nil)
+	if confirmed.Code != http.StatusOK {
+		t.Fatalf("confirm status=%d body=%s", confirmed.Code, confirmed.Body.String())
+	}
+	confirmedEvent := decodeEvent(t, confirmed)
+	if confirmedEvent.FactStatus != matchstate.FactStatusConfirmed || !confirmedEvent.Confirmed {
+		t.Fatalf("confirmed event = %+v", confirmedEvent)
+	}
+
+	revoked := doJSON(t, handler, http.MethodPost, "/api/matches/fact-api/facts/"+event.FactID+"/revoke?token=eval-token", nil)
+	if revoked.Code != http.StatusOK {
+		t.Fatalf("revoke status=%d body=%s", revoked.Code, revoked.Body.String())
+	}
+	revokedEvent := decodeEvent(t, revoked)
+	if revokedEvent.FactStatus != matchstate.FactStatusRevoked || revokedEvent.Confirmed {
+		t.Fatalf("revoked event = %+v", revokedEvent)
+	}
+}
+
 func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)

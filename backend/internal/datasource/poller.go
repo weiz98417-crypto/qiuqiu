@@ -3,6 +3,8 @@ package datasource
 import (
 	"context"
 	"log"
+	"sort"
+	"sync"
 	"time"
 
 	"qiuqiu/internal/event"
@@ -14,12 +16,27 @@ type PollReport struct {
 	Err     error
 }
 
+type PollDelivery struct {
+	Event        *event.StandardEvent
+	acknowledged chan bool
+}
+
+func newPollDelivery(standardEvent *event.StandardEvent) PollDelivery {
+	return PollDelivery{Event: standardEvent, acknowledged: make(chan bool, 1)}
+}
+
+func (d PollDelivery) Acknowledge(persisted bool) {
+	d.acknowledged <- persisted
+}
+
 type Poller struct {
 	client         EventsClient
 	matchID        int64
 	lastEventID    int64
-	eventChan      chan<- *event.StandardEvent
+	lastEventMu    sync.Mutex
+	eventChan      chan<- PollDelivery
 	reportChan     chan<- PollReport
+	commitCursor   func(int64) error
 	interval       time.Duration
 	homeScore      int
 	awayScore      int
@@ -27,8 +44,21 @@ type Poller struct {
 	initialized    bool
 }
 
-func NewPoller(client EventsClient, matchID int64, eventChan chan<- *event.StandardEvent) *Poller {
+func NewPoller(client EventsClient, matchID int64, eventChan chan<- PollDelivery) *Poller {
 	return &Poller{client: client, matchID: matchID, eventChan: eventChan, interval: 3 * time.Second}
+}
+
+func (p *Poller) WithCursor(cursor int64) *Poller {
+	if cursor > 0 {
+		p.lastEventID = cursor
+		p.initialized = true
+	}
+	return p
+}
+
+func (p *Poller) WithCursorCommit(commit func(int64) error) *Poller {
+	p.commitCursor = commit
+	return p
 }
 
 func (p *Poller) SetScore(home, away int) {
@@ -74,30 +104,73 @@ func (p *Poller) Run(ctx context.Context) {
 			}
 			backoff = time.Second
 			ticker.Reset(p.interval)
+			sort.SliceStable(events, func(left, right int) bool {
+				return events[left].ID() < events[right].ID()
+			})
 			if !p.initialized && !p.includeInitial {
+				latestEventID := int64(0)
 				for _, raw := range events {
-					if raw.ID() > p.lastEventID {
-						p.lastEventID = raw.ID()
+					if raw.ID() > latestEventID {
+						latestEventID = raw.ID()
+					}
+				}
+				if latestEventID > 0 {
+					if err := p.advanceCursor(latestEventID); err != nil {
+						p.report(PollReport{At: time.Now().UTC(), Err: err})
+						continue
 					}
 				}
 				p.initialized = true
 				continue
 			}
 			p.initialized = true
+		eventLoop:
 			for _, raw := range events {
-				if raw.ID() <= p.lastEventID {
+				p.lastEventMu.Lock()
+				lastEventID := p.lastEventID
+				p.lastEventMu.Unlock()
+				if raw.ID() <= lastEventID {
 					continue
 				}
-				p.lastEventID = raw.ID()
 				standardEvent := raw.ToStandardEvent(p.matchID, p.homeScore, p.awayScore)
+				delivery := newPollDelivery(standardEvent)
 				select {
-				case p.eventChan <- standardEvent:
-				default:
-					log.Printf("poller: event channel full, dropping event %d", standardEvent.ID)
+				case p.eventChan <- delivery:
+				case <-ctx.Done():
+					return
+				}
+				select {
+				case persisted := <-delivery.acknowledged:
+					if !persisted {
+						break eventLoop
+					}
+					if err := p.advanceCursor(standardEvent.ID); err != nil {
+						p.report(PollReport{At: time.Now().UTC(), Err: err})
+						break eventLoop
+					}
+				case <-ctx.Done():
+					return
 				}
 			}
 		}
 	}
+}
+
+func (p *Poller) advanceCursor(eventID int64) error {
+	if eventID <= 0 {
+		return nil
+	}
+	if p.commitCursor != nil {
+		if err := p.commitCursor(eventID); err != nil {
+			return err
+		}
+	}
+	p.lastEventMu.Lock()
+	if eventID > p.lastEventID {
+		p.lastEventID = eventID
+	}
+	p.lastEventMu.Unlock()
+	return nil
 }
 
 func (p *Poller) report(report PollReport) {

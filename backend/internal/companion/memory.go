@@ -39,12 +39,12 @@ func (m *StoreMemoryTools) WithTurnReader(reader ConversationTurnReader) *StoreM
 
 func (m *StoreMemoryTools) Snapshot(ctx context.Context, matchID string) (matchstate.Snapshot, error) {
 	_ = ctx
-	return m.store.Snapshot(matchID), nil
+	return m.store.PublicSnapshot(matchID), nil
 }
 
 func (m *StoreMemoryTools) RecentEvents(ctx context.Context, matchID string, limit int) ([]matchstate.MatchEvent, error) {
 	_ = ctx
-	events := activeOnly(m.store.Events(matchID))
+	events := activeOnly(m.store.PublicEvents(matchID))
 	if limit > 0 && len(events) > limit {
 		events = events[:limit]
 	}
@@ -55,7 +55,7 @@ func (m *StoreMemoryTools) EventsByPlayer(ctx context.Context, matchID, playerNa
 	_ = ctx
 	playerName = strings.TrimSpace(playerName)
 	var out []matchstate.MatchEvent
-	for _, ev := range activeOnly(m.store.Events(matchID)) {
+	for _, ev := range activeOnly(m.store.PublicEvents(matchID)) {
 		if eventHasPlayer(ev, playerName) {
 			out = append(out, ev)
 		}

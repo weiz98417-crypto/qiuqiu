@@ -86,3 +86,35 @@ func TestDisplayPeriodNeverLeaksInternalPrematchCode(t *testing.T) {
 		t.Fatalf("displayPeriod(pre_match) = %q, want 赛前", got)
 	}
 }
+
+func TestCompanionReadsOnlyPublicMatchFacts(t *testing.T) {
+	store := matchstate.NewStore()
+	if _, _, err := store.Create("public-only", matchstate.MatchEvent{
+		Source:      "api-sports",
+		Period:      "first_half",
+		Clock:       "12:00",
+		EventType:   "goal",
+		TeamID:      "home",
+		PlayerName:  "Saka",
+		Score:       matchstate.Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+	}); err != nil {
+		t.Fatalf("Create provisional event: %v", err)
+	}
+	tools := NewStoreMemoryTools(store)
+	snapshot, err := tools.Snapshot(context.Background(), "public-only")
+	if err != nil {
+		t.Fatalf("Snapshot: %v", err)
+	}
+	if snapshot.Score != (matchstate.Score{}) {
+		t.Fatalf("companion snapshot exposed provisional score: %+v", snapshot)
+	}
+	events, err := tools.RecentEvents(context.Background(), "public-only", 8)
+	if err != nil {
+		t.Fatalf("RecentEvents: %v", err)
+	}
+	if len(events) != 0 {
+		t.Fatalf("companion events exposed provisional facts: %+v", events)
+	}
+}

@@ -245,7 +245,7 @@ func main() {
 
 		writer.SendJSON(map[string]interface{}{
 			"type": "match_snapshot",
-			"data": matchStore.Snapshot(matchIDStr),
+			"data": matchStore.PublicSnapshot(matchIDStr),
 		})
 		go func() {
 			for {
@@ -253,7 +253,14 @@ func main() {
 				case <-connectionCtx.Done():
 					return
 				case ev := <-matchEvents:
-					snapshot := matchStore.Snapshot(matchIDStr)
+					snapshot := matchStore.PublicSnapshot(matchIDStr)
+					if !matchstate.IsPublicFact(ev) {
+						writer.SendJSON(map[string]interface{}{
+							"type": "match_snapshot",
+							"data": snapshot,
+						})
+						continue
+					}
 					writer.SendJSON(map[string]interface{}{
 						"type":     "match_event",
 						"data":     ev,
@@ -404,7 +411,7 @@ func main() {
 					conversationScheduler.SubmitUser(func(replyCtx context.Context, playback conversation.Playback) {
 						defer userTurnActive.Store(false)
 						result, err := handleVoiceTurnWithFactRefresh(
-							func() matchstate.Snapshot { return matchStore.Snapshot(matchIDStr) },
+							func() matchstate.Snapshot { return matchStore.PublicSnapshot(matchIDStr) },
 							func(turnText, turnAudio string) (voiceSessionResult, error) {
 								return handleVoiceSessionWithSignalID(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), turnSignalID)
 							},
@@ -617,7 +624,7 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"ok":       true,
 				"matchId":  matchID,
-				"snapshot": store.Snapshot(matchID),
+				"snapshot": store.PublicSnapshot(matchID),
 			})
 		case r.Method == http.MethodGet && resource == "sources" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
@@ -702,10 +709,49 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"policy": saved})
+		case r.Method == http.MethodPost && resource == "facts" && len(parts) == 4:
+			operator, authorized := operatorClaims(r, cfg)
+			if !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			var changed matchstate.MatchEvent
+			var snapshot matchstate.Snapshot
+			var err error
+			switch parts[3] {
+			case "confirm":
+				changed, snapshot, err = store.ConfirmFact(matchID, parts[2], operator.Subject)
+			case "revoke":
+				changed, snapshot, err = store.RevokeFact(matchID, parts[2], operator.Subject)
+			case "reconcile":
+				changed, snapshot, err = store.ReconcileFact(matchID, parts[2], operator.Subject)
+			default:
+				http.NotFound(w, r)
+				return
+			}
+			if err != nil {
+				status := http.StatusBadRequest
+				if errors.Is(err, matchstate.ErrNotFound) {
+					status = http.StatusNotFound
+				} else if errors.Is(err, matchstate.ErrConflict) {
+					status = http.StatusConflict
+				}
+				http.Error(w, err.Error(), status)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
+		case r.Method == http.MethodGet && resource == "facts" && len(parts) == 4 && parts[3] == "revisions":
+			if _, authorized := operatorClaims(r, cfg); !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"revisions": store.FactRevisions(matchID, parts[2]),
+			})
 		case r.Method == http.MethodGet && resource == "config" && len(parts) == 2:
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"config":   store.Config(matchID),
-				"snapshot": store.Snapshot(matchID),
+				"snapshot": store.PublicSnapshot(matchID),
 			})
 		case r.Method == http.MethodPost && resource == "config" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
@@ -727,12 +773,14 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"events": store.Events(matchID),
-			})
+			events := store.PublicEvents(matchID)
+			if validAPIToken(r, cfg) {
+				events = store.Events(matchID)
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{"events": events})
 		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"snapshot": store.Snapshot(matchID),
+				"snapshot": store.PublicSnapshot(matchID),
 			})
 		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
@@ -782,26 +830,28 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			ev.OperatorID = operator.Subject
+			applyRequestedFactStatus(&ev)
 			markProactiveMode(&ev)
 			var created matchstate.MatchEvent
-			var snapshot matchstate.Snapshot
 			var err error
 			if sources != nil {
-				created, snapshot, err = sources.Ingest(r.Context(), matchID, ev)
+				created, _, err = sources.Ingest(r.Context(), matchID, ev)
 			} else {
-				created, snapshot, err = store.Create(matchID, ev)
+				created, _, err = store.Create(matchID, ev)
 			}
 			if err != nil {
 				status := http.StatusBadRequest
 				if errors.Is(err, matchstate.ErrNotFound) {
 					status = http.StatusNotFound
+				} else if errors.Is(err, matchstate.ErrConflict) {
+					status = http.StatusConflict
 				}
 				http.Error(w, err.Error(), status)
 				return
 			}
 			writeJSON(w, http.StatusCreated, map[string]interface{}{
 				"event":    created,
-				"snapshot": snapshot,
+				"snapshot": store.PublicSnapshot(matchID),
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 4 && parts[3] == "correct":
 			operator, authorized := operatorClaims(r, cfg)
@@ -815,8 +865,9 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			ev.OperatorID = operator.Subject
+			applyRequestedFactStatus(&ev)
 			markProactiveMode(&ev)
-			corrected, snapshot, err := store.Correct(matchID, parts[2], ev)
+			corrected, _, err := store.Correct(matchID, parts[2], ev)
 			if err != nil {
 				status := http.StatusBadRequest
 				if errors.Is(err, matchstate.ErrNotFound) {
@@ -827,7 +878,7 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"event":    corrected,
-				"snapshot": snapshot,
+				"snapshot": store.PublicSnapshot(matchID),
 			})
 		default:
 			http.NotFound(w, r)
@@ -1320,6 +1371,15 @@ func markProactiveMode(event *matchstate.MatchEvent) {
 		return
 	}
 	event.Tags = append(event.Tags, "proactive=manual")
+}
+
+func applyRequestedFactStatus(event *matchstate.MatchEvent) {
+	if event == nil || event.FactStatus != "" {
+		return
+	}
+	if event.Confirmed {
+		event.FactStatus = matchstate.FactStatusConfirmed
+	}
 }
 
 func removeTagPrefix(tags []string, prefix string) []string {
