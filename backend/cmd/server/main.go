@@ -25,6 +25,7 @@ import (
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/pipeline"
 	"qiuqiu/internal/privacy"
@@ -76,6 +77,7 @@ func qiuqiuReplyData(text, traceID, source, eventID, deliveryKey string, present
 type demoStateResetter struct {
 	traces        companion.DemoResetter
 	relationships relationship.MatchResetter
+	observations  observation.MatchResetter
 }
 
 func (resetter demoStateResetter) Reset(matchID string) error {
@@ -85,7 +87,12 @@ func (resetter demoStateResetter) Reset(matchID string) error {
 		}
 	}
 	if resetter.relationships != nil {
-		return resetter.relationships.ResetMatch(matchID)
+		if err := resetter.relationships.ResetMatch(matchID); err != nil {
+			return err
+		}
+	}
+	if resetter.observations != nil {
+		return resetter.observations.ResetMatch(context.Background(), matchID)
 	}
 	return nil
 }
@@ -146,9 +153,7 @@ func main() {
 	}
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	defer outboxCancel()
-	if runner, ok := matchStore.(matchstate.OutboxRunner); ok {
-		go runner.RunOutbox(outboxCtx)
-	}
+	outboxRunner, _ := matchStore.(matchstate.OutboxRunner)
 	var privacyStore privacy.Store = privacy.NewMemoryStore()
 	var privacyStoreCloser func()
 	if cfg.DatabaseURL != "" {
@@ -195,7 +200,26 @@ func main() {
 		demoResetter = traceWriter
 		companionTools.WithTraceWriter(traceWriter)
 	}
+	var observationCoordinator observation.Coordinator
+	if cfg.PendingObservationCoordination {
+		observationCoordinator = observation.NewMemoryCoordinator()
+		if cfg.DatabaseURL != "" {
+			postgresObservationCoordinator, err := observation.OpenPostgresCoordinator(context.Background(), cfg.DatabaseURL)
+			if err != nil {
+				log.Fatalf("postgres observation coordinator: %v", err)
+			}
+			defer postgresObservationCoordinator.Close()
+			observationCoordinator = postgresObservationCoordinator
+		}
+		go runObservationExpiry(cleanupCtx, observationCoordinator)
+	}
 	companionAgent := companion.NewAgent(companionTools)
+	if observationCoordinator != nil {
+		companionAgent.WithObservationCoordinator(observationCoordinator)
+		companionAgent.WithObservationReconcileWindow(func(matchID, eventType string) time.Duration {
+			return sourceManager.ObservationReconcileWindow(matchID, observation.DefaultReconcileWindow(eventType))
+		})
+	}
 	var relationshipRepository relationship.StateRepository = relationship.NewMemoryRepository()
 	if cfg.DatabaseURL != "" {
 		postgresRelationshipRepository, err := relationship.OpenPostgresRepository(context.Background(), cfg.DatabaseURL)
@@ -206,11 +230,22 @@ func main() {
 		relationshipRepository = postgresRelationshipRepository
 	}
 	companionAgent.WithDirector(relationship.NewDirector(relationshipRepository))
-	if relationshipResetter, ok := relationshipRepository.(relationship.MatchResetter); ok {
-		demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter}
-	}
+	relationshipResetter, _ := relationshipRepository.(relationship.MatchResetter)
+	observationResetter, _ := observationCoordinator.(observation.MatchResetter)
+	demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter, observations: observationResetter}
 	if llmClient != nil {
 		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), 3*time.Second)
+	}
+	if registrar, ok := matchStore.(matchstate.EventObserverRegistrar); ok && observationCoordinator != nil {
+		registrar.SetEventObserver(func(event matchstate.MatchEvent) error {
+			observationCtx, observationCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
+			defer observationCancel()
+			_, err := companionAgent.HandleObservationFactChanged(observationCtx, event, time.Now().UTC())
+			return err
+		})
+	}
+	if outboxRunner != nil {
+		go outboxRunner.RunOutbox(outboxCtx)
 	}
 
 	mux := http.NewServeMux()
@@ -280,11 +315,33 @@ func main() {
 			}
 		}()
 		defer conversationScheduler.Close()
+		scheduleRecoveredObservations := func(userID string) int {
+			now := time.Now().UTC()
+			responses, err := companionAgent.RecoverObservationFollowUps(connectionCtx, userID, matchIDStr, now)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("observation recovery error: %v", err)
+				}
+				return 0
+			}
+			followUps := observationFollowUpsForUser(responses, userID, now)
+			for _, followUp := range followUps {
+				followUp := followUp
+				ttl := time.Until(followUp.Resolution.FollowUpDeadline)
+				conversationScheduler.SubmitProactive(followUp.Resolution.DeliveryKey, conversation.UrgencyCritical, ttl, func(replyCtx context.Context, playback conversation.Playback) {
+					emitObservationResponse(replyCtx, writer, companionAgent, ttsClient, playback, followUp, followUp.Resolution.FactID)
+				})
+			}
+			return len(followUps)
+		}
 
 		writer.SendJSON(map[string]interface{}{
 			"type": "match_snapshot",
 			"data": matchStore.PublicSnapshot(matchIDStr),
 		})
+		if userID := identity.Get(); userID != "" {
+			scheduleRecoveredObservations(userID)
+		}
 		go func() {
 			deliveredEventKeys := make(map[string]struct{})
 			deliveredEventOrder := make([]string, 0, 512)
@@ -304,6 +361,8 @@ func main() {
 						deliveredEventOrder = deliveredEventOrder[1:]
 					}
 					snapshot := matchStore.PublicSnapshot(matchIDStr)
+					userID := identity.Get()
+					followUpCount := scheduleRecoveredObservations(userID)
 					if !matchstate.IsPublicFact(ev) {
 						writer.SendJSON(map[string]interface{}{
 							"type": "match_snapshot",
@@ -318,6 +377,9 @@ func main() {
 						"deliveryKey": eventKey,
 					})
 					if ev.Visibility == "public" && ev.Status == "active" {
+						if followUpCount > 0 {
+							continue
+						}
 						userID := identity.Get()
 						if userID == "" {
 							userID = identity.Wait(connectionCtx)
@@ -390,6 +452,7 @@ func main() {
 					}
 					if cfg.LegacyAuthAllowed() {
 						identity.Set(str(req, "userId"))
+						scheduleRecoveredObservations(identity.Get())
 					}
 				case "user_activity":
 					userSpeaking.Store(str(req, "state") == "speaking")
@@ -405,6 +468,7 @@ func main() {
 					if _, err := companionAgent.ObserveSession(connectionCtx, "session:"+userID+":"+matchIDStr, userID, matchIDStr, time.Now().UTC()); err != nil {
 						log.Printf("relationship session observation error: %v", err)
 					}
+					scheduleRecoveredObservations(userID)
 
 				case "first_meeting":
 					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
@@ -467,6 +531,13 @@ func main() {
 							func(turnText, turnAudio string) (voiceSessionResult, error) {
 								return handleVoiceSessionWithSignalID(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), turnSignalID)
 							},
+							func(observationID string) bool {
+								if err := companionAgent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
+									log.Printf("observation in-band suppression error: %v", err)
+									return false
+								}
+								return true
+							},
 							text,
 							audioB64,
 						)
@@ -487,6 +558,9 @@ func main() {
 								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": result.ASRError})
 							}
 							return
+						}
+						if result.Trace.Observation != nil {
+							_ = companionAgent.UpdateTrace(replyCtx, result.Trace)
 						}
 						if replyCtx.Err() != nil {
 							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -603,6 +677,24 @@ func main() {
 	}
 }
 
+func observationFollowUpsForUser(responses []companion.ObservationResponse, userID string, now time.Time) []companion.ObservationResponse {
+	userID = strings.TrimSpace(userID)
+	if userID == "" {
+		return nil
+	}
+	selected := make([]companion.ObservationResponse, 0, len(responses))
+	for _, response := range responses {
+		if response.Resolution.UserID != userID {
+			continue
+		}
+		if !response.Resolution.FollowUpDeadline.IsZero() && now.After(response.Resolution.FollowUpDeadline) {
+			continue
+		}
+		selected = append(selected, response)
+	}
+	return selected
+}
+
 func registerDevelopmentPages(mux *http.ServeMux, environment, assetsDir string) {
 	if strings.EqualFold(strings.TrimSpace(environment), "production") {
 		return
@@ -644,6 +736,21 @@ func runPrivacyCleanup(ctx context.Context, service *privacy.Service) {
 			return
 		case <-ticker.C:
 			cleanup()
+		}
+	}
+}
+
+func runObservationExpiry(ctx context.Context, coordinator observation.Coordinator) {
+	ticker := time.NewTicker(5 * time.Second)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case now := <-ticker.C:
+			if _, err := coordinator.Expire(ctx, now.UTC()); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("observation expiry error: %v", err)
+			}
 		}
 	}
 }
@@ -1080,7 +1187,7 @@ func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent,
 	return result, nil
 }
 
-func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generate func(text, audio string) (voiceSessionResult, error), text, audio string) (voiceSessionResult, error) {
+func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generate func(text, audio string) (voiceSessionResult, error), suppressFollowUp func(string) bool, text, audio string) (voiceSessionResult, error) {
 	before := latestCriticalFactID(snapshot())
 	result, err := generate(text, audio)
 	if err != nil {
@@ -1093,6 +1200,16 @@ func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generat
 	refreshed, refreshErr := generate(result.Text, "")
 	if refreshErr != nil {
 		return result, nil
+	}
+	if result.Trace.Observation != nil {
+		if suppressFollowUp == nil || !suppressFollowUp(result.Trace.Observation.ID) {
+			return result, nil
+		}
+		refreshed.Trace.Observation = result.Trace.Observation
+		refreshed.Trace.ToolCalls = append(refreshed.Trace.ToolCalls, companion.ToolCall{
+			Name: "observation.follow_up",
+			Args: map[string]string{"status": "suppressed_in_band", "observationId": result.Trace.Observation.ID},
+		})
 	}
 	return refreshed, nil
 }
@@ -1130,13 +1247,21 @@ func recordVoiceTTS(ctx context.Context, agent *companion.Agent, result voiceSes
 }
 
 func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ProactiveResponse, eventID, deliveryKey string) {
+	emitScheduledResponse(ctx, writer, agent, ttsClient, playback, response.Reply, response.Trace, response.Presentation, "match_reaction", eventID, deliveryKey)
+}
+
+func emitObservationResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ObservationResponse, eventID string) {
+	emitScheduledResponse(ctx, writer, agent, ttsClient, playback, response.Reply, response.Trace, response.Presentation, "observation_resolution", eventID, response.Resolution.DeliveryKey)
+}
+
+func emitScheduledResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, reply string, trace companion.Trace, presentation relationship.PresentationPlan, source, eventID, deliveryKey string) {
 	if !replyContextActive(ctx) {
 		return
 	}
 	if err := writer.SendJSON(map[string]interface{}{
 		"type":  "event",
 		"event": "qiuqiu_reply",
-		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "match_reaction", eventID, deliveryKey, response.Presentation),
+		"data":  qiuqiuReplyData(reply, trace.ID, source, eventID, deliveryKey, presentation),
 	}); err != nil {
 		return
 	}
@@ -1144,12 +1269,11 @@ func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *compani
 		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
 		return
 	}
-	ttsResult, err := ttsClient.Synthesize(ctx, response.Reply, "")
+	ttsResult, err := ttsClient.Synthesize(ctx, reply, "")
 	if err != nil {
 		if !replyContextActive(ctx) {
 			return
 		}
-		trace := response.Trace
 		trace.Voice = ensureVoiceMeta(trace.Voice)
 		trace.Voice.TTSStatus = "failed"
 		trace.Voice.TTSError = err.Error()
@@ -1164,21 +1288,20 @@ func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *compani
 	if !replyContextActive(ctx) {
 		return
 	}
-	trace := response.Trace
 	trace.Voice = ensureVoiceMeta(trace.Voice)
 	trace.Voice.TTSStatus = "ok"
 	trace.Voice.TTSMime = fallbackString(ttsResult.MimeType, "audio/mpeg")
 	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
 	_ = agent.UpdateTrace(ctx, trace)
-	playback(response.Trace.ID)
+	playback(trace.ID)
 	writer.SendAudio(map[string]interface{}{
 		"type":        "voice_audio",
 		"mime":        trace.Voice.TTSMime,
-		"traceId":     response.Trace.ID,
+		"traceId":     trace.ID,
 		"byteLength":  len(ttsResult.AudioData),
 		"eventId":     eventID,
 		"deliveryKey": deliveryKey,
-		"source":      "match_reaction",
+		"source":      source,
 	}, ttsResult.AudioData)
 }
 
@@ -1307,6 +1430,8 @@ func recordDisplayedReply(ctx context.Context, reader companion.TraceReader, age
 	purpose := "user_reply"
 	if trace.Input == "first_meeting" {
 		purpose = "first_meeting"
+	} else if trace.ObservationResolution != nil {
+		purpose = "observation_resolution"
 	} else if trace.Reason == "operator_event_proactive_line" || trace.Reason == "relationship_match_reaction" {
 		purpose = "match_reaction"
 	}
@@ -1317,7 +1442,13 @@ func recordDisplayedReply(ctx context.Context, reader companion.TraceReader, age
 		usedMemoryIDs = trace.RelationshipDecision.UsedMemoryIDs
 	}
 	_, err = agent.ObserveDelivery(ctx, "delivery:"+traceID+":text", userID, matchID, decisionID, "text_delivered", purpose, usedMemoryIDs, now)
-	return err
+	if err != nil {
+		return err
+	}
+	if trace.ObservationResolution != nil {
+		return agent.MarkObservationResolutionDelivered(ctx, trace.ObservationResolution.DeliveryKey, now)
+	}
+	return nil
 }
 
 func ensureVoiceMeta(meta *companion.VoiceTraceMetadata) *companion.VoiceTraceMetadata {

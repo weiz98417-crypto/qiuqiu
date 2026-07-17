@@ -37,6 +37,7 @@ type Export struct {
 	RelationshipMemories []map[string]any `json:"relationshipMemories,omitempty"`
 	MatchStates          []map[string]any `json:"matchStates,omitempty"`
 	InteractionDecisions []map[string]any `json:"interactionDecisions,omitempty"`
+	PendingObservations  []map[string]any `json:"pendingObservations,omitempty"`
 }
 
 type Store interface {

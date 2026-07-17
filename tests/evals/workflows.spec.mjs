@@ -116,6 +116,16 @@ test('错误进球者会被纠正，玩笑不会进入事实核验', async ({ pa
 test('没有比赛证据时，用户报告的进球保持待确认', async ({ page, request }) => {
   await apiPost(request, `/api/matches/${matchId}/reset`, {});
   await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
+  await apiPost(request, `/api/matches/${matchId}/events`, {
+    eventType: 'kickoff',
+    period: 'first_half',
+    clock: '00:01',
+    score: { home: 0, away: 0 },
+    description: '比赛开始。',
+    proactiveText: '__quiet__',
+    visibility: 'public',
+    confirmed: true,
+  });
   await page.goto('/');
   await enableAccessibility(page);
   await openTextMode(page);

@@ -111,6 +111,9 @@ test('信号源可以切换，并通过人工接管同时暂停自动播报', as
   await expect(page.locator('[data-view-panel="sources"]')).toBeVisible();
   await expect(page.locator('[data-view-link="sources"]')).toHaveCount(2);
   await expect(page.locator('#activeSourceBadge')).not.toHaveText('读取中');
+  await expect(page.locator('#sourceFreshness')).toHaveText('等待同步基准');
+  await expect(page.locator('#sourceLeadHint')).toContainText('可能领先系统');
+  await expect(page.locator('#manualExpectedDelay')).toHaveValue('normal');
 
   await page.locator('#useReplaySource').click();
   await expect(page.locator('#activeSourceBadge')).toContainText('回放数据');
@@ -121,8 +124,52 @@ test('信号源可以切换，并通过人工接管同时暂停自动播报', as
 
   const sources = await apiGet(request, `/api/matches/${matchId}/sources`);
   expect(sources.status.activeSource).toBe('manual');
+  expect(sources.status.sources.manual).toMatchObject({
+    freshness: 'unknown',
+    userMayLead: true,
+    expectedDelay: 'normal',
+  });
   const automation = await apiGet(request, `/api/matches/${matchId}/automation`);
   expect(automation.policy.mode).toBe('paused');
+});
+
+test('导播台在窄桌面和手机上不裁切或重叠', async ({ page }) => {
+  for (const viewport of [
+    { width: 1256, height: 900 },
+    { width: 900, height: 900 },
+    { width: 390, height: 844 },
+  ]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+    const layout = await page.evaluate(() => {
+      const workspace = document.querySelector('.workspace.view.active');
+      const boxes = Array.from(workspace?.children || [], (element) => element.getBoundingClientRect());
+      const center = workspace?.querySelector('.center');
+      const centerBox = center?.getBoundingClientRect();
+      const centerChildren = Array.from(center?.children || [], (element) => element.getBoundingClientRect());
+      return {
+        documentFits: document.documentElement.scrollWidth <= document.documentElement.clientWidth,
+        workspaceFits: workspace.scrollWidth <= workspace.clientWidth,
+        panelsDoNotOverlap: boxes.every((box, index) => index === boxes.length - 1 || box.bottom <= boxes[index + 1].top + 1),
+        centerContainsPanels: centerChildren.every((box) => box.top >= centerBox.top - 1 && box.bottom <= centerBox.bottom + 1),
+      };
+    });
+    expect(layout, `${viewport.width}px live layout`).toEqual({
+      documentFits: true,
+      workspaceFits: true,
+      panelsDoNotOverlap: true,
+      centerContainsPanels: true,
+    });
+    await page.locator('#draftSubmit').scrollIntoViewIfNeeded();
+    await page.locator('#draftSubmit').click({ trial: true });
+  }
+
+  for (const viewport of [{ width: 900, height: 900 }, { width: 390, height: 844 }]) {
+    await page.setViewportSize(viewport);
+    await page.goto(`/operator.html?token=${encodeURIComponent(token)}#sources`);
+    const pageFits = await page.evaluate(() => document.documentElement.scrollWidth <= document.documentElement.clientWidth);
+    expect(pageFits, `${viewport.width}px sources layout`).toBe(true);
+  }
 });
 
 test('自动化策略页面保存事件范围和冷却时间', async ({ page, request }) => {

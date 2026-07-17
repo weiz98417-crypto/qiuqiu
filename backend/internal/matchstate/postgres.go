@@ -24,6 +24,7 @@ type PostgresStore struct {
 	pool            *pgxpool.Pool
 	mu              sync.RWMutex
 	subscribers     map[string]map[*eventSubscription]struct{}
+	eventObserver   func(MatchEvent) error
 	outboxPublisher func(MatchEvent) error
 }
 
@@ -47,6 +48,14 @@ func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (
 		subscribers: make(map[string]map[*eventSubscription]struct{}),
 	}
 	store.outboxPublisher = func(event MatchEvent) error {
+		store.mu.RLock()
+		observer := store.eventObserver
+		store.mu.RUnlock()
+		if observer != nil {
+			if err := observer(event); err != nil {
+				return err
+			}
+		}
 		store.publish(store.subscriberList(event.MatchID), event)
 		return nil
 	}
@@ -55,6 +64,12 @@ func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (
 
 func (s *PostgresStore) Close() {
 	s.pool.Close()
+}
+
+func (s *PostgresStore) SetEventObserver(observer func(MatchEvent) error) {
+	s.mu.Lock()
+	s.eventObserver = observer
+	s.mu.Unlock()
 }
 
 func (s *PostgresStore) beginMutation(ctx context.Context) (pgx.Tx, bool, error) {

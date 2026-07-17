@@ -93,7 +93,6 @@ func TestFalseScoreClaimUsesMatchFactsBeforeRealization(t *testing.T) {
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
-
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
 		MatchID: matchID,
 		UserID:  "user-1",
@@ -236,6 +235,12 @@ func TestUnconfirmedGoalClaimWaitsForMatchEvidence(t *testing.T) {
 	matchID := "fact-claim-unconfirmed-goal"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType: "kickoff", Period: "first_half", Clock: "00:01",
+		Description: "比赛开始。", Visibility: "public",
+	}); err != nil {
+		t.Fatalf("Create kickoff error: %v", err)
 	}
 
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{

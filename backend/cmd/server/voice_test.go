@@ -12,6 +12,7 @@ import (
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 )
@@ -200,6 +201,7 @@ func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
 	}
 	snapshotCall := 0
 	generationCall := 0
+	suppressedObservationID := ""
 	result, err := handleVoiceTurnWithFactRefresh(
 		func() matchstate.Snapshot {
 			index := snapshotCall
@@ -212,12 +214,19 @@ func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
 		func(text, audio string) (voiceSessionResult, error) {
 			generationCall++
 			if generationCall == 1 {
-				return voiceSessionResult{Text: "刚才谁进球？", Reply: "还没有进球。"}, nil
+				return voiceSessionResult{
+					Text: "刚才谁进球？", Reply: "还没有进球。",
+					Trace: companion.Trace{Observation: &observation.PendingObservation{ID: "obs-refresh"}},
+				}, nil
 			}
 			if text != "刚才谁进球？" || audio != "" {
 				t.Fatalf("refresh input = %q/%q, want recognized text without audio", text, audio)
 			}
 			return voiceSessionResult{Text: text, Reply: "萨拉赫刚刚进球了。"}, nil
+		},
+		func(observationID string) bool {
+			suppressedObservationID = observationID
+			return true
 		},
 		"",
 		"encoded-audio",
@@ -225,8 +234,11 @@ func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
 	if err != nil {
 		t.Fatalf("handleVoiceTurnWithFactRefresh error: %v", err)
 	}
-	if generationCall != 2 || result.Reply != "萨拉赫刚刚进球了。" {
+	if generationCall != 2 || result.Reply != "萨拉赫刚刚进球了。" || suppressedObservationID != "obs-refresh" {
 		t.Fatalf("expected one refreshed answer, calls=%d result=%+v", generationCall, result)
+	}
+	if result.Trace.Observation == nil || result.Trace.Observation.ID != "obs-refresh" {
+		t.Fatalf("refreshed trace lost original observation: %+v", result.Trace)
 	}
 }
 

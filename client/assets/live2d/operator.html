@@ -32,6 +32,7 @@
     --outline: #a98a7d;
     --error: #ffb4ab;
     --green: #34d399;
+    --warning: #f2c94c;
   }
   * { box-sizing: border-box; }
   html, body { margin: 0; min-height: 100%; background: var(--background); color: var(--on-surface); font-family: Inter, system-ui, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; }
@@ -527,6 +528,40 @@
   .source-state { color: var(--on-variant); font: 700 11px/16px "JetBrains Mono", monospace; }
   .source-state.ok { color: var(--green); }
   .source-state.bad { color: var(--error); }
+  .source-health-strip {
+    min-height: 64px;
+    border: 1px solid rgba(255,255,255,.1);
+    background: var(--surface-lowest);
+    border-radius: 8px;
+    padding: 12px 14px;
+    display: flex;
+    align-items: center;
+    gap: 12px;
+  }
+  .source-health-strip .material-symbols-outlined { color: var(--on-variant); }
+  .source-health-strip[data-health="fresh"] .material-symbols-outlined,
+  .source-health-strip[data-health="fresh"] strong { color: var(--green); }
+  .source-health-strip[data-health="degraded"] .material-symbols-outlined,
+  .source-health-strip[data-health="degraded"] strong { color: var(--warning); }
+  .source-health-strip[data-health="offline"] .material-symbols-outlined,
+  .source-health-strip[data-health="offline"] strong { color: var(--error); }
+  .source-health-copy { min-width: 0; display: grid; gap: 2px; }
+  .source-health-copy strong { font-size: 14px; line-height: 20px; }
+  .source-health-copy span { color: var(--on-variant); font-size: 12px; line-height: 18px; text-wrap: pretty; }
+  .source-detail-list { margin: 0; display: grid; }
+  .source-detail-list > div {
+    min-height: 38px;
+    padding: 8px 0;
+    border-bottom: 1px solid rgba(255,255,255,.07);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 12px;
+  }
+  .source-detail-list > div:last-child { border-bottom: 0; }
+  .source-detail-list dt { color: var(--on-variant); }
+  .source-detail-list dd { margin: 0; text-align: right; font-weight: 700; }
+  .source-guidance { border: 1px solid rgba(255,182,147,.24); background: rgba(255,182,147,.07); border-radius: 8px; padding: 11px 13px; color: var(--on-variant); }
   .inline-actions { display: flex; gap: 8px; align-items: center; justify-content: flex-end; flex-wrap: wrap; }
   .danger-btn {
     border: 1px solid rgba(255,180,171,.5);
@@ -609,20 +644,32 @@
     0% { box-shadow: 0 0 0 2px var(--primary-container), 0 0 18px rgba(255,107,0,.5); }
     100% { box-shadow: none; }
   }
-  @media (max-width: 1200px) {
-    .workspace { grid-template-columns: 1fr; overflow-y: auto; }
+  /* The fixed 256px navigation leaves less room than the viewport width suggests. */
+  @media (max-width: 1320px) {
+    .workspace { grid-template-columns: 1fr; grid-auto-rows: max-content; overflow-y: auto; }
     .panel, .combiner { min-height: 320px; max-height: none; }
-    .center { overflow: visible; }
+    .center {
+      display: grid;
+      grid-template-columns: minmax(0, 1fr);
+      grid-template-rows: max-content minmax(320px, max-content);
+      min-height: max-content;
+      overflow: visible;
+    }
+    .combiner .panel-body { overflow-y: visible; }
     body { overflow: auto; }
     .main { height: auto; min-height: 100vh; overflow: visible; }
+  }
+  @media (max-width: 1100px) {
+    .top-tabs { display: none; }
+  }
+  @media (max-width: 1040px) {
+    .scorebar { grid-template-columns: 1fr; gap: 8px; }
+    .score-side.home, .score-side.away { justify-content: center; padding: 0; }
   }
   @media (max-width: 860px) {
     .side-nav { display: none; }
     .topbar { padding-left: 16px; }
     .top-title { font-size: 22px; line-height: 28px; }
-    .top-tabs { display: none; }
-    .scorebar { grid-template-columns: 1fr; gap: 8px; }
-    .score-side.home, .score-side.away { justify-content: center; padding: 0; }
     .workspace { padding: 10px; }
     .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .trace-layout, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview, .control-grid, .source-row, .event-toggle-grid, .monitor-grid, .activity-row { grid-template-columns: 1fr; }
     .half { grid-column: 1 / -1; }
@@ -945,7 +992,16 @@
                   <div class="source-name"><span class="material-symbols-outlined">edit_note</span>人工导演</div>
                   <div class="muted">通过实战导演页录入和更正比赛事实</div>
                 </div>
-                <div><div class="source-state" id="manualSourceState">等待读取</div><div class="muted">不会被外部源禁用，可随时接管</div></div>
+                <div style="display:grid;grid-template-columns:minmax(0,1fr) auto;gap:8px;align-items:end">
+                  <div><div class="source-state" id="manualSourceState">等待读取</div><div class="muted">不会被外部源禁用，可随时接管</div></div>
+                  <label>预期录入延迟
+                    <select id="manualExpectedDelay">
+                      <option value="fast">快速 5-10 秒</option>
+                      <option value="normal" selected>正常 10-20 秒</option>
+                      <option value="conservative">保守 20-40 秒</option>
+                    </select>
+                  </label>
+                </div>
                 <div class="inline-actions"><button class="ghost-btn" id="useManualSource" type="button">切换到人工</button></div>
               </div>
               <div class="source-row">
@@ -974,10 +1030,19 @@
             <section class="settings-card">
               <div class="settings-card-head"><div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">route</span>当前接管状态</div></div>
               <div class="settings-card-body">
-                <div class="metric-card"><span>正在使用</span><strong id="activeSourceName">读取中</strong></div>
-                <div class="metric-card"><span>最近轮询</span><span class="mono" id="sourceLastPoll">无</span></div>
-                <div class="metric-card"><span>最近事件</span><span class="mono" id="sourceLastEvent">无</span></div>
-                <div class="callout" id="sourceMessage">正在读取来源状态。</div>
+                <div class="source-health-strip" id="sourceHealthStrip" data-health="unknown">
+                  <span class="material-symbols-outlined" id="sourceHealthIcon" aria-hidden="true">schedule</span>
+                  <div class="source-health-copy"><strong id="sourceFreshness">正在读取同步状态</strong><span id="sourceLeadHint">请稍候</span></div>
+                </div>
+                <dl class="source-detail-list">
+                  <div><dt>正在使用</dt><dd id="activeSourceName">读取中</dd></div>
+                  <div><dt>当前轮询延迟</dt><dd class="mono" id="sourceLatency">无</dd></div>
+                  <div><dt>近 5 分钟 P95</dt><dd class="mono" id="sourceLatencyP95">无</dd></div>
+                  <div><dt>最近轮询</dt><dd class="mono" id="sourceLastPoll">无</dd></div>
+                  <div><dt>最近事件</dt><dd class="mono" id="sourceLastEvent">无</dd></div>
+                  <div><dt>重连次数</dt><dd class="mono" id="sourceReconnects">0</dd></div>
+                </dl>
+                <div class="source-guidance" id="sourceMessage">正在读取来源状态。</div>
               </div>
             </section>
             <section class="settings-card">
@@ -1960,6 +2025,16 @@ function sourceLabel(type) {
 function sourceStateLabel(state) {
   return ({ ready: '可用', standby: '待命', running: '运行中', stopped: '已停止', error: '异常', unconfigured: '未配置' })[state] || state || '未知';
 }
+function sourceFreshnessLabel(freshness) {
+  return ({ fresh: '同步正常', degraded: '同步偏慢', unknown: '等待同步基准', offline: '来源离线' })[freshness] || '等待同步基准';
+}
+function sourceHealthIcon(freshness) {
+  return ({ fresh: 'check_circle', degraded: 'pace', unknown: 'schedule', offline: 'cloud_off' })[freshness] || 'schedule';
+}
+function formatLatency(milliseconds) {
+  const value = Number(milliseconds);
+  return Number.isFinite(value) && value >= 0 ? `${Math.round(value)} ms` : '无';
+}
 function renderSourceState(id, source) {
   const element = $(id);
   const state = source?.state || 'unknown';
@@ -1981,16 +2056,31 @@ function renderSources(status) {
   $('useApiSource').disabled = !apiAvailable;
   $('useApiSource').title = apiAvailable ? '启用 API-Sports 数据源' : '请先在服务端配置 APISPORTS_API_KEY';
   const activeDetail = sources[active] || {};
+  const freshness = activeDetail.freshness || 'unknown';
+  $('sourceHealthStrip').dataset.health = freshness;
+  $('sourceHealthIcon').textContent = sourceHealthIcon(freshness);
+  $('sourceFreshness').textContent = sourceFreshnessLabel(freshness);
+  $('sourceLeadHint').textContent = activeDetail.userMayLead
+    ? '用户看到的现场可能领先系统，球球会先保留判断。'
+    : '比赛信息在预期同步窗口内。';
+  $('sourceLatency').textContent = formatLatency(activeDetail.latencyMs);
+  $('sourceLatencyP95').textContent = formatLatency(activeDetail.latencyP95Ms);
   $('sourceLastPoll').textContent = formatStatusTime(activeDetail.lastPollAt);
   $('sourceLastEvent').textContent = formatStatusTime(activeDetail.lastEventAt);
+  $('sourceReconnects').textContent = String(Number(activeDetail.reconnects || 0));
+  if (sources.manual?.expectedDelay) $('manualExpectedDelay').value = sources.manual.expectedDelay;
   if (activeDetail.error) {
     $('sourceMessage').textContent = activeDetail.error;
     $('sourceMessage').style.borderColor = 'var(--error)';
   } else if (active === 'api-sports') {
-    $('sourceMessage').textContent = `外部源正在接管，Fixture ID ${activeDetail.fixtureId || '未返回'}，重连 ${Number(activeDetail.reconnects || 0)} 次。`;
+    $('sourceMessage').textContent = freshness === 'fresh'
+      ? `外部源正在接管，Fixture ID ${activeDetail.fixtureId || '未返回'}。`
+      : '外部源当前不够新鲜。比赛事实仍会继续接收，用户侧暂不做确定性判断。';
     $('sourceMessage').style.borderColor = 'var(--primary)';
   } else {
-    $('sourceMessage').textContent = active === 'manual' ? '当前由人工导演录入比赛事实。' : '当前使用回放数据进行联调。';
+    $('sourceMessage').textContent = active === 'manual'
+      ? '人工录入没有自动心跳，系统会按预期延迟档位保留用户观察。'
+      : '当前使用回放数据进行联调，新鲜度不会代表真实赛事延迟。';
     $('sourceMessage').style.borderColor = 'var(--primary)';
   }
 }
@@ -2008,6 +2098,7 @@ async function loadSources() {
 }
 async function startSource(type) {
   const body = { type };
+  if (type === 'manual') body.expectedDelay = value('manualExpectedDelay') || 'normal';
   if (type === 'api-sports') {
     body.fixtureId = Number(value('sourceFixtureId') || 0);
     body.importHistory = $('sourceImportHistory').checked;
@@ -2101,7 +2192,7 @@ async function loadMonitor() {
     const sourceStatus = sources.value.status || {};
     $('monitorSourceValue').textContent = sourceLabel(sourceStatus.activeSource);
     const active = sourceStatus.sources?.[sourceStatus.activeSource] || {};
-    $('monitorSourceMeta').textContent = active.error || `${sourceStateLabel(active.state)}${active.latencyMs ? `，轮询 ${active.latencyMs}ms` : ''}`;
+    $('monitorSourceMeta').textContent = active.error || `${sourceFreshnessLabel(active.freshness)}${Number.isFinite(Number(active.latencyMs)) ? `，轮询 ${Math.round(Number(active.latencyMs))}ms` : ''}`;
   } else {
     $('monitorSourceValue').textContent = '读取失败';
     $('monitorSourceMeta').textContent = sources.reason?.message || '未知错误';

@@ -108,7 +108,8 @@ func (s *PostgresStore) Export(ctx context.Context, userID string) (Export, erro
 	}
 	if export.AgentTraces, err = queryMaps(ctx, s.pool, `
 		SELECT id, match_id, user_id, input, intent, tool_calls, retrieved_event_ids,
-			output, reason, latency_ms, error, voice, fact_claim, relationship_decision, created_at
+			output, reason, latency_ms, error, voice, fact_claim, relationship_decision,
+			pending_observation, observation_resolution, created_at
 		FROM agent_traces
 		WHERE user_id = $1 AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > now())
 		ORDER BY created_at ASC
@@ -142,6 +143,17 @@ func (s *PostgresStore) Export(ctx context.Context, userID string) (Export, erro
 		FROM interaction_decisions
 		WHERE user_id = $1 AND deleted_at IS NULL AND (expires_at IS NULL OR expires_at > now())
 		ORDER BY created_at ASC
+	`, userID); err != nil {
+		return Export{}, err
+	}
+	if export.PendingObservations, err = queryMaps(ctx, s.pool, `
+		SELECT id, signal_id, trace_id, user_id, match_id, kind, event_type,
+			claimed_team, claimed_player, claimed_score_home, claimed_score_away,
+			certainty, status, candidate_fact_id, resolved_fact_id, resolved_revision,
+			received_at, follow_up_deadline, reconcile_until, resolved_at, resolution_reason
+		FROM pending_match_observations
+		WHERE user_id = $1
+		ORDER BY received_at ASC, id ASC
 	`, userID); err != nil {
 		return Export{}, err
 	}
@@ -222,6 +234,7 @@ func (s *PostgresStore) ProcessDeletion(ctx context.Context, userID string) (err
 		return nil
 	}
 	for _, query := range []string{
+		`DELETE FROM pending_match_observations WHERE user_id = $1`,
 		`DELETE FROM conversation_turns WHERE user_id = $1`,
 		`DELETE FROM agent_traces WHERE user_id = $1`,
 		`DELETE FROM relationship_memories WHERE user_id = $1`,
@@ -262,6 +275,7 @@ func (s *PostgresStore) markDeletionFailed(ctx context.Context, userID string, d
 
 func (s *PostgresStore) CleanupExpired(ctx context.Context) error {
 	for _, query := range []string{
+		`DELETE FROM pending_match_observations WHERE status IN ('confirmed', 'contradicted', 'expired', 'superseded') AND reconcile_until <= now() - interval '10 minutes'`,
 		`DELETE FROM conversation_turns WHERE deleted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now())`,
 		`DELETE FROM agent_traces WHERE deleted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now())`,
 		`DELETE FROM relationship_memories WHERE deleted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now())`,

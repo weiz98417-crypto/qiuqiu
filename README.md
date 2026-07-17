@@ -75,6 +75,7 @@ cp backend/.env.example .env
 #   - ALLOWED_ORIGINS: 用户端和企业控制台的 HTTPS 来源
 #   - POSTGRES_PASSWORD: 独立的数据库强密码
 #   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
+#   - PENDING_OBSERVATION_COORDINATION: 直播延迟事实协调开关（默认 true）
 
 # 2. 构建并启动服务（镜像内会自行编译 Flutter Web）
 docker compose up -d --build
@@ -129,6 +130,9 @@ flutter run \
 已确认的鉴权、比赛事实、隐私生命周期和导播幂等改造方案见：
 
 - [核心可信链改造方案](docs/security-facts-privacy-idempotency-plan.md)
+- [直播延迟下的事实协调方案](docs/live-latency-fact-coordination-solution.md)
+
+直播延迟事实协调默认开启。用户先看到现场时，球球会立即回应但不会把用户说法写进公共比分；导播台或外部数据源确认、撤销事实后，服务端只向对应用户补充确认或纠正，并在断线重连后继续未完成的跟进。可通过 `PENDING_OBSERVATION_COORDINATION=false` 暂停新增观察与异步跟进。
 
 ## License
 

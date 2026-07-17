@@ -36,6 +36,7 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 		_, _ = store.pool.Exec(context.Background(), `
 			DELETE FROM privacy_tombstones WHERE user_id = $1;
 			DELETE FROM user_sessions WHERE user_id = $1;
+			DELETE FROM pending_match_observations WHERE user_id = $1;
 			DELETE FROM conversation_turns WHERE user_id = $1;
 			DELETE FROM agent_traces WHERE user_id = $1;
 			DELETE FROM relationship_memories WHERE user_id = $1;
@@ -65,8 +66,14 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 		t.Fatal(err)
 	}
 	_, err = store.pool.Exec(ctx, `
-		INSERT INTO agent_traces (id, match_id, user_id, input, intent, output, reason, created_at, expires_at)
-		VALUES ($1, $2, $3, 'hello', 'chat', 'hi', 'test', now(), now() + interval '1 day')
+		INSERT INTO agent_traces (
+			id, match_id, user_id, input, intent, output, reason,
+			pending_observation, observation_resolution, created_at, expires_at
+		)
+		VALUES (
+			$1, $2, $3, 'hello', 'chat', 'hi', 'test',
+			'{"status":"pending_sync"}', '{"status":"confirmed"}', now(), now() + interval '1 day'
+		)
 	`, traceID, matchID, userID)
 	if err != nil {
 		t.Fatal(err)
@@ -99,13 +106,25 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
+	_, err = store.pool.Exec(ctx, `
+		INSERT INTO pending_match_observations (
+			id, signal_id, trace_id, user_id, match_id, kind, event_type, status,
+			received_at, follow_up_deadline, reconcile_until
+		) VALUES ($1, 'signal-observation', $2, $3, $4, 'event', 'goal', 'pending_sync', now(), now() + interval '15 seconds', now() + interval '1 minute')
+	`, userID+"-observation", traceID, userID, matchID)
+	if err != nil {
+		t.Fatal(err)
+	}
 
 	exported, err := store.Export(ctx, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exported.Sessions) != 1 || len(exported.ConversationTurns) != 1 || len(exported.AgentTraces) != 1 || len(exported.RelationshipStates) != 1 || len(exported.RelationshipMemories) != 1 || len(exported.MatchStates) != 1 || len(exported.InteractionDecisions) != 1 {
+	if len(exported.Sessions) != 1 || len(exported.ConversationTurns) != 1 || len(exported.AgentTraces) != 1 || len(exported.RelationshipStates) != 1 || len(exported.RelationshipMemories) != 1 || len(exported.MatchStates) != 1 || len(exported.InteractionDecisions) != 1 || len(exported.PendingObservations) != 1 {
 		t.Fatalf("export counts = sessions %d turns %d traces %d states %d memories %d matches %d decisions %d", len(exported.Sessions), len(exported.ConversationTurns), len(exported.AgentTraces), len(exported.RelationshipStates), len(exported.RelationshipMemories), len(exported.MatchStates), len(exported.InteractionDecisions))
+	}
+	if exported.AgentTraces[0]["pending_observation"] == nil || exported.AgentTraces[0]["observation_resolution"] == nil {
+		t.Fatalf("agent trace export omitted observation fields: %+v", exported.AgentTraces[0])
 	}
 	status, err := store.RequestDeletion(ctx, userID, "user_request")
 	if err != nil || status.Status != "pending" || status.JobID == "" {
@@ -131,5 +150,11 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("conversation turns remaining = %d", remaining)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM pending_match_observations WHERE user_id = $1`, userID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("pending observations remaining = %d", remaining)
 	}
 }

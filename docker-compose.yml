@@ -20,6 +20,7 @@ services:
       - MIMO_VOICE=${MIMO_VOICE:-Chloe}
       - APISPORTS_API_KEY=${APISPORTS_API_KEY:-}
       - PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS:-30}
+      - PENDING_OBSERVATION_COORDINATION=${PENDING_OBSERVATION_COORDINATION:-true}
     depends_on:
       - postgres
       - redis

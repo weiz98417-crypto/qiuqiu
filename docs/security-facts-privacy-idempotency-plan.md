@@ -395,4 +395,5 @@ privacy_tombstones
 - [Companion Agent Boundaries and Evals](companion-agent-boundaries-and-evals.md)
 - [Demo Runbook](demo-runbook.md)
 - [Humanity Runtime Technical Design](humanity-runtime-technical-design.md)
+- [Live Latency Fact Coordination Solution](live-latency-fact-coordination-solution.md)
 - [Trusted Interaction Foundation OpenSpec](../openspec/changes/trusted-interaction-foundation/proposal.md)

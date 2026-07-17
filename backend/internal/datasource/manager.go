@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -32,6 +33,15 @@ const (
 	StateUnconfigured SourceState = "unconfigured"
 )
 
+type Freshness string
+
+const (
+	FreshnessFresh    Freshness = "fresh"
+	FreshnessDegraded Freshness = "degraded"
+	FreshnessUnknown  Freshness = "unknown"
+	FreshnessOffline  Freshness = "offline"
+)
+
 type EventsClient interface {
 	GetEvents(fixtureID int) ([]Event, error)
 }
@@ -49,18 +59,24 @@ type SourceConfig struct {
 	Type          SourceType `json:"type"`
 	FixtureID     int        `json:"fixtureId,omitempty"`
 	ImportHistory bool       `json:"importHistory,omitempty"`
+	ExpectedDelay string     `json:"expectedDelay,omitempty"`
 }
 
 type SourceStatus struct {
-	Type        SourceType  `json:"type"`
-	State       SourceState `json:"state"`
-	FixtureID   int         `json:"fixtureId,omitempty"`
-	StartedAt   string      `json:"startedAt,omitempty"`
-	LastPollAt  string      `json:"lastPollAt,omitempty"`
-	LastEventAt string      `json:"lastEventAt,omitempty"`
-	LatencyMS   int64       `json:"latencyMs,omitempty"`
-	Error       string      `json:"error,omitempty"`
-	Reconnects  int         `json:"reconnects,omitempty"`
+	Type                 SourceType  `json:"type"`
+	State                SourceState `json:"state"`
+	FixtureID            int         `json:"fixtureId,omitempty"`
+	StartedAt            string      `json:"startedAt,omitempty"`
+	LastPollAt           string      `json:"lastPollAt,omitempty"`
+	LastEventAt          string      `json:"lastEventAt,omitempty"`
+	LatencyMS            int64       `json:"latencyMs,omitempty"`
+	Error                string      `json:"error,omitempty"`
+	Reconnects           int         `json:"reconnects,omitempty"`
+	Freshness            Freshness   `json:"freshness"`
+	LatencyP95MS         int64       `json:"latencyP95Ms,omitempty"`
+	FreshnessThresholdMS int64       `json:"freshnessThresholdMs,omitempty"`
+	UserMayLead          bool        `json:"userMayLead"`
+	ExpectedDelay        string      `json:"expectedDelay,omitempty"`
 }
 
 type MatchSourceStatus struct {
@@ -70,22 +86,29 @@ type MatchSourceStatus struct {
 }
 
 type Manager struct {
-	ctx       context.Context
-	cancel    context.CancelFunc
-	store     matchstate.Repository
-	client    EventsClient
-	config    ManagerConfig
-	controlMu sync.Mutex
-	mu        sync.RWMutex
-	active    map[string]SourceType
-	runs      map[string]*sourceRun
-	wg        sync.WaitGroup
+	ctx         context.Context
+	cancel      context.CancelFunc
+	store       matchstate.Repository
+	client      EventsClient
+	config      ManagerConfig
+	controlMu   sync.Mutex
+	mu          sync.RWMutex
+	active      map[string]SourceType
+	runs        map[string]*sourceRun
+	manualDelay map[string]string
+	wg          sync.WaitGroup
 }
 
 type sourceRun struct {
-	cancel context.CancelFunc
-	status SourceStatus
-	wait   sync.WaitGroup
+	cancel    context.CancelFunc
+	status    SourceStatus
+	latencies []latencySample
+	wait      sync.WaitGroup
+}
+
+type latencySample struct {
+	at      time.Time
+	latency time.Duration
 }
 
 func NewManager(parent context.Context, store matchstate.Repository, client EventsClient, config ManagerConfig) *Manager {
@@ -94,19 +117,21 @@ func NewManager(parent context.Context, store matchstate.Repository, client Even
 		config.PollInterval = 3 * time.Second
 	}
 	return &Manager{
-		ctx:    ctx,
-		cancel: cancel,
-		store:  store,
-		client: client,
-		config: config,
-		active: make(map[string]SourceType),
-		runs:   make(map[string]*sourceRun),
+		ctx:         ctx,
+		cancel:      cancel,
+		store:       store,
+		client:      client,
+		config:      config,
+		active:      make(map[string]SourceType),
+		runs:        make(map[string]*sourceRun),
+		manualDelay: make(map[string]string),
 	}
 }
 
 func (m *Manager) Status(matchID string) MatchSourceStatus {
 	m.mu.RLock()
 	active := m.active[matchID]
+	manualDelay := m.manualDelay[matchID]
 	m.mu.RUnlock()
 	if active == "" {
 		active = SourceManual
@@ -119,17 +144,47 @@ func (m *Manager) Status(matchID string) MatchSourceStatus {
 		MatchID:      matchID,
 		ActiveSource: active,
 		Sources: map[SourceType]SourceStatus{
-			SourceManual:    {Type: SourceManual, State: StateReady},
-			SourceReplay:    {Type: SourceReplay, State: StateReady},
-			SourceAPISports: {Type: SourceAPISports, State: apiState},
+			SourceManual:    {Type: SourceManual, State: StateReady, Freshness: FreshnessUnknown, UserMayLead: true, ExpectedDelay: defaultExpectedDelay(manualDelay)},
+			SourceReplay:    {Type: SourceReplay, State: StateReady, Freshness: FreshnessUnknown, UserMayLead: true},
+			SourceAPISports: {Type: SourceAPISports, State: apiState, Freshness: FreshnessOffline, UserMayLead: true},
 		},
 	}
 	m.mu.RLock()
 	if run := m.runs[matchID]; run != nil {
-		status.Sources[SourceAPISports] = run.status
+		status.Sources[SourceAPISports] = m.deriveSourceStatus(run.status, time.Now().UTC())
 	}
 	m.mu.RUnlock()
 	return status
+}
+
+func (m *Manager) ObservationReconcileWindow(matchID string, base time.Duration) time.Duration {
+	if base <= 0 {
+		base = time.Minute
+	}
+	status := m.Status(strings.TrimSpace(matchID))
+	active := status.Sources[status.ActiveSource]
+	switch status.ActiveSource {
+	case SourceManual:
+		switch defaultExpectedDelay(active.ExpectedDelay) {
+		case "conservative":
+			return maxDuration(base, 2*time.Minute)
+		case "normal":
+			return maxDuration(base, 90*time.Second)
+		default:
+			return base
+		}
+	case SourceAPISports:
+		switch active.Freshness {
+		case FreshnessOffline:
+			return maxDuration(base, 2*time.Minute)
+		case FreshnessDegraded, FreshnessUnknown:
+			return maxDuration(base, 90*time.Second)
+		default:
+			return base
+		}
+	default:
+		return base
+	}
 }
 
 func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus, error) {
@@ -174,6 +229,9 @@ func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus,
 	m.mu.Lock()
 	if config.Type == SourceManual || config.Type == SourceReplay {
 		m.active[matchID] = config.Type
+		if config.Type == SourceManual {
+			m.manualDelay[matchID] = defaultExpectedDelay(config.ExpectedDelay)
+		}
 		m.mu.Unlock()
 		return m.Status(matchID), nil
 	}
@@ -291,6 +349,16 @@ func (m *Manager) updatePollStatus(matchID string, report PollReport) {
 	}
 	run.status.LastPollAt = report.At.UTC().Format(time.RFC3339Nano)
 	run.status.LatencyMS = report.Latency.Milliseconds()
+	run.latencies = append(run.latencies, latencySample{at: report.At.UTC(), latency: report.Latency})
+	cutoff := report.At.UTC().Add(-5 * time.Minute)
+	kept := run.latencies[:0]
+	for _, sample := range run.latencies {
+		if !sample.at.Before(cutoff) {
+			kept = append(kept, sample)
+		}
+	}
+	run.latencies = kept
+	run.status.LatencyP95MS = latencyP95(run.latencies).Milliseconds()
 	if report.Err != nil {
 		run.status.State = StateError
 		run.status.Error = report.Err.Error()
@@ -299,6 +367,72 @@ func (m *Manager) updatePollStatus(matchID string, report PollReport) {
 	}
 	run.status.State = StateRunning
 	run.status.Error = ""
+}
+
+func (m *Manager) deriveSourceStatus(status SourceStatus, now time.Time) SourceStatus {
+	threshold := 2*m.config.PollInterval + time.Duration(status.LatencyP95MS)*time.Millisecond
+	if threshold < 6*time.Second {
+		threshold = 6 * time.Second
+	}
+	if threshold > 20*time.Second {
+		threshold = 20 * time.Second
+	}
+	status.FreshnessThresholdMS = threshold.Milliseconds()
+	switch status.State {
+	case StateUnconfigured, StateStopped:
+		status.Freshness = FreshnessOffline
+	case StateRunning, StateError:
+		lastPoll, err := time.Parse(time.RFC3339Nano, status.LastPollAt)
+		if err != nil {
+			status.Freshness = FreshnessUnknown
+		} else {
+			age := now.Sub(lastPoll)
+			switch {
+			case status.State == StateRunning && age <= threshold:
+				status.Freshness = FreshnessFresh
+			case age <= 2*threshold:
+				status.Freshness = FreshnessDegraded
+			default:
+				status.Freshness = FreshnessOffline
+			}
+		}
+	default:
+		status.Freshness = FreshnessUnknown
+	}
+	status.UserMayLead = status.Freshness != FreshnessFresh
+	return status
+}
+
+func latencyP95(samples []latencySample) time.Duration {
+	if len(samples) == 0 {
+		return 0
+	}
+	values := make([]time.Duration, len(samples))
+	for index, sample := range samples {
+		values[index] = sample.latency
+	}
+	sort.Slice(values, func(i, j int) bool { return values[i] < values[j] })
+	index := (95*len(values) + 99) / 100
+	if index < 1 {
+		index = 1
+	}
+	return values[index-1]
+}
+
+func defaultExpectedDelay(value string) string {
+	switch strings.TrimSpace(value) {
+	case "fast", "normal", "conservative":
+		return strings.TrimSpace(value)
+	default:
+		return "normal"
+	}
+}
+
+func maxDuration(left, right time.Duration) time.Duration {
+	if left > right {
+		return left
+	}
+	return right
 }
 
 func (m *Manager) updateSourceError(matchID string, err error) {

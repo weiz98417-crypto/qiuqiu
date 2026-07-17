@@ -15,6 +15,7 @@ import (
 	"unicode"
 
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/relationship"
 )
 
@@ -80,6 +81,13 @@ type ProactiveResponse struct {
 	Presentation relationship.PresentationPlan
 }
 
+type ObservationResponse struct {
+	Resolution   observation.Resolution
+	Reply        string
+	Trace        Trace
+	Presentation relationship.PresentationPlan
+}
+
 type MatchEventRequest struct {
 	UserID                string
 	Event                 matchstate.MatchEvent
@@ -101,21 +109,23 @@ type FirstMeetingRequest struct {
 }
 
 type Trace struct {
-	ID                   string                 `json:"id"`
-	MatchID              string                 `json:"matchId"`
-	UserID               string                 `json:"userId"`
-	Input                string                 `json:"input"`
-	Intent               Intent                 `json:"intent"`
-	ToolCalls            []ToolCall             `json:"toolCalls"`
-	RetrievedEvent       []string               `json:"retrievedEventIds"`
-	Output               string                 `json:"output"`
-	Reason               string                 `json:"reason"`
-	LatencyMS            int                    `json:"latencyMs"`
-	Error                string                 `json:"error"`
-	Voice                *VoiceTraceMetadata    `json:"voice,omitempty"`
-	Claim                *FactClaim             `json:"claim,omitempty"`
-	RelationshipDecision *relationship.Decision `json:"relationshipDecision,omitempty"`
-	CreatedAt            time.Time              `json:"createdAt"`
+	ID                    string                          `json:"id"`
+	MatchID               string                          `json:"matchId"`
+	UserID                string                          `json:"userId"`
+	Input                 string                          `json:"input"`
+	Intent                Intent                          `json:"intent"`
+	ToolCalls             []ToolCall                      `json:"toolCalls"`
+	RetrievedEvent        []string                        `json:"retrievedEventIds"`
+	Output                string                          `json:"output"`
+	Reason                string                          `json:"reason"`
+	LatencyMS             int                             `json:"latencyMs"`
+	Error                 string                          `json:"error"`
+	Voice                 *VoiceTraceMetadata             `json:"voice,omitempty"`
+	Claim                 *FactClaim                      `json:"claim,omitempty"`
+	Observation           *observation.PendingObservation `json:"observation,omitempty"`
+	ObservationResolution *observation.Resolution         `json:"observationResolution,omitempty"`
+	RelationshipDecision  *relationship.Decision          `json:"relationshipDecision,omitempty"`
+	CreatedAt             time.Time                       `json:"createdAt"`
 }
 
 type VoiceTraceMetadata struct {
@@ -171,10 +181,12 @@ type MemoryTools interface {
 }
 
 type Agent struct {
-	tools          MemoryTools
-	realizer       ReplyRealizer
-	director       relationship.CompanionDirector
-	realizeTimeout time.Duration
+	tools                      MemoryTools
+	realizer                   ReplyRealizer
+	director                   relationship.CompanionDirector
+	observations               observation.Coordinator
+	observationReconcileWindow func(string, string) time.Duration
+	realizeTimeout             time.Duration
 }
 
 func NewAgent(tools MemoryTools) *Agent {
@@ -194,8 +206,110 @@ func (a *Agent) WithDirector(director relationship.CompanionDirector) *Agent {
 	return a
 }
 
+func (a *Agent) WithObservationCoordinator(coordinator observation.Coordinator) *Agent {
+	a.observations = coordinator
+	return a
+}
+
+func (a *Agent) WithObservationReconcileWindow(provider func(string, string) time.Duration) *Agent {
+	a.observationReconcileWindow = provider
+	return a
+}
+
 func (a *Agent) UpdateTrace(ctx context.Context, trace Trace) error {
 	return a.tools.UpdateTrace(ctx, trace)
+}
+
+func (a *Agent) HandleObservationFactChanged(ctx context.Context, event matchstate.MatchEvent, now time.Time) ([]ObservationResponse, error) {
+	if a == nil || a.observations == nil {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	resolutions, err := a.observations.OnFactChanged(ctx, event)
+	if err != nil {
+		return nil, err
+	}
+	return a.observationResponses(ctx, resolutions, now, event.ID)
+}
+
+func (a *Agent) RecoverObservationFollowUps(ctx context.Context, userID, matchID string, now time.Time) ([]ObservationResponse, error) {
+	recovery, ok := a.observations.(observation.ResolutionRecovery)
+	if !ok {
+		return nil, nil
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	resolutions, err := recovery.PendingResolutions(ctx, userID, matchID, now)
+	if err != nil {
+		return nil, err
+	}
+	return a.observationResponses(ctx, resolutions, now, "")
+}
+
+func (a *Agent) MarkObservationResolutionDelivered(ctx context.Context, deliveryKey string, deliveredAt time.Time) error {
+	recovery, ok := a.observations.(observation.ResolutionRecovery)
+	if !ok {
+		return nil
+	}
+	return recovery.MarkResolutionDelivered(ctx, deliveryKey, deliveredAt)
+}
+
+func (a *Agent) SuppressObservationFollowUp(ctx context.Context, observationID string, suppressedAt time.Time) error {
+	suppressor, ok := a.observations.(observation.ResolutionSuppressor)
+	if !ok {
+		return nil
+	}
+	return suppressor.SuppressFollowUp(ctx, observationID, suppressedAt)
+}
+
+func (a *Agent) observationResponses(ctx context.Context, resolutions []observation.Resolution, now time.Time, eventID string) ([]ObservationResponse, error) {
+	responses := make([]ObservationResponse, 0, len(resolutions))
+	for index := range resolutions {
+		resolution := resolutions[index]
+		if strings.TrimSpace(resolution.ReliableText) == "" {
+			continue
+		}
+		trace := Trace{
+			ID:                    stableTraceID(resolution.UserID, resolution.MatchID, "observation:"+resolution.DeliveryKey),
+			MatchID:               resolution.MatchID,
+			UserID:                resolution.UserID,
+			Intent:                IntentRecentEvent,
+			RetrievedEvent:        compactAnchors(eventID),
+			Output:                resolution.ReliableText,
+			Reason:                "observation_" + string(resolution.Status),
+			ObservationResolution: &resolution,
+			CreatedAt:             now.UTC(),
+			ToolCalls: []ToolCall{
+				{Name: "observation.reconcile", Args: map[string]string{"observationId": resolution.ObservationID, "status": string(resolution.Status)}},
+				{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "observation_resolution"}},
+				{Name: "trace.write_decision", Args: map[string]string{"matchId": resolution.MatchID}},
+			},
+		}
+		if err := a.tools.WriteTrace(ctx, trace); err != nil {
+			return responses, err
+		}
+		responses = append(responses, ObservationResponse{
+			Resolution:   resolution,
+			Reply:        resolution.ReliableText,
+			Trace:        trace,
+			Presentation: observationPresentation(resolution.Status),
+		})
+	}
+	return responses, nil
+}
+
+func observationPresentation(status observation.Status) relationship.PresentationPlan {
+	switch status {
+	case observation.StatusConfirmed:
+		return relationship.PresentationPlan{Expression: "excited", Motion: "cheer", VoiceStyle: "excited", VoiceEnergy: 0.9, VoiceSpeed: 1.05, HoldMS: 1800, ReturnMode: "watching"}
+	case observation.StatusContradicted:
+		return relationship.PresentationPlan{Expression: "deflated", Motion: "slump", VoiceStyle: "soft", VoiceEnergy: 0.45, VoiceSpeed: 0.95, HoldMS: 1600, ReturnMode: "watching"}
+	default:
+		return relationship.PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"}
+	}
 }
 
 func (a *Agent) HandleMessage(ctx context.Context, req MessageRequest) (Response, error) {
@@ -253,8 +367,15 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		}
 		trace.Claim = &claim
 		trace.RetrievedEvent = eventIDs
+		if snapshot.Period == "pre_match" && claim.EventType == "goal" {
+			claim.Status = ClaimStatusContradicted
+			claim.Reason = "match has not started"
+		}
 		trace.Reason = "user_match_claim_" + string(claim.Status)
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+		if claim.Status == ClaimStatusUnverified {
+			a.recordObservation(ctx, req, requestTraceID, claim, &trace)
+		}
 		if claim.Kind == "score" {
 			score := fmt.Sprintf("%d-%d", snapshot.Score.Home, snapshot.Score.Away)
 			switch claim.Status {
@@ -267,6 +388,10 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			}
 			requiredAnchors = compactAnchors(snapshot.HomeTeam, score, snapshot.AwayTeam)
 		} else {
+			if claim.Reason == "match has not started" {
+				reply = "比赛还没开始，这条不能算。"
+				break
+			}
 			switch claim.Status {
 			case ClaimStatusConfirmed:
 				if claim.ClaimedPlayer != "" {
@@ -368,6 +493,9 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			trace.Claim = &claim
 			trace.Reason = "user_event_reference_" + string(claim.Status)
 			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+			if claim.Status == ClaimStatusUnverified {
+				a.recordObservation(ctx, req, requestTraceID, claim, &trace)
+			}
 			requiredAnchors = anchorsForEvents(events, trace.RetrievedEvent, reply)
 		} else {
 			reply = emotionReactionReply(req.Text)
@@ -427,6 +555,40 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		presentation = decision.Presentation
 	}
 	return Response{Intent: intent, Reply: reply, Trace: trace, Presentation: presentation}, nil
+}
+
+func (a *Agent) recordObservation(ctx context.Context, req AgentBoundaryRequest, traceID string, claim FactClaim, trace *Trace) {
+	if a.observations == nil || trace == nil {
+		return
+	}
+	signalID := strings.TrimSpace(req.SignalID)
+	if signalID == "" {
+		signalID = traceID
+	}
+	reconcileWindow := time.Duration(0)
+	if a.observationReconcileWindow != nil {
+		reconcileWindow = a.observationReconcileWindow(req.MatchID, claim.EventType)
+	}
+	recorded, err := a.observations.Record(ctx, observation.Input{
+		SignalID:        signalID,
+		TraceID:         traceID,
+		UserID:          req.UserID,
+		MatchID:         req.MatchID,
+		Kind:            claim.Kind,
+		EventType:       claim.EventType,
+		ClaimedTeam:     claim.ClaimedTeam,
+		ClaimedPlayer:   claim.ClaimedPlayer,
+		ClaimedScore:    claim.ClaimedScore,
+		Certainty:       claim.Certainty,
+		ReceivedAt:      trace.CreatedAt,
+		ReconcileWindow: reconcileWindow,
+	})
+	if err != nil {
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "observation.record", Args: map[string]string{"status": "error"}})
+		return
+	}
+	trace.Observation = &recorded
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "observation.record", Args: map[string]string{"status": string(recorded.Status), "observationId": recorded.ID}})
 }
 
 func reliableFallbackForDecision(input string, intent Intent, original string, decision relationship.Decision) string {
@@ -496,20 +658,36 @@ func isGroundedMatchReaction(input string) bool {
 func answerDeicticMatchReaction(text string, events []matchstate.MatchEvent) (string, FactClaim, []string) {
 	claim := FactClaim{
 		Kind:      "event_reference",
+		EventType: "play",
 		Certainty: claimCertainty(text),
 		Status:    ClaimStatusUnverified,
 	}
-	if len(events) == 0 {
+	var event *matchstate.MatchEvent
+	for index := range events {
+		if isReferencableMatchEvent(events[index].EventType) {
+			event = &events[index]
+			break
+		}
+	}
+	if event == nil {
 		claim.Reason = "no recent confirmed match event"
 		return "我这边还没看到你说的那一下，先不跟着瞎认。", claim, nil
 	}
-	event := events[0]
 	claim.EventType = event.EventType
 	claim.ActualPlayer = strings.TrimSpace(event.PlayerName)
 	claim.ActualTeam = strings.TrimSpace(event.TeamName)
 	claim.Status = ClaimStatusConfirmed
 	claim.Reason = "matched latest confirmed match event"
 	return fmt.Sprintf("这下我能接，刚才%s这一下确实漂亮：%s", event.Clock, event.Description), claim, []string{event.ID}
+}
+
+func isReferencableMatchEvent(eventType string) bool {
+	switch strings.TrimSpace(eventType) {
+	case "", "kickoff", "match_start", "half_time", "halftime", "fulltime", "match_end":
+		return false
+	default:
+		return true
+	}
 }
 
 func isDisbeliefReaction(input string) bool {

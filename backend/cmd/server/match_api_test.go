@@ -16,6 +16,7 @@ import (
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/pipeline"
 )
 
@@ -534,8 +535,9 @@ func TestEvalTraceAPIListDetailAndAuth(t *testing.T) {
 func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
+	observations := observation.NewMemoryCoordinator()
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil, pipeline.NewPromptManager())
 
 	if _, _, err := store.SetConfig("test", matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
@@ -559,6 +561,13 @@ func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
 		Now:     time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
 	}); err != nil {
 		t.Fatalf("HandleMessage error: %v", err)
+	}
+	pending, err := observations.Record(contextless(), observation.Input{
+		SignalID: "reset-observation", UserID: "user-1", MatchID: "test", Kind: "event", EventType: "goal",
+		ReceivedAt: time.Date(2026, 6, 2, 12, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("Record observation error: %v", err)
 	}
 
 	unauth := doJSON(t, handler, http.MethodPost, "/api/matches/test/reset", nil)
@@ -591,6 +600,9 @@ func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
 	}
 	if len(turns) != 0 {
 		t.Fatalf("expected reset to clear turns, got %+v", turns)
+	}
+	if _, ok := observations.Get(pending.ID); ok {
+		t.Fatal("expected reset to clear pending observations")
 	}
 	if got := store.Snapshot("test"); got.HomeTeam != "主队" || got.Score.Home != 0 || got.Score.Away != 0 {
 		t.Fatalf("expected reset snapshot defaults, got %+v", got)

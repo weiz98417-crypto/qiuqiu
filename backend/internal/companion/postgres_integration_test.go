@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/observation"
 )
 
 func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
@@ -104,6 +105,11 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 		Output:    "other",
 		Reason:    "test",
 		CreatedAt: time.Now().UTC(),
+		ObservationResolution: &observation.Resolution{
+			ObservationID: "observation-other", UserID: "pg-user", MatchID: otherMatchID,
+			Status: observation.StatusConfirmed, FactID: "fact-other", FactRevision: 2,
+			DeliveryKey: "observation-other:2:confirmed",
+		},
 	}); err != nil {
 		t.Fatalf("WriteTrace other error: %v", err)
 	}
@@ -183,5 +189,8 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 	}
 	if len(otherTraces) != 1 {
 		t.Fatalf("reset should not clear other match traces: %+v", otherTraces)
+	}
+	if otherTraces[0].ObservationResolution == nil || otherTraces[0].ObservationResolution.DeliveryKey != "observation-other:2:confirmed" {
+		t.Fatalf("observation resolution did not persist in trace: %+v", otherTraces[0])
 	}
 }

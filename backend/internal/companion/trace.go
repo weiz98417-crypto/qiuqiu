@@ -6,6 +6,7 @@ import (
 	"errors"
 	"time"
 
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/privacy"
 	"qiuqiu/internal/relationship"
 
@@ -88,6 +89,14 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 	if err != nil {
 		return err
 	}
+	pendingObservation, err := json.Marshal(trace.Observation)
+	if err != nil {
+		return err
+	}
+	observationResolution, err := json.Marshal(trace.ObservationResolution)
+	if err != nil {
+		return err
+	}
 	relationshipDecision, err := json.Marshal(trace.RelationshipDecision)
 	if err != nil {
 		return err
@@ -124,9 +133,10 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 	tag, err := tx.Exec(ctx, `
 		INSERT INTO agent_traces (
 			id, match_id, user_id, input, intent, tool_calls,
-			retrieved_event_ids, output, reason, latency_ms, error, voice, fact_claim, relationship_decision, created_at, expires_at
+			retrieved_event_ids, output, reason, latency_ms, error, voice, fact_claim,
+			pending_observation, observation_resolution, relationship_decision, created_at, expires_at
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
 		ON CONFLICT (id) DO UPDATE SET
 			input = EXCLUDED.input,
 			intent = EXCLUDED.intent,
@@ -138,13 +148,16 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 			error = EXCLUDED.error,
 			voice = EXCLUDED.voice,
 			fact_claim = EXCLUDED.fact_claim,
+			pending_observation = EXCLUDED.pending_observation,
+			observation_resolution = EXCLUDED.observation_resolution,
 			relationship_decision = EXCLUDED.relationship_decision,
 			expires_at = EXCLUDED.expires_at
 		WHERE agent_traces.match_id = EXCLUDED.match_id
 			AND agent_traces.user_id = EXCLUDED.user_id
 			AND agent_traces.input = EXCLUDED.input
 	`, trace.ID, trace.MatchID, trace.UserID, trace.Input, string(trace.Intent), toolCalls,
-		retrievedEvents, trace.Output, trace.Reason, trace.LatencyMS, trace.Error, voice, claim, relationshipDecision, createdAt, expiresAt)
+		retrievedEvents, trace.Output, trace.Reason, trace.LatencyMS, trace.Error, voice, claim,
+		pendingObservation, observationResolution, relationshipDecision, createdAt, expiresAt)
 	if err != nil {
 		return err
 	}
@@ -205,6 +218,14 @@ func (w *PostgresTraceWriter) UpdateTrace(ctx context.Context, trace Trace) erro
 	if err != nil {
 		return err
 	}
+	pendingObservation, err := json.Marshal(trace.Observation)
+	if err != nil {
+		return err
+	}
+	observationResolution, err := json.Marshal(trace.ObservationResolution)
+	if err != nil {
+		return err
+	}
 	relationshipDecision, err := json.Marshal(trace.RelationshipDecision)
 	if err != nil {
 		return err
@@ -223,9 +244,12 @@ func (w *PostgresTraceWriter) UpdateTrace(ctx context.Context, trace Trace) erro
 			error = $8,
 			voice = $9,
 			fact_claim = $10,
-			relationship_decision = $11
+			pending_observation = $11,
+			observation_resolution = $12,
+			relationship_decision = $13
 		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
-	`, trace.MatchID, trace.ID, toolCalls, retrievedEvents, trace.Output, trace.Reason, trace.LatencyMS, trace.Error, voice, claim, relationshipDecision)
+	`, trace.MatchID, trace.ID, toolCalls, retrievedEvents, trace.Output, trace.Reason, trace.LatencyMS, trace.Error,
+		voice, claim, pendingObservation, observationResolution, relationshipDecision)
 	if err != nil {
 		return err
 	}
@@ -238,7 +262,8 @@ func (w *PostgresTraceWriter) ListTraces(ctx context.Context, matchID string, li
 	}
 	rows, err := w.pool.Query(ctx, `
 		SELECT id, match_id, user_id, input, intent, tool_calls, retrieved_event_ids,
-			output, reason, latency_ms, error, voice, fact_claim, relationship_decision, created_at
+			output, reason, latency_ms, error, voice, fact_claim, pending_observation,
+			observation_resolution, relationship_decision, created_at
 		FROM agent_traces
 		WHERE match_id = $1 AND deleted_at IS NULL
 			AND (expires_at IS NULL OR expires_at > now())
@@ -264,7 +289,8 @@ func (w *PostgresTraceWriter) ListTraces(ctx context.Context, matchID string, li
 func (w *PostgresTraceWriter) GetTrace(ctx context.Context, matchID, traceID string) (Trace, error) {
 	rows, err := w.pool.Query(ctx, `
 		SELECT id, match_id, user_id, input, intent, tool_calls, retrieved_event_ids,
-			output, reason, latency_ms, error, voice, fact_claim, relationship_decision, created_at
+			output, reason, latency_ms, error, voice, fact_claim, pending_observation,
+			observation_resolution, relationship_decision, created_at
 		FROM agent_traces
 		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
 			AND (expires_at IS NULL OR expires_at > now())
@@ -321,6 +347,8 @@ func scanTrace(rows pgx.Rows) (Trace, error) {
 	var toolCalls []byte
 	var voice []byte
 	var claim []byte
+	var pendingObservation []byte
+	var observationResolution []byte
 	var relationshipDecision []byte
 	var createdAt time.Time
 	err := rows.Scan(
@@ -337,6 +365,8 @@ func scanTrace(rows pgx.Rows) (Trace, error) {
 		&trace.Error,
 		&voice,
 		&claim,
+		&pendingObservation,
+		&observationResolution,
 		&relationshipDecision,
 		&createdAt,
 	)
@@ -361,6 +391,20 @@ func scanTrace(rows pgx.Rows) (Trace, error) {
 			return Trace{}, err
 		}
 		trace.Claim = &assessment
+	}
+	if len(pendingObservation) > 0 && string(pendingObservation) != "null" {
+		var pending observation.PendingObservation
+		if err := json.Unmarshal(pendingObservation, &pending); err != nil {
+			return Trace{}, err
+		}
+		trace.Observation = &pending
+	}
+	if len(observationResolution) > 0 && string(observationResolution) != "null" {
+		var resolution observation.Resolution
+		if err := json.Unmarshal(observationResolution, &resolution); err != nil {
+			return Trace{}, err
+		}
+		trace.ObservationResolution = &resolution
 	}
 	if len(relationshipDecision) > 0 && string(relationshipDecision) != "null" {
 		var decision relationship.Decision

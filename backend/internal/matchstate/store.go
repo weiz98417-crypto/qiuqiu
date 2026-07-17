@@ -180,14 +180,19 @@ type OutboxRunner interface {
 	RunOutbox(context.Context)
 }
 
+type EventObserverRegistrar interface {
+	SetEventObserver(func(MatchEvent) error)
+}
+
 type Store struct {
-	mu           sync.RWMutex
-	events       map[string][]MatchEvent
-	configs      map[string]MatchConfig
-	factHistory  map[string][]FactRevision
-	sourceCursor map[string]int64
-	subscribers  map[string]map[*eventSubscription]struct{}
-	nextID       int64
+	mu            sync.RWMutex
+	events        map[string][]MatchEvent
+	configs       map[string]MatchConfig
+	factHistory   map[string][]FactRevision
+	sourceCursor  map[string]int64
+	subscribers   map[string]map[*eventSubscription]struct{}
+	eventObserver func(MatchEvent) error
+	nextID        int64
 }
 
 type eventSubscription struct {
@@ -758,6 +763,12 @@ func (s *Store) Subscribe(matchID string) (<-chan MatchEvent, func()) {
 	return subscription.events, unsubscribe
 }
 
+func (s *Store) SetEventObserver(observer func(MatchEvent) error) {
+	s.mu.Lock()
+	s.eventObserver = observer
+	s.mu.Unlock()
+}
+
 func (s *Store) subscriberListLocked(matchID string) []*eventSubscription {
 	var subs []*eventSubscription
 	for subscription := range s.subscribers[matchID] {
@@ -766,10 +777,18 @@ func (s *Store) subscriberListLocked(matchID string) []*eventSubscription {
 	return subs
 }
 
-func (s *Store) publish(subs []*eventSubscription, ev MatchEvent) {
+func (s *Store) publish(subs []*eventSubscription, ev MatchEvent) error {
+	s.mu.RLock()
+	observer := s.eventObserver
+	s.mu.RUnlock()
+	var observerErr error
+	if observer != nil {
+		observerErr = observer(ev)
+	}
 	for _, subscription := range subs {
 		subscription.enqueue(ev)
 	}
+	return observerErr
 }
 
 func normalize(ev *MatchEvent) {

@@ -7,6 +7,29 @@ import (
 	"time"
 )
 
+func TestEventObserverRunsWithoutMatchSubscriber(t *testing.T) {
+	store := NewStore()
+	observed := make(chan MatchEvent, 1)
+	store.SetEventObserver(func(event MatchEvent) error {
+		observed <- event
+		return nil
+	})
+	created, _, err := store.Create("observer-without-client", MatchEvent{
+		EventType: "kickoff", Period: "first_half", Clock: "00:01", Description: "match started",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	select {
+	case event := <-observed:
+		if event.ID != created.ID || event.MatchID != "observer-without-client" {
+			t.Fatalf("observed event = %+v, want created event", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event observer was not called without a match subscriber")
+	}
+}
+
 func TestUnsubscribeIsSafeDuringPublish(t *testing.T) {
 	store := NewStore()
 	const matchID = "subscription-race"

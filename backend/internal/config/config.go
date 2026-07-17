@@ -11,20 +11,21 @@ import (
 )
 
 type Config struct {
-	Port                 string
-	Environment          string
-	AppToken             string
-	AuthMode             string
-	SessionSigningKey    string
-	AllowedOrigins       []string
-	DatabaseURL          string
-	RedisAddr            string
-	MiMoAPIKey           string
-	MiMoBaseURL          string
-	MiMoModel            string
-	MiMoVoice            string
-	APISportsAPIKey      string
-	PrivacyRetentionDays int
+	Port                           string
+	Environment                    string
+	AppToken                       string
+	AuthMode                       string
+	SessionSigningKey              string
+	AllowedOrigins                 []string
+	DatabaseURL                    string
+	RedisAddr                      string
+	MiMoAPIKey                     string
+	MiMoBaseURL                    string
+	MiMoModel                      string
+	MiMoVoice                      string
+	APISportsAPIKey                string
+	PrivacyRetentionDays           int
+	PendingObservationCoordination bool
 }
 
 func Load() *Config {
@@ -42,20 +43,21 @@ func Load() *Config {
 		sessionSigningKey = developmentSessionSigningKey()
 	}
 	return &Config{
-		Port:                 getEnv("PORT", "8080"),
-		Environment:          environment,
-		AppToken:             strings.TrimSpace(os.Getenv("APP_TOKEN")),
-		AuthMode:             authMode,
-		SessionSigningKey:    sessionSigningKey,
-		AllowedOrigins:       splitCSV(os.Getenv("ALLOWED_ORIGINS")),
-		DatabaseURL:          getEnv("DATABASE_URL", ""),
-		RedisAddr:            getEnv("REDIS_ADDR", "localhost:6379"),
-		MiMoAPIKey:           getEnv("MIMO_API_KEY", ""),
-		MiMoBaseURL:          getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-		MiMoModel:            getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
-		MiMoVoice:            getEnv("MIMO_VOICE", "Chloe"),
-		APISportsAPIKey:      strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
-		PrivacyRetentionDays: getEnvInt("PRIVACY_RETENTION_DAYS", 30),
+		Port:                           getEnv("PORT", "8080"),
+		Environment:                    environment,
+		AppToken:                       strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		AuthMode:                       authMode,
+		SessionSigningKey:              sessionSigningKey,
+		AllowedOrigins:                 splitCSV(os.Getenv("ALLOWED_ORIGINS")),
+		DatabaseURL:                    getEnv("DATABASE_URL", ""),
+		RedisAddr:                      getEnv("REDIS_ADDR", "localhost:6379"),
+		MiMoAPIKey:                     getEnv("MIMO_API_KEY", ""),
+		MiMoBaseURL:                    getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		MiMoVoice:                      getEnv("MIMO_VOICE", "Chloe"),
+		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
+		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
 	}
 }
 
@@ -191,6 +193,16 @@ func getEnvInt(key string, fallback int) int {
 		n, err := strconv.Atoi(v)
 		if err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err == nil {
+			return parsed
 		}
 	}
 	return fallback

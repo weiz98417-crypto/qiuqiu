@@ -2,6 +2,17 @@ package config
 
 import "testing"
 
+func TestPendingObservationCoordinationDefaultsOnAndCanBeDisabled(t *testing.T) {
+	t.Setenv("PENDING_OBSERVATION_COORDINATION", "")
+	if cfg := Load(); !cfg.PendingObservationCoordination {
+		t.Fatal("pending observation coordination should default to enabled")
+	}
+	t.Setenv("PENDING_OBSERVATION_COORDINATION", "false")
+	if cfg := Load(); cfg.PendingObservationCoordination {
+		t.Fatal("pending observation coordination should be disabled by feature flag")
+	}
+}
+
 func TestProductionRequiresCredentials(t *testing.T) {
 	cfg := &Config{Environment: "production"}
 	if err := cfg.Validate(); err == nil {
