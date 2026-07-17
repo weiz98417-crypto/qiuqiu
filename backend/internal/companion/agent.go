@@ -355,7 +355,23 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	case IntentControlCommand:
 		reply = "收到，我会少说一点，关键变化再提醒你。"
 	case IntentEmotionReaction:
-		reply = emotionReactionReply(req.Text)
+		if isGroundedMatchReaction(req.Text) {
+			allowRealize = false
+			deterministicReason = "deictic_event_grounding"
+			events, err := a.tools.RecentEvents(ctx, req.MatchID, 8)
+			if err != nil {
+				return Response{}, err
+			}
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.search_events", Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
+			var claim FactClaim
+			reply, claim, trace.RetrievedEvent = answerDeicticMatchReaction(req.Text, events)
+			trace.Claim = &claim
+			trace.Reason = "user_event_reference_" + string(claim.Status)
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+			requiredAnchors = anchorsForEvents(events, trace.RetrievedEvent, reply)
+		} else {
+			reply = emotionReactionReply(req.Text)
+		}
 	case IntentSmalltalk:
 		reply = "我在，陪你看。你想聊比赛我就跟着场上节奏走，想闲聊也行。"
 	default:
@@ -465,6 +481,35 @@ func emotionReactionReply(input string) string {
 	default:
 		return "嗯，这一下有感觉。"
 	}
+}
+
+func isGroundedMatchReaction(input string) bool {
+	lower := strings.ToLower(strings.TrimSpace(input))
+	if !containsAny(lower, "漂亮", "舒服", "精彩", "好球", "牛", "厉害", "关键", "太棒", "神了", "绝了", "可惜", "离谱") {
+		return false
+	}
+	return containsMatchFactLanguage(lower) || containsAny(lower,
+		"这球", "这个球", "这一球", "那球", "那个球", "那一球", "这一下", "那一下", "这脚", "那脚", "这一脚", "那一脚",
+	)
+}
+
+func answerDeicticMatchReaction(text string, events []matchstate.MatchEvent) (string, FactClaim, []string) {
+	claim := FactClaim{
+		Kind:      "event_reference",
+		Certainty: claimCertainty(text),
+		Status:    ClaimStatusUnverified,
+	}
+	if len(events) == 0 {
+		claim.Reason = "no recent confirmed match event"
+		return "我这边还没看到你说的那一下，先不跟着瞎认。", claim, nil
+	}
+	event := events[0]
+	claim.EventType = event.EventType
+	claim.ActualPlayer = strings.TrimSpace(event.PlayerName)
+	claim.ActualTeam = strings.TrimSpace(event.TeamName)
+	claim.Status = ClaimStatusConfirmed
+	claim.Reason = "matched latest confirmed match event"
+	return fmt.Sprintf("这下我能接，刚才%s这一下确实漂亮：%s", event.Clock, event.Description), claim, []string{event.ID}
 }
 
 func isDisbeliefReaction(input string) bool {

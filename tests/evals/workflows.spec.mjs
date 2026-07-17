@@ -126,6 +126,23 @@ test('没有比赛证据时，用户报告的进球保持待确认', async ({ pa
   expect(trace.claim).toMatchObject({ kind: 'event', status: 'unverified', certainty: 'uncertain' });
 });
 
+test('没有比赛事件时，指代式赞美不会被球球顺着认同', async ({ page, request }) => {
+  await apiPost(request, `/api/matches/${matchId}/reset`, {});
+  await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
+  await page.goto('/');
+  await enableAccessibility(page);
+  await openTextMode(page);
+  await sendText(page, '刚刚那个球真漂亮吧');
+  await expect(page.getByText(/还没看到你说的那一下/).last()).toBeVisible({ timeout: 30_000 });
+
+  const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=20`);
+  const trace = traces.traces.find((item) => item.input === '刚刚那个球真漂亮吧');
+  expect(trace.output).not.toContain('确实漂亮');
+  expect(trace.claim).toMatchObject({ kind: 'event_reference', status: 'unverified', certainty: 'uncertain' });
+  expect(JSON.stringify(trace.toolCalls)).toContain('match.search_events');
+  expect(JSON.stringify(trace.toolCalls)).toContain('match.verify_user_claim');
+});
+
 test('人工与外部源冲突时，球球暂停确认赛况', async ({ page, request }) => {
   const conflictResponse = await request.post(`/api/matches/${matchId}/events`, {
     data: {
