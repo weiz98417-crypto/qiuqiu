@@ -6,17 +6,27 @@ const args = new Set(process.argv.slice(2));
 const tier = valueAfter('--tier') || 'pr';
 const skipBrowser = args.has('--skip-browser');
 
-await loadMiMoKeyFromProjectEnv();
+if (tier === 'release') await loadMiMoKeyFromProjectEnv();
+const evalEnvironment = tier === 'release'
+  ? { ...process.env }
+  : {
+      ...process.env,
+      DEEPSEEK_API_KEY: '',
+      MIMO_API_KEY: '',
+      ELEVENLABS_API_KEY: '',
+      APISPORTS_API_KEY: '',
+    };
 
-await runCommand('go', ['test', './...'], { cwd: backendDir });
-await runCommand('go', ['run', './cmd/evals', '-suite', 'all', '-out', '../artifacts/evals/offline.json'], { cwd: backendDir });
-await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoot });
+await runCommand('go', ['test', './...'], { cwd: backendDir, env: evalEnvironment });
+await runCommand('go', ['run', './cmd/evals', '-suite', 'all', '-out', '../artifacts/evals/offline.json'], { cwd: backendDir, env: evalEnvironment });
+await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoot, env: evalEnvironment });
 
 if (tier !== 'offline') {
+  await runCommand('node', [join('scripts', 'evals', 'session-isolation-e2e.mjs')], { cwd: repoRoot, env: evalEnvironment });
   const backend = await startEvalBackend();
   try {
     const env = {
-      ...process.env,
+      ...evalEnvironment,
       QIUQIU_BASE_URL: backend.baseUrl,
       QIUQIU_RUNTIME_TTS: '0',
       APP_TOKEN: backend.token,
@@ -33,13 +43,13 @@ if (tier !== 'offline') {
 
 if (tier === 'release') {
   if (!process.env.MIMO_API_KEY) throw new Error('release evals require MIMO_API_KEY in the environment');
-  await runCommand('node', [join('scripts', 'mimo-voice-smoke.mjs')], { cwd: repoRoot });
+  await runCommand('node', [join('scripts', 'mimo-voice-smoke.mjs')], { cwd: repoRoot, env: evalEnvironment });
 }
 
 if (tier === 'nightly') {
-  await runCommand('go', ['test', './internal/companion', '-run', '^$', '-bench', '^BenchmarkEvalCompanionRecentEventAnswer$', '-benchmem', '-count=3'], { cwd: backendDir });
+  await runCommand('go', ['test', './internal/companion', '-run', '^$', '-bench', '^BenchmarkEvalCompanionRecentEventAnswer$', '-benchmem', '-count=3'], { cwd: backendDir, env: evalEnvironment });
   if (process.env.DATABASE_URL) {
-    await runCommand('go', ['test', './internal/matchstate', './internal/companion', '-run', 'Postgres', '-count=1'], { cwd: backendDir });
+    await runCommand('go', ['test', './internal/matchstate', './internal/companion', '-run', 'Postgres', '-count=1'], { cwd: backendDir, env: evalEnvironment });
   }
 }
 

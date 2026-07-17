@@ -8,7 +8,13 @@ const scriptsDir = dirname(fileURLToPath(import.meta.url));
 export const repoRoot = resolve(scriptsDir, '..', '..');
 export const backendDir = join(repoRoot, 'backend');
 
-export async function startEvalBackend() {
+export async function startEvalBackend({ environment = {} } = {}) {
+  const allowedOverrides = ['APP_ENV', 'AUTH_MODE', 'SESSION_SIGNING_KEY'];
+  const environmentOverrides = Object.fromEntries(
+    allowedOverrides
+      .filter((name) => Object.hasOwn(environment, name))
+      .map((name) => [name, environment[name]]),
+  );
   const port = await reservePort();
   const binary = join(repoRoot, 'artifacts', 'evals', process.platform === 'win32' ? 'qiuqiu-eval-server.exe' : 'qiuqiu-eval-server');
   await mkdir(dirname(binary), { recursive: true });
@@ -18,12 +24,17 @@ export async function startEvalBackend() {
     cwd: backendDir,
     env: {
       ...process.env,
+      APP_ENV: 'development',
+      AUTH_MODE: 'dual',
+      SESSION_SIGNING_KEY: 'eval-session-signing-key-0123456789',
       PORT: String(port),
       APP_TOKEN: 'qiuqiu-dev-token',
       DATABASE_URL: '',
       DEEPSEEK_API_KEY: '',
       MIMO_API_KEY: '',
       ELEVENLABS_API_KEY: '',
+      APISPORTS_API_KEY: '',
+      ...environmentOverrides,
     },
     stdio: ['ignore', 'pipe', 'pipe'],
   });
