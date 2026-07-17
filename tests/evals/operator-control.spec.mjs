@@ -143,7 +143,8 @@ test('导播台在窄桌面和手机上不裁切或重叠', async ({ page }) => 
     await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
     const layout = await page.evaluate(() => {
       const workspace = document.querySelector('.workspace.view.active');
-      const boxes = Array.from(workspace?.children || [], (element) => element.getBoundingClientRect());
+      const boxes = Array.from(workspace?.children || [], (element) => element.getBoundingClientRect())
+        .sort((left, right) => left.top - right.top);
       const center = workspace?.querySelector('.center');
       const centerBox = center?.getBoundingClientRect();
       const centerChildren = Array.from(center?.children || [], (element) => element.getBoundingClientRect());
@@ -160,8 +161,22 @@ test('导播台在窄桌面和手机上不裁切或重叠', async ({ page }) => 
       panelsDoNotOverlap: true,
       centerContainsPanels: true,
     });
-    await page.locator('#draftSubmit').scrollIntoViewIfNeeded();
-    await page.locator('#draftSubmit').click({ trial: true });
+    const publishButton = await page.locator('#draftSubmit').evaluate((button) => {
+      const workspace = document.querySelector('.workspace.view.active');
+      const buttonBox = button.getBoundingClientRect();
+      const workspaceBox = workspace.getBoundingClientRect();
+      const top = Math.max(0, workspaceBox.top);
+      const bottom = Math.min(window.innerHeight, workspaceBox.bottom);
+      const inInitialViewport = buttonBox.top >= top && buttonBox.bottom <= bottom;
+      const hit = inInitialViewport
+        ? document.elementFromPoint(buttonBox.left + buttonBox.width / 2, buttonBox.top + buttonBox.height / 2)
+        : null;
+      return { inInitialViewport, receivesPointer: hit === button || button.contains(hit) };
+    });
+    expect(publishButton, `${viewport.width}px publish action`).toEqual({
+      inInitialViewport: true,
+      receivesPointer: true,
+    });
   }
 
   for (const viewport of [{ width: 900, height: 900 }, { width: 390, height: 844 }]) {

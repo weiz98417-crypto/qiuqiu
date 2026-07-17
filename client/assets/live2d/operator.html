@@ -647,6 +647,7 @@
   /* The fixed 256px navigation leaves less room than the viewport width suggests. */
   @media (max-width: 1320px) {
     .workspace { grid-template-columns: 1fr; grid-auto-rows: max-content; overflow-y: auto; }
+    .workspace > .center { order: -1; }
     .panel, .combiner { min-height: 320px; max-height: none; }
     .center {
       display: grid;
@@ -655,7 +656,19 @@
       min-height: max-content;
       overflow: visible;
     }
-    .combiner .panel-body { overflow-y: visible; }
+    .combiner {
+      height: calc(100dvh - 209px);
+      min-height: 520px;
+      max-height: 720px;
+    }
+    .combiner .panel-body { overflow-y: auto; }
+    #draftSubmit {
+      position: sticky;
+      bottom: 0;
+      z-index: 3;
+      flex: 0 0 auto;
+      box-shadow: 0 -12px 20px var(--surface-container);
+    }
     body { overflow: auto; }
     .main { height: auto; min-height: 100vh; overflow: visible; }
   }
@@ -665,6 +678,11 @@
   @media (max-width: 1040px) {
     .scorebar { grid-template-columns: 1fr; gap: 8px; }
     .score-side.home, .score-side.away { justify-content: center; padding: 0; }
+    .combiner {
+      height: calc(100dvh - 330px);
+      min-height: 460px;
+      max-height: 620px;
+    }
   }
   @media (max-width: 860px) {
     .side-nav { display: none; }
