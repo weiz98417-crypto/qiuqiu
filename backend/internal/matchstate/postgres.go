@@ -26,6 +26,7 @@ type PostgresStore struct {
 	subscribers      map[string]map[*eventSubscription]struct{}
 	clockSubscribers map[string]map[chan MatchClock]struct{}
 	eventObserver    func(MatchEvent) error
+	projectionAudit  func(FactProjectionAudit)
 	outboxPublisher  func(MatchEvent) error
 }
 
@@ -71,6 +72,12 @@ func (s *PostgresStore) Close() {
 func (s *PostgresStore) SetEventObserver(observer func(MatchEvent) error) {
 	s.mu.Lock()
 	s.eventObserver = observer
+	s.mu.Unlock()
+}
+
+func (s *PostgresStore) SetFactProjectionAuditObserver(observer func(FactProjectionAudit)) {
+	s.mu.Lock()
+	s.projectionAudit = observer
 	s.mu.Unlock()
 }
 
@@ -569,7 +576,7 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 			ev.Confirmed = false
 			ev.CreatedAt = now.UTC().Format(time.RFC3339Nano)
 			ev.UpdatedAt = ev.CreatedAt
-			if err := insertEvent(ctx, tx, ev); err != nil {
+			if err := insertEvent(ctx, tx, &ev); err != nil {
 				return MatchEvent{}, Snapshot{}, err
 			}
 			if err := insertParticipants(ctx, tx, ev.ID, ev.Participants); err != nil {
@@ -593,7 +600,7 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 	if err := validateAgainstSnapshot(ev, s.Snapshot(matchID), config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := insertEvent(ctx, tx, ev); err != nil {
+	if err := insertEvent(ctx, tx, &ev); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_match_events_provider_event" {
 			return MatchEvent{}, Snapshot{}, ErrDuplicate
@@ -694,7 +701,7 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 	replacement.CreatedAt = now
 	replacement.UpdatedAt = now
 
-	if err := insertEvent(ctx, tx, replacement); err != nil {
+	if err := insertEvent(ctx, tx, &replacement); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	if err := insertParticipants(ctx, tx, replacement.ID, replacement.Participants); err != nil {
@@ -782,7 +789,20 @@ func (s *PostgresStore) PublicSnapshot(matchID string) Snapshot {
 	if err != nil {
 		return buildSnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	return buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID), s.Clock(matchID), time.Now())
+	config := s.Config(matchID)
+	clock := s.Clock(matchID)
+	now := time.Now()
+	legacy := buildSnapshot(matchID, filterPublicFacts(events), config, clock, now)
+	s.mu.RLock()
+	observer := s.projectionAudit
+	s.mu.RUnlock()
+	auditFactProjection(
+		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
+		legacy,
+		newestFirstPublicFacts(events),
+		observer,
+	)
+	return legacy
 }
 
 func (s *PostgresStore) PublicSnapshotOperator(ctx context.Context, matchID string) (Snapshot, error) {
@@ -790,7 +810,20 @@ func (s *PostgresStore) PublicSnapshotOperator(ctx context.Context, matchID stri
 	if err != nil {
 		return Snapshot{}, err
 	}
-	return buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID), s.Clock(matchID), time.Now()), nil
+	config := s.Config(matchID)
+	clock := s.Clock(matchID)
+	now := time.Now()
+	legacy := buildSnapshot(matchID, filterPublicFacts(events), config, clock, now)
+	s.mu.RLock()
+	observer := s.projectionAudit
+	s.mu.RUnlock()
+	auditFactProjection(
+		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
+		legacy,
+		newestFirstPublicFacts(events),
+		observer,
+	)
+	return legacy, nil
 }
 
 func (s *PostgresStore) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -1072,10 +1105,10 @@ func (s *PostgresStore) events(ctx context.Context, matchID string, ascending bo
 		SELECT COALESCE(fact_id, id), id, match_id, source, provider_name, provider_event_id, operator_id, period, clock, event_type,
 			team_id, team_name, player_name, score_home, score_away, intensity, confirmed, sentiment,
 			description, proactive_text, tags, recommended_action, visibility, revision_of,
-			status, fact_revision, fact_status, confidence, evidence, confirmed_by, public_at, created_at, updated_at
+			status, fact_revision, fact_status, confidence, evidence, confirmed_by, public_at, created_at, updated_at, recorded_sequence
 		FROM match_events
 		WHERE match_id = $1
-		ORDER BY created_at `+order+`, id `+order,
+		ORDER BY recorded_sequence `+order,
 		matchID,
 	)
 	if err != nil {
@@ -1238,12 +1271,12 @@ func ensureMatch(ctx context.Context, tx pgx.Tx, matchID string, config MatchCon
 	return err
 }
 
-func insertEvent(ctx context.Context, tx pgx.Tx, ev MatchEvent) error {
+func insertEvent(ctx context.Context, tx pgx.Tx, ev *MatchEvent) error {
 	evidence, err := json.Marshal(ev.Evidence)
 	if err != nil {
 		return err
 	}
-	_, err = tx.Exec(ctx, `
+	err = tx.QueryRow(ctx, `
 		INSERT INTO match_events (
 			id, match_id, source, provider_name, provider_event_id, operator_id, period, clock, event_type,
 			team_id, team_name, player_name, score_home, score_away, intensity, confirmed, sentiment,
@@ -1256,10 +1289,11 @@ func insertEvent(ctx context.Context, tx pgx.Tx, ev MatchEvent) error {
 			$18, $19, $20, $21, $22, $23,
 			$24, $25, $26, $27, $28, $29, $30, $31, $32, $33
 		)
+		RETURNING recorded_sequence
 	`, ev.ID, ev.MatchID, ev.Source, ev.ProviderName, ev.ProviderEventID, ev.OperatorID, ev.Period, ev.Clock, ev.EventType,
 		ev.TeamID, ev.TeamName, ev.PlayerName, ev.Score.Home, ev.Score.Away, ev.Intensity, ev.Confirmed, ev.Sentiment,
 		ev.Description, ev.ProactiveText, ev.Tags, ev.RecommendedAction, ev.Visibility, nullIfEmpty(ev.RevisionOf),
-		ev.Status, ev.FactID, ev.FactRevision, ev.FactStatus, ev.Confidence, evidence, ev.ConfirmedBy, parseOptionalTime(ev.PublicAt), parseRequiredTime(ev.CreatedAt), parseRequiredTime(ev.UpdatedAt))
+		ev.Status, ev.FactID, ev.FactRevision, ev.FactStatus, ev.Confidence, evidence, ev.ConfirmedBy, parseOptionalTime(ev.PublicAt), parseRequiredTime(ev.CreatedAt), parseRequiredTime(ev.UpdatedAt)).Scan(&ev.RecordedSequence)
 	return err
 }
 
@@ -1302,7 +1336,7 @@ func scanEvent(rows pgx.Rows) (MatchEvent, error) {
 		&ev.FactID, &ev.ID, &ev.MatchID, &ev.Source, &ev.ProviderName, &ev.ProviderEventID, &ev.OperatorID, &ev.Period, &ev.Clock, &ev.EventType,
 		&ev.TeamID, &ev.TeamName, &ev.PlayerName, &ev.Score.Home, &ev.Score.Away, &ev.Intensity, &ev.Confirmed, &ev.Sentiment,
 		&ev.Description, &ev.ProactiveText, &ev.Tags, &ev.RecommendedAction, &ev.Visibility, &revisionOf,
-		&ev.Status, &ev.FactRevision, &ev.FactStatus, &ev.Confidence, &evidenceJSON, &ev.ConfirmedBy, &publicAt, &createdAt, &updatedAt,
+		&ev.Status, &ev.FactRevision, &ev.FactStatus, &ev.Confidence, &evidenceJSON, &ev.ConfirmedBy, &publicAt, &createdAt, &updatedAt, &ev.RecordedSequence,
 	)
 	if revisionOf != nil {
 		ev.RevisionOf = *revisionOf

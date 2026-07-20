@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"os"
+	"reflect"
 	"strconv"
 	"testing"
 	"time"
@@ -82,6 +83,177 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("subscriber did not receive created event")
 	}
+}
+
+func TestPostgresStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	store, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer store.Close()
+	matchID := "pg-shadow-replay-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	var audits []FactProjectionAudit
+	store.SetFactProjectionAuditObserver(func(audit FactProjectionAudit) {
+		audits = append(audits, audit)
+	})
+	goal, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "随后完成一次射门。",
+	}); err != nil {
+		t.Fatalf("Create shot: %v", err)
+	}
+	if _, _, err := store.RevokeFact(matchID, goal.FactID, "operator-1"); err != nil {
+		t.Fatalf("Revoke goal: %v", err)
+	}
+
+	legacy := store.PublicSnapshot(matchID)
+	if legacy.Score != (Score{Home: 1}) {
+		t.Fatalf("stage A changed the online snapshot: %+v", legacy.Score)
+	}
+	if len(audits) != 1 || audits[0].ProjectedScore != (Score{}) {
+		t.Fatalf("projection audits = %+v", audits)
+	}
+}
+
+func TestFactLedgerProjectionMatchesMemoryAndPostgresAdapters(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	postgresStore, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer postgresStore.Close()
+	matchID := "projection-adapter-parity-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer postgresStore.Reset(matchID)
+	memoryStore := NewStore()
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+
+	memoryProjection := buildAdapterProjection(t, memoryStore, matchID, now)
+	postgresProjection := buildAdapterProjection(t, postgresStore, matchID, now)
+	canonicalizeProjection(&memoryProjection)
+	canonicalizeProjection(&postgresProjection)
+	if !reflect.DeepEqual(memoryProjection, postgresProjection) {
+		t.Fatalf("adapter projections differ:\nmemory=%+v\npostgres=%+v", memoryProjection, postgresProjection)
+	}
+}
+
+func buildAdapterProjection(t *testing.T, store Repository, matchID string, now time.Time) FactLedgerProjection {
+	t.Helper()
+	config, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"})
+	if err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	firstGoal, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "主队第一次进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create first goal: %v", err)
+	}
+	if _, _, err := store.Correct(matchID, firstGoal.ID, MatchEvent{
+		EventType: "var_result", Period: "first_half", Clock: "10:10", TeamID: "home", Score: Score{}, Description: "试图改成VAR结果。",
+	}); err == nil {
+		t.Fatal("ordinary fact should not be corrected into a relationship event")
+	}
+	firstCancellation, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "10:30", TeamID: "home", TeamName: "西班牙",
+		Score: Score{}, Description: "第一次进球取消。", RevisionOf: firstGoal.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create cancellation: %v", err)
+	}
+	if _, _, err := store.RevokeFact(matchID, firstCancellation.FactID, "operator-1"); err != nil {
+		t.Fatalf("Revoke first cancellation: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "10:40", TeamID: "home", TeamName: "西班牙",
+		Score: Score{}, Description: "重新确认第一次进球取消。", RevisionOf: firstGoal.ID,
+	}); err != nil {
+		t.Fatalf("Create replacement cancellation: %v", err)
+	}
+	secondGoal, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "主队再次进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create second goal: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "score_correction", Period: "first_half", Clock: "20:30", Score: Score{}, Description: "比分更正为零比零。",
+		Evidence: map[string]any{"correctionReason": "人工核对"},
+	}); err != nil {
+		t.Fatalf("Create score correction: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "20:40", TeamID: "home", TeamName: "西班牙",
+		Score: Score{}, Description: "尝试取消检查点前的进球。", RevisionOf: secondGoal.ID,
+	}); err == nil {
+		t.Fatal("cancellation after score checkpoint should be rejected")
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "21:00", TeamID: "away", TeamName: "德国",
+		Score: Score{Away: 1}, Description: "客队进球。",
+	}); err != nil {
+		t.Fatalf("Create away goal: %v", err)
+	}
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: store.Events(matchID), Config: config,
+		Clock: MatchClock{MatchID: matchID, Period: "first_half"}, Now: now,
+	})
+	if err != nil {
+		t.Fatalf("Project: %v", err)
+	}
+	return projection
+}
+
+func canonicalizeProjection(projection *FactLedgerProjection) {
+	aliases := make(map[string]string, len(projection.PublicEvents)*2)
+	for index, event := range projection.PublicEvents {
+		canonicalID := "event-" + strconv.Itoa(index)
+		aliases[event.ID] = canonicalID
+		aliases[event.FactID] = canonicalID
+	}
+	normalizeEvents := func(events []MatchEvent) {
+		for index := range events {
+			event := &events[index]
+			event.ID = aliases[event.ID]
+			event.FactID = event.ID
+			if event.RevisionOf != "" {
+				event.RevisionOf = aliases[event.RevisionOf]
+			}
+			event.RecordedSequence = int64(len(projection.PublicEvents) - index)
+			event.CreatedAt = ""
+			event.UpdatedAt = ""
+			event.PublicAt = ""
+			if len(event.Participants) == 0 {
+				event.Participants = nil
+			}
+			if len(event.Tags) == 0 {
+				event.Tags = nil
+			}
+			if len(event.Evidence) == 0 {
+				event.Evidence = nil
+			}
+		}
+	}
+	normalizeEvents(projection.PublicEvents)
+	normalizeEvents(projection.Snapshot.RecentEvents)
+	normalizeEvents(projection.Snapshot.KeyEvents)
+	projection.Snapshot.LastUpdatedAt = ""
 }
 
 func TestPostgresOutboxRetriesFailedMatchEventPublication(t *testing.T) {

@@ -1,0 +1,406 @@
+package matchstate
+
+import (
+	"reflect"
+	"slices"
+	"testing"
+	"time"
+)
+
+func TestFactLedgerProjectsScoreAfterEarlierGoalIsRevoked(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	events := []MatchEvent{
+		{
+			ID: "goal-1", FactID: "goal-1", MatchID: "replay", EventType: "goal", TeamID: "home",
+			Score: Score{Home: 1}, Description: "主队进球。", Status: "active", Visibility: "public",
+			FactStatus: FactStatusRevoked, CreatedAt: now.Add(-2 * time.Minute).Format(time.RFC3339Nano), UpdatedAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+		},
+		{
+			ID: "shot-1", FactID: "shot-1", MatchID: "replay", EventType: "shot", TeamID: "home",
+			Score: Score{Home: 1}, Description: "随后完成一次射门。", Status: "active", Visibility: "public",
+			FactStatus: FactStatusConfirmed, CreatedAt: now.Add(-time.Minute).Format(time.RFC3339Nano), UpdatedAt: now.Add(-time.Minute).Format(time.RFC3339Nano),
+		},
+	}
+
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: "replay",
+		Events:  events,
+		Config:  MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"},
+		Clock:   MatchClock{MatchID: "replay", Period: "first_half"},
+		Now:     now,
+	})
+	if err != nil {
+		t.Fatalf("Project error: %v", err)
+	}
+	if projection.Snapshot.Score != (Score{}) {
+		t.Fatalf("projected score = %+v, want 0-0", projection.Snapshot.Score)
+	}
+	if len(projection.Snapshot.RecentEvents) != 1 || projection.Snapshot.RecentEvents[0].ID != "shot-1" {
+		t.Fatalf("projected recent events = %+v", projection.Snapshot.RecentEvents)
+	}
+	if projection.Snapshot.RecentEvents[0].Score != (Score{}) {
+		t.Fatalf("shot effective score = %+v, want 0-0", projection.Snapshot.RecentEvents[0].Score)
+	}
+}
+
+func TestMemoryStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *testing.T) {
+	store := NewStore()
+	var audits []FactProjectionAudit
+	store.SetFactProjectionAuditObserver(func(audit FactProjectionAudit) {
+		audits = append(audits, audit)
+	})
+	goal, _, err := store.Create("shadow-replay", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create("shadow-replay", MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "随后完成一次射门。",
+	}); err != nil {
+		t.Fatalf("Create shot: %v", err)
+	}
+	if _, _, err := store.RevokeFact("shadow-replay", goal.FactID, "operator-1"); err != nil {
+		t.Fatalf("Revoke goal: %v", err)
+	}
+
+	legacy := store.PublicSnapshot("shadow-replay")
+	if legacy.Score != (Score{Home: 1}) {
+		t.Fatalf("stage A changed the online snapshot: %+v", legacy.Score)
+	}
+	if len(audits) != 1 {
+		t.Fatalf("projection audits = %d, want 1", len(audits))
+	}
+	if audits[0].LegacyScore != (Score{Home: 1}) || audits[0].ProjectedScore != (Score{}) {
+		t.Fatalf("projection audit = %+v", audits[0])
+	}
+	if !slices.Contains(audits[0].Mismatches, "public_events") || len(audits[0].Differences) == 0 {
+		t.Fatalf("projection audit did not include complete event differences: %+v", audits[0])
+	}
+}
+
+func TestFactLedgerRejectsDanglingGoalCancellationReference(t *testing.T) {
+	_, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: "dangling-cancellation",
+		Events: []MatchEvent{
+			{
+				ID: "cancel-1", FactID: "cancel-1", MatchID: "dangling-cancellation",
+				EventType: "goal_cancelled", TeamID: "home", RevisionOf: "missing-goal",
+				Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed,
+			},
+		},
+		Config: MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"},
+		Clock:  MatchClock{MatchID: "dangling-cancellation", Period: "first_half"},
+		Now:    time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC),
+	})
+	if err == nil {
+		t.Fatal("dangling goal cancellation should fail projection")
+	}
+}
+
+func TestFactLedgerProjectionInvariants(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	tests := []struct {
+		name   string
+		events []MatchEvent
+		want   Score
+	}{
+		{
+			name: "candidate facts do not affect the accepted score",
+			events: []MatchEvent{
+				{ID: "candidate-goal", FactID: "candidate-goal", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Status: "active", Visibility: "private", FactStatus: FactStatusProvisional},
+				{ID: "confirmed-shot", FactID: "confirmed-shot", EventType: "shot", TeamID: "home", Score: Score{}, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			},
+			want: Score{},
+		},
+		{
+			name: "goal cancellation neutralizes the referenced goal",
+			events: []MatchEvent{
+				{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+				{ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", TeamID: "home", RevisionOf: "goal-1", Score: Score{}, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			},
+			want: Score{},
+		},
+	}
+
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+				MatchID: "projection-invariants", Events: testCase.events,
+				Config: MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"},
+				Clock:  MatchClock{MatchID: "projection-invariants", Period: "first_half"}, Now: now,
+			})
+			if err != nil {
+				t.Fatalf("Project error: %v", err)
+			}
+			if projection.Snapshot.Score != testCase.want {
+				t.Fatalf("projected score = %+v, want %+v", projection.Snapshot.Score, testCase.want)
+			}
+		})
+	}
+}
+
+func TestFactLedgerUsesRecordedSequenceInsteadOfInputOrder(t *testing.T) {
+	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: "recorded-order",
+		Events: []MatchEvent{
+			{ID: "away-goal", FactID: "away-goal", EventType: "goal", TeamID: "away", RecordedSequence: 3, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			{ID: "home-goal", FactID: "home-goal", EventType: "goal", TeamID: "home", RecordedSequence: 1, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			{ID: "checkpoint", FactID: "checkpoint", EventType: "score_correction", Score: Score{}, RecordedSequence: 2, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		},
+		Clock: MatchClock{MatchID: "recorded-order", Period: "first_half"},
+		Now:   now,
+	})
+	if err != nil {
+		t.Fatalf("Project error: %v", err)
+	}
+	if projection.Snapshot.Score != (Score{Away: 1}) {
+		t.Fatalf("projected score = %+v, want 0-1", projection.Snapshot.Score)
+	}
+	if len(projection.PublicEvents) != 3 || projection.PublicEvents[0].ID != "away-goal" {
+		t.Fatalf("projected public events = %+v", projection.PublicEvents)
+	}
+}
+
+func TestFactLedgerRejectsIncompleteRecordedSequence(t *testing.T) {
+	_, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: "incomplete-order",
+		Events: []MatchEvent{
+			{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", RecordedSequence: 1, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			{ID: "shot-1", FactID: "shot-1", EventType: "shot", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		},
+	})
+	if err == nil {
+		t.Fatal("mixed sequenced and unsequenced history should fail projection")
+	}
+}
+
+func TestFactLedgerRejectsInvalidGoalCancellationOrder(t *testing.T) {
+	tests := []struct {
+		name   string
+		events []MatchEvent
+	}{
+		{
+			name: "cancellation before goal",
+			events: []MatchEvent{
+				{ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", RevisionOf: "goal-1", RecordedSequence: 1, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+				{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", RecordedSequence: 2, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			},
+		},
+		{
+			name: "duplicate cancellation",
+			events: []MatchEvent{
+				{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", RecordedSequence: 1, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+				{ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", RevisionOf: "goal-1", RecordedSequence: 2, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+				{ID: "cancel-2", FactID: "cancel-2", EventType: "goal_cancelled", RevisionOf: "goal-1", RecordedSequence: 3, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			},
+		},
+		{
+			name: "cancellation after checkpoint",
+			events: []MatchEvent{
+				{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", RecordedSequence: 1, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+				{ID: "checkpoint", FactID: "checkpoint", EventType: "score_correction", Score: Score{}, RecordedSequence: 2, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+				{ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", RevisionOf: "goal-1", RecordedSequence: 3, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+			},
+		},
+	}
+	for _, testCase := range tests {
+		t.Run(testCase.name, func(t *testing.T) {
+			_, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+				MatchID: "invalid-cancellation", Events: testCase.events,
+			})
+			if err == nil {
+				t.Fatal("invalid cancellation history should fail projection")
+			}
+		})
+	}
+}
+
+func TestFactLedgerKeepsCancellationWhenReferencedGoalIsRevoked(t *testing.T) {
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: "revoked-goal-cancellation",
+		Events: []MatchEvent{
+			{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", RecordedSequence: 1, Status: "active", Visibility: "public", FactStatus: FactStatusRevoked},
+			{ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", RevisionOf: "goal-1", RecordedSequence: 2, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Project error: %v", err)
+	}
+	if projection.Snapshot.Score != (Score{}) {
+		t.Fatalf("projected score = %+v, want 0-0", projection.Snapshot.Score)
+	}
+	if len(projection.PublicEvents) != 1 || projection.PublicEvents[0].ID != "cancel-1" {
+		t.Fatalf("public events = %+v", projection.PublicEvents)
+	}
+}
+
+func TestFactLedgerRejectsPublicCancellationOfPrivateGoal(t *testing.T) {
+	_, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: "private-goal-cancellation",
+		Events: []MatchEvent{
+			{ID: "goal-1", FactID: "goal-1", EventType: "goal", TeamID: "home", RecordedSequence: 1, Status: "active", Visibility: "private", FactStatus: FactStatusConfirmed},
+			{ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", RevisionOf: "goal-1", RecordedSequence: 2, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		},
+	})
+	if err == nil {
+		t.Fatal("public cancellation of a private goal should fail projection")
+	}
+}
+
+func TestStoreRejectsPublicCancellationOfPrivateGoal(t *testing.T) {
+	store := NewStore()
+	goal, _, err := store.Create("private-goal-cancellation", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1},
+		Description: "内部进球候选。", Visibility: "private", FactStatus: FactStatusConfirmed, Confirmed: true,
+	})
+	if err != nil {
+		t.Fatalf("Create private goal: %v", err)
+	}
+	if _, _, err := store.Create("private-goal-cancellation", MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{},
+		Description: "不应公开的取消。", RevisionOf: goal.ID,
+	}); err == nil {
+		t.Fatal("public cancellation of a private goal should be rejected")
+	}
+}
+
+func TestStoreRejectsRelationshipEventsThroughCorrection(t *testing.T) {
+	store := NewStore()
+	goal, _, err := store.Create("relationship-correction", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Correct("relationship-correction", goal.ID, MatchEvent{
+		EventType: "var_result", Period: "first_half", Clock: "10:30", TeamID: "home", Score: Score{}, Description: "试图改成VAR结果。",
+	}); err == nil {
+		t.Fatal("ordinary fact should not be corrected into a relationship event")
+	}
+	cancellation, _, err := store.Create("relationship-correction", MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{},
+		Description: "进球取消。", RevisionOf: goal.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create cancellation: %v", err)
+	}
+	if _, _, err := store.Correct("relationship-correction", cancellation.ID, MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "11:10", TeamID: "home", Score: Score{}, Description: "修改取消说明。",
+	}); err == nil {
+		t.Fatal("relationship event should be revoked and recreated instead of corrected")
+	}
+}
+
+func TestStoreRejectsCancellationAfterScoreCheckpoint(t *testing.T) {
+	store := NewStore()
+	goal, _, err := store.Create("checkpoint-cancellation", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create("checkpoint-cancellation", MatchEvent{
+		EventType: "score_correction", Period: "first_half", Clock: "11:00", Score: Score{Home: 2}, Description: "比分更正为二比零。",
+		Evidence: map[string]any{"correctionReason": "人工核对"},
+	}); err != nil {
+		t.Fatalf("Create score correction: %v", err)
+	}
+	if _, _, err := store.Create("checkpoint-cancellation", MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "12:00", TeamID: "home", Score: Score{Home: 1},
+		Description: "取消检查点前的进球。", RevisionOf: goal.ID,
+	}); err == nil {
+		t.Fatal("cancellation after score checkpoint should be rejected")
+	}
+}
+
+func TestStoreAllowsCancellationAfterEarlierCancellationIsRevoked(t *testing.T) {
+	store := NewStore()
+	goal, _, err := store.Create("replacement-cancellation", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	cancellation, _, err := store.Create("replacement-cancellation", MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{},
+		Description: "进球取消。", RevisionOf: goal.ID,
+	})
+	if err != nil {
+		t.Fatalf("Create cancellation: %v", err)
+	}
+	if _, _, err := store.RevokeFact("replacement-cancellation", cancellation.FactID, "operator-1"); err != nil {
+		t.Fatalf("Revoke cancellation: %v", err)
+	}
+	if _, _, err := store.Create("replacement-cancellation", MatchEvent{
+		EventType: "goal_cancelled", Period: "first_half", Clock: "12:00", TeamID: "home", Score: Score{},
+		Description: "重新确认进球取消。", RevisionOf: goal.ID,
+	}); err != nil {
+		t.Fatalf("Create replacement cancellation: %v", err)
+	}
+}
+
+func TestFactLedgerReturnsCompletePublicEvents(t *testing.T) {
+	events := make([]MatchEvent, 0, 7)
+	for sequence := int64(1); sequence <= 7; sequence++ {
+		events = append(events, MatchEvent{
+			ID: "shot-" + time.Unix(sequence, 0).UTC().Format("05"), FactID: "shot-" + time.Unix(sequence, 0).UTC().Format("05"),
+			EventType: "shot", RecordedSequence: sequence, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed,
+		})
+	}
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{MatchID: "complete-public-events", Events: events})
+	if err != nil {
+		t.Fatalf("Project error: %v", err)
+	}
+	if len(projection.PublicEvents) != 7 {
+		t.Fatalf("public events = %d, want 7", len(projection.PublicEvents))
+	}
+	if len(projection.Snapshot.RecentEvents) != 5 {
+		t.Fatalf("recent events = %d, want 5", len(projection.Snapshot.RecentEvents))
+	}
+}
+
+func TestFactLedgerProjectionIsDeterministicWithoutNow(t *testing.T) {
+	input := FactLedgerProjectInput{MatchID: "deterministic-projection"}
+	first, err := (FactLedgerEngine{}).Project(input)
+	if err != nil {
+		t.Fatalf("first Project error: %v", err)
+	}
+	second, err := (FactLedgerEngine{}).Project(input)
+	if err != nil {
+		t.Fatalf("second Project error: %v", err)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("same input produced different projections: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestMemoryStoreDoesNotReportMatchingProjection(t *testing.T) {
+	store := NewStore()
+	var audits []FactProjectionAudit
+	store.SetFactProjectionAuditObserver(func(audit FactProjectionAudit) {
+		audits = append(audits, audit)
+	})
+	if _, _, err := store.Create("matching-shadow", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	}); err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create("matching-shadow", MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "随后完成一次射门。",
+	}); err != nil {
+		t.Fatalf("Create shot: %v", err)
+	}
+
+	if snapshot := store.PublicSnapshot("matching-shadow"); snapshot.Score != (Score{Home: 1}) {
+		t.Fatalf("public score = %+v, want 1-0", snapshot.Score)
+	}
+	if len(audits) != 0 {
+		t.Fatalf("matching projection produced audits: %+v", audits)
+	}
+}

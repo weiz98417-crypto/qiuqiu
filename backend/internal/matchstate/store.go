@@ -128,6 +128,7 @@ type MatchEvent struct {
 	Evidence          map[string]any `json:"evidence,omitempty"`
 	ConfirmedBy       string         `json:"confirmedBy,omitempty"`
 	PublicAt          string         `json:"publicAt,omitempty"`
+	RecordedSequence  int64          `json:"recordedSequence,omitempty"`
 }
 
 func DeliveryKey(event MatchEvent) string {
@@ -187,6 +188,10 @@ type EventObserverRegistrar interface {
 	SetEventObserver(func(MatchEvent) error)
 }
 
+type FactProjectionAuditRegistrar interface {
+	SetFactProjectionAuditObserver(func(FactProjectionAudit))
+}
+
 type Store struct {
 	mu               sync.RWMutex
 	events           map[string][]MatchEvent
@@ -197,6 +202,7 @@ type Store struct {
 	clockSubscribers map[string]map[chan MatchClock]struct{}
 	subscribers      map[string]map[*eventSubscription]struct{}
 	eventObserver    func(MatchEvent) error
+	projectionAudit  func(FactProjectionAudit)
 	nextID           int64
 	now              func() time.Time
 }
@@ -484,6 +490,7 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 			s.configs[matchID] = config
 			s.nextID++
 			ev.ID = fmt.Sprintf("evt_%d", s.nextID)
+			ev.RecordedSequence = s.nextID
 			if ev.FactID == "" {
 				ev.FactID = ev.ID
 			}
@@ -521,6 +528,7 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 	}
 	s.nextID++
 	ev.ID = fmt.Sprintf("evt_%d", s.nextID)
+	ev.RecordedSequence = s.nextID
 	if ev.FactID == "" {
 		ev.FactID = ev.ID
 	}
@@ -584,6 +592,7 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 	events[found].UpdatedAt = now
 	s.nextID++
 	replacement.ID = fmt.Sprintf("evt_%d", s.nextID)
+	replacement.RecordedSequence = s.nextID
 	if replacement.FactID == "" {
 		replacement.FactID = events[found].FactID
 	}
@@ -606,7 +615,7 @@ func (s *Store) Events(matchID string) []MatchEvent {
 	defer s.mu.RUnlock()
 	events := append([]MatchEvent(nil), s.events[matchID]...)
 	sort.SliceStable(events, func(i, j int) bool {
-		return events[i].CreatedAt > events[j].CreatedAt
+		return events[i].RecordedSequence > events[j].RecordedSequence
 	})
 	return events
 }
@@ -630,8 +639,20 @@ func (s *Store) PublicEvents(matchID string) []MatchEvent {
 
 func (s *Store) PublicSnapshot(matchID string) Snapshot {
 	s.mu.RLock()
-	defer s.mu.RUnlock()
-	return buildSnapshot(matchID, filterPublicFacts(s.events[matchID]), s.configs[matchID], s.clocks[matchID], s.now())
+	events := append([]MatchEvent(nil), s.events[matchID]...)
+	config := s.configs[matchID]
+	clock := s.clocks[matchID]
+	now := s.now()
+	observer := s.projectionAudit
+	s.mu.RUnlock()
+	legacy := buildSnapshot(matchID, filterPublicFacts(events), config, clock, now)
+	auditFactProjection(
+		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
+		legacy,
+		newestFirstPublicFacts(events),
+		observer,
+	)
+	return legacy
 }
 
 func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -844,6 +865,12 @@ func (s *Store) Subscribe(matchID string) (<-chan MatchEvent, func()) {
 func (s *Store) SetEventObserver(observer func(MatchEvent) error) {
 	s.mu.Lock()
 	s.eventObserver = observer
+	s.mu.Unlock()
+}
+
+func (s *Store) SetFactProjectionAuditObserver(observer func(FactProjectionAudit)) {
+	s.mu.Lock()
+	s.projectionAudit = observer
 	s.mu.Unlock()
 }
 
@@ -1285,16 +1312,25 @@ func validateEventRelations(events []MatchEvent, candidate MatchEvent) error {
 	if candidate.EventType != "var_result" && candidate.EventType != "goal_cancelled" {
 		return nil
 	}
+	orderedEvents, err := orderFactEvents(events)
+	if err != nil {
+		return err
+	}
 	var referenced *MatchEvent
-	for index := range events {
-		event := &events[index]
+	referencedIndex := -1
+	for index := range orderedEvents {
+		event := &orderedEvents[index]
 		if event.Status == "active" && (event.ID == candidate.RevisionOf || event.FactID == candidate.RevisionOf) {
 			referenced = event
+			referencedIndex = index
 		}
 	}
 	if referenced == nil ||
 		(referenced.FactStatus != FactStatusConfirmed && referenced.FactStatus != FactStatusReconciled) {
 		return fmt.Errorf("%w: %s must reference an active confirmed fact", ErrInvalid, candidate.EventType)
+	}
+	if IsPublicFact(candidate) && !IsPublicFact(*referenced) {
+		return fmt.Errorf("%w: public %s must reference a public fact", ErrInvalid, candidate.EventType)
 	}
 	if candidate.EventType == "var_result" {
 		return nil
@@ -1305,8 +1341,13 @@ func validateEventRelations(events []MatchEvent, candidate MatchEvent) error {
 	if referenced.TeamID != candidate.TeamID {
 		return fmt.Errorf("%w: goal cancellation team must match the referenced goal", ErrInvalid)
 	}
-	for _, event := range events {
-		if event.Status == "active" && event.EventType == "goal_cancelled" &&
+	for _, event := range orderedEvents[referencedIndex+1:] {
+		if IsPublicFact(event) && event.EventType == "score_correction" {
+			return fmt.Errorf("%w: goal cancellation cannot target a goal before the latest score correction", ErrInvalid)
+		}
+	}
+	for _, event := range orderedEvents {
+		if IsPublicFact(event) && event.EventType == "goal_cancelled" &&
 			(event.RevisionOf == referenced.ID || event.RevisionOf == referenced.FactID) {
 			return fmt.Errorf("%w: referenced goal is already cancelled", ErrInvalid)
 		}
@@ -1325,6 +1366,9 @@ func participantNamesByRole(participants []Participant, role string) []string {
 }
 
 func validateCorrection(original, replacement MatchEvent, current Snapshot, config MatchConfig) error {
+	if isRelationshipEventType(original.EventType) || isRelationshipEventType(replacement.EventType) {
+		return fmt.Errorf("%w: relationship events must be revoked and recreated instead of corrected", ErrInvalid)
+	}
 	if err := validateEventTeam(replacement, config); err != nil {
 		return err
 	}
@@ -1346,6 +1390,10 @@ func validateCorrection(original, replacement MatchEvent, current Snapshot, conf
 		return fmt.Errorf("%w: correction score must be %d-%d", ErrInvalid, expected.Home, expected.Away)
 	}
 	return nil
+}
+
+func isRelationshipEventType(eventType string) bool {
+	return eventType == "goal_cancelled" || eventType == "var_result"
 }
 
 func validateCorrectionTimeline(events []MatchEvent, original, replacement MatchEvent) error {

@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -152,6 +153,37 @@ func main() {
 		log.Printf("match store: postgresql")
 	} else {
 		log.Printf("match store: memory")
+	}
+	if registrar, ok := matchStore.(matchstate.FactProjectionAuditRegistrar); ok {
+		var projectionAuditMu sync.Mutex
+		projectionAuditSignatures := make(map[string]string)
+		registrar.SetFactProjectionAuditObserver(func(audit matchstate.FactProjectionAudit) {
+			differences, _ := json.Marshal(audit.Differences)
+			differenceHash := sha256.Sum256(differences)
+			signature := fmt.Sprintf(
+				"%s|%d-%d|%d-%d|%s|%x",
+				strings.Join(audit.Mismatches, ","),
+				audit.LegacyScore.Home, audit.LegacyScore.Away,
+				audit.ProjectedScore.Home, audit.ProjectedScore.Away,
+				audit.Error,
+				differenceHash,
+			)
+			projectionAuditMu.Lock()
+			if projectionAuditSignatures[audit.MatchID] == signature {
+				projectionAuditMu.Unlock()
+				return
+			}
+			projectionAuditSignatures[audit.MatchID] = signature
+			projectionAuditMu.Unlock()
+			log.Printf(
+				"fact projection shadow mismatch match=%q fields=%v legacy=%d-%d projected=%d-%d difference_hash=%x error=%q",
+				audit.MatchID, audit.Mismatches,
+				audit.LegacyScore.Home, audit.LegacyScore.Away,
+				audit.ProjectedScore.Home, audit.ProjectedScore.Away,
+				differenceHash,
+				audit.Error,
+			)
+		})
 	}
 	outboxCtx, outboxCancel := context.WithCancel(context.Background())
 	defer outboxCancel()
