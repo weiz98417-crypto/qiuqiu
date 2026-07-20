@@ -385,6 +385,89 @@ func TestFactConfirmationAndRevocationAreOperatorBound(t *testing.T) {
 	}
 }
 
+func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	matchID := "formal-conflict-api"
+
+	acceptedResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "12:00", TeamID: "home",
+		Score: matchstate.Score{Home: 1}, Description: "人工记录主队进球。",
+	})
+	if acceptedResponse.Code != http.StatusCreated {
+		t.Fatalf("accepted status=%d body=%s", acceptedResponse.Code, acceptedResponse.Body.String())
+	}
+	accepted := decodeEvent(t, acceptedResponse)
+	conflictResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
+		Source: "api-sports", ProviderEventID: "formal-conflict-api", EventType: "goal", Period: "first_half", Clock: "12:10", TeamID: "away",
+		Score: matchstate.Score{Away: 1}, Description: "外部源记录客队进球。",
+	})
+	if conflictResponse.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflictResponse.Code, conflictResponse.Body.String())
+	}
+
+	publicEvents := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/events", nil)
+	var publicPayload map[string]json.RawMessage
+	if err := json.Unmarshal(publicEvents.Body.Bytes(), &publicPayload); err != nil {
+		t.Fatalf("decode public events: %v", err)
+	}
+	if _, exposed := publicPayload["conflicts"]; exposed {
+		t.Fatalf("public events exposed operator conflicts: %s", publicEvents.Body.String())
+	}
+
+	operatorEvents := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/events?token=eval-token", nil)
+	var operatorPayload struct {
+		Events    []matchstate.MatchEvent   `json:"events"`
+		Conflicts []matchstate.FactConflict `json:"conflicts"`
+	}
+	if err := json.Unmarshal(operatorEvents.Body.Bytes(), &operatorPayload); err != nil {
+		t.Fatalf("decode operator events: %v", err)
+	}
+	if len(operatorPayload.Conflicts) != 1 || operatorPayload.Conflicts[0].Status != matchstate.ConflictStatusOpen {
+		t.Fatalf("operator conflicts = %+v", operatorPayload.Conflicts)
+	}
+	conflict := operatorPayload.Conflicts[0]
+	var candidateFactID string
+	for _, member := range conflict.Members {
+		if member.Role == matchstate.ConflictMemberCandidate {
+			candidateFactID = member.FactID
+		}
+	}
+	if candidateFactID == "" {
+		t.Fatalf("candidate missing: %+v", conflict)
+	}
+
+	unauthorized := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/conflicts/"+conflict.ID+"/resolve", map[string]string{
+		"chosenFactId": accepted.FactID,
+		"reason":       "保留人工记录",
+	})
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized resolution status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+	resolved := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/conflicts/"+conflict.ID+"/resolve?token=eval-token", map[string]string{
+		"chosenFactId": accepted.FactID,
+		"reason":       "保留人工记录",
+	})
+	if resolved.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", resolved.Code, resolved.Body.String())
+	}
+	var resolvedPayload struct {
+		Conflict matchstate.FactConflict `json:"conflict"`
+		Event    matchstate.MatchEvent   `json:"event"`
+		Snapshot matchstate.Snapshot     `json:"snapshot"`
+	}
+	if err := json.Unmarshal(resolved.Body.Bytes(), &resolvedPayload); err != nil {
+		t.Fatalf("decode resolution: %v", err)
+	}
+	if resolvedPayload.Conflict.Status != matchstate.ConflictStatusResolved || resolvedPayload.Conflict.ChosenFactID != accepted.FactID {
+		t.Fatalf("resolved conflict = %+v", resolvedPayload.Conflict)
+	}
+	if resolvedPayload.Event.FactID != accepted.FactID || resolvedPayload.Snapshot.Score != (matchstate.Score{Home: 1}) || resolvedPayload.Snapshot.Integrity.Status != "ok" {
+		t.Fatalf("resolution response = %+v", resolvedPayload)
+	}
+}
+
 func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)

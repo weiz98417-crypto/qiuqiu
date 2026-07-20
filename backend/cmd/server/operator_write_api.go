@@ -85,7 +85,7 @@ func executeOperatorWrite(w http.ResponseWriter, r *http.Request, service *opera
 
 func operatorWriteIsAtomic(operation string) bool {
 	switch operation {
-	case "events.create", "events.correct", "facts.confirm", "facts.revoke", "facts.reconcile":
+	case "events.create", "events.correct", "facts.confirm", "facts.revoke", "facts.reconcile", "conflicts.resolve":
 		return true
 	default:
 		return false

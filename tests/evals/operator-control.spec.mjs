@@ -133,7 +133,10 @@ test('冲突候选采用后完成调和并只公开选中的事实', async ({ pa
   expect(conflictResponse.status()).toBe(409);
 
   await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
-  const card = page.locator('.event-card').filter({ hasText: '外部源记录穆西亚拉进球' });
+  await expect(page.locator('.conflict-resolution-card')).toContainText('这两条赛况互相冲突，请确认一条');
+  await expect(page.locator('.conflict-resolution-card').getByRole('button', { name: '保留原事实' })).toBeVisible();
+  await expect(page.locator('.conflict-resolution-card').getByRole('button', { name: '采用新事实' })).toBeVisible();
+  const card = page.locator('.event-card:not(.conflict-resolution-card)').filter({ hasText: '外部源记录穆西亚拉进球' });
   await card.getByRole('button', { name: '采用到草稿' }).click();
   await page.locator('#correctionReason').fill('已对照官方数据，采用外部源记录。');
   await page.locator('#mode').selectOption('quiet');
@@ -146,6 +149,37 @@ test('冲突候选采用后完成调和并只公开选中的事实', async ({ pa
   const publicEvents = (await request.get(`/api/matches/${matchId}/events`)).json();
   expect((await publicEvents).events).toHaveLength(1);
   expect((await publicEvents).events[0].description).toBe('外部源记录穆西亚拉进球。');
+  const operatorLedger = await apiGet(request, `/api/matches/${matchId}/events`);
+  expect(operatorLedger.conflicts).toHaveLength(1);
+  expect(operatorLedger.conflicts[0].status).toBe('resolved');
+});
+
+test('冲突保留原事实后用户端比分不抖动', async ({ page, request }) => {
+  await apiPost(request, `/api/matches/${matchId}/events`, {
+    source: 'operator', eventType: 'goal', period: 'first_half', clock: '18:00', teamId: 'home', teamName: '西班牙',
+    playerName: '佩德里', score: { home: 1, away: 0 }, description: '人工确认佩德里进球。', proactiveText: '__quiet__',
+  });
+  const conflictResponse = await request.post(`/api/matches/${matchId}/events`, {
+    data: {
+      source: 'api-sports', providerEventId: 'keep-original-18', eventType: 'goal', period: 'first_half', clock: '18:10',
+      teamId: 'away', teamName: '德国', playerName: '穆西亚拉', score: { home: 0, away: 1 }, description: '外部源冲突候选。',
+    },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
+  });
+  expect(conflictResponse.status()).toBe(409);
+
+  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  const conflictCard = page.locator('.conflict-resolution-card');
+  await conflictCard.getByRole('button', { name: '保留原事实' }).click();
+  await expect(page.locator('#toast')).toContainText('已保留原事实');
+  await expect(conflictCard).toHaveCount(0);
+
+  const state = await apiGet(request, `/api/matches/${matchId}/state`);
+  expect(state.snapshot.score).toEqual({ home: 1, away: 0 });
+  expect(state.snapshot.integrity.status).toBe('ok');
+  const publicEvents = await (await request.get(`/api/matches/${matchId}/events`)).json();
+  expect(publicEvents.events).toHaveLength(1);
+  expect(publicEvents.events[0].description).toBe('人工确认佩德里进球。');
 });
 
 test('比分更正作为独立审计事实发布且不触发主动话术', async ({ page, request }) => {

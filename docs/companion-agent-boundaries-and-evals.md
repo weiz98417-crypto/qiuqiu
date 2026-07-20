@@ -54,7 +54,7 @@ Every user-facing fact path bypasses free-form realization: match status, recent
 
 The fact layer rejects impossible transitions before persistence, including pre-match goals, goals that do not add exactly one point to the scoring team, non-goal events that change the score, and configured scorers assigned to the wrong team.
 
-Events from different sources are checked against the same effective match state. An incompatible provider event is rejected and sets `snapshot.integrity.status` to `conflict`; while that status is active, QiuQiu must not confidently confirm the disputed score or event. The current implementation clears this sticky conflict only through a match reset. There is not yet an explicit reconcile/resolve-conflict API, so production operations still need that workflow before automatic source ingestion is considered complete.
+Events from different sources are checked against the same effective match state. An incompatible provider event is held in a formal conflict set and sets `snapshot.integrity.status` to `conflict`; while that status is active, QiuQiu must not confidently confirm the disputed score or event. Operators resolve the conflict explicitly by keeping the accepted fact or adopting a candidate. Resolution changes fact visibility and match integrity atomically, while public clients continue to see only the accepted projection.
 
 ## Operator trace viewer
 

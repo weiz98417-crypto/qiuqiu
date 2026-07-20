@@ -1086,6 +1086,55 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
 			})
+		case r.Method == http.MethodPost && resource == "conflicts" && len(parts) == 4 && parts[3] == "resolve":
+			operator, authorized := operatorClaims(r, cfg)
+			if !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			conflictStore, supported := store.(matchstate.FactConflictRepository)
+			if !supported {
+				http.Error(w, "fact conflict resolution unavailable", http.StatusNotImplemented)
+				return
+			}
+			var request struct {
+				ChosenFactID string `json:"chosenFactId"`
+				Reason       string `json:"reason"`
+			}
+			body, err := decodeOperatorJSON(w, r, &request)
+			if err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			executeOperatorWrite(w, r, operatorWrites, matchID, "conflicts.resolve", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+				var conflict matchstate.FactConflict
+				var changed matchstate.MatchEvent
+				var snapshot matchstate.Snapshot
+				var err error
+				if transactionalStore, transactional := store.(matchstate.FactConflictTransactionRepository); transactional {
+					conflict, changed, snapshot, err = transactionalStore.ResolveFactConflictOperator(
+						operationCtx, matchID, parts[2], request.ChosenFactID, operator.Subject, request.Reason,
+					)
+				} else {
+					conflict, changed, snapshot, err = conflictStore.ResolveFactConflict(
+						matchID, parts[2], request.ChosenFactID, operator.Subject, request.Reason,
+					)
+				}
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrNotFound) {
+						status = http.StatusNotFound
+					} else if errors.Is(err, matchstate.ErrConflict) {
+						status = http.StatusConflict
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"conflict": conflict,
+					"event":    changed,
+					"snapshot": snapshot,
+				})
+			})
 		case r.Method == http.MethodGet && resource == "facts" && len(parts) == 4 && parts[3] == "revisions":
 			if _, authorized := operatorClaims(r, cfg); !authorized {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -1122,13 +1171,24 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 			})
 		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
 			events := store.PublicEvents(matchID)
-			if validAPIToken(r, cfg) {
+			operatorView := validAPIToken(r, cfg)
+			if operatorView {
 				events = store.Events(matchID)
 			}
 			if events == nil {
 				events = []matchstate.MatchEvent{}
 			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"events": events})
+			response := map[string]interface{}{"events": events}
+			if operatorView {
+				if conflictStore, supported := store.(matchstate.FactConflictRepository); supported {
+					conflicts := conflictStore.FactConflicts(matchID)
+					if conflicts == nil {
+						conflicts = []matchstate.FactConflict{}
+					}
+					response["conflicts"] = conflicts
+				}
+			}
+			writeJSON(w, http.StatusOK, response)
 		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"snapshot": store.PublicSnapshot(matchID),

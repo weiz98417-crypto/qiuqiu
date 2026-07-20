@@ -9,6 +9,7 @@ func TestOperatorWriteAtomicity(t *testing.T) {
 		"facts.confirm",
 		"facts.revoke",
 		"facts.reconcile",
+		"conflicts.resolve",
 	}
 	for _, operation := range atomicOperations {
 		if !operatorWriteIsAtomic(operation) {

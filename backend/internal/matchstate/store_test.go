@@ -389,6 +389,9 @@ func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
 	if public := store.PublicEvents(matchID); len(public) != 1 || public[0].FactID != reconciled.FactID {
 		t.Fatalf("public facts after reconciliation = %+v", public)
 	}
+	if conflicts := store.FactConflicts(matchID); len(conflicts) != 1 || conflicts[0].Status != ConflictStatusResolved || conflicts[0].ChosenFactID != reconciled.FactID {
+		t.Fatalf("legacy reconciliation did not resolve formal conflict: %+v", conflicts)
+	}
 }
 
 func TestRevokingLastConflictCandidateRestoresIntegrity(t *testing.T) {
@@ -415,6 +418,160 @@ func TestRevokingLastConflictCandidateRestoresIntegrity(t *testing.T) {
 	if snapshot.Score != (Score{Home: 1}) || snapshot.Integrity.Status != "ok" {
 		t.Fatalf("snapshot after rejecting conflict = %+v", snapshot)
 	}
+	if conflicts := store.FactConflicts(matchID); len(conflicts) != 1 || conflicts[0].Status != ConflictStatusResolved {
+		t.Fatalf("legacy candidate rejection did not resolve formal conflict: %+v", conflicts)
+	}
+}
+
+func TestConflictSetRequiresExplicitResolution(t *testing.T) {
+	store := NewStore()
+	matchID := "explicit-conflict-resolution"
+	accepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+		Score: Score{Away: 1}, Description: "客队冲突候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+	}
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || conflicts[0].Status != ConflictStatusOpen {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
+	conflict := conflicts[0]
+	if len(conflict.Members) != 2 {
+		t.Fatalf("conflict members = %+v", conflict.Members)
+	}
+	roles := map[string]ConflictMemberRole{}
+	for _, member := range conflict.Members {
+		roles[member.FactID] = member.Role
+	}
+	if roles[accepted.FactID] != ConflictMemberAccepted {
+		t.Fatalf("accepted member role = %q", roles[accepted.FactID])
+	}
+	var candidateFactID string
+	for factID, role := range roles {
+		if role == ConflictMemberCandidate {
+			candidateFactID = factID
+		}
+	}
+	if candidateFactID == "" {
+		t.Fatalf("candidate member missing: %+v", conflict.Members)
+	}
+
+	resolved, chosen, snapshot, err := store.ResolveFactConflict(matchID, conflict.ID, accepted.FactID, "operator-1", "保留现场人工记录")
+	if err != nil {
+		t.Fatalf("ResolveFactConflict: %v", err)
+	}
+	if resolved.Status != ConflictStatusResolved || resolved.ChosenFactID != accepted.FactID || resolved.ResolvedBy != "operator-1" {
+		t.Fatalf("resolved conflict = %+v", resolved)
+	}
+	if chosen.FactID != accepted.FactID || chosen.FactStatus != FactStatusConfirmed {
+		t.Fatalf("chosen fact = %+v", chosen)
+	}
+	if snapshot.Score != (Score{Home: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("resolved snapshot = %+v", snapshot)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == candidateFactID && event.FactStatus != FactStatusRevoked {
+			t.Fatalf("candidate event = %+v", event)
+		}
+	}
+}
+
+func TestResolvingOneConflictDoesNotChangeAnotherOpenConflict(t *testing.T) {
+	store := NewStore()
+	matchID := "scoped-conflict-resolution"
+	firstAccepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "第一组原事实。",
+	})
+	if err != nil {
+		t.Fatalf("Create first accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider-a", EventType: "goal", Period: "first_half", Clock: "10:10", TeamID: "away",
+		Score: Score{Away: 1}, Description: "第一组候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create first candidate error = %v, want ErrConflict", err)
+	}
+	secondAccepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "30:00", TeamID: "home",
+		Score: Score{Home: 2}, Description: "第二组原事实。",
+	})
+	if err != nil {
+		t.Fatalf("Create second accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider-b", EventType: "goal", Period: "first_half", Clock: "30:10", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "第二组候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create second candidate error = %v, want ErrConflict", err)
+	}
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 2 {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
+	firstConflict := conflictContainingFact(t, conflicts, firstAccepted.FactID)
+	secondConflict := conflictContainingFact(t, conflicts, secondAccepted.FactID)
+	firstCandidate := conflictCandidateFact(t, firstConflict)
+	secondCandidate := conflictCandidateFact(t, secondConflict)
+
+	resolved, _, snapshot, err := store.ResolveFactConflict(matchID, firstConflict.ID, firstCandidate, "operator-1", "采用第一组外部源")
+	if err != nil {
+		t.Fatalf("Resolve first conflict: %v", err)
+	}
+	if resolved.ChosenFactID != firstCandidate || snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("first resolution result = %+v / %+v", resolved, snapshot)
+	}
+
+	after := store.FactConflicts(matchID)
+	stillOpen := conflictContainingFact(t, after, secondAccepted.FactID)
+	if stillOpen.Status != ConflictStatusOpen {
+		t.Fatalf("second conflict = %+v", stillOpen)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == secondAccepted.FactID && event.FactStatus != FactStatusConfirmed {
+			t.Fatalf("second accepted fact changed: %+v", event)
+		}
+		if event.FactID == secondCandidate && event.FactStatus != FactStatusConflict {
+			t.Fatalf("second candidate changed: %+v", event)
+		}
+	}
+}
+
+func conflictContainingFact(t *testing.T, conflicts []FactConflict, factID string) FactConflict {
+	t.Helper()
+	for _, conflict := range conflicts {
+		for _, member := range conflict.Members {
+			if member.FactID == factID {
+				return conflict
+			}
+		}
+	}
+	t.Fatalf("conflict containing fact %q not found: %+v", factID, conflicts)
+	return FactConflict{}
+}
+
+func conflictCandidateFact(t *testing.T, conflict FactConflict) string {
+	t.Helper()
+	for _, member := range conflict.Members {
+		if member.Role == ConflictMemberCandidate {
+			return member.FactID
+		}
+	}
+	t.Fatalf("candidate missing from conflict: %+v", conflict)
+	return ""
 }
 
 func TestSubscriberReceivesBurstWithoutDroppingEvents(t *testing.T) {

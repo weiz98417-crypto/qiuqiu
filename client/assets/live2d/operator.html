@@ -504,6 +504,13 @@
     gap: 6px;
   }
   .event-card::before { content: ""; position: absolute; left: 0; top: 0; bottom: 0; width: 4px; background: var(--primary); border-radius: 8px 0 0 8px; }
+  .conflict-resolution-card { border-color: rgba(242,201,76,.28); background: rgba(242,201,76,.045); }
+  .conflict-resolution-card::before { background: var(--warning); }
+  .conflict-title { display: flex; align-items: center; gap: 7px; color: var(--warning); font-weight: 900; }
+  .conflict-options { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
+  .conflict-option { display: grid; gap: 5px; min-width: 0; padding: 9px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: var(--surface-lowest); }
+  .conflict-option b, .conflict-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conflict-option .small-btn { width: 100%; margin-top: 2px; }
   .event-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-weight: 800; }
   .mono { font-family: "JetBrains Mono", monospace; }
   .time-badge { color: var(--primary); background: rgba(255,182,147,.1); border-radius: 4px; padding: 2px 6px; font: 700 13px/16px "JetBrains Mono", monospace; }
@@ -814,6 +821,7 @@
     .voice-conflict-row { grid-template-columns: 1fr 1fr; }
     .voice-conflict-row > span { grid-column: 1 / -1; }
     .voice-conflict-row.warning .small-btn { grid-column: 1 / -1; }
+    .conflict-options { grid-template-columns: 1fr; }
     .half { grid-column: 1 / -1; }
     .setup-canvas, .settings-canvas, .trace-canvas, .control-canvas { padding: 16px; }
   }
@@ -1468,6 +1476,8 @@ let focusedRole = '';
 let confirmedScore = { home: 0, away: 0 };
 let correctingId = '';
 let correctingFactStatus = '';
+let correctingConflictId = '';
+let latestFactConflicts = [];
 let matchClock = { period: 'pre_match', elapsedSeconds: 0, running: false, anchorAt: null, version: 0 };
 let clockTimer = null;
 let liveDraft = OperatorLiveState.createDraft({ matchId: 'test', teamId: 'home' });
@@ -2505,13 +2515,73 @@ async function loadConfig() {
   syncPreFromMain();
   renderCurrentDraft();
 }
+function openConflictForFact(factId) {
+  if (!factId) return null;
+  return latestFactConflicts.find((conflict) => conflict.status === 'open' && (conflict.members || []).some((member) => member.factId === factId)) || null;
+}
+
 function factActionButtons(event) {
+  if (openConflictForFact(event.factId)) return '';
   const status = event.factStatus || (event.confirmed ? 'confirmed' : 'provisional');
   const actions = [];
   if (status === 'provisional') actions.push(['confirm', '确认']);
   if (status === 'conflict') actions.push(['reconcile', '选为事实']);
   if (['provisional', 'confirmed', 'conflict', 'reconciled'].includes(status)) actions.push(['revoke', '撤销']);
   return actions.map(([action, label]) => `<button class="small-btn" type="button" data-fact-action="${action}">${label}</button>`).join('');
+}
+
+async function resolveFactConflict(conflict, chosenEvent, reason, triggerElement) {
+  if (!conflict?.id || !chosenEvent?.factId) return;
+  return runOperatorAction(`conflict:${currentMatchId()}:${conflict.id}:${chosenEvent.factId}`, async () => {
+    try {
+      const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/conflicts/${encodeURIComponent(conflict.id)}/resolve`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ chosenFactId: chosenEvent.factId, reason }),
+        inflightKey: `conflict:${currentMatchId()}:${conflict.id}:${chosenEvent.factId}`
+      });
+      applyPublishedSnapshot(result);
+      updateContextPreview();
+      await loadTimeline();
+      toast(chosenEvent.factStatus === 'conflict' ? '已采用新事实并同步赛况' : '已保留原事实', 'ok');
+    } catch (error) {
+      toast(error.message || '冲突处理失败', 'bad');
+    }
+  }, triggerElement);
+}
+
+function renderFactConflict(conflict, eventsByFactId) {
+  const card = document.createElement('div');
+  card.className = 'event-card conflict-resolution-card';
+  const members = (conflict.members || []).map((member) => ({ ...member, event: eventsByFactId.get(member.factId) })).filter((member) => member.event);
+  const accepted = members.filter((member) => member.role === 'accepted');
+  const candidates = members.filter((member) => member.role === 'candidate');
+  const options = [...accepted, ...candidates];
+  card.innerHTML = `
+    <div class="conflict-title"><span class="material-symbols-outlined">rule</span><span>这两条赛况互相冲突，请确认一条</span></div>
+    <div class="muted">用户端仍保持上一次已确认赛况；这里的选择会一次性完成比分和事实切换。</div>
+    <div class="conflict-options">
+      ${options.map((member, index) => `
+        <div class="conflict-option">
+          <span class="muted">${member.role === 'accepted' ? '当前已采用' : '新到候选'} · ${escapeHTML(member.event.clock || '')}</span>
+          <b>${escapeHTML(member.event.teamName || '')} ${escapeHTML(eventLabel(member.event.eventType))}</b>
+          <span>${escapeHTML(member.event.description || '')}</span>
+          <button class="small-btn" type="button" data-conflict-choice="${index}">${member.role === 'accepted' ? '保留原事实' : '采用新事实'}</button>
+        </div>
+      `).join('')}
+    </div>
+  `;
+  card.querySelectorAll('[data-conflict-choice]').forEach((button) => {
+    const member = options[Number(button.dataset.conflictChoice)];
+    button.dataset.busyLabel = '处理中…';
+    button.onclick = () => resolveFactConflict(
+      conflict,
+      member.event,
+      member.role === 'accepted' ? '导演确认保留原事实' : '导演确认采用新事实',
+      button
+    );
+  });
+  return card;
 }
 
 async function transitionFact(event, action, triggerElement) {
@@ -2539,10 +2609,18 @@ async function loadTimeline() {
   const host = $('timeline');
   host.innerHTML = '';
   const events = data.events || [];
+  latestFactConflicts = data.conflicts || [];
   if (!events.length) {
     host.innerHTML = '<div class="muted">暂无事件。选择球员和事件后，最新记录会出现在这里。</div>';
     return;
   }
+  const eventsByFactId = new Map();
+  events.forEach((event) => {
+    if (event.factId && !eventsByFactId.has(event.factId)) eventsByFactId.set(event.factId, event);
+  });
+  latestFactConflicts.filter((conflict) => conflict.status === 'open').forEach((conflict) => {
+    host.appendChild(renderFactConflict(conflict, eventsByFactId));
+  });
   events.forEach((event) => {
     const card = document.createElement('div');
     card.className = 'event-card';
@@ -2772,6 +2850,7 @@ function prettyJSON(value) {
 function editCorrection(event) {
   correctingId = event.id || '';
   correctingFactStatus = event.factStatus || '';
+  correctingConflictId = openConflictForFact(event.factId)?.id || '';
   const eventSide = ['home', 'away'].includes(event.teamId) ? event.teamId : side;
   const eventType = OperatorLiveState.eventDefinitions[event.eventType] ? event.eventType : 'operator_note';
   const definition = OperatorLiveState.eventDefinitions[eventType];
@@ -2818,6 +2897,7 @@ function editCorrection(event) {
 function clearDraft(silent = false) {
   correctingId = '';
   correctingFactStatus = '';
+  correctingConflictId = '';
   liveDraft = OperatorLiveState.updateDraft(liveDraft, {
     type: 'clear',
     period: matchClock.period,
@@ -2962,16 +3042,29 @@ async function publishCurrentDraft(factStatus, triggerElement) {
       const publishesRelatedFact = ['var_result', 'goal_cancelled'].includes(liveDraft.eventType);
       let result = correctingId && !publishesRelatedFact ? await correctEvent(correctingId, payload) : await publishEvent(payload);
       if (correctingFactStatus === 'conflict' && result.event?.factId) {
-        result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(result.event.factId)}/reconcile`, {
-          method: 'POST',
-          inflightKey: `fact:${currentMatchId()}:${result.event.factId}:reconcile`
-        });
+        if (correctingConflictId) {
+          result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/conflicts/${encodeURIComponent(correctingConflictId)}/resolve`, {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              chosenFactId: result.event.factId,
+              reason: payload.evidence?.correctionReason || '导演校准后采用新事实'
+            }),
+            inflightKey: `conflict:${currentMatchId()}:${correctingConflictId}:${result.event.factId}`
+          });
+        } else {
+          result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(result.event.factId)}/reconcile`, {
+            method: 'POST',
+            inflightKey: `fact:${currentMatchId()}:${result.event.factId}:reconcile`
+          });
+        }
       }
       applyPublishedSnapshot(result);
       const label = OperatorLiveState.eventDefinitions[liveDraft.eventType]?.label || liveDraft.eventType;
       toast(factStatus === 'provisional' ? `已暂存候选：${label}` : `已确认并发送：${label}`, 'ok');
       correctingId = '';
       correctingFactStatus = '';
+      correctingConflictId = '';
       clearDraft(true);
       await loadTimeline();
     } catch (error) {

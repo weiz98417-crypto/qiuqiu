@@ -7,11 +7,34 @@ import (
 	"os"
 	"reflect"
 	"strconv"
+	"sync"
 	"testing"
 	"time"
 
 	"qiuqiu/internal/operatorwrite"
 )
+
+func TestEventIDsRemainUniqueUnderConcurrentBurst(t *testing.T) {
+	const count = 4096
+	ids := make(chan string, count)
+	var wait sync.WaitGroup
+	wait.Add(count)
+	for index := 0; index < count; index++ {
+		go func() {
+			defer wait.Done()
+			ids <- newEventID()
+		}()
+	}
+	wait.Wait()
+	close(ids)
+	seen := make(map[string]struct{}, count)
+	for id := range ids {
+		if _, duplicate := seen[id]; duplicate {
+			t.Fatalf("duplicate event id %q", id)
+		}
+		seen[id] = struct{}{}
+	}
+}
 
 func TestPostgresStoreIntegration(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
@@ -452,6 +475,13 @@ func TestPostgresOperatorTransactionAtomicallyCommitsEventIdempotencyAndOutbox(t
 		if err != nil {
 			return operatorwrite.Response{}, err
 		}
+		transactionSnapshot, err := store.PublicSnapshotOperator(operationCtx, matchID)
+		if err != nil {
+			return operatorwrite.Response{}, err
+		}
+		if transactionSnapshot.Score != snapshot.Score {
+			return operatorwrite.Response{}, errors.New("operator transaction snapshot did not include its own mutation")
+		}
 		return operatorwrite.JSONResponse(201, map[string]any{"event": created, "snapshot": snapshot})
 	})
 	if err != nil || replayed || response.StatusCode != 201 {
@@ -468,7 +498,7 @@ func TestPostgresOperatorTransactionAtomicallyCommitsEventIdempotencyAndOutbox(t
 	}
 }
 
-func TestPostgresOperatorReconcileResponseUsesCommittedIntegrity(t *testing.T) {
+func TestPostgresOperatorConflictResolutionResponseUsesCommittedIntegrity(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
 		t.Skip("DATABASE_URL not set")
@@ -500,15 +530,21 @@ func TestPostgresOperatorReconcileResponseUsesCommittedIntegrity(t *testing.T) {
 		t.Fatalf("Create conflict candidate error = %v", err)
 	}
 	candidate := store.Events(matchID)[0]
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
 	request := operatorwrite.Request{
-		MatchID: matchID, Key: "reconcile-key", PayloadHash: "reconcile-hash", Operation: "facts.reconcile", Atomic: true,
+		MatchID: matchID, Key: "conflict-resolution-key", PayloadHash: "conflict-resolution-hash", Operation: "conflicts.resolve", Atomic: true,
 	}
 	operation := func(operationCtx context.Context) (operatorwrite.Response, error) {
-		reconciled, snapshot, err := store.ReconcileFactOperator(operationCtx, matchID, candidate.FactID, "operator-1")
+		conflict, reconciled, snapshot, err := store.ResolveFactConflictOperator(
+			operationCtx, matchID, conflicts[0].ID, candidate.FactID, "operator-1", "采用官方来源",
+		)
 		if err != nil {
 			return operatorwrite.Response{}, err
 		}
-		return operatorwrite.JSONResponse(200, map[string]any{"event": reconciled, "snapshot": snapshot})
+		return operatorwrite.JSONResponse(200, map[string]any{"conflict": conflict, "event": reconciled, "snapshot": snapshot})
 	}
 	response, replayed, err := service.Execute(ctx, request, operation)
 	if err != nil || replayed {
@@ -517,13 +553,17 @@ func TestPostgresOperatorReconcileResponseUsesCommittedIntegrity(t *testing.T) {
 	assertReconciledResponse := func(response operatorwrite.Response) {
 		t.Helper()
 		var envelope struct {
-			Snapshot Snapshot `json:"snapshot"`
+			Conflict FactConflict `json:"conflict"`
+			Snapshot Snapshot     `json:"snapshot"`
 		}
 		if err := json.Unmarshal(response.Body, &envelope); err != nil {
 			t.Fatalf("decode response: %v", err)
 		}
 		if envelope.Snapshot.Score != (Score{Away: 1}) || envelope.Snapshot.Integrity.Status != "ok" {
 			t.Fatalf("reconcile response snapshot = %+v", envelope.Snapshot)
+		}
+		if envelope.Conflict.Status != ConflictStatusResolved || envelope.Conflict.ChosenFactID != candidate.FactID {
+			t.Fatalf("resolution response conflict = %+v", envelope.Conflict)
 		}
 	}
 	assertReconciledResponse(response)
@@ -563,7 +603,7 @@ func TestPostgresSerializesConcurrentGoalTransitions(t *testing.T) {
 		go func(index int) {
 			<-start
 			_, _, createErr := store.Create(matchID, MatchEvent{
-				Source:          "api-sports",
+				Source:          "operator",
 				ProviderEventID: "concurrent-goal-" + strconv.Itoa(index),
 				EventType:       "goal",
 				Period:          "first_half",
@@ -678,6 +718,145 @@ func TestPostgresPersistsCrossSourceConflictIntegrity(t *testing.T) {
 	}
 }
 
+func TestPostgresPersistsAndAtomicallyResolvesFactConflict(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	store, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer store.Close()
+	matchID := "pg-formal-conflict-" + time.Now().UTC().Format("20060102150405.000000000")
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "Spain", AwayTeam: "Germany"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	accepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "23:41", TeamID: "home",
+		Score: Score{Home: 1}, Description: "Spain goal",
+	})
+	if err != nil {
+		t.Fatalf("Create accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "api-sports", ProviderEventID: "formal-conflict", EventType: "goal", Period: "first_half", Clock: "24:00", TeamID: "away",
+		Score: Score{Away: 1}, Description: "Germany candidate goal",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+	}
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || conflicts[0].Status != ConflictStatusOpen {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
+	conflict := conflicts[0]
+	candidateFactID := conflictCandidateFact(t, conflict)
+	resolved, chosen, snapshot, err := store.ResolveFactConflict(matchID, conflict.ID, candidateFactID, "operator-3", "official source confirmed")
+	if err != nil {
+		t.Fatalf("ResolveFactConflict error: %v", err)
+	}
+	if resolved.Status != ConflictStatusResolved || resolved.ChosenFactID != candidateFactID {
+		t.Fatalf("resolved conflict = %+v", resolved)
+	}
+	if chosen.FactStatus != FactStatusReconciled || snapshot.Score != (Score{Away: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("chosen event/snapshot = %+v / %+v", chosen, snapshot)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == accepted.FactID && event.FactStatus != FactStatusRevoked {
+			t.Fatalf("accepted fact was not revoked: %+v", event)
+		}
+	}
+
+	reopened, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("reopen store error: %v", err)
+	}
+	defer reopened.Close()
+	persisted := reopened.FactConflicts(matchID)
+	if len(persisted) != 1 || persisted[0].Status != ConflictStatusResolved || persisted[0].ChosenFactID != candidateFactID || persisted[0].Reason != "official source confirmed" {
+		t.Fatalf("persisted conflict = %+v", persisted)
+	}
+	if reopened.Snapshot(matchID).Score != (Score{Away: 1}) {
+		t.Fatalf("reopened snapshot = %+v", reopened.Snapshot(matchID))
+	}
+}
+
+func TestPostgresResolvesMultipleFactConflictsIndependently(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	store, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer store.Close()
+	matchID := "pg-independent-conflicts-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "Spain", AwayTeam: "Germany"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	firstAccepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "first accepted",
+	})
+	if err != nil {
+		t.Fatalf("Create first accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider-a", ProviderEventID: "independent-a", EventType: "goal", Period: "first_half", Clock: "10:10", TeamID: "away",
+		Score: Score{Away: 1}, Description: "first candidate",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create first candidate error = %v", err)
+	}
+	secondAccepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "30:00", TeamID: "home",
+		Score: Score{Home: 2}, Description: "second accepted",
+	})
+	if err != nil {
+		t.Fatalf("Create second accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider-b", ProviderEventID: "independent-b", EventType: "goal", Period: "first_half", Clock: "30:10", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "second candidate",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create second candidate error = %v", err)
+	}
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 2 {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
+	firstConflict := conflictContainingFact(t, conflicts, firstAccepted.FactID)
+	secondConflict := conflictContainingFact(t, conflicts, secondAccepted.FactID)
+	firstCandidate := conflictCandidateFact(t, firstConflict)
+	if _, _, snapshot, err := store.ResolveFactConflict(matchID, firstConflict.ID, firstCandidate, "operator-1", "adopt first candidate"); err != nil {
+		t.Fatalf("Resolve first conflict: %v", err)
+	} else if snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("first resolution snapshot = %+v", snapshot)
+	}
+	remaining := conflictContainingFact(t, store.FactConflicts(matchID), secondAccepted.FactID)
+	if remaining.Status != ConflictStatusOpen {
+		t.Fatalf("second conflict changed: %+v", remaining)
+	}
+	if _, _, snapshot, err := store.ResolveFactConflict(matchID, secondConflict.ID, secondAccepted.FactID, "operator-2", "keep second accepted"); err != nil {
+		t.Fatalf("Resolve second conflict: %v", err)
+	} else if snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("second resolution snapshot = %+v", snapshot)
+	}
+	for _, conflict := range store.FactConflicts(matchID) {
+		if conflict.Status != ConflictStatusResolved {
+			t.Fatalf("unresolved conflict after both choices: %+v", conflict)
+		}
+	}
+}
+
 func TestPostgresFactLifecycleAndRevisions(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -776,6 +955,9 @@ func TestPostgresFactLifecycleAndRevisions(t *testing.T) {
 	}
 	if got := store.FactRevisions(conflictMatchID, manual.FactID); len(got) != 2 || got[1].Status != FactStatusRevoked {
 		t.Fatalf("manual conflict revisions = %+v", got)
+	}
+	if conflicts := store.FactConflicts(conflictMatchID); len(conflicts) != 1 || conflicts[0].Status != ConflictStatusResolved || conflicts[0].ChosenFactID != provider.FactID {
+		t.Fatalf("legacy reconciliation did not resolve formal conflict: %+v", conflicts)
 	}
 	reopened, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
 	if err != nil {

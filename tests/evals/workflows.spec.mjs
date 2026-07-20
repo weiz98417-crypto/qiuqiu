@@ -183,6 +183,18 @@ test('人工与外部源冲突时，球球暂停确认赛况', async ({ page, re
   const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=20`);
   const trace = traces.traces.find((item) => item.input === '西班牙1比0德国');
   expect(trace.claim).toMatchObject({ kind: 'score', status: 'unverified' });
+
+  const ledger = await apiGet(request, `/api/matches/${matchId}/events`);
+  const conflict = ledger.conflicts.find((item) => item.status === 'open');
+  const acceptedFactId = conflict.members.find((member) => member.role === 'accepted').factId;
+  await apiPost(request, `/api/matches/${matchId}/conflicts/${conflict.id}/resolve`, {
+    chosenFactId: acceptedFactId,
+    reason: '浏览器端到端验证保留原事实',
+  });
+  await expect(page.getByText(/1\s*—\s*0/).first()).toBeVisible({ timeout: 10_000 });
+  const resolvedState = await apiGet(request, `/api/matches/${matchId}/state`);
+  expect(resolvedState.snapshot.score).toEqual({ home: 1, away: 0 });
+  expect(resolvedState.snapshot.integrity.status).toBe('ok');
 });
 
 test('导演赛前配置通过页面保存，并同步到事实 API', async ({ page, request }) => {

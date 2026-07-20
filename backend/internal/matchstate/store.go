@@ -51,6 +51,37 @@ type FactRevision struct {
 	PublicAt      string         `json:"publicAt,omitempty"`
 }
 
+type ConflictStatus string
+
+const (
+	ConflictStatusOpen     ConflictStatus = "open"
+	ConflictStatusResolved ConflictStatus = "resolved"
+)
+
+type ConflictMemberRole string
+
+const (
+	ConflictMemberAccepted  ConflictMemberRole = "accepted"
+	ConflictMemberCandidate ConflictMemberRole = "candidate"
+)
+
+type FactConflictMember struct {
+	FactID string             `json:"factId"`
+	Role   ConflictMemberRole `json:"role"`
+}
+
+type FactConflict struct {
+	ID           string               `json:"id"`
+	MatchID      string               `json:"matchId"`
+	Status       ConflictStatus       `json:"status"`
+	ChosenFactID string               `json:"chosenFactId,omitempty"`
+	Reason       string               `json:"reason,omitempty"`
+	DetectedAt   string               `json:"detectedAt"`
+	ResolvedAt   string               `json:"resolvedAt,omitempty"`
+	ResolvedBy   string               `json:"resolvedBy,omitempty"`
+	Members      []FactConflictMember `json:"members"`
+}
+
 const (
 	AutomationModeActive = "active"
 	AutomationModePaused = "paused"
@@ -180,6 +211,15 @@ type OperatorTransactionRepository interface {
 	PublicSnapshotOperator(context.Context, string) (Snapshot, error)
 }
 
+type FactConflictRepository interface {
+	FactConflicts(matchID string) []FactConflict
+	ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error)
+}
+
+type FactConflictTransactionRepository interface {
+	ResolveFactConflictOperator(context.Context, string, string, string, string, string) (FactConflict, MatchEvent, Snapshot, error)
+}
+
 type OutboxRunner interface {
 	RunOutbox(context.Context)
 }
@@ -217,6 +257,7 @@ type Store struct {
 	events           map[string][]MatchEvent
 	configs          map[string]MatchConfig
 	factHistory      map[string][]FactRevision
+	factConflicts    map[string][]FactConflict
 	sourceCursor     map[string]int64
 	clocks           map[string]MatchClock
 	clockSubscribers map[string]map[chan MatchClock]struct{}
@@ -225,6 +266,7 @@ type Store struct {
 	projectionAudit  func(FactProjectionAudit)
 	projectedReads   bool
 	nextID           int64
+	nextConflictID   int64
 	now              func() time.Time
 }
 
@@ -313,6 +355,7 @@ func NewStore(options ...StoreOption) *Store {
 		events:           make(map[string][]MatchEvent),
 		configs:          make(map[string]MatchConfig),
 		factHistory:      make(map[string][]FactRevision),
+		factConflicts:    make(map[string][]FactConflict),
 		sourceCursor:     make(map[string]int64),
 		clocks:           make(map[string]MatchClock),
 		clockSubscribers: make(map[string]map[chan MatchClock]struct{}),
@@ -450,6 +493,7 @@ func (s *Store) Reset(matchID string) error {
 	delete(s.events, matchID)
 	delete(s.configs, matchID)
 	delete(s.clocks, matchID)
+	delete(s.factConflicts, matchID)
 	for key := range s.factHistory {
 		if strings.HasPrefix(key, matchID+"\x00") {
 			delete(s.factHistory, key)
@@ -513,6 +557,7 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 	}
 	if err := crossSourceEventError(s.events[matchID], ev); err != nil {
 		if errors.Is(err, ErrConflict) {
+			conflictIndices := crossSourceConflictIndices(s.events[matchID], ev)
 			config := normalizeConfig(matchID, s.configs[matchID])
 			config.Integrity = conflictIntegrity(ev)
 			config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
@@ -529,6 +574,7 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 			ev.UpdatedAt = now
 			s.events[matchID] = append(s.events[matchID], ev)
 			s.recordFactRevisionLocked(matchID, ev)
+			s.recordFactConflictLocked(matchID, s.events[matchID], conflictIndices, ev, now)
 			subs := s.subscriberListLocked(matchID)
 			s.mu.Unlock()
 			s.publish(subs, ev)
@@ -779,12 +825,223 @@ func (s *Store) FactRevisions(matchID, factID string) []FactRevision {
 	return append([]FactRevision(nil), s.factHistory[key]...)
 }
 
+func (s *Store) FactConflicts(matchID string) []FactConflict {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	conflicts := s.factConflicts[strings.TrimSpace(matchID)]
+	cloned := make([]FactConflict, len(conflicts))
+	for index := range conflicts {
+		cloned[index] = cloneFactConflict(conflicts[index])
+	}
+	return cloned
+}
+
+func (s *Store) ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
+	matchID = strings.TrimSpace(matchID)
+	conflictID = strings.TrimSpace(conflictID)
+	chosenFactID = strings.TrimSpace(chosenFactID)
+	operatorID = strings.TrimSpace(operatorID)
+	reason = strings.TrimSpace(reason)
+	if matchID == "" || conflictID == "" || chosenFactID == "" || operatorID == "" || reason == "" {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, conflictId, chosenFactId, operatorId and reason are required", ErrInvalid)
+	}
+
+	s.mu.Lock()
+	conflicts := s.factConflicts[matchID]
+	conflictIndex := -1
+	for index := range conflicts {
+		if conflicts[index].ID == conflictID && conflicts[index].Status == ConflictStatusOpen {
+			conflictIndex = index
+			break
+		}
+	}
+	if conflictIndex == -1 {
+		s.mu.Unlock()
+		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+	}
+	memberFactIDs := make(map[string]struct{}, len(conflicts[conflictIndex].Members))
+	for _, member := range conflicts[conflictIndex].Members {
+		memberFactIDs[member.FactID] = struct{}{}
+	}
+	if _, member := memberFactIDs[chosenFactID]; !member {
+		s.mu.Unlock()
+		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: chosen fact is not a member of the conflict", ErrInvalid)
+	}
+
+	events := s.events[matchID]
+	chosenIndex := -1
+	changedSignalIndex := -1
+	now := s.now().UTC().Format(time.RFC3339Nano)
+	for index := range events {
+		if events[index].Status != "active" {
+			continue
+		}
+		if _, member := memberFactIDs[events[index].FactID]; !member {
+			continue
+		}
+		if events[index].FactID == chosenFactID {
+			chosenIndex = index
+			if events[index].FactStatus == FactStatusConflict || events[index].FactStatus == FactStatusProvisional {
+				events[index].FactStatus = FactStatusReconciled
+				events[index].Confirmed = true
+				events[index].ConfirmedBy = operatorID
+				events[index].PublicAt = now
+				events[index].FactRevision++
+				events[index].UpdatedAt = now
+				s.recordFactRevisionLocked(matchID, events[index])
+				changedSignalIndex = index
+			}
+			continue
+		}
+		if events[index].FactStatus == FactStatusRevoked {
+			continue
+		}
+		events[index].FactStatus = FactStatusRevoked
+		events[index].Confirmed = false
+		events[index].ConfirmedBy = operatorID
+		events[index].PublicAt = ""
+		events[index].FactRevision++
+		events[index].UpdatedAt = now
+		s.recordFactRevisionLocked(matchID, events[index])
+		if changedSignalIndex == -1 {
+			changedSignalIndex = index
+		}
+	}
+	if chosenIndex == -1 {
+		s.mu.Unlock()
+		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+	}
+
+	conflicts[conflictIndex].Status = ConflictStatusResolved
+	conflicts[conflictIndex].ChosenFactID = chosenFactID
+	conflicts[conflictIndex].Reason = reason
+	conflicts[conflictIndex].ResolvedAt = now
+	conflicts[conflictIndex].ResolvedBy = operatorID
+	s.factConflicts[matchID] = conflicts
+	s.events[matchID] = events
+	config := normalizeConfig(matchID, s.configs[matchID])
+	if !hasOpenFactConflict(conflicts) {
+		config.Integrity = MatchIntegrity{Status: "ok"}
+		config.UpdatedAt = now
+		s.configs[matchID] = config
+	}
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: s.clocks[matchID], Now: s.now()},
+		s.projectedReads,
+		nil,
+	).Snapshot
+	chosen := events[chosenIndex]
+	resolved := cloneFactConflict(conflicts[conflictIndex])
+	subs := s.subscriberListLocked(matchID)
+	var signal MatchEvent
+	if changedSignalIndex >= 0 {
+		signal = events[changedSignalIndex]
+	}
+	s.mu.Unlock()
+	if signal.ID != "" {
+		s.publish(subs, signal)
+	}
+	return resolved, chosen, snapshot, nil
+}
+
+func (s *Store) recordFactConflictLocked(matchID string, events []MatchEvent, conflictingIndices []int, candidate MatchEvent, detectedAt string) {
+	conflicts := s.factConflicts[matchID]
+	conflictIndex := -1
+	conflictingFactIDs := make(map[string]struct{}, len(conflictingIndices))
+	for _, index := range conflictingIndices {
+		if index >= 0 && index < len(events) {
+			conflictingFactIDs[events[index].FactID] = struct{}{}
+		}
+	}
+	for index := range conflicts {
+		if conflicts[index].Status != ConflictStatusOpen {
+			continue
+		}
+		for _, member := range conflicts[index].Members {
+			if _, conflictsWithExisting := conflictingFactIDs[member.FactID]; conflictsWithExisting {
+				conflictIndex = index
+				break
+			}
+		}
+		if conflictIndex >= 0 {
+			break
+		}
+	}
+	if conflictIndex == -1 {
+		s.nextConflictID++
+		conflicts = append(conflicts, FactConflict{
+			ID:         fmt.Sprintf("conflict_%d", s.nextConflictID),
+			MatchID:    matchID,
+			Status:     ConflictStatusOpen,
+			DetectedAt: detectedAt,
+			Members:    []FactConflictMember{},
+		})
+		conflictIndex = len(conflicts) - 1
+	}
+	for _, index := range conflictingIndices {
+		if index < 0 || index >= len(events) {
+			continue
+		}
+		role := ConflictMemberCandidate
+		if IsPublicFact(events[index]) {
+			role = ConflictMemberAccepted
+		}
+		conflicts[conflictIndex].Members = appendConflictMember(conflicts[conflictIndex].Members, events[index].FactID, role)
+	}
+	conflicts[conflictIndex].Members = appendConflictMember(conflicts[conflictIndex].Members, candidate.FactID, ConflictMemberCandidate)
+	s.factConflicts[matchID] = conflicts
+}
+
+func appendConflictMember(members []FactConflictMember, factID string, role ConflictMemberRole) []FactConflictMember {
+	for index := range members {
+		if members[index].FactID == factID {
+			if role == ConflictMemberAccepted {
+				members[index].Role = role
+			}
+			return members
+		}
+	}
+	return append(members, FactConflictMember{FactID: factID, Role: role})
+}
+
+func cloneFactConflict(conflict FactConflict) FactConflict {
+	conflict.Members = append([]FactConflictMember(nil), conflict.Members...)
+	return conflict
+}
+
+func hasOpenFactConflict(conflicts []FactConflict) bool {
+	for _, conflict := range conflicts {
+		if conflict.Status == ConflictStatusOpen {
+			return true
+		}
+	}
+	return false
+}
+
 func (s *Store) transitionFact(matchID, factID, operatorID string, status FactStatus) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	factID = strings.TrimSpace(factID)
 	operatorID = strings.TrimSpace(operatorID)
 	if matchID == "" || factID == "" || operatorID == "" {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, factId and operatorId are required", ErrInvalid)
+	}
+	if conflictID, chosenFactID, reason, found := s.legacyConflictResolution(matchID, factID, status); found {
+		if chosenFactID == "" {
+			return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: resolve the open conflict explicitly", ErrInvalid)
+		}
+		_, changed, snapshot, err := s.ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason)
+		if err != nil {
+			return MatchEvent{}, Snapshot{}, err
+		}
+		if chosenFactID == factID {
+			return changed, snapshot, nil
+		}
+		for _, event := range s.Events(matchID) {
+			if event.FactID == factID && event.Status == "active" {
+				return event, snapshot, nil
+			}
+		}
+		return MatchEvent{}, Snapshot{}, ErrNotFound
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -849,6 +1106,39 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	s.publish(subs, changed)
 	s.mu.Lock()
 	return changed, snapshot, nil
+}
+
+func (s *Store) legacyConflictResolution(matchID, factID string, status FactStatus) (string, string, string, bool) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	for _, conflict := range s.factConflicts[matchID] {
+		if conflict.Status != ConflictStatusOpen {
+			continue
+		}
+		var targetRole ConflictMemberRole
+		acceptedFactID := ""
+		for _, member := range conflict.Members {
+			if member.FactID == factID {
+				targetRole = member.Role
+			}
+			if member.Role == ConflictMemberAccepted && acceptedFactID == "" {
+				acceptedFactID = member.FactID
+			}
+		}
+		if targetRole == "" {
+			continue
+		}
+		switch status {
+		case FactStatusReconciled:
+			return conflict.ID, factID, "兼容接口采用冲突候选", true
+		case FactStatusRevoked:
+			if targetRole == ConflictMemberCandidate && acceptedFactID != "" {
+				return conflict.ID, acceptedFactID, "兼容接口保留原事实", true
+			}
+			return conflict.ID, "", "", true
+		}
+	}
+	return "", "", "", false
 }
 
 func reconciliationConflictIndices(events []MatchEvent, chosenIndex int) map[int]struct{} {
