@@ -76,6 +76,7 @@ cp backend/.env.example .env
 #   - POSTGRES_PASSWORD: 独立的数据库强密码
 #   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
 #   - PENDING_OBSERVATION_COORDINATION: 直播延迟事实协调开关（默认 true）
+#   - FACT_LEDGER_PUBLIC_READS: 事实账本公共读路径开关（默认 true；设为 false 回退旧投影）
 
 # 2. 构建并启动服务（镜像内会自行编译 Flutter Web）
 docker compose up -d --build
@@ -133,6 +134,8 @@ flutter run \
 - [直播延迟下的事实协调方案](docs/live-latency-fact-coordination-solution.md)
 
 直播延迟事实协调默认开启。用户先看到现场时，球球会立即回应但不会把用户说法写进公共比分；导播台或外部数据源确认、撤销事实后，服务端只向对应用户补充确认或纠正，并在断线重连后继续未完成的跟进。可通过 `PENDING_OBSERVATION_COORDINATION=false` 暂停新增观察与异步跟进。
+
+公共比分、公共事件、客户端 WebSocket 初始快照和球球比赛上下文默认使用事实账本重放结果。紧急回退时可设置 `FACT_LEDGER_PUBLIC_READS=false` 恢复旧公共投影；影子差异审计仍会保留。
 
 ## License
 

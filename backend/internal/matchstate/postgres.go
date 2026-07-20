@@ -27,10 +27,12 @@ type PostgresStore struct {
 	clockSubscribers map[string]map[chan MatchClock]struct{}
 	eventObserver    func(MatchEvent) error
 	projectionAudit  func(FactProjectionAudit)
+	projectedReads   bool
 	outboxPublisher  func(MatchEvent) error
 }
 
-func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (*PostgresStore, error) {
+func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string, options ...StoreOption) (*PostgresStore, error) {
+	resolved := resolveStoreOptions(options)
 	pool, err := pgxpool.New(ctx, databaseURL)
 	if err != nil {
 		return nil, err
@@ -49,6 +51,7 @@ func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (
 		pool:             pool,
 		subscribers:      make(map[string]map[*eventSubscription]struct{}),
 		clockSubscribers: make(map[string]map[chan MatchClock]struct{}),
+		projectedReads:   resolved.projectedReads,
 	}
 	store.outboxPublisher = func(event MatchEvent) error {
 		store.mu.RLock()
@@ -597,7 +600,13 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 		}
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := validateAgainstSnapshot(ev, s.Snapshot(matchID), config); err != nil {
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: existingEvents, Config: config, Clock: s.Clock(matchID), Now: time.Now(),
+	})
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateAgainstSnapshot(ev, projection.Snapshot, config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	if err := insertEvent(ctx, tx, &ev); err != nil {
@@ -620,10 +629,16 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 		return MatchEvent{}, Snapshot{}, err
 	}
 	updatedEvents := append(append([]MatchEvent(nil), existingEvents...), ev)
-	if publicResult {
-		updatedEvents = filterPublicFacts(updatedEvents)
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: updatedEvents, Config: config, Clock: s.Clock(matchID), Now: time.Now(),
+		},
+		publicResult && s.projectedReads,
+		nil,
+	).Snapshot
+	if !publicResult {
+		snapshot = buildLegacySnapshot(matchID, updatedEvents, config, s.Clock(matchID), time.Now())
 	}
-	snapshot := buildSnapshot(matchID, updatedEvents, config, s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}
@@ -676,7 +691,13 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 	if err := validateCorrectionTimeline(events, original, replacement); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := validateCorrection(original, replacement, s.Snapshot(matchID), s.Config(matchID)); err != nil {
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+	})
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateCorrection(original, replacement, projection.Snapshot, s.Config(matchID)); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 
@@ -724,10 +745,16 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 		updatedEvents = append(updatedEvents, event)
 	}
 	updatedEvents = append(updatedEvents, replacement)
-	if publicResult {
-		updatedEvents = filterPublicFacts(updatedEvents)
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: updatedEvents, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+		},
+		publicResult && s.projectedReads,
+		nil,
+	).Snapshot
+	if !publicResult {
+		snapshot = buildLegacySnapshot(matchID, updatedEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	snapshot := buildSnapshot(matchID, updatedEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}
@@ -768,41 +795,53 @@ func (s *PostgresStore) Events(matchID string) []MatchEvent {
 func (s *PostgresStore) Snapshot(matchID string) Snapshot {
 	events, err := s.events(context.Background(), matchID, true)
 	if err != nil {
-		return buildSnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
+		return buildLegacySnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	return buildSnapshot(matchID, events, s.Config(matchID), s.Clock(matchID), time.Now())
+	return resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 }
 
 func (s *PostgresStore) PublicEvents(matchID string) []MatchEvent {
-	events := s.Events(matchID)
-	public := make([]MatchEvent, 0, len(events))
-	for _, event := range events {
-		if IsPublicFact(event) {
-			public = append(public, event)
-		}
+	events, err := s.events(context.Background(), matchID, true)
+	if err != nil {
+		return nil
 	}
-	return public
+	config := s.Config(matchID)
+	clock := s.Clock(matchID)
+	now := time.Now()
+	s.mu.RLock()
+	observer := s.projectionAudit
+	enabled := s.projectedReads
+	s.mu.RUnlock()
+	return resolvePublicProjection(
+		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
+		enabled,
+		observer,
+	).Events
 }
 
 func (s *PostgresStore) PublicSnapshot(matchID string) Snapshot {
 	events, err := s.events(context.Background(), matchID, true)
 	if err != nil {
-		return buildSnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
+		return buildLegacySnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
 	config := s.Config(matchID)
 	clock := s.Clock(matchID)
 	now := time.Now()
-	legacy := buildSnapshot(matchID, filterPublicFacts(events), config, clock, now)
 	s.mu.RLock()
 	observer := s.projectionAudit
+	enabled := s.projectedReads
 	s.mu.RUnlock()
-	auditFactProjection(
+	return resolvePublicProjection(
 		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
-		legacy,
-		newestFirstPublicFacts(events),
+		enabled,
 		observer,
-	)
-	return legacy
+	).Snapshot
 }
 
 func (s *PostgresStore) PublicSnapshotOperator(ctx context.Context, matchID string) (Snapshot, error) {
@@ -813,17 +852,15 @@ func (s *PostgresStore) PublicSnapshotOperator(ctx context.Context, matchID stri
 	config := s.Config(matchID)
 	clock := s.Clock(matchID)
 	now := time.Now()
-	legacy := buildSnapshot(matchID, filterPublicFacts(events), config, clock, now)
 	s.mu.RLock()
 	observer := s.projectionAudit
+	enabled := s.projectedReads
 	s.mu.RUnlock()
-	auditFactProjection(
+	return resolvePublicProjection(
 		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
-		legacy,
-		newestFirstPublicFacts(events),
+		enabled,
 		observer,
-	)
-	return legacy, nil
+	).Snapshot, nil
 }
 
 func (s *PostgresStore) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -866,8 +903,13 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if events[found].FactStatus != FactStatusProvisional {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: fact is not provisional", ErrInvalid)
 	}
-	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID), s.Clock(matchID), time.Now())
-	if err := validateAgainstSnapshot(events[found], publicSnapshot, s.Config(matchID)); err != nil {
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+	})
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateAgainstSnapshot(events[found], projection.Snapshot, s.Config(matchID)); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	now := time.Now().UTC()
@@ -898,11 +940,16 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	snapshotEvents := events
-	if publicResult {
-		snapshotEvents = filterPublicFacts(events)
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+		},
+		publicResult && s.projectedReads,
+		nil,
+	).Snapshot
+	if !publicResult {
+		snapshot = buildLegacySnapshot(matchID, events, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}
@@ -1059,11 +1106,16 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 		return MatchEvent{}, Snapshot{}, err
 	}
 	changed := events[found]
-	snapshotEvents := events
-	if publicResult {
-		snapshotEvents = filterPublicFacts(events)
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+		},
+		publicResult && s.projectedReads,
+		nil,
+	).Snapshot
+	if !publicResult {
+		snapshot = buildLegacySnapshot(matchID, events, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}

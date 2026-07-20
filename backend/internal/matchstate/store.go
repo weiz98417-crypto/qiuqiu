@@ -192,6 +192,26 @@ type FactProjectionAuditRegistrar interface {
 	SetFactProjectionAuditObserver(func(FactProjectionAudit))
 }
 
+type StoreOption func(*storeOptions)
+
+type storeOptions struct {
+	projectedReads bool
+}
+
+func WithFactLedgerPublicReads(enabled bool) StoreOption {
+	return func(options *storeOptions) {
+		options.projectedReads = enabled
+	}
+}
+
+func resolveStoreOptions(options []StoreOption) storeOptions {
+	resolved := storeOptions{projectedReads: true}
+	for _, option := range options {
+		option(&resolved)
+	}
+	return resolved
+}
+
 type Store struct {
 	mu               sync.RWMutex
 	events           map[string][]MatchEvent
@@ -203,6 +223,7 @@ type Store struct {
 	subscribers      map[string]map[*eventSubscription]struct{}
 	eventObserver    func(MatchEvent) error
 	projectionAudit  func(FactProjectionAudit)
+	projectedReads   bool
 	nextID           int64
 	now              func() time.Time
 }
@@ -286,7 +307,8 @@ func (s *eventSubscription) run() {
 	}
 }
 
-func NewStore() *Store {
+func NewStore(options ...StoreOption) *Store {
+	resolved := resolveStoreOptions(options)
 	return &Store{
 		events:           make(map[string][]MatchEvent),
 		configs:          make(map[string]MatchConfig),
@@ -295,6 +317,7 @@ func NewStore() *Store {
 		clocks:           make(map[string]MatchClock),
 		clockSubscribers: make(map[string]map[chan MatchClock]struct{}),
 		subscribers:      make(map[string]map[*eventSubscription]struct{}),
+		projectedReads:   resolved.projectedReads,
 		now:              time.Now,
 	}
 }
@@ -381,7 +404,13 @@ func (s *Store) SetConfig(matchID string, config MatchConfig) (MatchConfig, Snap
 	config.Integrity = normalizeConfig(matchID, s.configs[matchID]).Integrity
 	config.Automation = normalizeAutomationPolicy(config.Automation)
 	s.configs[matchID] = config
-	snapshot := buildSnapshot(matchID, s.events[matchID], config, s.clocks[matchID], s.now())
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: s.events[matchID], Config: config, Clock: s.clocks[matchID], Now: s.now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 	s.mu.Unlock()
 
 	return config, snapshot, nil
@@ -517,7 +546,14 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 		return MatchEvent{}, Snapshot{}, err
 	}
 	config := normalizeConfig(matchID, s.configs[matchID])
-	current := buildSnapshot(matchID, s.events[matchID], config, s.clocks[matchID], s.now())
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: s.events[matchID], Config: config, Clock: s.clocks[matchID], Now: s.now(),
+	})
+	if err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
+	current := projection.Snapshot
 	if err := validateEventRelations(s.events[matchID], ev); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
@@ -536,7 +572,13 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 	ev.UpdatedAt = now
 	s.events[matchID] = append(s.events[matchID], ev)
 	s.recordFactRevisionLocked(matchID, ev)
-	snapshot := buildSnapshot(matchID, s.events[matchID], s.configs[matchID], s.clocks[matchID], s.now())
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: s.events[matchID], Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 
@@ -577,7 +619,14 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
-	current := buildSnapshot(matchID, events, s.configs[matchID], s.clocks[matchID], s.now())
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+	})
+	if err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
+	current := projection.Snapshot
 	if err := validateCorrectionTimeline(events, events[found], replacement); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
@@ -602,7 +651,13 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 	events = append(events, replacement)
 	s.recordFactRevisionLocked(matchID, replacement)
 	s.events[matchID] = events
-	snapshot := buildSnapshot(matchID, events, s.configs[matchID], s.clocks[matchID], s.now())
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 
@@ -623,18 +678,25 @@ func (s *Store) Events(matchID string) []MatchEvent {
 func (s *Store) Snapshot(matchID string) Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return buildSnapshot(matchID, s.events[matchID], s.configs[matchID], s.clocks[matchID], s.now())
+	return resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: s.events[matchID], Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 }
 
 func (s *Store) PublicEvents(matchID string) []MatchEvent {
-	events := s.Events(matchID)
-	public := make([]MatchEvent, 0, len(events))
-	for _, event := range events {
-		if IsPublicFact(event) {
-			public = append(public, event)
-		}
+	s.mu.RLock()
+	events := append([]MatchEvent(nil), s.events[matchID]...)
+	input := FactLedgerProjectInput{
+		MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
 	}
-	return public
+	observer := s.projectionAudit
+	enabled := s.projectedReads
+	s.mu.RUnlock()
+	return resolvePublicProjection(input, enabled, observer).Events
 }
 
 func (s *Store) PublicSnapshot(matchID string) Snapshot {
@@ -644,15 +706,13 @@ func (s *Store) PublicSnapshot(matchID string) Snapshot {
 	clock := s.clocks[matchID]
 	now := s.now()
 	observer := s.projectionAudit
+	enabled := s.projectedReads
 	s.mu.RUnlock()
-	legacy := buildSnapshot(matchID, filterPublicFacts(events), config, clock, now)
-	auditFactProjection(
+	return resolvePublicProjection(
 		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: clock, Now: now},
-		legacy,
-		newestFirstPublicFacts(events),
+		enabled,
 		observer,
-	)
-	return legacy
+	).Snapshot
 }
 
 func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -679,8 +739,13 @@ func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Sna
 	if events[found].FactStatus != FactStatusProvisional {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: fact is not provisional", ErrInvalid)
 	}
-	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID], s.clocks[matchID], s.now())
-	if err := validateAgainstSnapshot(events[found], publicSnapshot, normalizeConfig(matchID, s.configs[matchID])); err != nil {
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+	})
+	if err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
+	if err := validateAgainstSnapshot(events[found], projection.Snapshot, normalizeConfig(matchID, s.configs[matchID])); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
@@ -693,7 +758,13 @@ func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Sna
 	s.events[matchID] = events
 	s.recordFactRevisionLocked(matchID, events[found])
 	confirmed := events[found]
-	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID], s.clocks[matchID], s.now())
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 	s.publish(subs, confirmed)
@@ -771,7 +842,13 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	s.events[matchID] = events
 	s.recordFactRevisionLocked(matchID, events[found])
 	changed := events[found]
-	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID], s.clocks[matchID], s.now())
+	snapshot := resolvePublicProjection(
+		FactLedgerProjectInput{
+			MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+		},
+		s.projectedReads,
+		nil,
+	).Snapshot
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 	s.publish(subs, changed)
@@ -1438,7 +1515,7 @@ func configuredPlayerTeam(config MatchConfig, name string) string {
 	return ""
 }
 
-func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig, clock MatchClock, now time.Time) Snapshot {
+func buildLegacySnapshot(matchID string, events []MatchEvent, config MatchConfig, clock MatchClock, now time.Time) Snapshot {
 	config = normalizeConfig(matchID, config)
 	clock = normalizeMatchClock(matchID, clock)
 	snap := Snapshot{

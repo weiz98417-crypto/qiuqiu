@@ -38,6 +38,11 @@ type FactProjectionAudit struct {
 	Error          string
 }
 
+type resolvedPublicProjection struct {
+	Snapshot Snapshot
+	Events   []MatchEvent
+}
+
 type projectedGoalState string
 
 const (
@@ -238,13 +243,23 @@ func orderFactEvents(events []MatchEvent) ([]MatchEvent, error) {
 	return ordered, nil
 }
 
-func auditFactProjection(input FactLedgerProjectInput, legacy Snapshot, legacyPublicEvents []MatchEvent, observer func(FactProjectionAudit)) {
+func resolvePublicProjection(input FactLedgerProjectInput, enabled bool, observer func(FactProjectionAudit)) resolvedPublicProjection {
+	legacySnapshot := buildLegacySnapshot(input.MatchID, filterPublicFacts(input.Events), input.Config, input.Clock, input.Now)
+	legacyEvents := newestFirstPublicFacts(input.Events)
+	projection, err := (FactLedgerEngine{}).Project(input)
+	auditFactProjectionResult(input.MatchID, legacySnapshot, legacyEvents, projection, err, observer)
+	if enabled && err == nil {
+		return resolvedPublicProjection{Snapshot: projection.Snapshot, Events: projection.PublicEvents}
+	}
+	return resolvedPublicProjection{Snapshot: legacySnapshot, Events: legacyEvents}
+}
+
+func auditFactProjectionResult(matchID string, legacy Snapshot, legacyPublicEvents []MatchEvent, projection FactLedgerProjection, err error, observer func(FactProjectionAudit)) {
 	if observer == nil {
 		return
 	}
-	projection, err := (FactLedgerEngine{}).Project(input)
 	audit := FactProjectionAudit{
-		MatchID: input.MatchID, LegacyScore: legacy.Score,
+		MatchID: matchID, LegacyScore: legacy.Score,
 	}
 	if err != nil {
 		audit.Error = err.Error()

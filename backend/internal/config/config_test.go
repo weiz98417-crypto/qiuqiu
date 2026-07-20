@@ -13,6 +13,17 @@ func TestPendingObservationCoordinationDefaultsOnAndCanBeDisabled(t *testing.T) 
 	}
 }
 
+func TestFactLedgerPublicReadsDefaultsOnAndCanBeDisabled(t *testing.T) {
+	t.Setenv("FACT_LEDGER_PUBLIC_READS", "")
+	if cfg := Load(); !cfg.FactLedgerPublicReads {
+		t.Fatal("fact ledger public reads should default to enabled")
+	}
+	t.Setenv("FACT_LEDGER_PUBLIC_READS", "false")
+	if cfg := Load(); cfg.FactLedgerPublicReads {
+		t.Fatal("fact ledger public reads should be disabled by rollback flag")
+	}
+}
+
 func TestProductionRequiresCredentials(t *testing.T) {
 	cfg := &Config{Environment: "production"}
 	if err := cfg.Validate(); err == nil {

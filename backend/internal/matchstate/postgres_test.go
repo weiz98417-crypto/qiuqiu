@@ -90,7 +90,7 @@ func TestPostgresStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *
 	if databaseURL == "" {
 		t.Skip("DATABASE_URL not set")
 	}
-	store, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	store, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations", WithFactLedgerPublicReads(false))
 	if err != nil {
 		t.Fatalf("OpenPostgresStore error: %v", err)
 	}
@@ -124,6 +124,44 @@ func TestPostgresStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *
 	}
 	if len(audits) != 1 || audits[0].ProjectedScore != (Score{}) {
 		t.Fatalf("projection audits = %+v", audits)
+	}
+}
+
+func TestPostgresPublicReadsReplayRevokedGoal(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	store, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer store.Close()
+	matchID := "pg-public-replay-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	goal, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{Home: 1}, Description: "随后射门。",
+	}); err != nil {
+		t.Fatalf("Create shot: %v", err)
+	}
+	_, revokedSnapshot, err := store.RevokeFact(matchID, goal.FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("Revoke goal: %v", err)
+	}
+	if revokedSnapshot.Score != (Score{}) || len(revokedSnapshot.RecentEvents) != 1 || revokedSnapshot.RecentEvents[0].Score != (Score{}) {
+		t.Fatalf("revoke response = %+v", revokedSnapshot)
+	}
+	if snapshot := store.PublicSnapshot(matchID); !reflect.DeepEqual(snapshot, revokedSnapshot) {
+		t.Fatalf("public snapshot = %+v, revoke snapshot = %+v", snapshot, revokedSnapshot)
+	}
+	if events := store.PublicEvents(matchID); len(events) != 1 || events[0].Score != (Score{}) {
+		t.Fatalf("public events = %+v", events)
 	}
 }
 
@@ -185,8 +223,16 @@ func buildAdapterProjection(t *testing.T, store Repository, matchID string, now 
 	}); err != nil {
 		t.Fatalf("Create replacement cancellation: %v", err)
 	}
-	secondGoal, _, err := store.Create(matchID, MatchEvent{
+	if _, _, err := store.Create(matchID, MatchEvent{
+		Source: "provider", FactStatus: FactStatusProvisional, Visibility: "private",
 		EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home", TeamName: "西班牙",
+		Score: Score{Home: 1}, Description: "待确认进球。",
+	}); err != nil {
+		t.Fatalf("Create candidate goal: %v", err)
+	}
+	secondGoal, _, err := store.Create(matchID, MatchEvent{
+		Source: "provider", FactStatus: FactStatusConfirmed, Visibility: "public",
+		EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "home", TeamName: "西班牙",
 		Score: Score{Home: 1}, Description: "主队再次进球。",
 	})
 	if err != nil {

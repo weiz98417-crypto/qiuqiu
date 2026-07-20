@@ -142,9 +142,10 @@ func main() {
 		defer sessionStoreCloser()
 	}
 	hub := ws.NewHub(cfg).WithSessionAuthenticator(sessionManager)
-	var matchStore matchstate.Repository = matchstate.NewStore()
+	storeOptions := []matchstate.StoreOption{matchstate.WithFactLedgerPublicReads(cfg.FactLedgerPublicReads)}
+	var matchStore matchstate.Repository = matchstate.NewStore(storeOptions...)
 	if cfg.DatabaseURL != "" {
-		postgresStore, err := matchstate.OpenPostgresStore(context.Background(), cfg.DatabaseURL, "migrations")
+		postgresStore, err := matchstate.OpenPostgresStore(context.Background(), cfg.DatabaseURL, "migrations", storeOptions...)
 		if err != nil {
 			log.Fatalf("postgres match store: %v", err)
 		}

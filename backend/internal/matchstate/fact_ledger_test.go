@@ -43,8 +43,144 @@ func TestFactLedgerProjectsScoreAfterEarlierGoalIsRevoked(t *testing.T) {
 	}
 }
 
-func TestMemoryStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *testing.T) {
+func TestMemoryPublicReadsReplayRevokedGoal(t *testing.T) {
 	store := NewStore()
+	goal, _, err := store.Create("public-replay", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	if _, _, err := store.Create("public-replay", MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{Home: 1}, Description: "随后射门。",
+	}); err != nil {
+		t.Fatalf("Create shot: %v", err)
+	}
+	_, revokedSnapshot, err := store.RevokeFact("public-replay", goal.FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("Revoke goal: %v", err)
+	}
+	if revokedSnapshot.Score != (Score{}) || len(revokedSnapshot.RecentEvents) != 1 || revokedSnapshot.RecentEvents[0].Score != (Score{}) {
+		t.Fatalf("revoke response did not replay public state: %+v", revokedSnapshot)
+	}
+
+	snapshot := store.PublicSnapshot("public-replay")
+	if snapshot.Score != (Score{}) {
+		t.Fatalf("public score = %+v, want 0-0", snapshot.Score)
+	}
+	if len(snapshot.RecentEvents) != 1 || snapshot.RecentEvents[0].Score != (Score{}) {
+		t.Fatalf("public recent events = %+v", snapshot.RecentEvents)
+	}
+	events := store.PublicEvents("public-replay")
+	if len(events) != 1 || events[0].ID != snapshot.RecentEvents[0].ID || events[0].Score != (Score{}) {
+		t.Fatalf("public events = %+v", events)
+	}
+}
+
+func TestCreateValidatesAgainstPublicProjection(t *testing.T) {
+	store := NewStore()
+	if _, _, err := store.Create("public-validation", MatchEvent{
+		Source: "provider", FactStatus: FactStatusProvisional, Visibility: "private",
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "待确认进球。",
+	}); err != nil {
+		t.Fatalf("Create candidate goal: %v", err)
+	}
+	confirmed, snapshot, err := store.Create("public-validation", MatchEvent{
+		Source: "provider", FactStatus: FactStatusConfirmed, Visibility: "public",
+		EventType: "goal", Period: "first_half", Clock: "10:10", TeamID: "home", Score: Score{Home: 1}, Description: "正式确认进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create confirmed goal: %v", err)
+	}
+	if confirmed.Score != (Score{Home: 1}) || snapshot.Score != (Score{Home: 1}) {
+		t.Fatalf("confirmed event/snapshot = %+v / %+v", confirmed, snapshot)
+	}
+	if len(snapshot.RecentEvents) != 1 || snapshot.RecentEvents[0].ID != confirmed.ID {
+		t.Fatalf("mutation snapshot leaked candidate facts: %+v", snapshot.RecentEvents)
+	}
+}
+
+func TestSnapshotUsesPublicProjectionWhenEnabled(t *testing.T) {
+	store := NewStore()
+	if _, _, err := store.Create("snapshot-public-projection", MatchEvent{
+		Source: "provider", FactStatus: FactStatusProvisional, Visibility: "private",
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "待确认进球。",
+	}); err != nil {
+		t.Fatalf("Create candidate goal: %v", err)
+	}
+	snapshot := store.Snapshot("snapshot-public-projection")
+	if snapshot.Score != (Score{}) || len(snapshot.RecentEvents) != 0 {
+		t.Fatalf("snapshot leaked candidate facts: %+v", snapshot)
+	}
+}
+
+func TestConfirmFactValidatesAgainstPublicProjection(t *testing.T) {
+	store := NewStore()
+	oldGoal, _, err := store.Create("confirm-public-validation", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "旧进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create old goal: %v", err)
+	}
+	if _, _, err := store.Create("confirm-public-validation", MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{Home: 1}, Description: "随后射门。",
+	}); err != nil {
+		t.Fatalf("Create shot: %v", err)
+	}
+	if _, _, err := store.RevokeFact("confirm-public-validation", oldGoal.FactID, "operator-1"); err != nil {
+		t.Fatalf("Revoke old goal: %v", err)
+	}
+	candidate, _, err := store.Create("confirm-public-validation", MatchEvent{
+		Source: "provider", FactStatus: FactStatusProvisional, Visibility: "public",
+		EventType: "goal", Period: "first_half", Clock: "12:00", TeamID: "home", Score: Score{Home: 1}, Description: "待确认新进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create candidate: %v", err)
+	}
+	confirmed, snapshot, err := store.ConfirmFact("confirm-public-validation", candidate.FactID, "operator-2")
+	if err != nil {
+		t.Fatalf("Confirm candidate: %v", err)
+	}
+	if confirmed.FactStatus != FactStatusConfirmed || snapshot.Score != (Score{Home: 1}) {
+		t.Fatalf("confirmed event/snapshot = %+v / %+v", confirmed, snapshot)
+	}
+	if len(snapshot.RecentEvents) != 2 || snapshot.RecentEvents[1].EventType != "shot" || snapshot.RecentEvents[1].Score != (Score{}) {
+		t.Fatalf("confirmed snapshot did not replay historical scores: %+v", snapshot.RecentEvents)
+	}
+}
+
+func TestCorrectValidatesAgainstPublicProjection(t *testing.T) {
+	store := NewStore()
+	if _, _, err := store.Create("correct-public-validation", MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "公开进球。",
+	}); err != nil {
+		t.Fatalf("Create public goal: %v", err)
+	}
+	shot, _, err := store.Create("correct-public-validation", MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{Home: 1}, Description: "公开射门。",
+	})
+	if err != nil {
+		t.Fatalf("Create public shot: %v", err)
+	}
+	if _, _, err := store.Create("correct-public-validation", MatchEvent{
+		Source: "provider", FactStatus: FactStatusProvisional, Visibility: "private",
+		EventType: "goal", Period: "first_half", Clock: "12:00", TeamID: "home", Score: Score{Home: 2}, Description: "待确认进球。",
+	}); err != nil {
+		t.Fatalf("Create candidate goal: %v", err)
+	}
+	corrected, snapshot, err := store.Correct("correct-public-validation", shot.ID, MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "11:00", TeamID: "home", Score: Score{Home: 1}, Description: "修正后的射门说明。",
+	})
+	if err != nil {
+		t.Fatalf("Correct public shot: %v", err)
+	}
+	if corrected.Score != (Score{Home: 1}) || snapshot.Score != (Score{Home: 1}) {
+		t.Fatalf("corrected event/snapshot = %+v / %+v", corrected, snapshot)
+	}
+}
+
+func TestMemoryStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *testing.T) {
+	store := NewStore(WithFactLedgerPublicReads(false))
 	var audits []FactProjectionAudit
 	store.SetFactProjectionAuditObserver(func(audit FactProjectionAudit) {
 		audits = append(audits, audit)

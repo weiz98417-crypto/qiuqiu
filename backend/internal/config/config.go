@@ -26,6 +26,7 @@ type Config struct {
 	APISportsAPIKey                string
 	PrivacyRetentionDays           int
 	PendingObservationCoordination bool
+	FactLedgerPublicReads          bool
 }
 
 func Load() *Config {
@@ -58,6 +59,7 @@ func Load() *Config {
 		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
+		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),
 	}
 }
 
