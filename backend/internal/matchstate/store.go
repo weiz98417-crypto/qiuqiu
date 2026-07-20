@@ -527,14 +527,6 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 			ev.Confirmed = false
 			ev.CreatedAt = now
 			ev.UpdatedAt = now
-			for _, index := range crossSourceConflictIndices(s.events[matchID], ev) {
-				s.events[matchID][index].FactStatus = FactStatusConflict
-				s.events[matchID][index].Confirmed = false
-				s.events[matchID][index].PublicAt = ""
-				s.events[matchID][index].FactRevision++
-				s.events[matchID][index].UpdatedAt = now
-				s.recordFactRevisionLocked(matchID, s.events[matchID][index])
-			}
 			s.events[matchID] = append(s.events[matchID], ev)
 			s.recordFactRevisionLocked(matchID, ev)
 			subs := s.subscriberListLocked(matchID)
@@ -810,6 +802,7 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	if err := validateFactTransition(events[found].FactStatus, status); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	previousStatus := events[found].FactStatus
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	events[found].FactStatus = status
 	events[found].Confirmed = status == FactStatusReconciled
@@ -821,19 +814,21 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	events[found].FactRevision++
 	events[found].UpdatedAt = now
 	if status == FactStatusReconciled {
+		conflictingIndices := reconciliationConflictIndices(events, found)
 		for index := range events {
-			if index == found || events[index].Status != "active" || events[index].FactStatus != FactStatusConflict {
+			if _, conflicting := conflictingIndices[index]; !conflicting {
 				continue
 			}
-			if events[index].EventType == events[found].EventType && events[index].Period == events[found].Period && clocksNear(events[index].Clock, events[found].Clock, 45) {
-				events[index].FactStatus = FactStatusRevoked
-				events[index].Confirmed = false
-				events[index].ConfirmedBy = operatorID
-				events[index].FactRevision++
-				events[index].UpdatedAt = now
-				s.recordFactRevisionLocked(matchID, events[index])
-			}
+			events[index].FactStatus = FactStatusRevoked
+			events[index].Confirmed = false
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = ""
+			events[index].FactRevision++
+			events[index].UpdatedAt = now
+			s.recordFactRevisionLocked(matchID, events[index])
 		}
+	}
+	if (status == FactStatusReconciled || previousStatus == FactStatusConflict) && !hasActiveFactConflict(events) {
 		config := normalizeConfig(matchID, s.configs[matchID])
 		config.Integrity = MatchIntegrity{Status: "ok"}
 		config.UpdatedAt = now
@@ -854,6 +849,37 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	s.publish(subs, changed)
 	s.mu.Lock()
 	return changed, snapshot, nil
+}
+
+func reconciliationConflictIndices(events []MatchEvent, chosenIndex int) map[int]struct{} {
+	conflicts := make(map[int]struct{})
+	if chosenIndex < 0 || chosenIndex >= len(events) {
+		return conflicts
+	}
+	chosen := events[chosenIndex]
+	for _, index := range crossSourceConflictIndices(events, chosen) {
+		if index != chosenIndex && events[index].FactStatus != FactStatusRevoked {
+			conflicts[index] = struct{}{}
+		}
+	}
+	for index, event := range events {
+		if index == chosenIndex || event.Status != "active" || event.FactStatus != FactStatusConflict {
+			continue
+		}
+		if event.EventType == chosen.EventType && event.Period == chosen.Period && clocksNear(event.Clock, chosen.Clock, 45) {
+			conflicts[index] = struct{}{}
+		}
+	}
+	return conflicts
+}
+
+func hasActiveFactConflict(events []MatchEvent) bool {
+	for _, event := range events {
+		if event.Status == "active" && event.FactStatus == FactStatusConflict {
+			return true
+		}
+	}
+	return false
 }
 
 func (s *Store) recordFactRevisionLocked(matchID string, event MatchEvent) {
@@ -1241,27 +1267,22 @@ func crossSourceConflictIndices(events []MatchEvent, candidate MatchEvent) []int
 	}
 	var conflicts []int
 	for index, existing := range events {
-		if existing.Status != "active" || existing.EventType != candidate.EventType || existing.Source == candidate.Source {
-			continue
-		}
-		if existing.Period != candidate.Period || !clocksNear(existing.Clock, candidate.Clock, 45) {
-			continue
-		}
-		playersCompatible := existing.PlayerName == "" || candidate.PlayerName == "" || strings.EqualFold(existing.PlayerName, candidate.PlayerName)
-		if existing.TeamID != candidate.TeamID || !playersCompatible {
+		if crossSourceFactsConflict(existing, candidate) {
 			conflicts = append(conflicts, index)
 		}
 	}
 	return conflicts
 }
 
-func conflictingEventIDs(events []MatchEvent, candidate MatchEvent) []string {
-	indices := crossSourceConflictIndices(events, candidate)
-	ids := make([]string, 0, len(indices))
-	for _, index := range indices {
-		ids = append(ids, events[index].ID)
+func crossSourceFactsConflict(existing, candidate MatchEvent) bool {
+	if existing.Status != "active" || existing.EventType != candidate.EventType || existing.Source == candidate.Source {
+		return false
 	}
-	return ids
+	if existing.Period != candidate.Period || !clocksNear(existing.Clock, candidate.Clock, 45) {
+		return false
+	}
+	playersCompatible := existing.PlayerName == "" || candidate.PlayerName == "" || strings.EqualFold(existing.PlayerName, candidate.PlayerName)
+	return existing.TeamID != candidate.TeamID || !playersCompatible
 }
 
 func crossSourceComparable(eventType string) bool {
@@ -1474,6 +1495,14 @@ func isRelationshipEventType(eventType string) bool {
 }
 
 func validateCorrectionTimeline(events []MatchEvent, original, replacement MatchEvent) error {
+	for _, event := range events {
+		if event.FactStatus != FactStatusConflict || !crossSourceFactsConflict(event, original) {
+			continue
+		}
+		if !crossSourceFactsConflict(event, replacement) {
+			return fmt.Errorf("%w: resolve the open conflict before changing its matching fields", ErrInvalid)
+		}
+	}
 	changesGoalContribution := original.EventType != replacement.EventType || (original.EventType == "goal" && original.TeamID != replacement.TeamID)
 	if !changesGoalContribution {
 		return nil

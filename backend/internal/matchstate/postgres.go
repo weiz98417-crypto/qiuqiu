@@ -506,14 +506,14 @@ func (s *PostgresStore) SetSourceCursor(matchID, sourceType, sourceKey string, c
 }
 
 func (s *PostgresStore) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {
-	return s.create(context.Background(), matchID, ev, false)
+	return s.create(context.Background(), matchID, ev)
 }
 
 func (s *PostgresStore) CreateOperator(ctx context.Context, matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {
-	return s.create(ctx, matchID, ev, true)
+	return s.create(ctx, matchID, ev)
 }
 
-func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEvent, publicResult bool) (MatchEvent, Snapshot, error) {
+func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEvent) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	if matchID == "" {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
@@ -557,24 +557,6 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 				return MatchEvent{}, Snapshot{}, markErr
 			}
 			now := time.Now().UTC()
-			if _, markErr := tx.Exec(ctx, `
-				UPDATE match_events
-				SET fact_status = 'conflict', confirmed = FALSE, public_at = NULL,
-					fact_revision = fact_revision + 1, updated_at = $2
-				WHERE match_id = $1 AND id = ANY($3)
-			`, matchID, now, conflictingEventIDs(existingEvents, ev)); markErr != nil {
-				return MatchEvent{}, Snapshot{}, markErr
-			}
-			for _, index := range crossSourceConflictIndices(existingEvents, ev) {
-				existingEvents[index].FactStatus = FactStatusConflict
-				existingEvents[index].Confirmed = false
-				existingEvents[index].PublicAt = ""
-				existingEvents[index].FactRevision++
-				existingEvents[index].UpdatedAt = now.UTC().Format(time.RFC3339Nano)
-				if err := insertFactRevision(ctx, tx, existingEvents[index]); err != nil {
-					return MatchEvent{}, Snapshot{}, err
-				}
-			}
 			ev.FactStatus = FactStatusConflict
 			ev.Confirmed = false
 			ev.CreatedAt = now.UTC().Format(time.RFC3339Nano)
@@ -633,12 +615,9 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 		FactLedgerProjectInput{
 			MatchID: matchID, Events: updatedEvents, Config: config, Clock: s.Clock(matchID), Now: time.Now(),
 		},
-		publicResult && s.projectedReads,
+		s.projectedReads,
 		nil,
 	).Snapshot
-	if !publicResult {
-		snapshot = buildLegacySnapshot(matchID, updatedEvents, config, s.Clock(matchID), time.Now())
-	}
 	if owned {
 		s.kickOutbox()
 	}
@@ -646,14 +625,14 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 }
 
 func (s *PostgresStore) Correct(matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error) {
-	return s.correct(context.Background(), matchID, eventID, replacement, false)
+	return s.correct(context.Background(), matchID, eventID, replacement)
 }
 
 func (s *PostgresStore) CorrectOperator(ctx context.Context, matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error) {
-	return s.correct(ctx, matchID, eventID, replacement, true)
+	return s.correct(ctx, matchID, eventID, replacement)
 }
 
-func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, replacement MatchEvent, publicResult bool) (MatchEvent, Snapshot, error) {
+func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	eventID = strings.TrimSpace(eventID)
 	if matchID == "" || eventID == "" {
@@ -673,6 +652,7 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	config := s.Config(matchID)
 	original, err := activeEventByID(events, eventID)
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
@@ -692,7 +672,7 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 		return MatchEvent{}, Snapshot{}, err
 	}
 	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
-		MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+		MatchID: matchID, Events: events, Config: config, Clock: s.Clock(matchID), Now: time.Now(),
 	})
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
@@ -749,12 +729,9 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 		FactLedgerProjectInput{
 			MatchID: matchID, Events: updatedEvents, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
 		},
-		publicResult && s.projectedReads,
+		s.projectedReads,
 		nil,
 	).Snapshot
-	if !publicResult {
-		snapshot = buildLegacySnapshot(matchID, updatedEvents, s.Config(matchID), s.Clock(matchID), time.Now())
-	}
 	if owned {
 		s.kickOutbox()
 	}
@@ -864,14 +841,14 @@ func (s *PostgresStore) PublicSnapshotOperator(ctx context.Context, matchID stri
 }
 
 func (s *PostgresStore) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.confirmFact(context.Background(), matchID, factID, operatorID, true)
+	return s.confirmFact(context.Background(), matchID, factID, operatorID)
 }
 
 func (s *PostgresStore) ConfirmFactOperator(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.confirmFact(ctx, matchID, factID, operatorID, true)
+	return s.confirmFact(ctx, matchID, factID, operatorID)
 }
 
-func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operatorID string, publicResult bool) (MatchEvent, Snapshot, error) {
+func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	factID = strings.TrimSpace(factID)
 	operatorID = strings.TrimSpace(operatorID)
@@ -890,6 +867,7 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	config := s.Config(matchID)
 	found := -1
 	for index := range events {
 		if events[index].FactID == factID && events[index].Status == "active" {
@@ -909,7 +887,7 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := validateAgainstSnapshot(events[found], projection.Snapshot, s.Config(matchID)); err != nil {
+	if err := validateAgainstSnapshot(events[found], projection.Snapshot, config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
 	now := time.Now().UTC()
@@ -942,14 +920,11 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	}
 	snapshot := resolvePublicProjection(
 		FactLedgerProjectInput{
-			MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+			MatchID: matchID, Events: events, Config: config, Clock: s.Clock(matchID), Now: time.Now(),
 		},
-		publicResult && s.projectedReads,
+		s.projectedReads,
 		nil,
 	).Snapshot
-	if !publicResult {
-		snapshot = buildLegacySnapshot(matchID, events, s.Config(matchID), s.Clock(matchID), time.Now())
-	}
 	if owned {
 		s.kickOutbox()
 	}
@@ -957,19 +932,19 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 }
 
 func (s *PostgresStore) RevokeFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.transitionFact(context.Background(), matchID, factID, operatorID, FactStatusRevoked, true)
+	return s.transitionFact(context.Background(), matchID, factID, operatorID, FactStatusRevoked)
 }
 
 func (s *PostgresStore) ReconcileFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.transitionFact(context.Background(), matchID, factID, operatorID, FactStatusReconciled, true)
+	return s.transitionFact(context.Background(), matchID, factID, operatorID, FactStatusReconciled)
 }
 
 func (s *PostgresStore) RevokeFactOperator(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.transitionFact(ctx, matchID, factID, operatorID, FactStatusRevoked, true)
+	return s.transitionFact(ctx, matchID, factID, operatorID, FactStatusRevoked)
 }
 
 func (s *PostgresStore) ReconcileFactOperator(ctx context.Context, matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	return s.transitionFact(ctx, matchID, factID, operatorID, FactStatusReconciled, true)
+	return s.transitionFact(ctx, matchID, factID, operatorID, FactStatusReconciled)
 }
 
 func (s *PostgresStore) FactRevisions(matchID, factID string) []FactRevision {
@@ -1011,7 +986,7 @@ func (s *PostgresStore) FactRevisions(matchID, factID string) []FactRevision {
 	return revisions
 }
 
-func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, operatorID string, status FactStatus, publicResult bool) (MatchEvent, Snapshot, error) {
+func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, operatorID string, status FactStatus) (MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	factID = strings.TrimSpace(factID)
 	operatorID = strings.TrimSpace(operatorID)
@@ -1030,6 +1005,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	config := s.Config(matchID)
 	found := -1
 	for index := range events {
 		if events[index].FactID == factID && events[index].Status == "active" {
@@ -1043,6 +1019,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 	if err := validateFactTransition(events[found].FactStatus, status); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	previousStatus := events[found].FactStatus
 	now := time.Now().UTC()
 	confirmed := status == FactStatusReconciled
 	publicAt := any(nil)
@@ -1070,13 +1047,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 		return MatchEvent{}, Snapshot{}, err
 	}
 	if status == FactStatusReconciled {
-		for index := range events {
-			if index == found || events[index].Status != "active" || events[index].FactStatus != FactStatusConflict {
-				continue
-			}
-			if events[index].EventType != events[found].EventType || events[index].Period != events[found].Period || !clocksNear(events[index].Clock, events[found].Clock, 45) {
-				continue
-			}
+		for index := range reconciliationConflictIndices(events, found) {
 			if _, err := tx.Exec(ctx, `
 				UPDATE match_events
 				SET fact_status = 'revoked', confirmed = FALSE, confirmed_by = $3,
@@ -1095,9 +1066,13 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 				return MatchEvent{}, Snapshot{}, err
 			}
 		}
+	}
+	if (status == FactStatusReconciled || previousStatus == FactStatusConflict) && !hasActiveFactConflict(events) {
 		if err := markMatchIntegrity(ctx, tx, matchID, MatchIntegrity{Status: "ok"}); err != nil {
 			return MatchEvent{}, Snapshot{}, err
 		}
+		config.Integrity = MatchIntegrity{Status: "ok"}
+		config.UpdatedAt = now.Format(time.RFC3339Nano)
 	}
 	if err := enqueueMatchEvent(ctx, tx, events[found]); err != nil {
 		return MatchEvent{}, Snapshot{}, err
@@ -1108,14 +1083,11 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 	changed := events[found]
 	snapshot := resolvePublicProjection(
 		FactLedgerProjectInput{
-			MatchID: matchID, Events: events, Config: s.Config(matchID), Clock: s.Clock(matchID), Now: time.Now(),
+			MatchID: matchID, Events: events, Config: config, Clock: s.Clock(matchID), Now: time.Now(),
 		},
-		publicResult && s.projectedReads,
+		s.projectedReads,
 		nil,
 	).Snapshot
-	if !publicResult {
-		snapshot = buildLegacySnapshot(matchID, events, s.Config(matchID), s.Clock(matchID), time.Now())
-	}
 	if owned {
 		s.kickOutbox()
 	}

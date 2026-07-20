@@ -248,10 +248,26 @@ func resolvePublicProjection(input FactLedgerProjectInput, enabled bool, observe
 	legacyEvents := newestFirstPublicFacts(input.Events)
 	projection, err := (FactLedgerEngine{}).Project(input)
 	auditFactProjectionResult(input.MatchID, legacySnapshot, legacyEvents, projection, err, observer)
-	if enabled && err == nil {
-		return resolvedPublicProjection{Snapshot: projection.Snapshot, Events: projection.PublicEvents}
+	if enabled {
+		if err == nil {
+			return resolvedPublicProjection{Snapshot: projection.Snapshot, Events: projection.PublicEvents}
+		}
+		return failedPublicProjection(input)
 	}
 	return resolvedPublicProjection{Snapshot: legacySnapshot, Events: legacyEvents}
+}
+
+func failedPublicProjection(input FactLedgerProjectInput) resolvedPublicProjection {
+	input.Events = nil
+	projection, _ := (FactLedgerEngine{}).Project(input)
+	detectedAt := ""
+	if !input.Now.IsZero() {
+		detectedAt = input.Now.UTC().Format(time.RFC3339Nano)
+	}
+	projection.Snapshot.Integrity = MatchIntegrity{
+		Status: "conflict", Reason: "public projection unavailable", DetectedAt: detectedAt,
+	}
+	return resolvedPublicProjection{Snapshot: projection.Snapshot}
 }
 
 func auditFactProjectionResult(matchID string, legacy Snapshot, legacyPublicEvents []MatchEvent, projection FactLedgerProjection, err error, observer func(FactProjectionAudit)) {

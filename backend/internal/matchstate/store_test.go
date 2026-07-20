@@ -358,17 +358,62 @@ func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflicting cross-source goal error = %v, want ErrConflict", err)
 	}
-	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{}) || len(snapshot.KeyEvents) != 0 || snapshot.Integrity.Status != "conflict" {
-		t.Fatalf("cross-source conflict should leave no authoritative score: %+v", snapshot)
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1}) || len(snapshot.KeyEvents) != 1 || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("cross-source conflict should preserve the accepted score: %+v", snapshot)
 	}
 	events := store.Events(matchID)
-	if len(events) != 2 || events[0].FactStatus != FactStatusConflict || events[1].FactStatus != FactStatusConflict {
+	if len(events) != 2 || events[0].FactStatus != FactStatusConflict || events[1].FactStatus != FactStatusConfirmed {
 		t.Fatalf("conflict candidates = %+v", events)
+	}
+	if public := store.PublicEvents(matchID); len(public) != 1 || public[0].FactID != "manual-fact" {
+		t.Fatalf("public facts changed during open conflict: %+v", public)
+	}
+	if _, _, err := store.Correct(matchID, events[1].ID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "25:00", TeamID: "home",
+		TeamName: "西班牙", PlayerName: "佩德里", Score: Score{Home: 1}, Description: "试图脱离冲突关系。",
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("detaching conflict correction error = %v, want ErrInvalid", err)
 	}
 	for _, event := range events {
 		if event.Source == "operator" && event.FactID != "manual-fact" {
 			t.Fatalf("manual fact id changed on conflict: %+v", event)
 		}
+	}
+	reconciled, snapshot, err := store.ReconcileFact(matchID, events[0].FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("ReconcileFact: %v", err)
+	}
+	if reconciled.FactStatus != FactStatusReconciled || snapshot.Score != (Score{Away: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("reconciled event/snapshot = %+v / %+v", reconciled, snapshot)
+	}
+	if public := store.PublicEvents(matchID); len(public) != 1 || public[0].FactID != reconciled.FactID {
+		t.Fatalf("public facts after reconciliation = %+v", public)
+	}
+}
+
+func TestRevokingLastConflictCandidateRestoresIntegrity(t *testing.T) {
+	store := NewStore()
+	matchID := "reject-conflict-candidate"
+	if _, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	}); err != nil {
+		t.Fatalf("Create accepted goal: %v", err)
+	}
+	_, _, err := store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "冲突候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create conflict candidate error = %v", err)
+	}
+	candidate := store.Events(matchID)[0]
+	_, snapshot, err := store.RevokeFact(matchID, candidate.FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("Revoke conflict candidate: %v", err)
+	}
+	if snapshot.Score != (Score{Home: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("snapshot after rejecting conflict = %+v", snapshot)
 	}
 }
 

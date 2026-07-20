@@ -514,6 +514,26 @@ func TestFactLedgerProjectionIsDeterministicWithoutNow(t *testing.T) {
 	}
 }
 
+func TestEnabledPublicProjectionDoesNotFallbackToLegacyOnError(t *testing.T) {
+	input := FactLedgerProjectInput{
+		MatchID: "projection-failure",
+		Events: []MatchEvent{
+			{
+				ID: "cancel-1", FactID: "cancel-1", EventType: "goal_cancelled", RevisionOf: "missing-goal",
+				Score: Score{Home: 7}, Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed,
+			},
+		},
+	}
+	enabled := resolvePublicProjection(input, true, nil)
+	if enabled.Snapshot.Score != (Score{}) || len(enabled.Events) != 0 || enabled.Snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("enabled projection fell back to legacy state: %+v", enabled)
+	}
+	disabled := resolvePublicProjection(input, false, nil)
+	if disabled.Snapshot.Score != (Score{Home: 7}) || len(disabled.Events) != 1 {
+		t.Fatalf("explicit rollback did not return legacy state: %+v", disabled)
+	}
+}
+
 func TestMemoryStoreDoesNotReportMatchingProjection(t *testing.T) {
 	store := NewStore()
 	var audits []FactProjectionAudit

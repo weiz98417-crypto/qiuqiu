@@ -2,6 +2,7 @@ package matchstate
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"os"
 	"reflect"
@@ -186,6 +187,36 @@ func TestFactLedgerProjectionMatchesMemoryAndPostgresAdapters(t *testing.T) {
 	canonicalizeProjection(&postgresProjection)
 	if !reflect.DeepEqual(memoryProjection, postgresProjection) {
 		t.Fatalf("adapter projections differ:\nmemory=%+v\npostgres=%+v", memoryProjection, postgresProjection)
+	}
+}
+
+func TestFactLedgerMutationSnapshotsMatchMemoryAndPostgresAdapters(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	postgresStore, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer postgresStore.Close()
+	matchID := "mutation-adapter-parity-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer postgresStore.Reset(matchID)
+	memoryStore := NewStore()
+	candidate := MatchEvent{
+		Source: "provider", FactStatus: FactStatusProvisional, Visibility: "private",
+		EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home", Score: Score{Home: 1}, Description: "待确认进球。",
+	}
+	_, memorySnapshot, err := memoryStore.Create(matchID, candidate)
+	if err != nil {
+		t.Fatalf("memory Create: %v", err)
+	}
+	_, postgresSnapshot, err := postgresStore.Create(matchID, candidate)
+	if err != nil {
+		t.Fatalf("postgres Create: %v", err)
+	}
+	if memorySnapshot.Score != postgresSnapshot.Score || len(memorySnapshot.RecentEvents) != len(postgresSnapshot.RecentEvents) {
+		t.Fatalf("mutation snapshots differ: memory=%+v postgres=%+v", memorySnapshot, postgresSnapshot)
 	}
 }
 
@@ -437,6 +468,75 @@ func TestPostgresOperatorTransactionAtomicallyCommitsEventIdempotencyAndOutbox(t
 	}
 }
 
+func TestPostgresOperatorReconcileResponseUsesCommittedIntegrity(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	store, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close()
+	service, err := operatorwrite.OpenPostgresService(ctx, databaseURL)
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer service.Close()
+	matchID := "pg-operator-reconcile-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	if _, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	}); err != nil {
+		t.Fatalf("Create accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "冲突候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create conflict candidate error = %v", err)
+	}
+	candidate := store.Events(matchID)[0]
+	request := operatorwrite.Request{
+		MatchID: matchID, Key: "reconcile-key", PayloadHash: "reconcile-hash", Operation: "facts.reconcile", Atomic: true,
+	}
+	operation := func(operationCtx context.Context) (operatorwrite.Response, error) {
+		reconciled, snapshot, err := store.ReconcileFactOperator(operationCtx, matchID, candidate.FactID, "operator-1")
+		if err != nil {
+			return operatorwrite.Response{}, err
+		}
+		return operatorwrite.JSONResponse(200, map[string]any{"event": reconciled, "snapshot": snapshot})
+	}
+	response, replayed, err := service.Execute(ctx, request, operation)
+	if err != nil || replayed {
+		t.Fatalf("first reconcile replayed=%v err=%v", replayed, err)
+	}
+	assertReconciledResponse := func(response operatorwrite.Response) {
+		t.Helper()
+		var envelope struct {
+			Snapshot Snapshot `json:"snapshot"`
+		}
+		if err := json.Unmarshal(response.Body, &envelope); err != nil {
+			t.Fatalf("decode response: %v", err)
+		}
+		if envelope.Snapshot.Score != (Score{Away: 1}) || envelope.Snapshot.Integrity.Status != "ok" {
+			t.Fatalf("reconcile response snapshot = %+v", envelope.Snapshot)
+		}
+	}
+	assertReconciledResponse(response)
+	replayedResponse, replayed, err := service.Execute(ctx, request, func(context.Context) (operatorwrite.Response, error) {
+		t.Fatal("idempotent replay executed mutation")
+		return operatorwrite.Response{}, nil
+	})
+	if err != nil || !replayed {
+		t.Fatalf("reconcile replayed=%v err=%v", replayed, err)
+	}
+	assertReconciledResponse(replayedResponse)
+}
+
 func TestPostgresSerializesConcurrentGoalTransitions(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -529,30 +629,30 @@ func TestPostgresPersistsCrossSourceConflictIntegrity(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("Create conflicting goal error = %v, want ErrConflict", err)
 	}
-	if snapshot := store.Snapshot(matchID); snapshot.Integrity.Status != "conflict" || snapshot.Score != (Score{}) {
+	if snapshot := store.Snapshot(matchID); snapshot.Integrity.Status != "conflict" || snapshot.Score != (Score{Home: 1}) {
 		t.Fatalf("conflict snapshot mismatch: %+v", snapshot)
 	}
 	conflictEvents := store.Events(matchID)
-	if len(conflictEvents) != 2 || conflictEvents[0].FactStatus != FactStatusConflict || conflictEvents[1].FactStatus != FactStatusConflict {
+	if len(conflictEvents) != 2 || conflictEvents[0].FactStatus != FactStatusConflict || conflictEvents[1].FactStatus != FactStatusConfirmed {
 		t.Fatalf("conflict candidates = %+v", conflictEvents)
 	}
 	manualRevisionFound := false
 	providerRevisionFound := false
 	for _, event := range conflictEvents {
 		revisions := store.FactRevisions(matchID, event.FactID)
-		switch len(revisions) {
-		case 2:
-			if revisions[0].Status != FactStatusConfirmed || revisions[1].Status != FactStatusConflict {
+		switch event.Source {
+		case "operator":
+			if len(revisions) != 1 || revisions[0].Status != FactStatusConfirmed {
 				t.Fatalf("manual fact revisions = %+v", revisions)
 			}
 			manualRevisionFound = true
-		case 1:
-			if revisions[0].Status != FactStatusConflict {
+		case "api-sports":
+			if len(revisions) != 1 || revisions[0].Status != FactStatusConflict {
 				t.Fatalf("provider fact revisions = %+v", revisions)
 			}
 			providerRevisionFound = true
 		default:
-			t.Fatalf("unexpected fact revisions for %s = %+v", event.FactID, revisions)
+			t.Fatalf("unexpected source %q", event.Source)
 		}
 	}
 	if !manualRevisionFound || !providerRevisionFound {
@@ -561,8 +661,8 @@ func TestPostgresPersistsCrossSourceConflictIntegrity(t *testing.T) {
 	if _, _, err := store.Correct(matchID, manual.ID, MatchEvent{
 		EventType: "goal", Period: "first_half", Clock: "25:00", TeamID: "home", TeamName: "西班牙", PlayerName: "佩德里",
 		Score: Score{Home: 1, Away: 0}, Description: "确认佩德里进球。",
-	}); err != nil {
-		t.Fatalf("Correct manual goal error: %v", err)
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("detaching conflict correction error = %v, want ErrInvalid", err)
 	}
 	if snapshot := store.Snapshot(matchID); snapshot.Integrity.Status != "conflict" {
 		t.Fatalf("unrelated correction cleared conflict: %+v", snapshot)
@@ -674,7 +774,7 @@ func TestPostgresFactLifecycleAndRevisions(t *testing.T) {
 	if got := store.PublicEvents(conflictMatchID); len(got) != 1 || got[0].FactID != provider.FactID {
 		t.Fatalf("public reconciled events = %+v", got)
 	}
-	if got := store.FactRevisions(conflictMatchID, manual.FactID); len(got) != 3 || got[2].Status != FactStatusRevoked {
+	if got := store.FactRevisions(conflictMatchID, manual.FactID); len(got) != 2 || got[1].Status != FactStatusRevoked {
 		t.Fatalf("manual conflict revisions = %+v", got)
 	}
 	reopened, err := OpenPostgresStore(ctx, databaseURL, "../../migrations")
