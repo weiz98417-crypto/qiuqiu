@@ -74,6 +74,48 @@ void main() {
     expect(credentials.userId, 'usr_server_bound');
   });
 
+  test('keeps the client online when secure storage is unavailable', () async {
+    SharedPreferences.setMockInitialValues({});
+    final paths = <String>[];
+    final client = MockClient((request) async {
+      paths.add(request.url.path);
+      return http.Response(
+        jsonEncode({
+          'userId': 'usr_memory',
+          'sessionId': 'ses_memory',
+          'accessToken': 'access_memory',
+          'refreshToken': 'refresh_memory',
+          'expiresAt': DateTime.now()
+              .toUtc()
+              .add(const Duration(minutes: 15))
+              .toIso8601String(),
+        }),
+        request.url.path.endsWith('/anonymous') ? 201 : 200,
+      );
+    });
+    final service = SessionService(
+      client: client,
+      secretStorage: ThrowingSessionSecretStore(),
+    );
+
+    await service.ensureSession(
+      baseUrl: 'http://127.0.0.1:8080',
+      deviceId: 'device_memory',
+    );
+    await service.ensureSession(
+      baseUrl: 'http://127.0.0.1:8080',
+      deviceId: 'device_memory',
+    );
+
+    expect(paths, [
+      '/api/sessions/anonymous',
+      '/api/sessions/refresh',
+    ]);
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('session_access_token'), isNull);
+    expect(prefs.getString('session_refresh_token'), isNull);
+  });
+
   test('discarded sessions are replaced after refresh returns unauthorized',
       () async {
     SharedPreferences.setMockInitialValues({
@@ -131,4 +173,16 @@ class MemorySessionSecretStore implements SessionSecretStore {
 
   @override
   Future<void> delete(String key) async => values.remove(key);
+}
+
+class ThrowingSessionSecretStore implements SessionSecretStore {
+  @override
+  Future<String?> read(String key) => throw StateError('storage unavailable');
+
+  @override
+  Future<void> write(String key, String value) =>
+      throw StateError('storage unavailable');
+
+  @override
+  Future<void> delete(String key) => throw StateError('storage unavailable');
 }

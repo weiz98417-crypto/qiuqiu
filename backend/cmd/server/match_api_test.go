@@ -15,12 +15,21 @@ import (
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/datasource"
+	"qiuqiu/internal/directordraft"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/pipeline"
 )
 
 var testIdempotencyCounter atomic.Uint64
+
+type fixedDirectorExtractor struct {
+	extraction directordraft.Extraction
+}
+
+func (extractor fixedDirectorExtractor) Extract(context.Context, string, directordraft.MatchContext) (directordraft.Extraction, error) {
+	return extractor.extraction, nil
+}
 
 func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	store := matchstate.NewStore()
@@ -125,6 +134,16 @@ func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
 	if created.Code != http.StatusCreated {
 		t.Fatalf("create status=%d body=%s", created.Code, created.Body.String())
 	}
+	var createdEnvelope struct {
+		Event    matchstate.MatchEvent `json:"event"`
+		Snapshot matchstate.Snapshot   `json:"snapshot"`
+	}
+	if err := json.Unmarshal(created.Body.Bytes(), &createdEnvelope); err != nil {
+		t.Fatalf("decode provisional create response: %v", err)
+	}
+	if createdEnvelope.Event.FactStatus != matchstate.FactStatusProvisional || createdEnvelope.Snapshot.Score != (matchstate.Score{}) || len(createdEnvelope.Snapshot.RecentEvents) != 0 {
+		t.Fatalf("provisional create response exposed private state: %+v", createdEnvelope)
+	}
 
 	state := doJSON(t, handler, http.MethodGet, "/api/matches/public-api/state", nil)
 	var stateEnvelope struct {
@@ -157,6 +176,93 @@ func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
 	}
 	if len(operatorEnvelope.Events) != 1 || operatorEnvelope.Events[0].FactStatus != matchstate.FactStatusProvisional {
 		t.Fatalf("operator ledger events = %+v", operatorEnvelope.Events)
+	}
+}
+
+func TestMatchClockAPIKeepsEventTimeIndependentAndRejectsStaleWrites(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+
+	initial := doJSON(t, handler, http.MethodGet, "/api/matches/clock-api/clock", nil)
+	if initial.Code != http.StatusOK {
+		t.Fatalf("initial clock status=%d body=%s", initial.Code, initial.Body.String())
+	}
+
+	unauthorized := doJSON(t, handler, http.MethodPatch, "/api/matches/clock-api/clock", matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: "first_half", ElapsedSeconds: testIntPointer(600), ExpectedVersion: 0,
+	})
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
+	}
+
+	updated := doJSON(t, handler, http.MethodPatch, "/api/matches/clock-api/clock?token=eval-token", matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: "first_half", ElapsedSeconds: testIntPointer(600), ExpectedVersion: 0,
+	})
+	if updated.Code != http.StatusOK {
+		t.Fatalf("update status=%d body=%s", updated.Code, updated.Body.String())
+	}
+
+	event := doJSON(t, handler, http.MethodPost, "/api/matches/clock-api/events?token=eval-token", matchstate.MatchEvent{
+		EventType: "shot", Period: "first_half", Clock: "09:30", Description: "delayed report",
+	})
+	if event.Code != http.StatusCreated {
+		t.Fatalf("event status=%d body=%s", event.Code, event.Body.String())
+	}
+	state := doJSON(t, handler, http.MethodGet, "/api/matches/clock-api/state", nil)
+	var envelope struct {
+		Snapshot matchstate.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(state.Body.Bytes(), &envelope); err != nil {
+		t.Fatalf("decode state: %v", err)
+	}
+	if envelope.Snapshot.Clock != "10:00" || envelope.Snapshot.RecentEvents[0].Clock != "09:30" {
+		t.Fatalf("clock/event time boundary = %+v", envelope.Snapshot)
+	}
+
+	stale := doJSON(t, handler, http.MethodPatch, "/api/matches/clock-api/clock?token=eval-token", matchstate.ClockCommand{
+		Action: matchstate.ClockActionAdjust, DeltaSeconds: testIntPointer(10), ExpectedVersion: 0,
+	})
+	if stale.Code != http.StatusConflict {
+		t.Fatalf("stale status=%d body=%s", stale.Code, stale.Body.String())
+	}
+}
+
+func TestDirectorVoiceDraftAPIProducesDraftWithoutCreatingFact(t *testing.T) {
+	store := matchstate.NewStore()
+	if _, _, err := store.SetConfig("voice-draft-api", matchstate.MatchConfig{
+		HomeTeam: "西班牙", AwayTeam: "德国",
+		AwayPlayers: []matchstate.Player{{Name: "菲尔克鲁格"}, {Name: "哈弗茨"}},
+	}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if _, err := store.SetClock("voice-draft-api", matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: "second_half", ElapsedSeconds: testIntPointer(67 * 60), ExpectedVersion: 0,
+	}); err != nil {
+		t.Fatalf("SetClock: %v", err)
+	}
+	traces := companion.NewStoreMemoryTools(store)
+	drafts := directordraft.NewService(nil, fixedDirectorExtractor{extraction: directordraft.Extraction{
+		Team: "德国", EventType: "substitution", Description: "德国换人，菲尔克鲁格换下哈弗茨。",
+		Participants: []directordraft.ExtractedParticipant{{Role: "sub_on", Name: "菲尔克鲁格"}, {Role: "sub_off", Name: "哈弗茨"}},
+	}})
+	handler := handleMatchAPIWithDirectorDraft(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager(), nil, drafts)
+
+	response := doJSON(t, handler, http.MethodPost, "/api/matches/voice-draft-api/drafts/voice?token=eval-token", directordraft.Request{
+		Text: "德国换人，菲尔克鲁格换下哈弗茨",
+	})
+	if response.Code != http.StatusOK {
+		t.Fatalf("voice draft status=%d body=%s", response.Code, response.Body.String())
+	}
+	var result directordraft.Result
+	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
+		t.Fatalf("decode voice draft: %v", err)
+	}
+	if result.Draft.TeamID != "away" || result.Draft.EventType != "substitution" || !result.Ready {
+		t.Fatalf("voice draft result = %+v", result)
+	}
+	if events := store.Events("voice-draft-api"); len(events) != 0 {
+		t.Fatalf("voice draft created public facts: %+v", events)
 	}
 }
 
@@ -317,6 +423,14 @@ func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 	}
 	created := decodeEvent(t, createdResp)
 
+	missingReasonResp := doJSON(t, handler, http.MethodPost, "/api/matches/api-boundary/events/"+created.ID+"/correct?token=eval-token", matchstate.MatchEvent{
+		EventType: "var_check", Clock: "13:00", TeamID: "home", TeamName: "Spain", PlayerName: "Pedri",
+		Score: matchstate.Score{Home: 0, Away: 0}, Description: "VAR overturns the goal.",
+	})
+	if missingReasonResp.Code != http.StatusBadRequest {
+		t.Fatalf("missing correction reason status=%d body=%s", missingReasonResp.Code, missingReasonResp.Body.String())
+	}
+
 	correctResp := doJSON(t, handler, http.MethodPost, "/api/matches/api-boundary/events/"+created.ID+"/correct?token=eval-token", matchstate.MatchEvent{
 		EventType:   "var_check",
 		Clock:       "13:00",
@@ -325,6 +439,7 @@ func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 		PlayerName:  "Pedri",
 		Score:       matchstate.Score{Home: 0, Away: 0},
 		Description: "VAR overturns the goal.",
+		Evidence:    map[string]any{"correctionReason": "VAR review overturned the original record."},
 	})
 	if correctResp.Code != http.StatusOK {
 		t.Fatalf("correct status=%d body=%s", correctResp.Code, correctResp.Body.String())
@@ -587,6 +702,10 @@ func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
 	if got := store.Events("test"); len(got) != 0 {
 		t.Fatalf("expected reset to clear events, got %+v", got)
 	}
+	emptyEvents := doJSON(t, handler, http.MethodGet, "/api/matches/test/events?token=eval-token", nil)
+	if !strings.Contains(emptyEvents.Body.String(), `"events":[]`) {
+		t.Fatalf("empty event ledger must use a JSON array, body=%s", emptyEvents.Body.String())
+	}
 	traceList, err := traces.ListTraces(contextless(), "test", 10)
 	if err != nil {
 		t.Fatalf("ListTraces error: %v", err)
@@ -623,12 +742,16 @@ func doJSON(t *testing.T, handler http.HandlerFunc, method, target string, body 
 		req.URL.RawQuery = query.Encode()
 	}
 	req.Header.Set("Content-Type", "application/json")
-	if method == http.MethodPost {
+	if method == http.MethodPost || method == http.MethodPatch {
 		req.Header.Set("Idempotency-Key", t.Name()+"-"+strconv.FormatUint(testIdempotencyCounter.Add(1), 10))
 	}
 	rr := httptest.NewRecorder()
 	handler.ServeHTTP(rr, req)
 	return rr
+}
+
+func testIntPointer(value int) *int {
+	return &value
 }
 
 func decodeEvent(t *testing.T, rr *httptest.ResponseRecorder) matchstate.MatchEvent {

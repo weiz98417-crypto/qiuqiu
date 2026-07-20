@@ -40,6 +40,10 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 
 	eventIDs := map[string]string{}
 	for _, step := range evalCase.Events {
+		if err := syncEvalClock(store, matchID, step.Event); err != nil {
+			result.addFailure("truth", fmt.Sprintf("event %s clock: %v", step.Key, err))
+			continue
+		}
 		var created matchstate.MatchEvent
 		var snapshot matchstate.Snapshot
 		var err error
@@ -105,6 +109,22 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 		}
 	}
 	return result.finish(startedAt)
+}
+
+func syncEvalClock(store *matchstate.Store, matchID string, event matchstate.MatchEvent) error {
+	var minutes, seconds int
+	if _, err := fmt.Sscanf(strings.TrimSpace(event.Clock), "%d:%d", &minutes, &seconds); err != nil || minutes < 0 || seconds < 0 || seconds > 59 {
+		return nil
+	}
+	elapsed := minutes*60 + seconds
+	current := store.Clock(matchID)
+	if current.Version > 0 && current.Period == event.Period && elapsed < current.ElapsedSeconds {
+		return nil
+	}
+	_, err := store.SetClock(matchID, matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: event.Period, ElapsedSeconds: &elapsed, ExpectedVersion: current.Version, Source: "eval-fixture",
+	})
+	return err
 }
 
 func gradeProactive(ctx context.Context, agent *companion.Agent, event matchstate.MatchEvent, snapshot matchstate.Snapshot, eventIDs map[string]string, key string, expect ProactiveExpectation) StepResult {

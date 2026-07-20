@@ -174,6 +174,12 @@ func TestObservationFollowUpCanRecoverUntilDisplayed(t *testing.T) {
 
 func startLiveMatch(t *testing.T, store *matchstate.Store, matchID string) {
 	t.Helper()
+	elapsed := 1
+	if _, err := store.SetClock(matchID, matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: "first_half", ElapsedSeconds: &elapsed, ExpectedVersion: store.Clock(matchID).Version, Source: "test-fixture",
+	}); err != nil {
+		t.Fatalf("start match clock: %v", err)
+	}
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType: "kickoff", Period: "first_half", Clock: "00:01", Score: matchstate.Score{},
 		Description: "比赛开始。", Visibility: "public",

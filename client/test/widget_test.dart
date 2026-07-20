@@ -25,6 +25,7 @@ void main() {
         {
           'eventType': 'goal',
           'playerName': '哈兰德',
+          'clock': '83:12',
           'description': '哈兰德禁区内破门',
         },
         {
@@ -40,7 +41,7 @@ void main() {
     expect(updated.homeScore, 1);
     expect(updated.awayScore, 2);
     expect(updated.clock, "83'");
-    expect(updated.eventLabel, '刚刚 · 哈兰德禁区内破门');
+    expect(updated.eventLabel, '83:12 · 哈兰德禁区内破门');
     expect(updated.recentEventLabels, hasLength(2));
     expect(updated.statusCarouselItems, hasLength(4));
   });
@@ -65,6 +66,38 @@ void main() {
     expect(updated.eventLabel, contains('0—0'));
     expect(updated.eventLabel, startsWith('赛前'));
     expect(updated.liveLabel, '等待开赛');
+  });
+
+  test('match clock advances independently from event occurrence time', () {
+    final clock = MatchClockViewData.tryParse({
+      'period': 'second_half',
+      'elapsedSeconds': 4200,
+      'running': true,
+      'anchorAt': '2026-07-17T12:00:00Z',
+      'version': 4,
+    });
+
+    expect(clock, isNotNull);
+    expect(clock!.displayAt(DateTime.parse('2026-07-17T12:00:05Z')), '70:05');
+
+    const current = MatchViewData(
+      homeTeam: '西班牙',
+      awayTeam: '德国',
+      period: 'second_half',
+      clock: '70:05',
+      hasMatchInfo: true,
+    );
+    final afterDelayedEvent = current.withEvent({
+      'eventType': 'shot',
+      'period': 'second_half',
+      'clock': '69:41',
+      'description': '一次延迟录入的射门',
+      'score': {'home': 0, 'away': 0},
+    });
+
+    expect(afterDelayedEvent.clock, '70:05');
+    expect(afterDelayedEvent.period, 'second_half');
+    expect(afterDelayedEvent.eventLabel, '69:41 · 一次延迟录入的射门');
   });
 
   test('profile preferences preserve the continuous conversation choice', () {

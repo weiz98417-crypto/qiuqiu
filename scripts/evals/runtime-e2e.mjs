@@ -90,6 +90,7 @@ export async function runRuntimeEvals() {
       score: { home: 0, away: 0 },
       intensity: 4,
       description: 'VAR 取消进球。',
+      evidence: { correctionReason: 'VAR 回放确认原进球无效。' },
       proactiveText: '__quiet__',
       visibility: 'public',
     });

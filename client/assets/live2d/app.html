@@ -132,6 +132,8 @@ let vadPoll = null;
 let audioUnlocked = false;
 let pendingAudioMime = 'audio/mpeg';
 let pendingAudioTraceId = '';
+let latestMatchSnapshot = null;
+let liveMatchClock = null;
 const seenMatchEventIds = new Set();
 const seenReactionEventIds = new Set();
 const seenPresentationDeliveryIds = new Set();
@@ -265,18 +267,43 @@ function speakFor(text) {
   }, Math.max(1800, Math.min(5600, text.length * 140)));
 }
 
-function formatMatchSnapshot(snapshot) {
+function currentClockSeconds(clock = liveMatchClock) {
+  if (!clock) return 0;
+  let elapsed = Number(clock.elapsedSeconds || 0);
+  if (clock.running && clock.anchorAt) {
+    const anchor = new Date(clock.anchorAt).getTime();
+    if (Number.isFinite(anchor)) elapsed += Math.max(0, Math.floor((Date.now() - anchor) / 1000));
+  }
+  return Math.max(0, elapsed);
+}
+
+function formatMatchClock(clock = liveMatchClock) {
+  const elapsed = currentClockSeconds(clock);
+  return `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
+}
+
+function periodName(period) {
+  return ({ pre_match: '赛前', first_half: '上半场', halftime: '中场', second_half: '下半场', extra_time: '加时', fulltime: '完场' })[period] || period || '赛前';
+}
+
+function formatMatchSnapshot(snapshot = latestMatchSnapshot) {
   if (!snapshot) return '等待比赛状态...';
   const home = snapshot.homeTeam || '主队';
   const away = snapshot.awayTeam || '客队';
   const score = snapshot.score || { home: 0, away: 0 };
-  const clock = snapshot.clock || '00:00';
-  const period = snapshot.period || 'pre_match';
-  return `${home} ${score.home || 0}-${score.away || 0} ${away} · ${period} ${clock}`;
+  const clock = liveMatchClock || snapshot.matchClock;
+  const clockText = clock ? formatMatchClock(clock) : snapshot.clock || '00:00';
+  const period = clock?.period || snapshot.period || 'pre_match';
+  return `${home} ${score.home || 0}-${score.away || 0} ${away} · ${periodName(period)} ${clockText}`;
+}
+
+function renderMatchStatus() {
+  match.textContent = formatMatchSnapshot(latestMatchSnapshot);
 }
 
 function handleMatchEvent(eventData, snapshot) {
-  if (snapshot) match.textContent = formatMatchSnapshot(snapshot);
+  if (snapshot) latestMatchSnapshot = snapshot;
+  renderMatchStatus();
   if (!eventData) return;
   const action = eventData.recommendedAction || inferAction(eventData.description || '');
   const clock = eventData.clock || '';
@@ -319,11 +346,19 @@ function connect() {
       return;
     }
     if (msg.type === 'match_snapshot') {
-      match.textContent = formatMatchSnapshot(msg.data);
+      latestMatchSnapshot = msg.data || latestMatchSnapshot;
+      if (msg.data?.matchClock) liveMatchClock = msg.data.matchClock;
+      renderMatchStatus();
+      return;
+    }
+    if (msg.type === 'match_clock') {
+      liveMatchClock = msg.data || liveMatchClock;
+      renderMatchStatus();
       return;
     }
     if (msg.type === 'match_event') {
-      if (msg.snapshot) match.textContent = formatMatchSnapshot(msg.snapshot);
+      if (msg.snapshot) latestMatchSnapshot = msg.snapshot;
+      renderMatchStatus();
       if (rememberDeliveryId(seenMatchEventIds, msg.deliveryKey || matchEventDeliveryKey(msg.data))) {
         handleMatchEvent(msg.data, null);
       }
@@ -465,6 +500,7 @@ document.getElementById('reconnect').addEventListener('click', connect);
 mic.addEventListener('click', toggleMic);
 
 addMessage('bot', '我准备好了，开场、进球、可惜、吐槽、生气、紧张、好奇、安慰和战术分析都可以接。');
+window.setInterval(renderMatchStatus, 250);
 connect();
 </script>
 </body>

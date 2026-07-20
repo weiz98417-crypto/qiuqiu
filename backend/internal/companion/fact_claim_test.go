@@ -48,6 +48,7 @@ func TestMatchEventPraiseDoesNotAffirmMissingEvent(t *testing.T) {
 func TestDeicticMatchPraiseUsesConfirmedRecentEvent(t *testing.T) {
 	store := matchstate.NewStore()
 	matchID := "deictic-praise-confirmed-event"
+	setFactClaimClock(t, store, matchID, "first_half", 31*60+15)
 	goal, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -150,6 +151,7 @@ func TestWrongScorerClaimIsCorrectedFromRecentGoal(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 23*60+41)
 	goal, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -199,6 +201,7 @@ func TestUnknownRosterNameInGoalClaimIsStillVerified(t *testing.T) {
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 41*60)
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -236,6 +239,7 @@ func TestUnconfirmedGoalClaimWaitsForMatchEvidence(t *testing.T) {
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 1)
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType: "kickoff", Period: "first_half", Clock: "00:01",
 		Description: "比赛开始。", Visibility: "public",
@@ -525,6 +529,7 @@ func TestWrongScoringTeamClaimIsCorrected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 31*60)
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -584,6 +589,16 @@ func TestHypotheticalScoreIsNotTreatedAsMatchFact(t *testing.T) {
 		}
 		assertNotContains(t, response.Reply, "3比0领先")
 		assertToolNotCalled(t, response.Trace, "match.verify_user_claim")
+	}
+}
+
+func setFactClaimClock(t *testing.T, store *matchstate.Store, matchID, period string, elapsedSeconds int) {
+	t.Helper()
+	current := store.Clock(matchID)
+	if _, err := store.SetClock(matchID, matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: period, ElapsedSeconds: &elapsedSeconds, ExpectedVersion: current.Version, Source: "test-fixture",
+	}); err != nil {
+		t.Fatalf("SetClock error: %v", err)
 	}
 }
 

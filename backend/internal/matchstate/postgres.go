@@ -21,11 +21,12 @@ import (
 )
 
 type PostgresStore struct {
-	pool            *pgxpool.Pool
-	mu              sync.RWMutex
-	subscribers     map[string]map[*eventSubscription]struct{}
-	eventObserver   func(MatchEvent) error
-	outboxPublisher func(MatchEvent) error
+	pool             *pgxpool.Pool
+	mu               sync.RWMutex
+	subscribers      map[string]map[*eventSubscription]struct{}
+	clockSubscribers map[string]map[chan MatchClock]struct{}
+	eventObserver    func(MatchEvent) error
+	outboxPublisher  func(MatchEvent) error
 }
 
 func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (*PostgresStore, error) {
@@ -44,8 +45,9 @@ func OpenPostgresStore(ctx context.Context, databaseURL, migrationsDir string) (
 		}
 	}
 	store := &PostgresStore{
-		pool:        pool,
-		subscribers: make(map[string]map[*eventSubscription]struct{}),
+		pool:             pool,
+		subscribers:      make(map[string]map[*eventSubscription]struct{}),
+		clockSubscribers: make(map[string]map[chan MatchClock]struct{}),
 	}
 	store.outboxPublisher = func(event MatchEvent) error {
 		store.mu.RLock()
@@ -323,6 +325,119 @@ func (s *PostgresStore) Config(matchID string) MatchConfig {
 	return normalizeConfig(matchID, config)
 }
 
+func (s *PostgresStore) Clock(matchID string) MatchClock {
+	matchID = strings.TrimSpace(matchID)
+	clock := defaultMatchClock(matchID)
+	var anchorAt *time.Time
+	err := s.pool.QueryRow(context.Background(), `
+		SELECT period, elapsed_seconds, running, anchor_at, source, version, updated_at
+		FROM match_clocks
+		WHERE match_id = $1
+	`, matchID).Scan(&clock.Period, &clock.ElapsedSeconds, &clock.Running, &anchorAt, &clock.Source, &clock.Version, &clock.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) || err != nil {
+		return clock
+	}
+	clock.AnchorAt = anchorAt
+	return normalizeMatchClock(matchID, clock)
+}
+
+func (s *PostgresStore) SetClock(matchID string, command ClockCommand) (MatchClock, error) {
+	ctx := context.Background()
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return MatchClock{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	tx, err := s.pool.Begin(ctx)
+	if err != nil {
+		return MatchClock{}, err
+	}
+	defer tx.Rollback(ctx)
+	if err := ensureMatch(ctx, tx, matchID, s.Config(matchID)); err != nil {
+		return MatchClock{}, err
+	}
+	current := defaultMatchClock(matchID)
+	var anchorAt *time.Time
+	err = tx.QueryRow(ctx, `
+		SELECT period, elapsed_seconds, running, anchor_at, source, version, updated_at
+		FROM match_clocks
+		WHERE match_id = $1
+		FOR UPDATE
+	`, matchID).Scan(&current.Period, &current.ElapsedSeconds, &current.Running, &anchorAt, &current.Source, &current.Version, &current.UpdatedAt)
+	if err != nil && !errors.Is(err, pgx.ErrNoRows) {
+		return MatchClock{}, err
+	}
+	current.AnchorAt = anchorAt
+	next, err := applyClockCommand(current, command, time.Now())
+	if err != nil {
+		return MatchClock{}, err
+	}
+	if next.Version == current.Version {
+		return next, nil
+	}
+	_, err = tx.Exec(ctx, `
+		INSERT INTO match_clocks (match_id, period, elapsed_seconds, running, anchor_at, source, version, updated_at)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8)
+		ON CONFLICT (match_id) DO UPDATE SET
+			period = EXCLUDED.period,
+			elapsed_seconds = EXCLUDED.elapsed_seconds,
+			running = EXCLUDED.running,
+			anchor_at = EXCLUDED.anchor_at,
+			source = EXCLUDED.source,
+			version = EXCLUDED.version,
+			updated_at = EXCLUDED.updated_at
+	`, matchID, next.Period, next.ElapsedSeconds, next.Running, next.AnchorAt, next.Source, next.Version, next.UpdatedAt)
+	if err != nil {
+		return MatchClock{}, err
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return MatchClock{}, err
+	}
+	s.publishClock(next)
+	return next, nil
+}
+
+func (s *PostgresStore) SubscribeClock(matchID string) (<-chan MatchClock, func()) {
+	matchID = strings.TrimSpace(matchID)
+	updates := make(chan MatchClock, 1)
+	s.mu.Lock()
+	if s.clockSubscribers[matchID] == nil {
+		s.clockSubscribers[matchID] = make(map[chan MatchClock]struct{})
+	}
+	s.clockSubscribers[matchID][updates] = struct{}{}
+	s.mu.Unlock()
+	var once sync.Once
+	return updates, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.clockSubscribers[matchID], updates)
+			s.mu.Unlock()
+		})
+	}
+}
+
+func (s *PostgresStore) publishClock(clock MatchClock) {
+	s.mu.RLock()
+	subscribers := make([]chan MatchClock, 0, len(s.clockSubscribers[clock.MatchID]))
+	for subscriber := range s.clockSubscribers[clock.MatchID] {
+		subscribers = append(subscribers, subscriber)
+	}
+	s.mu.RUnlock()
+	for _, subscriber := range subscribers {
+		select {
+		case subscriber <- clock:
+		default:
+			select {
+			case <-subscriber:
+			default:
+			}
+			select {
+			case subscriber <- clock:
+			default:
+			}
+		}
+	}
+}
+
 func (s *PostgresStore) Reset(matchID string) error {
 	ctx := context.Background()
 	matchID = strings.TrimSpace(matchID)
@@ -423,6 +538,9 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 	if err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	if err := validateEventRelations(existingEvents, ev); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
 	if err := crossSourceEventError(existingEvents, ev); err != nil {
 		if errors.Is(err, ErrConflict) {
 			if markErr := markMatchIntegrity(ctx, tx, matchID, conflictIntegrity(ev)); markErr != nil {
@@ -498,7 +616,7 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 	if publicResult {
 		updatedEvents = filterPublicFacts(updatedEvents)
 	}
-	snapshot := buildSnapshot(matchID, updatedEvents, config)
+	snapshot := buildSnapshot(matchID, updatedEvents, config, s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}
@@ -602,7 +720,7 @@ func (s *PostgresStore) correct(ctx context.Context, matchID, eventID string, re
 	if publicResult {
 		updatedEvents = filterPublicFacts(updatedEvents)
 	}
-	snapshot := buildSnapshot(matchID, updatedEvents, s.Config(matchID))
+	snapshot := buildSnapshot(matchID, updatedEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}
@@ -643,9 +761,9 @@ func (s *PostgresStore) Events(matchID string) []MatchEvent {
 func (s *PostgresStore) Snapshot(matchID string) Snapshot {
 	events, err := s.events(context.Background(), matchID, true)
 	if err != nil {
-		return buildSnapshot(matchID, nil, s.Config(matchID))
+		return buildSnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	return buildSnapshot(matchID, events, s.Config(matchID))
+	return buildSnapshot(matchID, events, s.Config(matchID), s.Clock(matchID), time.Now())
 }
 
 func (s *PostgresStore) PublicEvents(matchID string) []MatchEvent {
@@ -662,9 +780,17 @@ func (s *PostgresStore) PublicEvents(matchID string) []MatchEvent {
 func (s *PostgresStore) PublicSnapshot(matchID string) Snapshot {
 	events, err := s.events(context.Background(), matchID, true)
 	if err != nil {
-		return buildSnapshot(matchID, nil, s.Config(matchID))
+		return buildSnapshot(matchID, nil, s.Config(matchID), s.Clock(matchID), time.Now())
 	}
-	return buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID))
+	return buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID), s.Clock(matchID), time.Now())
+}
+
+func (s *PostgresStore) PublicSnapshotOperator(ctx context.Context, matchID string) (Snapshot, error) {
+	events, err := s.events(ctx, matchID, true)
+	if err != nil {
+		return Snapshot{}, err
+	}
+	return buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID), s.Clock(matchID), time.Now()), nil
 }
 
 func (s *PostgresStore) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -707,7 +833,7 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if events[found].FactStatus != FactStatusProvisional {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: fact is not provisional", ErrInvalid)
 	}
-	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID))
+	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.Config(matchID), s.Clock(matchID), time.Now())
 	if err := validateAgainstSnapshot(events[found], publicSnapshot, s.Config(matchID)); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -743,7 +869,7 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if publicResult {
 		snapshotEvents = filterPublicFacts(events)
 	}
-	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID))
+	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}
@@ -904,7 +1030,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 	if publicResult {
 		snapshotEvents = filterPublicFacts(events)
 	}
-	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID))
+	snapshot := buildSnapshot(matchID, snapshotEvents, s.Config(matchID), s.Clock(matchID), time.Now())
 	if owned {
 		s.kickOutbox()
 	}

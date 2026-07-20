@@ -12,6 +12,7 @@ test('用户领先现场时，导播确认与撤销只跟进对应用户', async
     awayTeam: '德国',
     homePlayers: [{ number: '10', name: '佩德里', position: 'CM' }],
   });
+  await startMatchClock(request, matchId);
   await apiPost(request, `/api/matches/${matchId}/events`, {
     eventType: 'kickoff',
     period: 'first_half',
@@ -38,15 +39,14 @@ test('用户领先现场时，导播确认与撤销只跟进对应用户', async
 
   const operator = await page.context().newPage();
   await operator.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
-  await operator.locator('#eventType').selectOption('goal');
-  await operator.locator('#sideSelect').selectOption('home');
-  await operator.locator('#mainPlayer').fill('佩德里');
-  await operator.locator('#period').selectOption('first_half');
-  await operator.locator('#clock').fill('08:20');
+  await operator.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
+  await operator.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
+  await operator.locator('#occurredClock').fill('08:20');
   await operator.locator('#description').fill('佩德里禁区前沿推射破门。');
   await operator.locator('#confirmation').selectOption('confirmed');
   await operator.locator('#mode').selectOption('quiet');
-  await operator.locator('#draft button[type="submit"]').click();
+  await operator.locator('#draftSubmit').click();
+  await expect(operator.locator('#toast')).toContainText('已确认并发送：进球');
   await expect(operator.locator('#timeline')).toContainText('佩德里禁区前沿推射破门');
 
   await expect(page.getByText(/跟上了.*佩德里进的/).last()).toBeVisible({ timeout: 30_000 });
@@ -75,6 +75,7 @@ test('离线期间确认的事实会在重连后跟进且展示后不重复', as
     awayTeam: '德国',
     homePlayers: [{ number: '10', name: '佩德里', position: 'CM' }],
   });
+  await startMatchClock(request, matchId);
   await apiPost(request, `/api/matches/${matchId}/events`, {
     eventType: 'kickoff',
     period: 'first_half',
@@ -127,6 +128,7 @@ test('没有其他在线客户端时也能调和离线用户的观察', async ({
     awayTeam: '德国',
     homePlayers: [{ number: '10', name: '佩德里', position: 'CM' }],
   });
+  await startMatchClock(request, isolatedMatchId);
   await apiPost(request, `/api/matches/${isolatedMatchId}/events`, {
     eventType: 'kickoff',
     period: 'first_half',
@@ -215,8 +217,12 @@ async function prepareClient(page) {
 }
 
 async function openTextMode(page) {
-  await page.getByRole('button', { name: '更多陪看方式' }).click();
-  await page.getByRole('menuitem', { name: '改用文字说' }).click();
+  const moreButton = page.getByRole('button', { name: '更多陪看方式' });
+  await expect(moreButton).toBeVisible();
+  await moreButton.evaluate((element) => element.click());
+  const textModeItem = page.getByRole('menuitem', { name: '改用文字说' });
+  await expect(textModeItem).toBeVisible();
+  await textModeItem.evaluate((element) => element.click());
   await expect(page.getByRole('textbox')).toBeVisible();
 }
 
@@ -287,4 +293,15 @@ async function apiGet(request, path) {
   const response = await request.get(path, { headers: { Authorization: `Bearer ${token}` } });
   if (!response.ok()) throw new Error(`GET ${path} -> ${response.status()}: ${await response.text()}`);
   return response.json();
+}
+
+async function startMatchClock(request, targetMatchId) {
+  const response = await request.patch(`/api/matches/${targetMatchId}/clock`, {
+    data: { action: 'set', period: 'first_half', elapsedSeconds: 1, expectedVersion: 0 },
+    headers: {
+      Authorization: `Bearer ${token}`,
+      'Idempotency-Key': `observation-clock-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+    },
+  });
+  if (!response.ok()) throw new Error(`PATCH clock -> ${response.status()}: ${await response.text()}`);
 }

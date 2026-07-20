@@ -12,10 +12,11 @@ import (
 )
 
 var (
-	ErrNotFound  = errors.New("not found")
-	ErrInvalid   = errors.New("invalid match event")
-	ErrDuplicate = errors.New("duplicate match event")
-	ErrConflict  = errors.New("conflicting match event")
+	ErrNotFound             = errors.New("not found")
+	ErrInvalid              = errors.New("invalid match event")
+	ErrDuplicate            = errors.New("duplicate match event")
+	ErrConflict             = errors.New("conflicting match event")
+	ErrClockVersionConflict = errors.New("match clock version conflict")
 )
 
 type Score struct {
@@ -140,6 +141,7 @@ type Snapshot struct {
 	Score                 Score          `json:"score"`
 	Period                string         `json:"period"`
 	Clock                 string         `json:"clock"`
+	MatchClock            MatchClock     `json:"matchClock"`
 	Momentum              string         `json:"momentum"`
 	EmotionalTemperature  int            `json:"emotionalTemperature"`
 	RecentEvents          []MatchEvent   `json:"recentEvents"`
@@ -174,6 +176,7 @@ type OperatorTransactionRepository interface {
 	ConfirmFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
 	RevokeFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
 	ReconcileFactOperator(context.Context, string, string, string) (MatchEvent, Snapshot, error)
+	PublicSnapshotOperator(context.Context, string) (Snapshot, error)
 }
 
 type OutboxRunner interface {
@@ -185,14 +188,17 @@ type EventObserverRegistrar interface {
 }
 
 type Store struct {
-	mu            sync.RWMutex
-	events        map[string][]MatchEvent
-	configs       map[string]MatchConfig
-	factHistory   map[string][]FactRevision
-	sourceCursor  map[string]int64
-	subscribers   map[string]map[*eventSubscription]struct{}
-	eventObserver func(MatchEvent) error
-	nextID        int64
+	mu               sync.RWMutex
+	events           map[string][]MatchEvent
+	configs          map[string]MatchConfig
+	factHistory      map[string][]FactRevision
+	sourceCursor     map[string]int64
+	clocks           map[string]MatchClock
+	clockSubscribers map[string]map[chan MatchClock]struct{}
+	subscribers      map[string]map[*eventSubscription]struct{}
+	eventObserver    func(MatchEvent) error
+	nextID           int64
+	now              func() time.Time
 }
 
 type eventSubscription struct {
@@ -276,11 +282,78 @@ func (s *eventSubscription) run() {
 
 func NewStore() *Store {
 	return &Store{
-		events:       make(map[string][]MatchEvent),
-		configs:      make(map[string]MatchConfig),
-		factHistory:  make(map[string][]FactRevision),
-		sourceCursor: make(map[string]int64),
-		subscribers:  make(map[string]map[*eventSubscription]struct{}),
+		events:           make(map[string][]MatchEvent),
+		configs:          make(map[string]MatchConfig),
+		factHistory:      make(map[string][]FactRevision),
+		sourceCursor:     make(map[string]int64),
+		clocks:           make(map[string]MatchClock),
+		clockSubscribers: make(map[string]map[chan MatchClock]struct{}),
+		subscribers:      make(map[string]map[*eventSubscription]struct{}),
+		now:              time.Now,
+	}
+}
+
+func (s *Store) Clock(matchID string) MatchClock {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeMatchClock(matchID, s.clocks[matchID])
+}
+
+func (s *Store) SetClock(matchID string, command ClockCommand) (MatchClock, error) {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return MatchClock{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	s.mu.Lock()
+	current := normalizeMatchClock(matchID, s.clocks[matchID])
+	next, err := applyClockCommand(current, command, s.now())
+	if err != nil {
+		s.mu.Unlock()
+		return MatchClock{}, err
+	}
+	if next.Version == current.Version {
+		s.mu.Unlock()
+		return next, nil
+	}
+	s.clocks[matchID] = next
+	subscribers := make([]chan MatchClock, 0, len(s.clockSubscribers[matchID]))
+	for subscriber := range s.clockSubscribers[matchID] {
+		subscribers = append(subscribers, subscriber)
+	}
+	s.mu.Unlock()
+	for _, subscriber := range subscribers {
+		select {
+		case subscriber <- next:
+		default:
+			select {
+			case <-subscriber:
+			default:
+			}
+			select {
+			case subscriber <- next:
+			default:
+			}
+		}
+	}
+	return next, nil
+}
+
+func (s *Store) SubscribeClock(matchID string) (<-chan MatchClock, func()) {
+	matchID = strings.TrimSpace(matchID)
+	updates := make(chan MatchClock, 1)
+	s.mu.Lock()
+	if s.clockSubscribers[matchID] == nil {
+		s.clockSubscribers[matchID] = make(map[chan MatchClock]struct{})
+	}
+	s.clockSubscribers[matchID][updates] = struct{}{}
+	s.mu.Unlock()
+	var once sync.Once
+	return updates, func() {
+		once.Do(func() {
+			s.mu.Lock()
+			delete(s.clockSubscribers[matchID], updates)
+			s.mu.Unlock()
+		})
 	}
 }
 
@@ -302,7 +375,7 @@ func (s *Store) SetConfig(matchID string, config MatchConfig) (MatchConfig, Snap
 	config.Integrity = normalizeConfig(matchID, s.configs[matchID]).Integrity
 	config.Automation = normalizeAutomationPolicy(config.Automation)
 	s.configs[matchID] = config
-	snapshot := buildSnapshot(matchID, s.events[matchID], config)
+	snapshot := buildSnapshot(matchID, s.events[matchID], config, s.clocks[matchID], s.now())
 	s.mu.Unlock()
 
 	return config, snapshot, nil
@@ -341,6 +414,7 @@ func (s *Store) Reset(matchID string) error {
 	s.mu.Lock()
 	delete(s.events, matchID)
 	delete(s.configs, matchID)
+	delete(s.clocks, matchID)
 	for key := range s.factHistory {
 		if strings.HasPrefix(key, matchID+"\x00") {
 			delete(s.factHistory, key)
@@ -436,7 +510,11 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 		return MatchEvent{}, Snapshot{}, err
 	}
 	config := normalizeConfig(matchID, s.configs[matchID])
-	current := buildSnapshot(matchID, s.events[matchID], config)
+	current := buildSnapshot(matchID, s.events[matchID], config, s.clocks[matchID], s.now())
+	if err := validateEventRelations(s.events[matchID], ev); err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
 	if err := validateAgainstSnapshot(ev, current, config); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
@@ -450,7 +528,7 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 	ev.UpdatedAt = now
 	s.events[matchID] = append(s.events[matchID], ev)
 	s.recordFactRevisionLocked(matchID, ev)
-	snapshot := buildSnapshot(matchID, s.events[matchID], s.configs[matchID])
+	snapshot := buildSnapshot(matchID, s.events[matchID], s.configs[matchID], s.clocks[matchID], s.now())
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 
@@ -491,7 +569,7 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
-	current := buildSnapshot(matchID, events, s.configs[matchID])
+	current := buildSnapshot(matchID, events, s.configs[matchID], s.clocks[matchID], s.now())
 	if err := validateCorrectionTimeline(events, events[found], replacement); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
@@ -515,7 +593,7 @@ func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchE
 	events = append(events, replacement)
 	s.recordFactRevisionLocked(matchID, replacement)
 	s.events[matchID] = events
-	snapshot := buildSnapshot(matchID, events, s.configs[matchID])
+	snapshot := buildSnapshot(matchID, events, s.configs[matchID], s.clocks[matchID], s.now())
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 
@@ -536,7 +614,7 @@ func (s *Store) Events(matchID string) []MatchEvent {
 func (s *Store) Snapshot(matchID string) Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return buildSnapshot(matchID, s.events[matchID], s.configs[matchID])
+	return buildSnapshot(matchID, s.events[matchID], s.configs[matchID], s.clocks[matchID], s.now())
 }
 
 func (s *Store) PublicEvents(matchID string) []MatchEvent {
@@ -553,7 +631,7 @@ func (s *Store) PublicEvents(matchID string) []MatchEvent {
 func (s *Store) PublicSnapshot(matchID string) Snapshot {
 	s.mu.RLock()
 	defer s.mu.RUnlock()
-	return buildSnapshot(matchID, filterPublicFacts(s.events[matchID]), s.configs[matchID])
+	return buildSnapshot(matchID, filterPublicFacts(s.events[matchID]), s.configs[matchID], s.clocks[matchID], s.now())
 }
 
 func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -580,7 +658,7 @@ func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Sna
 	if events[found].FactStatus != FactStatusProvisional {
 		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: fact is not provisional", ErrInvalid)
 	}
-	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID])
+	publicSnapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID], s.clocks[matchID], s.now())
 	if err := validateAgainstSnapshot(events[found], publicSnapshot, normalizeConfig(matchID, s.configs[matchID])); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -594,7 +672,7 @@ func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Sna
 	s.events[matchID] = events
 	s.recordFactRevisionLocked(matchID, events[found])
 	confirmed := events[found]
-	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID])
+	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID], s.clocks[matchID], s.now())
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 	s.publish(subs, confirmed)
@@ -672,7 +750,7 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	s.events[matchID] = events
 	s.recordFactRevisionLocked(matchID, events[found])
 	changed := events[found]
-	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID])
+	snapshot := buildSnapshot(matchID, filterPublicFacts(events), s.configs[matchID], s.clocks[matchID], s.now())
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 	s.publish(subs, changed)
@@ -950,6 +1028,15 @@ func validate(ev MatchEvent) error {
 	if ev.EventType == "goal_cancelled" && ev.RevisionOf == "" {
 		return fmt.Errorf("%w: goal cancellation requires revisionOf", ErrInvalid)
 	}
+	if ev.EventType == "var_result" && ev.RevisionOf == "" {
+		return fmt.Errorf("%w: VAR result requires revisionOf", ErrInvalid)
+	}
+	if ev.EventType == "score_correction" {
+		reason, _ := ev.Evidence["correctionReason"].(string)
+		if strings.TrimSpace(reason) == "" {
+			return fmt.Errorf("%w: score correction requires correctionReason evidence", ErrInvalid)
+		}
+	}
 	return nil
 }
 
@@ -1007,6 +1094,12 @@ func validateAgainstSnapshot(ev MatchEvent, current Snapshot, config MatchConfig
 		}
 		if expected.Home < 0 || expected.Away < 0 || ev.Score != expected {
 			return fmt.Errorf("%w: goal cancellation score must move from %d-%d to %d-%d", ErrInvalid, current.Score.Home, current.Score.Away, expected.Home, expected.Away)
+		}
+		return nil
+	}
+	if ev.EventType == "score_correction" {
+		if ev.Score == current.Score {
+			return fmt.Errorf("%w: score correction must change the public score", ErrInvalid)
 		}
 		return nil
 	}
@@ -1106,8 +1199,8 @@ func validateEventTeam(ev MatchEvent, config MatchConfig) error {
 	expectedTeamName := ""
 	switch ev.TeamID {
 	case "":
-		if ev.EventType == "goal" {
-			return fmt.Errorf("%w: goal requires home or away teamId", ErrInvalid)
+		if ev.EventType == "goal" || ev.EventType == "substitution" {
+			return fmt.Errorf("%w: %s requires home or away teamId", ErrInvalid, ev.EventType)
 		}
 		return nil
 	case "home":
@@ -1120,6 +1213,9 @@ func validateEventTeam(ev MatchEvent, config MatchConfig) error {
 	configuredTeamName := expectedTeamName != "" && expectedTeamName != "主队" && expectedTeamName != "客队"
 	if configuredTeamName && ev.TeamName != "" && !strings.EqualFold(ev.TeamName, expectedTeamName) {
 		return fmt.Errorf("%w: teamName %q does not match %s team %q", ErrInvalid, ev.TeamName, ev.TeamID, expectedTeamName)
+	}
+	if ev.EventType == "substitution" {
+		return validateSubstitutionParticipants(ev, config)
 	}
 	if ev.EventType != "goal" {
 		return nil
@@ -1146,6 +1242,73 @@ func validateEventTeam(ev MatchEvent, config MatchConfig) error {
 		}
 		if teamID := configuredPlayerTeam(config, participant.Name); teamID != "" && teamID != ev.TeamID {
 			return fmt.Errorf("%w: %s %q belongs to %s team", ErrInvalid, participant.Role, participant.Name, teamID)
+		}
+	}
+	return nil
+}
+
+func validateSubstitutionParticipants(ev MatchEvent, config MatchConfig) error {
+	var subOn, subOff *Participant
+	for index := range ev.Participants {
+		participant := &ev.Participants[index]
+		switch participant.Role {
+		case "sub_on":
+			if subOn != nil {
+				return fmt.Errorf("%w: substitution requires exactly one sub_on player", ErrInvalid)
+			}
+			subOn = participant
+		case "sub_off":
+			if subOff != nil {
+				return fmt.Errorf("%w: substitution requires exactly one sub_off player", ErrInvalid)
+			}
+			subOff = participant
+		}
+	}
+	if subOn == nil || subOff == nil {
+		return fmt.Errorf("%w: substitution requires sub_on and sub_off players", ErrInvalid)
+	}
+	if strings.EqualFold(subOn.Name, subOff.Name) {
+		return fmt.Errorf("%w: substitution players must be different", ErrInvalid)
+	}
+	for _, participant := range []*Participant{subOn, subOff} {
+		if participant.TeamID != ev.TeamID {
+			return fmt.Errorf("%w: %s %q must belong to the substituted team", ErrInvalid, participant.Role, participant.Name)
+		}
+		if teamID := configuredPlayerTeam(config, participant.Name); teamID != "" && teamID != ev.TeamID {
+			return fmt.Errorf("%w: %s %q belongs to %s team", ErrInvalid, participant.Role, participant.Name, teamID)
+		}
+	}
+	return nil
+}
+
+func validateEventRelations(events []MatchEvent, candidate MatchEvent) error {
+	if candidate.EventType != "var_result" && candidate.EventType != "goal_cancelled" {
+		return nil
+	}
+	var referenced *MatchEvent
+	for index := range events {
+		event := &events[index]
+		if event.Status == "active" && (event.ID == candidate.RevisionOf || event.FactID == candidate.RevisionOf) {
+			referenced = event
+		}
+	}
+	if referenced == nil ||
+		(referenced.FactStatus != FactStatusConfirmed && referenced.FactStatus != FactStatusReconciled) {
+		return fmt.Errorf("%w: %s must reference an active confirmed fact", ErrInvalid, candidate.EventType)
+	}
+	if candidate.EventType == "var_result" {
+		return nil
+	}
+	if referenced.EventType != "goal" {
+		return fmt.Errorf("%w: goal cancellation must reference an active confirmed goal", ErrInvalid)
+	}
+	if referenced.TeamID != candidate.TeamID {
+		return fmt.Errorf("%w: goal cancellation team must match the referenced goal", ErrInvalid)
+	}
+	for _, event := range events {
+		if event.Status == "active" && event.EventType == "goal_cancelled" &&
+			(event.RevisionOf == referenced.ID || event.RevisionOf == referenced.FactID) {
+			return fmt.Errorf("%w: referenced goal is already cancelled", ErrInvalid)
 		}
 	}
 	return nil
@@ -1227,15 +1390,17 @@ func configuredPlayerTeam(config MatchConfig, name string) string {
 	return ""
 }
 
-func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig) Snapshot {
+func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig, clock MatchClock, now time.Time) Snapshot {
 	config = normalizeConfig(matchID, config)
+	clock = normalizeMatchClock(matchID, clock)
 	snap := Snapshot{
 		MatchID:              matchID,
 		HomeTeam:             config.HomeTeam,
 		AwayTeam:             config.AwayTeam,
 		Score:                Score{},
-		Period:               "pre_match",
-		Clock:                "00:00",
+		Period:               clock.Period,
+		Clock:                clock.displayAt(now),
+		MatchClock:           clock,
 		Momentum:             "neutral",
 		EmotionalTemperature: 1,
 		LastUpdatedAt:        time.Now().UTC().Format(time.RFC3339Nano),
@@ -1255,8 +1420,6 @@ func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig) Snap
 			}
 		}
 		snap.Score = ev.Score
-		snap.Period = ev.Period
-		snap.Clock = ev.Clock
 		snap.EmotionalTemperature = ev.Intensity
 		snap.LastRecommendedAction = ev.RecommendedAction
 		snap.LastPublicDescription = ev.Description
@@ -1266,6 +1429,9 @@ func buildSnapshot(matchID string, events []MatchEvent, config MatchConfig) Snap
 			snap.KeyEvents = append([]MatchEvent{ev}, snap.KeyEvents...)
 		}
 		snap.Momentum = momentumFor(ev)
+	}
+	if !clock.UpdatedAt.IsZero() && clock.UpdatedAt.Format(time.RFC3339Nano) > snap.LastUpdatedAt {
+		snap.LastUpdatedAt = clock.UpdatedAt.Format(time.RFC3339Nano)
 	}
 
 	if len(snap.RecentEvents) > 5 {
@@ -1366,7 +1532,7 @@ func normalizePlayers(players []Player) []Player {
 
 func isKeyEvent(t string) bool {
 	switch t {
-	case "goal", "red_card", "penalty", "penalty_awarded", "var_check", "var_result", "goal_cancelled", "halftime", "fulltime", "match_end":
+	case "goal", "red_card", "penalty", "penalty_awarded", "var_check", "var_result", "goal_cancelled", "score_correction", "halftime", "fulltime", "match_end":
 		return true
 	default:
 		return false
@@ -1403,7 +1569,7 @@ func DefaultAction(eventType string) string {
 		return "complain"
 	case "red_card":
 		return "angry"
-	case "tactical_shift", "halftime":
+	case "tactical_shift", "score_correction", "halftime":
 		return "analysis"
 	case "pressure":
 		return "focus"
@@ -1449,7 +1615,7 @@ func DefaultSentiment(eventType string) string {
 		return "regret"
 	case "foul", "yellow_card", "red_card":
 		return "complaint"
-	case "tactical_shift", "halftime":
+	case "tactical_shift", "score_correction", "halftime":
 		return "analytical"
 	default:
 		return "neutral"
@@ -1464,28 +1630,29 @@ func defaultString(value, fallback string) string {
 }
 
 var allowedEventTypes = map[string]bool{
-	"kickoff":         true,
-	"goal":            true,
-	"shot":            true,
-	"big_chance":      true,
-	"save":            true,
-	"miss":            true,
-	"foul":            true,
-	"yellow_card":     true,
-	"red_card":        true,
-	"var_check":       true,
-	"var_result":      true,
-	"goal_cancelled":  true,
-	"penalty":         true,
-	"penalty_awarded": true,
-	"substitution":    true,
-	"injury":          true,
-	"tactical_shift":  true,
-	"pressure":        true,
-	"halftime":        true,
-	"fulltime":        true,
-	"match_end":       true,
-	"operator_note":   true,
+	"kickoff":          true,
+	"goal":             true,
+	"shot":             true,
+	"big_chance":       true,
+	"save":             true,
+	"miss":             true,
+	"foul":             true,
+	"yellow_card":      true,
+	"red_card":         true,
+	"var_check":        true,
+	"var_result":       true,
+	"goal_cancelled":   true,
+	"score_correction": true,
+	"penalty":          true,
+	"penalty_awarded":  true,
+	"substitution":     true,
+	"injury":           true,
+	"tactical_shift":   true,
+	"pressure":         true,
+	"halftime":         true,
+	"fulltime":         true,
+	"match_end":        true,
+	"operator_note":    true,
 }
 
 var allowedPeriods = map[string]bool{

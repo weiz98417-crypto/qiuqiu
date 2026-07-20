@@ -49,6 +49,7 @@ class SessionService {
 
   final http.Client _client;
   final SessionSecretStore _secretStorage;
+  final Map<String, String> _memorySecrets = <String, String>{};
 
   SessionService({http.Client? client, SessionSecretStore? secretStorage})
       : _client = client ?? http.Client(),
@@ -145,8 +146,8 @@ class SessionService {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setString(_userIdKey, credentials.userId);
     await prefs.setString(_sessionIdKey, credentials.sessionId);
-    await _secretStorage.write(_accessTokenKey, credentials.accessToken);
-    await _secretStorage.write(_refreshTokenKey, credentials.refreshToken);
+    await _writeSecret(_accessTokenKey, credentials.accessToken);
+    await _writeSecret(_refreshTokenKey, credentials.refreshToken);
     await prefs.remove(_accessTokenKey);
     await prefs.remove(_refreshTokenKey);
     await prefs.setString(
@@ -154,20 +155,43 @@ class SessionService {
   }
 
   Future<String> _readSecret(String key, SharedPreferences prefs) async {
-    final secureValue = await _secretStorage.read(key);
+    final memoryValue = _memorySecrets[key];
+    if (memoryValue != null && memoryValue.isNotEmpty) return memoryValue;
+    String? secureValue;
+    try {
+      secureValue = await _secretStorage.read(key);
+    } catch (_) {
+      secureValue = null;
+    }
     if (secureValue != null && secureValue.isNotEmpty) return secureValue;
     final legacyValue = prefs.getString(key) ?? '';
     if (legacyValue.isNotEmpty) {
-      await _secretStorage.write(key, legacyValue);
-      await prefs.remove(key);
+      await _writeSecret(key, legacyValue);
+      if (_memorySecrets[key] == null) await prefs.remove(key);
     }
     return legacyValue;
   }
 
+  Future<void> _writeSecret(String key, String value) async {
+    try {
+      await _secretStorage.write(key, value);
+      _memorySecrets.remove(key);
+    } catch (_) {
+      _memorySecrets[key] = value;
+    }
+  }
+
+  Future<void> _deleteSecret(String key) async {
+    _memorySecrets.remove(key);
+    try {
+      await _secretStorage.delete(key);
+    } catch (_) {}
+  }
+
   Future<void> _clear() async {
     final prefs = await SharedPreferences.getInstance();
-    await _secretStorage.delete(_accessTokenKey);
-    await _secretStorage.delete(_refreshTokenKey);
+    await _deleteSecret(_accessTokenKey);
+    await _deleteSecret(_refreshTokenKey);
     await prefs.remove(_userIdKey);
     await prefs.remove(_sessionIdKey);
     await prefs.remove(_expiresAtKey);

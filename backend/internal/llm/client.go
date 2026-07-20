@@ -146,10 +146,18 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 
 // GenerateWithMessages sends a full message list with configurable temperature.
 func (c *Client) GenerateWithMessages(ctx context.Context, messages []Message, temperature float64) (*GenerateResult, error) {
+	return c.GenerateWithMessagesLimit(ctx, messages, temperature, 80)
+}
+
+// GenerateWithMessagesLimit allows structured-output callers to reserve enough room for their schema.
+func (c *Client) GenerateWithMessagesLimit(ctx context.Context, messages []Message, temperature float64, maxTokens int) (*GenerateResult, error) {
+	if maxTokens <= 0 {
+		maxTokens = 80
+	}
 	req := ChatRequest{
 		Model:       c.model,
 		Messages:    messages,
-		MaxTokens:   80,
+		MaxTokens:   maxTokens,
 		Temperature: temperature,
 		Stream:      false,
 		Thinking:    Thinking{Type: "disabled"},

@@ -368,6 +368,132 @@
     pointer-events: none;
   }
   .timeline-list { position: relative; z-index: 1; padding: 12px; overflow-y: auto; flex: 1; display: flex; flex-direction: column; gap: 10px; }
+  .live-workspace {
+    grid-template-columns: minmax(210px, .78fr) minmax(280px, 1fr) minmax(320px, 1.25fr);
+    grid-template-rows: minmax(390px, 1fr) minmax(170px, .42fr);
+  }
+  .participant-panel, .behavior-panel, .current-event-panel { min-height: 390px; }
+  .live-timeline { grid-column: 1 / -1; min-height: 170px; }
+  .team-segment {
+    display: grid;
+    grid-template-columns: repeat(2, minmax(0, 1fr));
+    padding: 3px;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 7px;
+    background: var(--surface-lowest);
+  }
+  .team-segment-button {
+    min-height: 48px;
+    border: 0;
+    border-radius: 5px;
+    background: transparent;
+    color: var(--on-variant);
+    display: grid;
+    gap: 1px;
+    padding: 6px 8px;
+    text-align: left;
+  }
+  .team-segment-button span { font-size: 10px; line-height: 14px; font-weight: 800; }
+  .team-segment-button b { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .team-segment-button.active { background: var(--surface-variant); color: var(--on-surface); box-shadow: inset 0 0 0 1px rgba(255,182,147,.35); }
+  .search-field {
+    min-height: 42px;
+    border: 1px solid rgba(169,138,125,.22);
+    border-radius: 6px;
+    background: var(--surface-lowest);
+    display: flex;
+    align-items: center;
+    gap: 5px;
+    padding-left: 9px;
+  }
+  .search-field .material-symbols-outlined { color: var(--on-variant); font-size: 18px; }
+  .search-field input { width: 100%; border: 0; background: transparent; box-shadow: none; }
+  .roster-list { max-height: none; min-height: 0; align-content: flex-start; }
+  .quick-combinations { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
+  .behavior-group { display: grid; gap: 8px; }
+  .behavior-group + .behavior-group { padding-top: 12px; border-top: 1px solid rgba(255,255,255,.06); }
+  .behavior-group-title { color: var(--on-variant); font-size: 11px; line-height: 16px; font-weight: 800; }
+  .behavior-group-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 7px; }
+  .behavior-button {
+    min-height: 48px;
+    border: 1px solid var(--surface-variant);
+    border-radius: 7px;
+    background: var(--surface-lowest);
+    color: var(--on-surface);
+    display: flex;
+    align-items: center;
+    justify-content: space-between;
+    gap: 8px;
+    padding: 8px 10px;
+    text-align: left;
+  }
+  .behavior-button:hover { border-color: rgba(255,182,147,.55); }
+  .behavior-button.active { border-color: var(--primary); background: rgba(255,107,0,.12); color: var(--primary); }
+  .behavior-key { color: var(--on-variant); font: 700 10px/14px "JetBrains Mono", monospace; }
+  .draft-head-actions { display: flex; align-items: center; gap: 5px; }
+  .draft-meta { margin-top: 2px; color: var(--on-variant); font-size: 11px; line-height: 16px; }
+  .voice-entry {
+    min-height: 36px;
+    border: 1px solid rgba(255,182,147,.35);
+    border-radius: 7px;
+    background: rgba(255,182,147,.08);
+    color: var(--primary);
+    display: inline-flex;
+    align-items: center;
+    gap: 5px;
+    padding: 7px 9px;
+    font-weight: 800;
+  }
+  .voice-entry.recording { border-color: var(--error); background: rgba(127,29,29,.25); color: var(--error); }
+  .voice-entry .material-symbols-outlined { font-size: 18px; }
+  .voice-draft {
+    border: 1px solid rgba(188,199,222,.22);
+    border-radius: 7px;
+    background: rgba(188,199,222,.07);
+    padding: 10px;
+    display: grid;
+    gap: 7px;
+  }
+  .voice-draft[hidden] { display: none; }
+  .voice-draft-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--secondary); font-weight: 800; }
+  .voice-transcript { color: var(--on-surface); line-height: 20px; }
+  .voice-conflicts { display: grid; gap: 5px; color: var(--warning); font-size: 12px; line-height: 17px; }
+  .voice-conflict-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; align-items: center; padding: 7px; border: 1px solid rgba(242,201,76,.24); background: rgba(242,201,76,.05); }
+  .voice-conflict-row .small-btn { min-height: 34px; padding: 6px 9px; }
+  .voice-conflict-row.warning .small-btn { grid-column: 2 / 4; }
+  .voice-inferred { box-shadow: inset 3px 0 0 var(--primary); background-color: rgba(255,182,147,.06); }
+  label.voice-inferred { padding-left: 9px; }
+  .draft-summary {
+    min-height: 58px;
+    border: 1px solid rgba(255,255,255,.08);
+    border-radius: 7px;
+    background: var(--surface-lowest);
+    padding: 10px;
+    display: grid;
+    gap: 5px;
+  }
+  .draft-summary strong { font-size: 15px; line-height: 20px; }
+  .draft-summary-line { display: flex; align-items: center; gap: 7px; flex-wrap: wrap; }
+  .draft-errors { min-height: 18px; color: var(--error); font-size: 12px; line-height: 18px; }
+  .event-form-grid { grid-template-columns: repeat(2, minmax(0, 1fr)); }
+  .score-correction-fields { display: grid; grid-template-columns: 1fr 1fr; gap: 8px; }
+  .score-correction-fields[hidden] { display: none; }
+  .draft-tools { border-top: 1px solid rgba(255,255,255,.07); padding-top: 8px; }
+  .draft-tools summary { color: var(--on-variant); cursor: pointer; font-weight: 800; }
+  .draft-tools[open] { display: grid; gap: 10px; }
+  .draft-submit-row {
+    position: sticky;
+    bottom: 0;
+    z-index: 3;
+    margin-top: auto;
+    padding-top: 10px;
+    background: var(--surface-container);
+    display: grid;
+    grid-template-columns: minmax(120px, .55fr) minmax(210px, 1fr);
+    gap: 8px;
+  }
+  .draft-submit-row .ghost-btn { min-height: 48px; }
+  .draft-submit-row .primary-btn { min-height: 48px; font-size: 16px; line-height: 22px; }
   .event-card {
     position: relative;
     border: 1px solid rgba(255,255,255,.06);
@@ -644,33 +770,21 @@
     0% { box-shadow: 0 0 0 2px var(--primary-container), 0 0 18px rgba(255,107,0,.5); }
     100% { box-shadow: none; }
   }
-  /* The fixed 256px navigation leaves less room than the viewport width suggests. */
-  @media (max-width: 1320px) {
-    .workspace { grid-template-columns: 1fr; grid-auto-rows: max-content; overflow-y: auto; }
-    .workspace > .center { order: -1; }
-    .panel, .combiner { min-height: 320px; max-height: none; }
-    .center {
-      display: grid;
-      grid-template-columns: minmax(0, 1fr);
-      grid-template-rows: max-content minmax(320px, max-content);
-      min-height: max-content;
-      overflow: visible;
+  @media (max-width: 1179px) {
+    .side-nav { width: 80px; flex-basis: 80px; padding-inline: 8px; }
+    .side-nav .brand > div:last-child, .side-nav .nav-item span:last-child, .side-nav .quick-btn { display: none; }
+    .side-nav .brand { justify-content: center; padding: 0; }
+    .side-nav .nav-item { justify-content: center; gap: 0; padding-inline: 0; }
+    .topbar { padding-left: 104px; }
+    .live-workspace {
+      grid-template-columns: minmax(240px, .75fr) minmax(390px, 1.25fr);
+      grid-template-rows: minmax(210px, auto) minmax(260px, 1fr) minmax(170px, .4fr);
+      overflow-y: auto;
     }
-    .combiner {
-      height: calc(100dvh - 209px);
-      min-height: 520px;
-      max-height: 720px;
-    }
-    .combiner .panel-body { overflow-y: auto; }
-    #draftSubmit {
-      position: sticky;
-      bottom: 0;
-      z-index: 3;
-      flex: 0 0 auto;
-      box-shadow: 0 -12px 20px var(--surface-container);
-    }
-    body { overflow: auto; }
-    .main { height: auto; min-height: 100vh; overflow: visible; }
+    .participant-panel { grid-column: 1; grid-row: 1; min-height: 210px; }
+    .behavior-panel { grid-column: 1; grid-row: 2; min-height: 260px; }
+    .current-event-panel { grid-column: 2; grid-row: 1 / 3; min-height: 490px; }
+    .live-timeline { grid-column: 1 / -1; grid-row: 3; }
   }
   @media (max-width: 1100px) {
     .top-tabs { display: none; }
@@ -688,8 +802,18 @@
     .side-nav { display: none; }
     .topbar { padding-left: 16px; }
     .top-title { font-size: 22px; line-height: 28px; }
+    body { height: auto; overflow: auto; }
+    .main { min-height: 100vh; height: auto; overflow: visible; }
     .workspace { padding: 10px; }
-    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .trace-layout, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview, .control-grid, .source-row, .event-toggle-grid, .monitor-grid, .activity-row { grid-template-columns: 1fr; }
+    .live-workspace { grid-template-columns: 1fr; grid-template-rows: none; grid-auto-rows: max-content; overflow: visible; }
+    .participant-panel, .behavior-panel, .current-event-panel, .live-timeline { grid-column: 1; grid-row: auto; min-height: 320px; }
+    .current-event-panel { min-height: 620px; }
+    .live-timeline { min-height: 280px; }
+    .form-grid, .slots, .type-row, .setup-meta, .setup-rosters, .settings-grid, .trace-layout, .setup-grid-2, .settings-grid-2, .radio-grid, .roster-preview, .control-grid, .source-row, .event-toggle-grid, .monitor-grid, .activity-row, .score-correction-fields { grid-template-columns: 1fr; }
+    .draft-submit-row { grid-template-columns: 1fr; }
+    .voice-conflict-row { grid-template-columns: 1fr 1fr; }
+    .voice-conflict-row > span { grid-column: 1 / -1; }
+    .voice-conflict-row.warning .small-btn { grid-column: 1 / -1; }
     .half { grid-column: 1 / -1; }
     .setup-canvas, .settings-canvas, .trace-canvas, .control-canvas { padding: 16px; }
   }
@@ -738,181 +862,147 @@
 
       <section class="scorebar view active" data-view-panel="live">
         <div class="score-side home">
-          <input class="team-name home" id="homeTeam" value="西班牙">
-          <input class="score-input" id="homeScore" min="0" type="number" value="0">
+          <input class="team-name home" id="homeTeam" value="西班牙" readonly>
+          <input class="score-input" id="homeScore" type="number" value="0" readonly aria-label="主队比分">
         </div>
         <div class="clock-box">
           <div class="clock-main">
-            <input id="clock" value="00:00" placeholder="45:00">
-            <button class="icon-btn" id="clockStart" title="开始/暂停" type="button"><span class="material-symbols-outlined">play_arrow</span></button>
+            <input id="clock" value="00:00" readonly aria-label="比赛主时钟">
+            <button class="icon-btn" id="clockStart" title="开始比赛时钟" type="button"><span class="material-symbols-outlined">play_arrow</span></button>
           </div>
           <div class="clock-row">
-            <select id="period">
+            <select id="period" aria-label="比赛阶段">
               <option value="pre_match">赛前</option>
-              <option value="first_half" selected>上半场</option>
+              <option value="first_half">上半场</option>
               <option value="halftime">中场</option>
               <option value="second_half">下半场</option>
               <option value="extra_time">加时</option>
               <option value="fulltime">完场</option>
             </select>
-            <button class="small-btn" id="clockMinus" type="button">-1'</button>
-            <button class="small-btn" id="clockPlus" type="button">+1'</button>
-            <button class="small-btn" id="scoreUndo" type="button">比分回退</button>
+            <button class="small-btn" id="clockMinus" type="button">-10秒</button>
+            <button class="small-btn" id="clockPlus" type="button">+10秒</button>
+            <span class="fact-pill" id="clockVersion">版本 0</span>
           </div>
         </div>
         <div class="score-side away">
-          <input class="score-input" id="awayScore" min="0" type="number" value="0">
-          <input class="team-name away" id="awayTeam" value="德国">
+          <input class="score-input" id="awayScore" type="number" value="0" readonly aria-label="客队比分">
+          <input class="team-name away" id="awayTeam" value="德国" readonly>
         </div>
       </section>
 
-      <section class="workspace view active" data-view-panel="live">
-        <aside class="panel glass">
+      <section class="workspace live-workspace view active" data-view-panel="live">
+        <aside class="panel participant-panel">
           <div class="panel-head">
-            <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">groups</span><span id="homeTitle">西班牙事实员</span></div>
-            <button class="small-btn" data-side="home" type="button">当前主队</button>
+            <div class="panel-title"><span class="material-symbols-outlined">groups</span>参与者</div>
+            <button class="icon-btn" id="saveConfig" title="保存赛前配置" type="button" data-busy-label="保存中…"><span class="material-symbols-outlined">save</span></button>
           </div>
           <div class="panel-body">
-            <div style="display:grid;grid-template-columns:1fr auto;gap:8px">
-              <label>比赛 ID <input id="matchId" value="test"></label>
-              <button class="ghost-btn" id="saveConfig" type="button" style="align-self:end">保存配置</button>
+            <div class="team-segment" role="group" aria-label="选择球队">
+              <button class="team-segment-button active" id="homeSideButton" data-side="home" type="button"><span>主队</span><b id="homeSideName">西班牙</b></button>
+              <button class="team-segment-button" id="awaySideButton" data-side="away" type="button"><span>客队</span><b id="awaySideName">德国</b></button>
             </div>
-            <div class="roster-box">
-              <label>主队名单 / 每行：号码 姓名 位置</label>
-              <textarea id="homePlayers" placeholder="10 佩德里 CM&#10;7 莫拉塔 ST&#10;19 亚马尔 RW">10 佩德里 CM
+            <label class="search-field"><span class="material-symbols-outlined">search</span><input id="playerSearch" placeholder="搜索号码或姓名" aria-label="搜索球员"></label>
+            <div class="selection-line" id="participantSelection">尚未选择参与者</div>
+            <div class="chips roster-list" id="homeChips"></div>
+            <div class="chips roster-list" id="awayChips" hidden></div>
+            <div class="quick-combinations" id="quickCombinations"></div>
+          </div>
+        </aside>
+
+        <section class="panel behavior-panel">
+          <div class="panel-head">
+            <div class="panel-title"><span class="material-symbols-outlined">sports_soccer</span>行为</div>
+            <span class="fact-pill">只生成草稿</span>
+          </div>
+          <div class="panel-body" id="behaviorGroups"></div>
+        </section>
+
+        <form class="panel current-event-panel" id="draft">
+          <div class="panel-head">
+            <div>
+              <div class="panel-title"><span class="material-symbols-outlined">edit_note</span>当前事件</div>
+              <div class="draft-meta" id="draftMeta">等待选择球队、球员和行为</div>
+            </div>
+            <div class="draft-head-actions">
+              <button class="voice-entry" id="voiceInput" type="button" data-busy-label="整理中…"><span class="material-symbols-outlined">mic</span><span>语音录入</span></button>
+              <button class="icon-btn" id="clearDraft" title="清空当前草稿" type="button"><span class="material-symbols-outlined">delete_sweep</span></button>
+              <button class="icon-btn" id="reload" title="刷新比赛状态" type="button"><span class="material-symbols-outlined">refresh</span></button>
+            </div>
+          </div>
+          <div class="panel-body">
+            <section class="voice-draft" id="voiceDraft" hidden>
+              <div class="voice-draft-head"><span id="voiceStatus">准备录音</span><button class="small-btn" id="undoVoice" type="button" hidden>撤回本次语音</button></div>
+              <div id="voiceTranscript" class="voice-transcript"></div>
+              <div id="voiceConflicts" class="voice-conflicts"></div>
+            </section>
+
+            <div class="draft-summary" id="draftSummary">还没有事件草稿</div>
+            <div class="draft-errors" id="draftErrors" role="status"></div>
+
+            <div hidden>
+              <input id="matchId" value="test">
+              <textarea id="homePlayers">10 佩德里 CM
 7 莫拉塔 ST
 19 亚马尔 RW
 8 法比安 CM</textarea>
-            </div>
-            <div class="team-tools">
-              <label>当前主队球员 <input id="homeActive" placeholder="先选/输入球员，再点事件"></label>
-              <button class="ghost-btn" data-use-side="home" type="button">使用</button>
-            </div>
-            <div class="selection-line" id="homeSelected">主队当前球员：未选择</div>
-            <div class="chips" id="homeChips"></div>
-            <div class="event-grid" id="homeEvents"></div>
-          </div>
-        </aside>
-
-        <div class="center">
-          <form class="panel glass combiner" id="draft">
-            <div class="panel-head">
-              <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--primary)">hub</span>逻辑组合器</div>
-              <div style="display:flex;align-items:center;gap:10px">
-                <button class="small-btn" id="clearDraft" type="button">清空草稿</button>
-                <button class="small-btn" id="reload" type="button">刷新</button>
-                <span class="status" id="status">准备就绪</span>
-              </div>
-            </div>
-            <div class="panel-body">
-              <div class="type-row">
-                <select id="eventType"></select>
-                <input id="templateSearch" placeholder="搜索模板，也可直接在下方打字">
-                <button class="small-btn" id="hint" type="button">导演提示</button>
-              </div>
-              <div class="template-board">
-                <div class="template-board-head">
-                  <span>事件模板库</span>
-                  <span id="templateCount">0 条</span>
-                </div>
-                <div class="templates" id="templates"></div>
-              </div>
-              <div class="slots" id="slots"></div>
-              <div class="form-grid">
-                <label>当前方
-                  <select id="sideSelect">
-                    <option value="home">主队</option>
-                    <option value="away">客队</option>
-                    <option value="">双方/无</option>
-                  </select>
-                </label>
-                <label>主参与人 <input id="mainPlayer" placeholder="自动带入"></label>
-                <label>强度
-                  <select id="intensity">
-                    <option value="1">1 安静</option>
-                    <option value="2">2 轻微</option>
-                    <option value="3" selected>3 明显</option>
-                    <option value="4">4 强烈</option>
-                    <option value="5">5 爆发</option>
-                  </select>
-                </label>
-                <label>事实状态
-                  <select id="confirmation">
-                    <option value="pending">等待确认</option>
-                    <option value="confirmed">已确认</option>
-                  </select>
-                </label>
-                <label>动作
-                  <select id="action">
-                    <option value="">自动</option>
-                    <option value="celebrate">celebrate</option>
-                    <option value="tense">tense</option>
-                    <option value="miss">miss</option>
-                    <option value="complain">complain</option>
-                    <option value="angry">angry</option>
-                    <option value="analysis">analysis</option>
-                    <option value="focus">focus</option>
-                    <option value="surprise">surprise</option>
-                    <option value="comfort">comfort</option>
-                  </select>
-                </label>
-                <label class="wide">详细描述
-                  <textarea id="description" placeholder="选择模板后可继续修改；也可以完全手写。"></textarea>
-                </label>
-                <label class="half">球球主动话术
-                  <textarea id="proactive" placeholder="留空自动生成；导演手写时会按原文发布。"></textarea>
-                </label>
-                <label class="half">发布方式
-                  <select id="mode">
-                    <option value="auto">直接发布并触发球球</option>
-                    <option value="quiet">只记事件，不主动说话</option>
-                    <option value="manual">使用我写的主动话术</option>
-                  </select>
-                </label>
-              </div>
-              <div class="context-preview">
-                <div class="template-board-head" style="padding:0;text-transform:none;letter-spacing:0">
-                  <span>发送给球球的上下文</span>
-                  <span class="fact-pill" id="contextScore">0-0</span>
-                </div>
-                <textarea id="contextPreview" readonly></textarea>
-              </div>
-              <button class="primary-btn" id="draftSubmit" type="submit" data-busy-label="发布中…"><span class="material-symbols-outlined">send</span>发布详细事件</button>
-            </div>
-          </form>
-
-          <section class="panel glass timeline">
-            <div class="panel-head" style="position:relative;z-index:1">
-              <div class="panel-title">事件时间轴</div>
-              <span class="material-symbols-outlined" style="color:var(--on-variant)">history</span>
-            </div>
-            <div class="timeline-list" id="timeline"></div>
-          </section>
-        </div>
-
-        <aside class="panel glass">
-          <div class="panel-head">
-            <div class="panel-title"><span class="material-symbols-outlined" style="color:var(--secondary)">groups</span><span id="awayTitle">德国事实员</span></div>
-            <button class="small-btn" data-side="away" type="button">当前客队</button>
-          </div>
-          <div class="panel-body">
-            <div class="fact-pill">远端事实员 / Away Desk</div>
-            <div class="roster-box">
-              <label>客队名单 / 每行：号码 姓名 位置</label>
-              <textarea id="awayPlayers" placeholder="10 穆西亚拉 AM&#10;9 菲尔克鲁格 ST">10 穆西亚拉 AM
+              <textarea id="awayPlayers">10 穆西亚拉 AM
 9 菲尔克鲁格 ST
 7 哈弗茨 FW
 22 吕迪格 CB</textarea>
+              <input id="homeActive"><input id="awayActive">
+              <span id="homeTitle"></span><span id="awayTitle"></span>
+              <span id="homeSelected"></span><span id="awaySelected"></span>
+              <div id="homeEvents"></div><div id="awayEvents"></div>
+              <select id="eventType"></select>
+              <select id="sideSelect"><option value="home">home</option><option value="away">away</option><option value=""></option></select>
             </div>
-            <div class="team-tools">
-              <label>当前客队球员 <input id="awayActive" placeholder="先选/输入球员，再点事件"></label>
-              <button class="ghost-btn" data-use-side="away" type="button">使用</button>
+
+            <div class="slots" id="slots"></div>
+            <div class="form-grid event-form-grid">
+              <label data-draft-field="participants">主参与人 <input id="mainPlayer" placeholder="从左侧选择球员"></label>
+              <label data-draft-field="occurredSeconds">事件时间 <input id="occurredClock" value="00:00" inputmode="numeric"></label>
+              <label>强度
+                <select id="intensity"><option value="1">1 安静</option><option value="2">2 轻微</option><option value="3" selected>3 明显</option><option value="4">4 强烈</option><option value="5">5 爆发</option></select>
+              </label>
+              <label>事实状态
+                <select id="confirmation"><option value="pending">候选，等待确认</option><option value="confirmed">确认事实</option></select>
+              </label>
+              <label>动作
+                <select id="action"><option value="">自动</option><option value="celebrate">celebrate</option><option value="tense">tense</option><option value="miss">miss</option><option value="complain">complain</option><option value="angry">angry</option><option value="analysis">analysis</option><option value="focus">focus</option><option value="surprise">surprise</option><option value="comfort">comfort</option></select>
+              </label>
+              <label>球球处理
+                <select id="mode"><option value="auto">自动反应</option><option value="quiet">只记事实</option><option value="manual">人工话术</option></select>
+              </label>
+              <label class="wide" data-draft-field="description">事件描述<textarea id="description" placeholder="描述场上发生了什么"></textarea></label>
+              <div class="wide score-correction-fields" id="scoreCorrectionFields" hidden>
+                <label>更正后主队比分<input id="scoreCorrectionHome" min="0" step="1" type="number"></label>
+                <label>更正后客队比分<input id="scoreCorrectionAway" min="0" step="1" type="number"></label>
+              </div>
+              <label class="wide" id="correctionReasonField" data-draft-field="correctionReason" hidden>更正或采用原因<textarea id="correctionReason" placeholder="说明为什么修改原记录，便于后续审计"></textarea></label>
+              <label class="wide" id="proactiveField">球球主动话术<textarea id="proactive" placeholder="仅在选择人工话术时填写"></textarea></label>
             </div>
-            <div class="selection-line" id="awaySelected">客队当前球员：未选择</div>
-            <div class="chips" id="awayChips"></div>
-            <div class="event-grid" id="awayEvents"></div>
+
+            <details class="draft-tools">
+              <summary>模板与发送预览</summary>
+              <div class="type-row"><input id="templateSearch" placeholder="搜索当前行为模板"><button class="small-btn" id="hint" type="button">补一句提醒</button></div>
+              <div class="template-board"><div class="template-board-head"><span>可用模板</span><span id="templateCount">0 条</span></div><div class="templates" id="templates"></div></div>
+              <div class="context-preview"><div class="template-board-head"><span>发送预览</span><span class="fact-pill" id="contextScore">0-0</span></div><textarea id="contextPreview" readonly></textarea></div>
+            </details>
+
+            <div class="draft-submit-row">
+              <button class="ghost-btn" id="saveCandidate" type="button" data-busy-label="暂存中…">暂存为候选</button>
+              <button class="primary-btn" id="draftSubmit" type="submit" data-busy-label="发送中…"><span class="material-symbols-outlined">send</span>确认并发送给球球</button>
+            </div>
           </div>
-        </aside>
+        </form>
+
+        <section class="panel timeline live-timeline">
+          <div class="panel-head">
+            <div class="panel-title"><span class="material-symbols-outlined">history</span>事实时间线</div>
+            <span class="status" id="status">准备就绪</span>
+          </div>
+          <div class="timeline-list" id="timeline"></div>
+        </section>
       </section>
 
       <section class="setup-canvas view" data-view-panel="setup">
@@ -1283,6 +1373,7 @@
   </div>
   <div class="toast" id="toast"></div>
 
+<script src="/live2d-assets/operator-live-state.js"></script>
 <script>
 function loadOperatorToken() {
   const url = new URL(window.location.href);
@@ -1311,12 +1402,15 @@ const presets = [
   { key: '7', type: 'yellow_card', label: '黄牌', action: 'complain', intensity: 3, text: '裁判出示黄牌。' },
   { key: '8', type: 'red_card', label: '红牌', level: 'major', action: 'angry', intensity: 5, text: '裁判出示红牌，比赛形势发生重大变化。' },
   { key: '9', type: 'var_check', label: 'VAR', level: 'major', action: 'tense', intensity: 4, text: 'VAR 正在介入检查。' },
+  { key: 'U', type: 'var_result', label: 'VAR 结果', level: 'major', action: 'analysis', intensity: 4, text: 'VAR 已经给出最终结果。' },
+  { key: 'I', type: 'goal_cancelled', label: '进球取消', level: 'major', action: 'analysis', intensity: 5, text: 'VAR 判定越位，进球取消。' },
   { key: '0', type: 'penalty', label: '点球', level: 'major', action: 'tense', intensity: 5, text: '裁判判罚点球。' },
   { key: 'Q', type: 'substitution', label: '换人', action: 'analysis', intensity: 2, text: '场边准备换人调整。' },
   { key: 'W', type: 'tactical_shift', label: '战术变化', action: 'analysis', intensity: 3, text: '场上战术站位出现变化。' },
   { key: 'E', type: 'pressure', label: '持续压迫', action: 'focus', intensity: 4, text: '正在形成持续压迫。' },
   { key: 'R', type: 'injury', label: '伤停', action: 'comfort', intensity: 3, text: '场上有球员受伤，比赛暂时中断。' },
-  { key: 'T', type: 'operator_note', label: '备注', action: 'analysis', intensity: 2, text: '运营补充一条比赛背景。' }
+  { key: 'T', type: 'operator_note', label: '备注', action: 'analysis', intensity: 2, text: '运营补充一条比赛背景。' },
+  { key: 'Y', type: 'score_correction', label: '比分更正', action: 'analysis', intensity: 2, text: '人工核对后更正当前比分。' }
 ];
 
 const automationEventOptions = [
@@ -1344,7 +1438,8 @@ const templates = [
   ['substitution', '准备换人，明显是在调整节奏。'], ['substitution', '换上进攻球员，阵型可能要前压。'], ['substitution', '用防守球员换下前场球员，开始守比分。'],
   ['tactical_shift', '阵型从四后卫切到三中卫。'], ['tactical_shift', '边路压得更靠前，开始加强进攻。'], ['tactical_shift', '中场站位回收，先稳住防线。'],
   ['pressure', '连续把球压在对方半场。'], ['pressure', '这一段攻势很密集，防线压力很大。'], ['pressure', '连续获得角球和二点球机会。'],
-  ['injury', '队医进场，比赛暂时中断。'], ['match_end', '比赛结束。'], ['operator_note', '场上节奏变慢，双方都在重新组织。'], ['operator_note', '这一段更像是在试探，不急着冒险。']
+  ['injury', '队医进场，比赛暂时中断。'], ['match_end', '比赛结束。'], ['operator_note', '场上节奏变慢，双方都在重新组织。'], ['operator_note', '这一段更像是在试探，不急着冒险。'],
+  ['score_correction', '人工核对后更正当前比分。']
 ].map(([type, text]) => ({ type, text }));
 
 const roles = {
@@ -1370,11 +1465,18 @@ const roles = {
 
 let side = 'home';
 let focusedRole = '';
-let lastScore = { home: 0, away: 0 };
 let confirmedScore = { home: 0, away: 0 };
 let correctingId = '';
+let correctingFactStatus = '';
+let matchClock = { period: 'pre_match', elapsedSeconds: 0, running: false, anchorAt: null, version: 0 };
 let clockTimer = null;
-let clockRunning = false;
+let liveDraft = OperatorLiveState.createDraft({ matchId: 'test', teamId: 'home' });
+let voiceRecorder = null;
+let voiceChunks = [];
+let voiceDraftBeforeApply = null;
+let voiceConflicts = [];
+let voiceWarnings = [];
+let voiceCapture = null;
 let activeView = 'live';
 let traceItems = [];
 let traceFilter = 'all';
@@ -1541,17 +1643,31 @@ function activePlayer(sideName = side) {
   return sideName === 'away' ? value('awayActive') : value('homeActive');
 }
 function setSide(next) {
+  if (!['home', 'away'].includes(next)) return;
+  const changed = next !== side;
   side = next;
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'select_team', teamId: next });
+  if (changed) focusedRole = roleSet()[0]?.[0] || '';
   $('sideSelect').value = next;
-  $('mainPlayer').value = activePlayer(next) || value('mainPlayer');
+  $('homeSideButton')?.classList.toggle('active', next === 'home');
+  $('awaySideButton')?.classList.toggle('active', next === 'away');
+  if ($('homeChips')) $('homeChips').hidden = next !== 'home';
+  if ($('awayChips')) $('awayChips').hidden = next !== 'away';
   syncSelected();
-  updateContextPreview();
+  renderPlayers();
+  renderCurrentDraft();
 }
 function syncSelected() {
   $('homeTitle').textContent = `${team('home')}事实员`;
   $('awayTitle').textContent = `${team('away')}事实员`;
   $('homeSelected').textContent = `主队当前球员：${value('homeActive') || '未选择'}`;
   $('awaySelected').textContent = `客队当前球员：${value('awayActive') || '未选择'}`;
+  if ($('homeSideName')) $('homeSideName').textContent = team('home');
+  if ($('awaySideName')) $('awaySideName').textContent = team('away');
+  if ($('participantSelection')) {
+    const primary = liveDraft.primaryParticipant?.name;
+    $('participantSelection').textContent = primary ? `${team(liveDraft.teamId)} · ${primary}` : `${team(side)} · 尚未选择球员`;
+  }
   if ($('preHomeTeamBadge')) $('preHomeTeamBadge').textContent = value('preHomeTeam') || team('home');
   if ($('preAwayTeamBadge')) $('preAwayTeamBadge').textContent = value('preAwayTeam') || team('away');
 }
@@ -1603,24 +1719,43 @@ function renderRosterPreview(id, list, sideName) {
 }
 function setPlayer(nextSide, name, button) {
   if (nextSide === 'away') $('awayActive').value = name; else $('homeActive').value = name;
-  setSide(nextSide);
-  if (focusedRole) setSlot(focusedRole, name, nextSide);
-  $('mainPlayer').value = name;
-  document.querySelectorAll('.player-chip').forEach((chip) => chip.classList.remove('selected'));
-  if (button) button.classList.add('selected');
+  if (nextSide !== side) setSide(nextSide);
+  if (liveDraft.eventType && focusedRole) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'set_participant', role: focusedRole, name, teamId: nextSide, teamName: team(nextSide), resolved: true
+    });
+  } else {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'select_player', name, teamId: nextSide, teamName: team(nextSide)
+    });
+  }
+  $('mainPlayer').value = liveDraft.primaryParticipant?.name || name;
+  renderSlots();
+  renderPlayers();
+  renderCurrentDraft();
   toast(`已选择：${team(nextSide)} ${name}`);
 }
 function renderPlayers() {
-  renderPlayerGroup('homeChips', parsePlayers(value('homePlayers')), 'home');
-  renderPlayerGroup('awayChips', parsePlayers(value('awayPlayers')), 'away');
+  const query = ($('playerSearch')?.value || '').trim().toLowerCase();
+  const matches = (player) => !query || `${player.number} ${player.name} ${player.position}`.toLowerCase().includes(query);
+  renderPlayerGroup('homeChips', parsePlayers(value('homePlayers')).filter(matches), 'home');
+  renderPlayerGroup('awayChips', parsePlayers(value('awayPlayers')).filter(matches), 'away');
+  if ($('homeChips')) $('homeChips').hidden = side !== 'home';
+  if ($('awayChips')) $('awayChips').hidden = side !== 'away';
 }
 function renderPlayerGroup(id, list, listSide) {
   const host = $(id);
   host.innerHTML = '';
+  if (!list.length) {
+    host.innerHTML = '<div class="muted">没有匹配球员，请到赛前配置核对名单。</div>';
+    return;
+  }
   list.forEach((p) => {
     const btn = document.createElement('button');
     btn.type = 'button';
-    btn.className = 'player-chip';
+    const selected = liveDraft.participants.some((item) => item.name === p.name) || liveDraft.primaryParticipant?.name === p.name;
+    btn.className = `player-chip ${selected ? 'selected' : ''}`;
+    btn.dataset.playerName = p.name;
     btn.innerHTML = `${p.number ? `<span class="chip-num">${escapeHTML(p.number)}</span>` : ''}<span>${escapeHTML(p.name)}</span>${p.position ? `<span class="event-meta">${escapeHTML(p.position)}</span>` : ''}`;
     btn.onclick = () => setPlayer(listSide, p.name, btn);
     host.appendChild(btn);
@@ -1633,7 +1768,7 @@ function renderEvents(id, eventSide) {
     const btn = document.createElement('button');
     btn.type = 'button';
     btn.className = `event-btn ${preset.level || ''}`;
-    btn.dataset.busyLabel = '发布中…';
+    btn.dataset.busyLabel = '整理中…';
     btn.innerHTML = `<span class="event-label">${preset.key} ${preset.label}</span><span class="event-meta">${preset.action} / ${preset.intensity}</span>`;
     btn.onclick = () => {
       flash(btn);
@@ -1646,22 +1781,31 @@ function renderEventTypes() {
   $('eventType').innerHTML = presets.map((p) => `<option value="${p.type}">${p.label}</option>`).join('');
 }
 function roleSet() {
-  return roles[value('eventType')] || roles.operator_note;
+  return roles[liveDraft.eventType] || [];
 }
 function renderSlots() {
   const host = $('slots');
   host.innerHTML = '';
+  if (!liveDraft.eventType) return;
   roleSet().forEach(([role, label], index) => {
     const slot = document.createElement('div');
     slot.className = `slot ${(focusedRole === role || (!focusedRole && index === 0)) ? 'active' : ''}`;
+    if (liveDraft.inferredFields?.includes('participants')) slot.classList.add('voice-inferred');
     slot.dataset.role = role;
-    slot.innerHTML = `<span class="slot-label">${label}</span><input id="slot_${role}" data-role="${role}" placeholder="点球员 chip 或手写">`;
+    const participant = liveDraft.participants.find((item) => item.role === role);
+    slot.innerHTML = `<span class="slot-label">${label}</span><input id="slot_${role}" data-role="${role}" value="${escapeHTML(participant?.name || '')}" placeholder="点左侧球员或手写">`;
     slot.onclick = () => focusRole(role);
     host.appendChild(slot);
     const input = slot.querySelector('input');
     input.addEventListener('focus', () => focusRole(role));
     input.addEventListener('input', () => {
-      if (roleSet()[0]?.[0] === role) $('mainPlayer').value = input.value.trim();
+      const name = input.value.trim();
+      markDraftFieldReviewed('participants');
+      liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+        type: 'set_participant', role, name, teamId: side, teamName: team(side), resolved: !name || playerBelongsToTeam(name, side)
+      });
+      if (roleSet()[0]?.[0] === role) $('mainPlayer').value = name;
+      renderCurrentDraft({ preserveSlots: true });
     });
   });
   if (!focusedRole || !roleSet().some(([role]) => role === focusedRole)) focusRole(roleSet()[0]?.[0] || '');
@@ -1671,22 +1815,24 @@ function focusRole(role) {
   document.querySelectorAll('.slot').forEach((slot) => slot.classList.toggle('active', slot.dataset.role === role));
 }
 function setSlot(role, name, slotSide = side) {
-  const input = $(`slot_${role}`);
-  if (input) input.value = name;
-  if (roleSet()[0]?.[0] === role) $('mainPlayer').value = name;
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+    type: 'set_participant', role, name, teamId: slotSide, teamName: team(slotSide), resolved: playerBelongsToTeam(name, slotSide)
+  });
+  renderSlots();
+  renderPlayers();
+  renderCurrentDraft();
   setStatus(`已填入 ${roleLabel(role)}：${name}`, 'ok');
 }
 function roleLabel(role) {
-  const item = roleSet().find(([key]) => key === role);
-  return item ? item[1] : role;
+  return OperatorLiveState.roleLabel(liveDraft.eventType, role);
 }
 function participants() {
-  const selected = value('sideSelect') || side;
-  return roleSet().map(([role]) => {
-    const input = $(`slot_${role}`);
-    const name = input ? input.value.trim() : '';
-    return name ? { role, name, teamId: selected, teamName: team(selected) } : null;
-  }).filter(Boolean);
+  return liveDraft.participants.filter((item) => item.name).map((item) => ({ ...item }));
+}
+function playerBelongsToTeam(name, teamId) {
+  if (!name) return true;
+  const roster = parsePlayers(value(teamId === 'away' ? 'awayPlayers' : 'homePlayers'));
+  return roster.some((player) => player.name === name);
 }
 function periodLabel(period = value('period')) {
   return ({
@@ -1716,16 +1862,16 @@ function cleanDirectorDescription(text = value('description')) {
 function buildEventPackage(score = currentScore()) {
   const part = participants();
   const scoreText = `${score.home ?? 0}-${score.away ?? 0}`;
-  const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
+  const preset = presets.find((p) => p.type === liveDraft.eventType) || presets[0];
   return {
-    time: `${periodLabel()} ${value('clock') || '00:00'}`,
+    time: `${periodLabel(liveDraft.occurredPeriod)} ${OperatorLiveState.formatClock(liveDraft.occurredSeconds)}`,
     match: `${team('home')} vs ${team('away')}`,
     score: scoreText,
     side: sideLabel(),
-    event: eventLabel(value('eventType')),
+    event: eventLabel(liveDraft.eventType),
     action: value('action') || preset.action || 'auto',
     intensity: value('intensity') || String(preset.intensity || 3),
-    mainPlayer: value('mainPlayer') || activePlayer(value('sideSelect') || side) || '未选择',
+    mainPlayer: liveDraft.primaryParticipant?.name || value('mainPlayer') || '未选择',
     participants: part,
     participantText: participantLine(part),
     description: cleanDirectorDescription() || preset.text || '未填写',
@@ -1763,6 +1909,112 @@ function updateContextPreview() {
   $('contextPreview').value = buildContextPreview();
   $('contextScore').textContent = `${value('homeScore') || 0}-${value('awayScore') || 0}`;
 }
+function currentClockElapsed() {
+  let elapsed = Number(matchClock.elapsedSeconds || 0);
+  if (matchClock.running && matchClock.anchorAt) {
+    const anchor = new Date(matchClock.anchorAt).getTime();
+    if (Number.isFinite(anchor)) elapsed += Math.max(0, Math.floor((Date.now() - anchor) / 1000));
+  }
+  return Math.max(0, elapsed);
+}
+function parseClockValue(raw) {
+  const match = String(raw || '').trim().match(/^(\d{1,3})(?::(\d{1,2}))?$/);
+  if (!match) return null;
+  const seconds = Number(match[2] || 0);
+  if (seconds > 59) return null;
+  return Number(match[1]) * 60 + seconds;
+}
+function cloneLiveDraft(draft = liveDraft) {
+  return OperatorLiveState.createDraft({
+    ...draft,
+    participants: (draft.participants || []).map((item) => ({ ...item })),
+    primaryParticipant: draft.primaryParticipant ? { ...draft.primaryParticipant } : null,
+    inferredFields: [...(draft.inferredFields || [])],
+    fieldConfidence: { ...(draft.fieldConfidence || {}) }
+  });
+}
+function renderQuickCombinations() {
+  const host = $('quickCombinations');
+  if (!host) return;
+  const primary = liveDraft.primaryParticipant?.name;
+  if (!primary) {
+    host.innerHTML = '<span class="muted">选中球员后显示快捷组合</span>';
+    return;
+  }
+  const quickTypes = ['goal', 'shot', 'foul'];
+  host.innerHTML = quickTypes.map((type) => {
+    const preset = presets.find((item) => item.type === type);
+    return `<button class="small-btn" type="button" data-quick-event="${type}">${escapeHTML(primary)} · ${escapeHTML(preset.label)}</button>`;
+  }).join('');
+  host.querySelectorAll('[data-quick-event]').forEach((button) => {
+    button.onclick = () => publishPreset(presets.find((item) => item.type === button.dataset.quickEvent), side, button);
+  });
+}
+function renderCurrentDraft(options = {}) {
+  liveDraft.matchId = currentMatchId();
+  if (!options.preserveForm) {
+    if (liveDraft.eventType) $('eventType').value = liveDraft.eventType;
+    $('sideSelect').value = liveDraft.teamId || side;
+    $('mainPlayer').value = liveDraft.primaryParticipant?.name || '';
+    $('occurredClock').value = OperatorLiveState.formatClock(liveDraft.occurredSeconds);
+    $('intensity').value = String(liveDraft.intensity || 3);
+    $('confirmation').value = liveDraft.factStatus === 'provisional' ? 'pending' : 'confirmed';
+    $('action').value = liveDraft.recommendedAction || '';
+    $('description').value = liveDraft.description || '';
+    $('correctionReason').value = liveDraft.correctionReason || '';
+    $('scoreCorrectionHome').value = String(liveDraft.scoreOverride?.home ?? confirmedScore.home);
+    $('scoreCorrectionAway').value = String(liveDraft.scoreOverride?.away ?? confirmedScore.away);
+    $('mode').value = liveDraft.deliveryMode || 'auto';
+    $('proactive').value = liveDraft.proactiveText || '';
+  }
+  $('proactiveField').hidden = value('mode') !== 'manual';
+  $('scoreCorrectionFields').hidden = liveDraft.eventType !== 'score_correction';
+  $('correctionReasonField').hidden = !liveDraft.revisionOf && liveDraft.eventType !== 'score_correction';
+  const definition = OperatorLiveState.eventDefinitions[liveDraft.eventType];
+  const validation = OperatorLiveState.validateDraft(liveDraft);
+  const unresolvedVoiceReview = voiceConflicts.length > 0 || voiceWarnings.length > 0;
+  const teamName = liveDraft.eventType === 'score_correction' ? '全场' : liveDraft.teamId ? team(liveDraft.teamId) : '未选球队';
+  const participantText = liveDraft.participants.length
+    ? liveDraft.participants.map((item) => `${roleLabel(item.role)}：${item.name}${item.resolved === false ? '（待确认）' : ''}`).join(' · ')
+    : '未选参与者';
+  const expectedScore = { ...confirmedScore };
+  if (definition?.scoreDelta && liveDraft.teamId) expectedScore[liveDraft.teamId] += definition.scoreDelta;
+  if (liveDraft.eventType === 'score_correction' && liveDraft.scoreOverride) {
+    expectedScore.home = Number(liveDraft.scoreOverride.home);
+    expectedScore.away = Number(liveDraft.scoreOverride.away);
+  }
+  $('draftSummary').innerHTML = liveDraft.eventType ? `
+    <div class="draft-summary-line"><strong>${escapeHTML(teamName)} · ${escapeHTML(definition?.label || liveDraft.eventType)}</strong><span class="time-badge">${escapeHTML(periodLabel(liveDraft.occurredPeriod))} ${OperatorLiveState.formatClock(liveDraft.occurredSeconds)}</span></div>
+    <div class="muted">${escapeHTML(participantText)}</div>
+    <div class="muted">公开比分 ${confirmedScore.home}-${confirmedScore.away}${definition?.scoreDelta || liveDraft.eventType === 'score_correction' ? ` · 确认后 ${expectedScore.home}-${expectedScore.away}` : ''}</div>
+  ` : '还没有事件草稿。先选球队和球员，再选择行为。';
+  $('draftMeta').textContent = liveDraft.eventType
+    ? `${liveDraft.source === 'operator_voice' ? '语音草稿' : '人工草稿'} · 捕获主时钟版本 ${liveDraft.capturedClockVersion}`
+    : '等待选择球队、球员和行为';
+  $('draftErrors').textContent = [...validation.errors, ...(unresolvedVoiceReview ? ['请先完成语音草稿核对'] : [])].join('；');
+  $('saveCandidate').disabled = !validation.ready || unresolvedVoiceReview;
+  $('draftSubmit').disabled = !validation.ready || unresolvedVoiceReview;
+  renderVoiceInferredFields();
+  syncSelected();
+  renderQuickCombinations();
+  renderBehaviorGroups();
+  updateContextPreview();
+}
+function markDraftFieldReviewed(field) {
+  liveDraft.inferredFields = (liveDraft.inferredFields || []).filter((item) => item !== field);
+}
+function renderVoiceInferredFields() {
+  document.querySelectorAll('.voice-inferred').forEach((element) => element.classList.remove('voice-inferred'));
+  const inferred = new Set(liveDraft.inferredFields || []);
+  if (inferred.has('teamId') || inferred.has('participants')) document.querySelector('.participant-panel')?.classList.add('voice-inferred');
+  if (inferred.has('eventType')) document.querySelector('.behavior-panel')?.classList.add('voice-inferred');
+  document.querySelectorAll('[data-draft-field]').forEach((element) => {
+    if (inferred.has(element.dataset.draftField)) element.classList.add('voice-inferred');
+  });
+  document.querySelectorAll('.slot').forEach((element) => {
+    if (inferred.has('participants')) element.classList.add('voice-inferred');
+  });
+}
 function renderTemplates() {
   const host = $('templates');
   const query = value('templateSearch').toLowerCase();
@@ -1783,9 +2035,10 @@ function renderTemplates() {
       btn.textContent = item.text;
       btn.onclick = () => {
         $('description').value = item.text;
+        liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: item.text });
         flash(btn);
         toast('已套用模板');
-        updateContextPreview();
+        renderCurrentDraft({ preserveForm: true });
       };
       host.appendChild(btn);
     });
@@ -1794,42 +2047,22 @@ function renderTemplates() {
 function syncEventTypeUI() {
   focusedRole = '';
   const preset = presets.find((p) => p.type === value('eventType'));
-  if (preset && !value('action')) $('action').value = preset.action;
-  if (preset) $('confirmation').value = defaultEventConfirmed(preset.type) ? 'confirmed' : 'pending';
+  if (preset && liveDraft.eventType !== preset.type) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'select_event',
+      eventType: preset.type,
+      period: matchClock.period,
+      elapsedSeconds: currentClockElapsed(),
+      clockVersion: Number(matchClock.version || 0)
+    });
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: preset.text });
+  }
   renderTemplates();
   renderSlots();
-  updateContextPreview();
+  renderCurrentDraft();
 }
 function currentScore() {
   return { home: Number(value('homeScore') || 0), away: Number(value('awayScore') || 0) };
-}
-function defaultEventConfirmed(eventType) {
-  return eventType !== 'goal' && eventType !== 'var_check';
-}
-function selectedEventConfirmed(eventType) {
-  return eventType !== 'var_check' && value('confirmation') === 'confirmed';
-}
-function applyScore(preset, eventSide) {
-  lastScore = currentScore();
-  if (!preset.score || !eventSide) return lastScore;
-  const next = { ...lastScore };
-  next[eventSide] += preset.score;
-  $('homeScore').value = next.home;
-  $('awayScore').value = next.away;
-  return next;
-}
-function scoreForNewEvent(preset, eventSide) {
-  const shown = currentScore();
-  if (!preset.score || !eventSide) return shown;
-  const expected = { ...confirmedScore };
-  expected[eventSide] += preset.score;
-  const matchesConfirmed = shown.home === confirmedScore.home && shown.away === confirmedScore.away;
-  const matchesExpected = shown.home === expected.home && shown.away === expected.away;
-  if (!matchesConfirmed && !matchesExpected) return shown;
-  lastScore = { ...confirmedScore };
-  $('homeScore').value = expected.home;
-  $('awayScore').value = expected.away;
-  return expected;
 }
 function applyPublishedSnapshot(result) {
   const score = result?.snapshot?.score;
@@ -1851,77 +2084,6 @@ async function restoreConfirmedScore() {
   $('awayScore').value = confirmedScore.away;
   updateContextPreview();
 }
-function buildDescription(preset, eventSide) {
-  const main = participants()[0]?.name || value('mainPlayer') || activePlayer(eventSide);
-  const text = cleanDirectorDescription() || preset.text;
-  if (!main || text.startsWith(main) || text.includes(`${main}：`) || text.includes(`${main}:`)) return text;
-  return `${main}：${text}`;
-}
-function buildProactiveText(preset, eventSide) {
-  const mode = value('mode');
-  if (mode === 'quiet') return '__quiet__';
-  if (mode === 'manual') return value('proactive');
-  return '';
-}
-function payloadFromPreset(preset, score, eventSide) {
-  const list = participants();
-  const main = list[0]?.name || value('mainPlayer') || activePlayer(eventSide);
-  const eventPackage = buildEventPackage(score);
-  return {
-    source: 'operator',
-    providerName: 'director-console',
-    eventType: preset.type,
-    period: value('period'),
-    clock: value('clock'),
-    teamId: eventSide,
-    teamName: team(eventSide),
-    playerName: main,
-    participants: list,
-    score,
-    intensity: Number(value('intensity') || preset.intensity || 3),
-    confirmed: selectedEventConfirmed(preset.type),
-    factStatus: selectedEventConfirmed(preset.type) ? 'confirmed' : 'provisional',
-    description: buildDescription(preset, eventSide),
-    recommendedAction: value('action') || preset.action,
-    tags: [
-      `time=${eventPackage.time}`,
-      `score=${eventPackage.score}`,
-      `event=${eventPackage.event}`,
-      `participants=${list.map((p) => `${p.role}:${p.name}`).join('|') || 'none'}`
-    ],
-    proactiveText: buildProactiveText(preset, eventSide)
-  };
-}
-function quickPayloadFromPreset(preset, score, eventSide) {
-  const main = activePlayer(eventSide);
-  const primaryRole = (roles[preset.type] || roles.operator_note)[0]?.[0] || 'subject';
-  const list = main ? [{ role: primaryRole, name: main, teamId: eventSide, teamName: team(eventSide) }] : [];
-  const description = main ? `${main}：${preset.text}` : preset.text;
-  return {
-    source: 'operator',
-    providerName: 'director-console',
-    eventType: preset.type,
-    period: value('period'),
-    clock: value('clock'),
-    teamId: eventSide,
-    teamName: team(eventSide),
-    playerName: main,
-    participants: list,
-    score,
-    intensity: Number(preset.intensity || 3),
-    confirmed: defaultEventConfirmed(preset.type),
-    factStatus: defaultEventConfirmed(preset.type) ? 'confirmed' : 'provisional',
-    description,
-    recommendedAction: preset.action,
-    tags: [
-      `time=${periodLabel()} ${value('clock') || '00:00'}`,
-      `score=${score.home ?? 0}-${score.away ?? 0}`,
-      `event=${eventLabel(preset.type)}`,
-      `participants=${list.map((p) => `${p.role}:${p.name}`).join('|') || 'none'}`
-    ],
-    proactiveText: value('defaultPublishMode') === 'quiet' ? '__quiet__' : ''
-  };
-}
 async function saveConfig() {
   syncSelected();
   renderPlayers();
@@ -1938,6 +2100,33 @@ async function saveConfig() {
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     inflightKey: `config:${currentMatchId()}:${JSON.stringify(body)}`
+  });
+}
+function renderBehaviorGroups() {
+  const host = $('behaviorGroups');
+  if (!host) return;
+  const grouped = new Map();
+  presets.forEach((preset) => {
+    const group = OperatorLiveState.eventDefinitions[preset.type]?.group || '其他';
+    if (!grouped.has(group)) grouped.set(group, []);
+    grouped.get(group).push(preset);
+  });
+  host.innerHTML = '';
+  grouped.forEach((items, group) => {
+    const section = document.createElement('section');
+    section.className = 'behavior-group';
+    section.innerHTML = `<div class="behavior-group-title">${escapeHTML(group)}</div><div class="behavior-group-grid"></div>`;
+    const grid = section.querySelector('.behavior-group-grid');
+    items.forEach((preset) => {
+      const button = document.createElement('button');
+      button.type = 'button';
+      button.className = `behavior-button ${liveDraft.eventType === preset.type ? 'active' : ''}`;
+      button.dataset.eventType = preset.type;
+      button.innerHTML = `<b>${escapeHTML(preset.label)}</b><span class="behavior-key">${escapeHTML(preset.key)}</span>`;
+      button.onclick = () => publishPreset(preset, side, button);
+      grid.appendChild(button);
+    });
+    host.appendChild(section);
   });
 }
 async function savePrematchConfig() {
@@ -2265,23 +2454,30 @@ async function correctEvent(eventId, event) {
   });
 }
 async function publishPreset(preset, eventSide = side, triggerElement) {
-  return runOperatorAction(`preset:${currentMatchId()}:${preset.type}:${eventSide}`, async () => {
-    try {
-      setSide(eventSide);
-      if (value('period') === 'pre_match' && preset.type !== 'kickoff' && preset.type !== 'operator_note') {
-        $('period').value = 'first_half';
-      }
-      await saveConfig();
-      const score = applyScore(preset, eventSide);
-      const result = await publishEvent(quickPayloadFromPreset(preset, score, eventSide));
-      applyPublishedSnapshot(result);
-      toast(`已发布：${team(eventSide)} ${preset.label}`, 'ok');
-      updateContextPreview();
-      await loadTimeline();
-    } catch (err) {
-      toast(err.message || '发布失败', 'bad');
-    }
-  }, triggerElement);
+  if (!preset) return;
+  markDraftFieldReviewed('eventType');
+  markDraftFieldReviewed('description');
+  if (['home', 'away'].includes(eventSide) && eventSide !== side) setSide(eventSide);
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+    type: 'select_event',
+    eventType: preset.type,
+    period: matchClock.period,
+    elapsedSeconds: currentClockElapsed(),
+    clockVersion: Number(matchClock.version || 0)
+  });
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: preset.text });
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'source', value: 'operator' });
+  if (preset.type === 'score_correction') {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'scoreBefore', value: { ...confirmedScore } });
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'scoreOverride', value: { ...confirmedScore } });
+  }
+  focusedRole = roleSet()[0]?.[0] || '';
+  renderSlots();
+  renderTemplates();
+  renderPlayers();
+  renderCurrentDraft();
+  flash(triggerElement);
+  toast(`已加入草稿：${team(side)} ${preset.label}`, 'ok');
 }
 async function loadConfig() {
   const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
@@ -2302,13 +2498,12 @@ async function loadConfig() {
 	};
     $('homeScore').value = data.snapshot.score?.home ?? value('homeScore') ?? 0;
     $('awayScore').value = data.snapshot.score?.away ?? value('awayScore') ?? 0;
-    $('period').value = data.snapshot.period || value('period') || 'first_half';
-    $('clock').value = data.snapshot.clock || value('clock') || '00:00';
   }
+  liveDraft.matchId = currentMatchId();
   syncSelected();
   renderPlayers();
   syncPreFromMain();
-  updateContextPreview();
+  renderCurrentDraft();
 }
 function factActionButtons(event) {
   const status = event.factStatus || (event.confirmed ? 'confirmed' : 'provisional');
@@ -2360,12 +2555,13 @@ async function loadTimeline() {
         </div>
         <div style="display:flex;gap:8px;align-items:center">
           <span class="score-badge">${event.score?.home ?? 0}-${event.score?.away ?? 0}</span>
-          <button class="small-btn" type="button">拉回更正</button>
+          <button class="small-btn" type="button">${['provisional', 'conflict'].includes(event.factStatus) ? '采用到草稿' : '拉回更正'}</button>
         </div>
       </div>
       <div>${escapeHTML(event.description || '')}</div>
       ${roleText ? `<div class="muted">参与人：${escapeHTML(roleText)}</div>` : ''}
       ${event.proactiveText ? `<div class="voice-line">球球主动说：${escapeHTML(event.proactiveText)}</div>` : ''}
+      ${event.evidence?.correctionReason ? `<div class="muted">更正原因：${escapeHTML(event.evidence.correctionReason)}</div>` : ''}
       <div class="muted mono">${event.confirmed ? '事实已确认' : '等待事实确认'} / ${escapeHTML(event.status || 'created')} / ${escapeHTML(event.recommendedAction || 'auto')} / ${escapeHTML(event.id || '')}</div>
     `;
     const correctionButton = card.querySelector('button');
@@ -2575,52 +2771,346 @@ function prettyJSON(value) {
 }
 function editCorrection(event) {
   correctingId = event.id || '';
-  $('eventType').value = event.eventType || 'operator_note';
-  renderTemplates();
+  correctingFactStatus = event.factStatus || '';
+  const eventSide = ['home', 'away'].includes(event.teamId) ? event.teamId : side;
+  const eventType = OperatorLiveState.eventDefinitions[event.eventType] ? event.eventType : 'operator_note';
+  const definition = OperatorLiveState.eventDefinitions[eventType];
+  const eventParticipants = (event.participants || []).map((item) => ({
+    ...item,
+    resolved: playerBelongsToTeam(item.name, item.teamId || eventSide)
+  }));
+  const primaryRole = definition?.roles?.[0]?.[0];
+  const eventIsQuiet = event.proactiveText === '__quiet__' || (event.tags || []).includes('proactive=quiet');
+  const primary = eventParticipants.find((item) => item.role === primaryRole) || (event.playerName ? {
+    role: primaryRole || '', name: event.playerName, teamId: eventSide, teamName: team(eventSide), resolved: playerBelongsToTeam(event.playerName, eventSide)
+  } : null);
+  liveDraft = OperatorLiveState.createDraft({
+    matchId: currentMatchId(),
+    source: 'operator',
+    teamId: eventSide,
+    eventType,
+    occurredPeriod: event.period || matchClock.period,
+    occurredSeconds: parseClockValue(event.clock) ?? currentClockElapsed(),
+    capturedClockVersion: Number(matchClock.version || 0),
+    primaryParticipant: primary,
+    participants: eventParticipants,
+    description: event.description || '',
+    scoreBefore: eventType === 'score_correction' ? { ...confirmedScore } : null,
+    scoreOverride: eventType === 'score_correction' ? { home: Number(event.score?.home || 0), away: Number(event.score?.away || 0) } : null,
+    intensity: Number(event.intensity || definition?.intensity || 3),
+    recommendedAction: event.recommendedAction || definition?.action || '',
+    factStatus: event.factStatus === 'provisional' ? 'provisional' : 'confirmed',
+    deliveryMode: eventIsQuiet ? 'quiet' : event.proactiveText ? 'manual' : 'auto',
+    proactiveText: eventIsQuiet ? '' : event.proactiveText || '',
+    revisionOf: event.id || '',
+    correctionReason: ''
+  });
+  side = eventSide;
+  focusedRole = primaryRole || '';
+  if (eventSide === 'home') $('homeActive').value = primary?.name || '';
+  if (eventSide === 'away') $('awayActive').value = primary?.name || '';
+  setSide(eventSide);
   renderSlots();
-  $('period').value = event.period || 'first_half';
-  $('clock').value = event.clock || value('clock');
-  $('homeScore').value = event.score?.home ?? value('homeScore');
-  $('awayScore').value = event.score?.away ?? value('awayScore');
-  $('sideSelect').value = event.teamId || '';
-  $('mainPlayer').value = event.playerName || '';
-  if (event.teamId === 'home') $('homeActive').value = event.playerName || '';
-  if (event.teamId === 'away') $('awayActive').value = event.playerName || '';
-  (event.participants || []).forEach((p) => setSlot(p.role, p.name, p.teamId || event.teamId || ''));
-  $('intensity').value = String(event.intensity || 3);
-  $('confirmation').value = event.confirmed ? 'confirmed' : 'pending';
-  $('action').value = event.recommendedAction || '';
-  $('description').value = event.description || '';
-  $('proactive').value = event.proactiveText || '';
-  $('mode').value = event.proactiveText ? 'manual' : 'auto';
-  setSide(event.teamId || '');
-  updateContextPreview();
+  renderTemplates();
+  renderCurrentDraft();
   toast(`正在更正：${event.id}`, 'ok');
 }
-function clearDraft() {
+function clearDraft(silent = false) {
   correctingId = '';
-  $('mainPlayer').value = '';
-  $('description').value = '';
-  $('proactive').value = '';
-  $('mode').value = $('defaultPublishMode')?.value || 'auto';
-  $('confirmation').value = defaultEventConfirmed(value('eventType')) ? 'confirmed' : 'pending';
-  document.querySelectorAll('#slots input').forEach((input) => { input.value = ''; });
-  updateContextPreview();
-  toast('草稿已清空', 'ok');
+  correctingFactStatus = '';
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+    type: 'clear',
+    period: matchClock.period,
+    elapsedSeconds: currentClockElapsed(),
+    clockVersion: Number(matchClock.version || 0)
+  });
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'select_team', teamId: side });
+  liveDraft.deliveryMode = $('defaultPublishMode')?.value || 'auto';
+  focusedRole = '';
+  voiceConflicts = [];
+  voiceWarnings = [];
+  $('voiceDraft').hidden = true;
+  renderSlots();
+  renderPlayers();
+  renderCurrentDraft();
+  if (!silent) toast('草稿已清空', 'ok');
 }
 function parseClock() {
-  const match = value('clock').match(/^(\d{1,3})(?::(\d{1,2}))?$/);
-  return match ? Number(match[1]) * 60 + Number(match[2] || 0) : 0;
+  return currentClockElapsed();
 }
 function setClock(seconds) {
-  const safe = Math.max(0, seconds);
-  $('clock').value = `${String(Math.floor(safe / 60)).padStart(2, '0')}:${String(safe % 60).padStart(2, '0')}`;
+  $('clock').value = OperatorLiveState.formatClock(Math.max(0, seconds));
+}
+function applyClockState(clock, snapshot) {
+  if (clock) {
+    matchClock = { ...matchClock, ...clock };
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'sync_clock',
+      period: matchClock.period,
+      elapsedSeconds: currentClockElapsed(),
+      clockVersion: Number(matchClock.version || 0)
+    });
+  }
+  if (snapshot?.score) {
+    confirmedScore = { home: Number(snapshot.score.home || 0), away: Number(snapshot.score.away || 0) };
+    $('homeScore').value = confirmedScore.home;
+    $('awayScore').value = confirmedScore.away;
+  }
+  renderMatchClock();
+  renderCurrentDraft({ preserveForm: true });
+}
+function renderMatchClock() {
+  const elapsedSeconds = currentClockElapsed();
+  setClock(elapsedSeconds);
+  if (!OperatorLiveState.hasDraftContent(liveDraft)) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'sync_clock',
+      period: matchClock.period,
+      elapsedSeconds,
+      clockVersion: Number(matchClock.version || 0)
+    });
+    $('occurredClock').value = OperatorLiveState.formatClock(liveDraft.occurredSeconds);
+  }
+  $('period').value = matchClock.period || 'pre_match';
+  $('clockVersion').textContent = `版本 ${Number(matchClock.version || 0)}`;
+  $('clockStart').innerHTML = `<span class="material-symbols-outlined">${matchClock.running ? 'pause' : 'play_arrow'}</span>`;
+  $('clockStart').title = matchClock.running ? '暂停比赛时钟' : '开始比赛时钟';
+}
+async function loadMatchClock() {
+  const data = await requestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/clock`);
+  applyClockState(data.clock, data.snapshot);
+  return data.clock;
+}
+async function patchMatchClock(action, fields = {}, triggerElement) {
+  return runOperatorAction(`clock:${currentMatchId()}`, async () => {
+    const command = { action, expectedVersion: Number(matchClock.version || 0), ...fields };
+    try {
+      const data = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/clock`, {
+        method: 'PATCH',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify(command),
+        inflightKey: `clock:${currentMatchId()}:${JSON.stringify(command)}`
+      });
+      applyClockState(data.clock, data.snapshot);
+      return data.clock;
+    } catch (error) {
+      if (String(error.message || '').includes('冲突')) {
+        await loadMatchClock();
+        toast('比赛时间已被另一端校准，已载入最新时间', 'bad');
+        return null;
+      }
+      throw error;
+    }
+  }, triggerElement);
 }
 function toggleClock() {
-  clockRunning = !clockRunning;
-  $('clockStart').innerHTML = `<span class="material-symbols-outlined">${clockRunning ? 'pause' : 'play_arrow'}</span>`;
-  clearInterval(clockTimer);
-  if (clockRunning) clockTimer = setInterval(() => setClock(parseClock() + 1), 1000);
+  return patchMatchClock(matchClock.running ? 'pause' : 'start', {}, $('clockStart'))
+    .catch((error) => toast(error.message || '比赛时钟更新失败', 'bad'));
+}
+function captureDraftFromForm(factStatus) {
+  const fields = {
+    occurredSeconds: parseClockValue(value('occurredClock')),
+    intensity: Number(value('intensity') || 3),
+    factStatus,
+    recommendedAction: value('action'),
+    description: cleanDirectorDescription(),
+    correctionReason: value('correctionReason'),
+    deliveryMode: value('mode'),
+    proactiveText: value('proactive')
+  };
+  if (liveDraft.eventType === 'score_correction') {
+    fields.scoreOverride = {
+      home: Number(value('scoreCorrectionHome')),
+      away: Number(value('scoreCorrectionAway'))
+    };
+  }
+  Object.entries(fields).forEach(([field, fieldValue]) => {
+    if (fieldValue !== null) liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field, value: fieldValue });
+  });
+  const primaryRole = roleSet()[0]?.[0];
+  const main = value('mainPlayer');
+  if (primaryRole && main && !liveDraft.participants.some((item) => item.role === primaryRole && item.name === main)) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'set_participant', role: primaryRole, name: main, teamId: side, teamName: team(side), resolved: playerBelongsToTeam(main, side)
+    });
+  }
+  return liveDraft;
+}
+function updateScoreCorrectionDraft() {
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+    type: 'set_field',
+    field: 'scoreOverride',
+    value: { home: Number(value('scoreCorrectionHome')), away: Number(value('scoreCorrectionAway')) }
+  });
+  renderCurrentDraft({ preserveForm: true });
+}
+async function publishCurrentDraft(factStatus, triggerElement) {
+  captureDraftFromForm(correctingFactStatus === 'conflict' ? 'conflict' : factStatus);
+  const validation = OperatorLiveState.validateDraft(liveDraft);
+  if (!validation.ready) {
+    renderCurrentDraft({ preserveForm: true });
+    toast(validation.errors[0] || '事件草稿还不完整', 'bad');
+    return;
+  }
+  return runOperatorAction(`draft:${currentMatchId()}:${factStatus}`, async () => {
+    const payload = OperatorLiveState.toEventPayload(liveDraft, {
+      score: confirmedScore,
+      homeTeam: team('home'),
+      awayTeam: team('away')
+    });
+    try {
+      const publishesRelatedFact = ['var_result', 'goal_cancelled'].includes(liveDraft.eventType);
+      let result = correctingId && !publishesRelatedFact ? await correctEvent(correctingId, payload) : await publishEvent(payload);
+      if (correctingFactStatus === 'conflict' && result.event?.factId) {
+        result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/${encodeURIComponent(result.event.factId)}/reconcile`, {
+          method: 'POST',
+          inflightKey: `fact:${currentMatchId()}:${result.event.factId}:reconcile`
+        });
+      }
+      applyPublishedSnapshot(result);
+      const label = OperatorLiveState.eventDefinitions[liveDraft.eventType]?.label || liveDraft.eventType;
+      toast(factStatus === 'provisional' ? `已暂存候选：${label}` : `已确认并发送：${label}`, 'ok');
+      correctingId = '';
+      correctingFactStatus = '';
+      clearDraft(true);
+      await loadTimeline();
+    } catch (error) {
+      await restoreConfirmedScore();
+      renderCurrentDraft({ preserveForm: true });
+      toast(error.message || '发布失败，草稿已保留', 'bad');
+    }
+  }, triggerElement);
+}
+function blobToDataURL(blob) {
+  return new Promise((resolve, reject) => {
+    const reader = new FileReader();
+    reader.onerror = () => reject(reader.error || new Error('读取录音失败'));
+    reader.onload = () => resolve(String(reader.result || ''));
+    reader.readAsDataURL(blob);
+  });
+}
+async function stopVoiceRecording() {
+  if (voiceRecorder?.state === 'recording') voiceRecorder.stop();
+}
+async function startVoiceRecording() {
+  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('当前浏览器不支持麦克风录音');
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  const preferredType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((type) => MediaRecorder.isTypeSupported(type));
+  voiceDraftBeforeApply = cloneLiveDraft();
+  voiceCapture = {
+    occurredPeriod: matchClock.period,
+    occurredSeconds: currentClockElapsed(),
+    capturedClockVersion: Number(matchClock.version || 0)
+  };
+  voiceChunks = [];
+  voiceRecorder = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
+  voiceRecorder.ondataavailable = (event) => { if (event.data.size) voiceChunks.push(event.data); };
+  voiceRecorder.onstop = async () => {
+    stream.getTracks().forEach((track) => track.stop());
+    $('voiceInput').classList.remove('recording');
+    $('voiceInput').innerHTML = '<span class="material-symbols-outlined">progress_activity</span><span>正在整理</span>';
+    $('voiceInput').disabled = true;
+    $('voiceStatus').textContent = '正在识别并整理成事件草稿';
+    try {
+      const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || 'audio/webm' });
+      const audioBase64 = await blobToDataURL(blob);
+      const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/drafts/voice`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ audioBase64, audioMime: blob.type, ...voiceCapture }),
+        inflightKey: `voice-draft:${currentMatchId()}:${Date.now()}`
+      });
+      const incoming = { ...(result.draft || {}), ...(voiceCapture || {}) };
+      const applied = OperatorLiveState.applyVoiceDraft(liveDraft, incoming);
+      liveDraft = applied.draft;
+      voiceConflicts = applied.conflicts || [];
+      voiceWarnings = result.warnings || [];
+      $('voiceTranscript').textContent = result.transcript || incoming.transcript || '未识别到文字';
+      $('voiceStatus').textContent = result.ready && !voiceConflicts.length ? '语音内容已填入草稿，请核对后发布' : '已生成草稿，仍有内容需要人工核对';
+      $('undoVoice').hidden = false;
+      renderVoiceConflicts();
+      focusedRole = roleSet()[0]?.[0] || '';
+      renderSlots();
+      renderPlayers();
+      renderCurrentDraft();
+    } catch (error) {
+      $('voiceStatus').textContent = `语音整理失败：${error.message || '未知错误'}`;
+      $('voiceConflicts').textContent = '原草稿没有改动，可以重试或继续手工填写。';
+      toast(error.message || '语音整理失败', 'bad');
+    } finally {
+      $('voiceInput').disabled = false;
+      $('voiceInput').innerHTML = '<span class="material-symbols-outlined">mic</span><span>语音录入</span>';
+      voiceRecorder = null;
+      voiceChunks = [];
+    }
+  };
+  voiceRecorder.start();
+  $('voiceDraft').hidden = false;
+  $('voiceStatus').textContent = `正在录音 · ${periodLabel(voiceCapture.occurredPeriod)} ${OperatorLiveState.formatClock(voiceCapture.occurredSeconds)}`;
+  $('voiceTranscript').textContent = '说完后再次点击停止。';
+  $('voiceConflicts').textContent = '';
+  $('voiceInput').classList.add('recording');
+  $('voiceInput').innerHTML = '<span class="material-symbols-outlined">stop_circle</span><span>停止录音</span>';
+}
+function renderVoiceConflicts() {
+  const warnings = voiceWarnings.map((message, index) => `
+    <div class="voice-conflict-row warning">
+      <span>${escapeHTML(message)}</span>
+      <button class="small-btn" type="button" data-warning-index="${index}">我已核对</button>
+    </div>
+  `).join('');
+  const conflicts = voiceConflicts.map((item, index) => `
+    <div class="voice-conflict-row">
+      <span>${escapeHTML(voiceFieldLabel(item.field))}：当前“${escapeHTML(item.current)}”，语音“${escapeHTML(item.incoming)}”</span>
+      <button class="small-btn" type="button" data-voice-choice="keep" data-conflict-index="${index}">保留原值</button>
+      <button class="small-btn" type="button" data-voice-choice="apply" data-conflict-index="${index}">采用语音值</button>
+    </div>
+  `).join('');
+  $('voiceConflicts').innerHTML = warnings + conflicts;
+  $('voiceConflicts').querySelectorAll('[data-voice-choice]').forEach((button) => {
+    button.onclick = () => resolveVoiceConflict(Number(button.dataset.conflictIndex), button.dataset.voiceChoice === 'apply');
+  });
+  $('voiceConflicts').querySelectorAll('[data-warning-index]').forEach((button) => {
+    button.onclick = () => {
+      voiceWarnings.splice(Number(button.dataset.warningIndex), 1);
+      $('voiceStatus').textContent = voiceWarnings.length || voiceConflicts.length ? '还有语音内容需要确认' : '语音草稿已核对，可以继续编辑或发布';
+      renderVoiceConflicts();
+      renderCurrentDraft({ preserveForm: true });
+    };
+  });
+}
+function voiceFieldLabel(field) {
+  if (field.startsWith('participants.')) return roleLabel(field.split('.')[1]);
+  return ({ teamId: '球队', eventType: '行为', occurredPeriod: '比赛阶段', occurredSeconds: '事件时间', capturedClockVersion: '时钟版本', description: '事件描述', transcript: '转写文本' })[field] || field;
+}
+function resolveVoiceConflict(index, applyIncoming) {
+  const conflict = voiceConflicts[index];
+  if (!conflict) return;
+  if (applyIncoming) {
+    liveDraft = OperatorLiveState.applyVoiceConflict(liveDraft, conflict);
+    if (conflict.field === 'teamId' && ['home', 'away'].includes(liveDraft.teamId)) side = liveDraft.teamId;
+  }
+  voiceConflicts.splice(index, 1);
+  $('voiceStatus').textContent = voiceConflicts.length ? '还有语音冲突需要确认' : '语音草稿已核对，可以继续编辑或发布';
+  focusedRole = roleSet()[0]?.[0] || '';
+  renderVoiceConflicts();
+  renderSlots();
+  renderPlayers();
+  renderCurrentDraft();
+}
+async function toggleVoiceInput() {
+  if (voiceRecorder?.state === 'recording') {
+    await stopVoiceRecording();
+    return;
+  }
+  try {
+    await startVoiceRecording();
+  } catch (error) {
+    $('voiceDraft').hidden = false;
+    $('voiceStatus').textContent = error.name === 'NotAllowedError' ? '麦克风权限未开启' : '无法开始录音';
+    $('voiceConflicts').textContent = error.name === 'NotAllowedError' ? '请在浏览器地址栏允许麦克风权限后重试。' : error.message;
+    toast(error.message || '无法开始录音', 'bad');
+  }
 }
 function eventLabel(type) {
   return presets.find((p) => p.type === type)?.label || type || '事件';
@@ -2631,44 +3121,42 @@ function escapeHTML(text) {
 
 $('draft').addEventListener('submit', async (event) => {
   event.preventDefault();
-  await runOperatorAction(`draft:${currentMatchId()}`, async () => {
-    try {
-      const eventSide = value('sideSelect') || side;
-      setSide(eventSide);
-      await saveConfig();
-      const preset = presets.find((p) => p.type === value('eventType')) || presets[0];
-      const score = correctingId ? currentScore() : scoreForNewEvent(preset, eventSide);
-      const payload = payloadFromPreset({ ...preset, score: 0 }, score, eventSide);
-      let result;
-      if (correctingId) {
-        result = await correctEvent(correctingId, payload);
-        toast(`已发布更正：${correctingId}`, 'ok');
-        correctingId = '';
-      } else {
-        result = await publishEvent(payload);
-        toast(`已发布详细事件：${preset.label}`, 'ok');
-      }
-      applyPublishedSnapshot(result);
-      clearDraft();
-      await loadTimeline();
-    } catch (err) {
-      await restoreConfirmedScore();
-      toast(err.message || '发布失败', 'bad');
-    }
-  }, event.submitter || $('draftSubmit'));
+  await publishCurrentDraft('confirmed', event.submitter || $('draftSubmit'));
 });
+$('saveCandidate').addEventListener('click', () => publishCurrentDraft('provisional', $('saveCandidate')));
 $('saveConfig').addEventListener('click', async () => {
   await runOperatorAction(`save-config:${currentMatchId()}`, async () => {
     try { await saveConfig(); toast('赛前配置已保存', 'ok'); } catch (err) { toast(err.message || '保存失败', 'bad'); }
   }, $('saveConfig'));
 });
-$('reload').addEventListener('click', async () => { await loadConfig(); await loadTimeline(); toast('已刷新', 'ok'); });
-$('clearDraft').addEventListener('click', clearDraft);
+$('reload').addEventListener('click', async () => { await Promise.all([loadConfig(), loadMatchClock(), loadTimeline()]); toast('已刷新', 'ok'); });
+$('clearDraft').addEventListener('click', () => clearDraft(false));
 $('clockStart').addEventListener('click', toggleClock);
-$('clockMinus').addEventListener('click', () => { setClock(parseClock() - 60); updateContextPreview(); });
-$('clockPlus').addEventListener('click', () => { setClock(parseClock() + 60); updateContextPreview(); });
-$('scoreUndo').addEventListener('click', () => { $('homeScore').value = lastScore.home; $('awayScore').value = lastScore.away; updateContextPreview(); toast('比分已回退', 'ok'); });
-$('hint').addEventListener('click', () => { $('proactive').value = '这一下很关键，我们先看裁判和双方球员怎么反应。'; $('mode').value = 'manual'; updateContextPreview(); toast('已套用导演话术', 'ok'); });
+$('clockMinus').addEventListener('click', () => patchMatchClock('adjust', { deltaSeconds: -10 }, $('clockMinus')).catch((error) => toast(error.message || '校时失败', 'bad')));
+$('clockPlus').addEventListener('click', () => patchMatchClock('adjust', { deltaSeconds: 10 }, $('clockPlus')).catch((error) => toast(error.message || '校时失败', 'bad')));
+$('period').addEventListener('change', () => patchMatchClock('set', { period: value('period') }).catch((error) => toast(error.message || '比赛阶段更新失败', 'bad')));
+$('hint').addEventListener('click', () => {
+  const text = '这一下很关键，我们先看裁判和双方球员怎么反应。';
+  $('proactive').value = text;
+  $('mode').value = 'manual';
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'proactiveText', value: text });
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'deliveryMode', value: 'manual' });
+  renderCurrentDraft({ preserveForm: true });
+  toast('已套用导演话术', 'ok');
+});
+$('voiceInput').addEventListener('click', toggleVoiceInput);
+$('undoVoice').addEventListener('click', () => {
+  if (!voiceDraftBeforeApply) return;
+  liveDraft = cloneLiveDraft(voiceDraftBeforeApply);
+  voiceDraftBeforeApply = null;
+  voiceConflicts = [];
+  voiceWarnings = [];
+  $('voiceDraft').hidden = true;
+  renderSlots();
+  renderPlayers();
+  renderCurrentDraft();
+  toast('已撤回本次语音修改', 'ok');
+});
 $('manualTakeover').addEventListener('click', () => runOperatorAction(`takeover:${currentMatchId()}`, () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')), $('manualTakeover')));
 $('manualTakeoverSource').addEventListener('click', () => runOperatorAction(`takeover:${currentMatchId()}`, () => takeManualControl().catch((error) => toast(error.message || '人工接管失败', 'bad')), $('manualTakeoverSource')));
 $('refreshSources').addEventListener('click', loadSources);
@@ -2692,6 +3180,7 @@ $('homeTeam').addEventListener('input', syncSelected);
 $('awayTeam').addEventListener('input', syncSelected);
 $('homePlayers').addEventListener('input', renderPlayers);
 $('awayPlayers').addEventListener('input', renderPlayers);
+$('playerSearch').addEventListener('input', renderPlayers);
 $('preMatchId').addEventListener('input', () => { $('matchId').value = value('preMatchId') || 'test'; });
 $('preHomeTeam').addEventListener('input', renderPreviews);
 $('preAwayTeam').addEventListener('input', renderPreviews);
@@ -2702,12 +3191,34 @@ $('awayActive').addEventListener('input', () => { setSide('away'); syncSelected(
 $('eventType').addEventListener('change', syncEventTypeUI);
 $('templateSearch').addEventListener('input', renderTemplates);
 $('sideSelect').addEventListener('change', () => setSide(value('sideSelect')));
-['homeScore', 'awayScore', 'clock', 'period', 'mainPlayer', 'intensity', 'action', 'description', 'proactive', 'mode'].forEach((id) => {
-  $(id).addEventListener('input', updateContextPreview);
-  $(id).addEventListener('change', updateContextPreview);
+$('occurredClock').addEventListener('input', () => {
+  markDraftFieldReviewed('occurredSeconds');
+  const seconds = parseClockValue(value('occurredClock'));
+  if (seconds !== null) liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'occurredSeconds', value: seconds });
+  renderCurrentDraft({ preserveForm: true });
 });
-document.querySelectorAll('[data-side]').forEach((btn) => btn.addEventListener('click', () => { setSide(btn.dataset.side); flash(btn); toast(`当前操作方：${team(btn.dataset.side)}`, 'ok'); }));
-document.querySelectorAll('[data-use-side]').forEach((btn) => btn.addEventListener('click', () => { setSide(btn.dataset.useSide); flash(btn); toast(`当前操作方：${team(btn.dataset.useSide)}`, 'ok'); }));
+$('mainPlayer').addEventListener('input', () => {
+  markDraftFieldReviewed('participants');
+  const role = roleSet()[0]?.[0];
+  if (role) {
+    const name = value('mainPlayer');
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'set_participant', role, name, teamId: side, teamName: team(side), resolved: !name || playerBelongsToTeam(name, side)
+    });
+  }
+  renderCurrentDraft({ preserveForm: true });
+});
+$('intensity').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'intensity', value: Number(value('intensity') || 3) }); renderCurrentDraft({ preserveForm: true }); });
+$('confirmation').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'factStatus', value: value('confirmation') === 'pending' ? 'provisional' : 'confirmed' }); renderCurrentDraft({ preserveForm: true }); });
+$('action').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'recommendedAction', value: value('action') }); renderCurrentDraft({ preserveForm: true }); });
+$('description').addEventListener('input', () => { markDraftFieldReviewed('description'); liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: value('description') }); renderCurrentDraft({ preserveForm: true }); });
+$('correctionReason').addEventListener('input', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'correctionReason', value: value('correctionReason') }); renderCurrentDraft({ preserveForm: true }); });
+$('scoreCorrectionHome').addEventListener('input', updateScoreCorrectionDraft);
+$('scoreCorrectionAway').addEventListener('input', updateScoreCorrectionDraft);
+$('proactive').addEventListener('input', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'proactiveText', value: value('proactive') }); renderCurrentDraft({ preserveForm: true }); });
+$('mode').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'deliveryMode', value: value('mode') }); renderCurrentDraft({ preserveForm: true }); });
+document.querySelectorAll('[data-side]').forEach((btn) => btn.addEventListener('click', () => { markDraftFieldReviewed('teamId'); setSide(btn.dataset.side); flash(btn); toast(`当前操作方：${team(btn.dataset.side)}`, 'ok'); }));
+document.querySelectorAll('[data-use-side]').forEach((btn) => btn.addEventListener('click', () => { markDraftFieldReviewed('teamId'); setSide(btn.dataset.useSide); flash(btn); toast(`当前操作方：${team(btn.dataset.useSide)}`, 'ok'); }));
 document.querySelectorAll('[data-trace-filter]').forEach((btn) => btn.addEventListener('click', () => {
   traceFilter = btn.dataset.traceFilter || 'all';
   activeTraceId = '';
@@ -2751,6 +3262,7 @@ renderEventTypes();
 renderEvents('homeEvents', 'home');
 renderEvents('awayEvents', 'away');
 renderPlayers();
+renderBehaviorGroups();
 renderTemplates();
 renderSlots();
 renderAutomationEventTypes([]);
@@ -2759,7 +3271,12 @@ syncPreFromMain();
 loadSettings();
 $('mode').value = value('defaultPublishMode') || 'auto';
 setView(location.hash.replace('#', '') || 'live');
-loadConfig().then(loadTimeline).catch(() => loadTimeline());
+renderCurrentDraft();
+clockTimer = window.setInterval(renderMatchClock, 250);
+Promise.allSettled([loadConfig(), loadMatchClock(), loadTimeline()]).then((results) => {
+  const failed = results.find((result) => result.status === 'rejected');
+  if (failed) toast(failed.reason?.message || '部分比赛状态读取失败', 'bad');
+});
 </script>
 </body>
 </html>

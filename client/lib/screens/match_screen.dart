@@ -72,6 +72,8 @@ class _MatchScreenState extends State<MatchScreen> {
   String? _motion;
   CompanionPresentation? _activePresentation;
   Timer? _presentationReturnTimer;
+  Timer? _clockTicker;
+  MatchClockViewData? _matchClock;
   String _qiuqiuLine = '今晚我在。开场以后，想说什么直接说。';
   String _qiuqiuDetail = '我会跟着比赛节奏回应，不打断你看球。';
   String _userLine = '';
@@ -90,6 +92,14 @@ class _MatchScreenState extends State<MatchScreen> {
   void initState() {
     super.initState();
     _bindServices();
+    _clockTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
+      final clock = _matchClock;
+      if (!mounted || clock == null || !clock.running) return;
+      final display = clock.displayAt(DateTime.now().toUtc());
+      if (display == _match.clock) return;
+      setState(
+          () => _match = _match.copyWith(period: clock.period, clock: display));
+    });
     _profileLoad = _initialize();
     unawaited(_profileLoad);
   }
@@ -200,7 +210,31 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'match_snapshot':
         final snapshot = _map(message['data']);
         if (snapshot != null) {
-          setState(() => _match = _match.withSnapshot(snapshot));
+          final clock =
+              MatchClockViewData.tryParse(_map(snapshot['matchClock']));
+          setState(() {
+            if (clock != null) _matchClock = clock;
+            _match = _match.withSnapshot(snapshot);
+            if (clock != null) {
+              _match = _match.copyWith(
+                period: clock.period,
+                clock: clock.displayAt(DateTime.now().toUtc()),
+              );
+            }
+          });
+        }
+        break;
+      case 'match_clock':
+        final clock = MatchClockViewData.tryParse(_map(message['data']));
+        if (clock != null) {
+          setState(() {
+            _matchClock = clock;
+            _match = _match.copyWith(
+              period: clock.period,
+              clock: clock.displayAt(DateTime.now().toUtc()),
+              hasMatchInfo: true,
+            );
+          });
         }
         break;
       case 'match_event':
@@ -754,6 +788,7 @@ class _MatchScreenState extends State<MatchScreen> {
   @override
   void dispose() {
     _presentationReturnTimer?.cancel();
+    _clockTicker?.cancel();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -1902,7 +1937,7 @@ class MatchViewData {
 
   String get liveLabel => switch (period.trim().toLowerCase()) {
         '' || 'pre_match' => '等待开赛',
-        'finished' || 'full_time' => '已结束',
+        'finished' || 'full_time' || 'fulltime' => '已结束',
         _ => '直播中',
       };
 
@@ -1935,6 +1970,8 @@ class MatchViewData {
 
   MatchViewData withSnapshot(Map<String, dynamic> snapshot) {
     final score = _map(snapshot['score']);
+    final matchClock =
+        MatchClockViewData.tryParse(_map(snapshot['matchClock']));
     final events = snapshot['recentEvents'];
     final eventLabels = events is List
         ? events
@@ -1949,8 +1986,9 @@ class MatchViewData {
       awayTeam: snapshot['awayTeam'] as String?,
       homeScore: _integer(score?['home']),
       awayScore: _integer(score?['away']),
-      period: snapshot['period'] as String?,
-      clock: snapshot['clock'] as String?,
+      period: matchClock?.period ?? snapshot['period'] as String?,
+      clock: matchClock?.displayAt(DateTime.now().toUtc()) ??
+          snapshot['clock'] as String?,
       recentEventLabels: eventLabels,
       hasMatchInfo: true,
     );
@@ -1966,8 +2004,6 @@ class MatchViewData {
     return copyWith(
       homeScore: _integer(score?['home']),
       awayScore: _integer(score?['away']),
-      period: event['period'] as String?,
-      clock: event['clock'] as String?,
       recentEventLabels: eventLabels,
       hasMatchInfo: true,
     );
@@ -2007,6 +2043,54 @@ class MatchViewData {
   }
 }
 
+@immutable
+class MatchClockViewData {
+  final String period;
+  final int elapsedSeconds;
+  final bool running;
+  final DateTime? anchorAt;
+  final int version;
+
+  const MatchClockViewData({
+    required this.period,
+    required this.elapsedSeconds,
+    required this.running,
+    required this.anchorAt,
+    required this.version,
+  });
+
+  static MatchClockViewData? tryParse(Map<String, dynamic>? value) {
+    if (value == null) return null;
+    final anchorRaw = value['anchorAt']?.toString();
+    return MatchClockViewData(
+      period: value['period']?.toString().trim().isNotEmpty == true
+          ? value['period'].toString()
+          : 'pre_match',
+      elapsedSeconds: _integer(value['elapsedSeconds']) ?? 0,
+      running: value['running'] == true,
+      anchorAt:
+          anchorRaw == null ? null : DateTime.tryParse(anchorRaw)?.toUtc(),
+      version: _integer(value['version']) ?? 0,
+    );
+  }
+
+  int elapsedAt(DateTime now) {
+    var elapsed = elapsedSeconds;
+    if (running && anchorAt != null) {
+      final delta = now.toUtc().difference(anchorAt!).inSeconds;
+      if (delta > 0) elapsed += delta;
+    }
+    return elapsed < 0 ? 0 : elapsed;
+  }
+
+  String displayAt(DateTime now) {
+    final elapsed = elapsedAt(now);
+    final minutes = (elapsed ~/ 60).toString().padLeft(2, '0');
+    final seconds = (elapsed % 60).toString().padLeft(2, '0');
+    return '$minutes:$seconds';
+  }
+}
+
 Map<String, dynamic>? _map(dynamic value) {
   if (value is Map<String, dynamic>) return value;
   if (value is Map) return value.cast<String, dynamic>();
@@ -2023,19 +2107,21 @@ String _displayPeriod(String value) {
   return switch (value.trim().toLowerCase()) {
     '' || 'pre_match' => '赛前',
     'first_half' => '上半场',
-    'half_time' => '中场休息',
+    'half_time' || 'halftime' => '中场休息',
     'second_half' => '下半场',
     'extra_time' => '加时赛',
     'penalties' => '点球大战',
-    'finished' || 'full_time' => '全场结束',
+    'finished' || 'full_time' || 'fulltime' => '全场结束',
     _ => value.trim(),
   };
 }
 
 String _eventDescription(Map<String, dynamic> event) {
+  final eventClock = event['clock']?.toString().trim();
+  final timing = eventClock?.isNotEmpty == true ? eventClock! : '刚刚';
   final description = event['description'] as String?;
   if (description != null && description.trim().isNotEmpty) {
-    return '刚刚 · ${description.trim()}';
+    return '$timing · ${description.trim()}';
   }
   final player = event['playerName'] as String?;
   final eventType = event['eventType'] as String? ?? '';
@@ -2049,6 +2135,6 @@ String _eventDescription(Map<String, dynamic> event) {
     _ => '比赛有新进展',
   };
   return player?.trim().isNotEmpty == true
-      ? '刚刚 · ${player!.trim()}$label'
-      : '刚刚 · $label';
+      ? '$timing · ${player!.trim()}$label'
+      : '$timing · $label';
 }

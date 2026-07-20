@@ -18,6 +18,7 @@ test.beforeEach(async ({ page, request }) => {
     ],
     awayPlayers: [{ number: '10', name: '穆西亚拉', position: 'AM' }],
   });
+  await startMatchClock(request, 1421);
   await apiPost(request, `/api/matches/${matchId}/events`, {
     eventType: 'goal',
     period: 'first_half',
@@ -116,6 +117,7 @@ test('错误进球者会被纠正，玩笑不会进入事实核验', async ({ pa
 test('没有比赛证据时，用户报告的进球保持待确认', async ({ page, request }) => {
   await apiPost(request, `/api/matches/${matchId}/reset`, {});
   await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
+  await startMatchClock(request, 1);
   await apiPost(request, `/api/matches/${matchId}/events`, {
     eventType: 'kickoff',
     period: 'first_half',
@@ -259,4 +261,14 @@ async function apiGet(request, path) {
 
 function testIdempotencyKey() {
   return `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+async function startMatchClock(request, elapsedSeconds) {
+  const response = await request.patch(`/api/matches/${matchId}/clock`, {
+    data: { action: 'set', period: 'first_half', elapsedSeconds, expectedVersion: 0 },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
+  });
+  if (!response.ok()) {
+    throw new Error(`PATCH clock failed: ${response.status()} ${await response.text()}`);
+  }
 }

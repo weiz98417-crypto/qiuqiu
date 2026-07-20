@@ -48,3 +48,24 @@ func TestEvalBearerHeaderForNonMiMoProviders(t *testing.T) {
 		t.Fatalf("expected bearer auth for non-MiMo provider")
 	}
 }
+
+func TestGenerateWithMessagesLimitUsesRequestedTokenBudget(t *testing.T) {
+	var request ChatRequest
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+			t.Fatalf("decode request: %v", err)
+		}
+		_ = json.NewEncoder(w).Encode(ChatResponse{
+			Choices: []Choice{{Message: Message{Role: "assistant", Content: `{}`}}},
+		})
+	}))
+	defer server.Close()
+
+	client := NewClient(server.URL, "mimo-key", "mimo-v2.5-pro")
+	if _, err := client.GenerateWithMessagesLimit(context.Background(), []Message{{Role: "user", Content: "extract"}}, 0.1, 320); err != nil {
+		t.Fatalf("GenerateWithMessagesLimit error: %v", err)
+	}
+	if request.MaxTokens != 320 {
+		t.Fatalf("max_tokens = %d, want 320", request.MaxTokens)
+	}
+}

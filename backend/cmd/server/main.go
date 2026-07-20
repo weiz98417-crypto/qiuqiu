@@ -23,6 +23,7 @@ import (
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/datasource"
+	"qiuqiu/internal/directordraft"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
@@ -120,6 +121,7 @@ func main() {
 		ttsClient = tts.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
 	}
 	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
+	directorDrafts := directordraft.NewService(asrClient, directordraft.NewLLMExtractor(llmClient))
 
 	var sessionStore auth.Store = auth.NewMemoryStore()
 	var sessionStoreCloser func()
@@ -252,7 +254,7 @@ func main() {
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
-	mux.HandleFunc("/api/matches/", handleMatchAPIWithSources(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, operatorWrites))
+	mux.HandleFunc("/api/matches/", handleMatchAPIWithDirectorDraft(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, operatorWrites))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -297,6 +299,12 @@ func main() {
 		matchIDStr := r.URL.Path[len("/ws/match/"):]
 		matchEvents, unsubscribe := matchStore.Subscribe(matchIDStr)
 		defer unsubscribe()
+		var clockUpdates <-chan matchstate.MatchClock
+		if clockStore, ok := matchStore.(matchstate.ClockRepository); ok {
+			var unsubscribeClock func()
+			clockUpdates, unsubscribeClock = clockStore.SubscribeClock(matchIDStr)
+			defer unsubscribeClock()
+		}
 
 		connectionCtx, connectionCancel := context.WithCancel(r.Context())
 		defer connectionCancel()
@@ -339,6 +347,12 @@ func main() {
 			"type": "match_snapshot",
 			"data": matchStore.PublicSnapshot(matchIDStr),
 		})
+		if clockStore, ok := matchStore.(matchstate.ClockRepository); ok {
+			writer.SendJSON(map[string]interface{}{
+				"type": "match_clock",
+				"data": clockStore.Clock(matchIDStr),
+			})
+		}
 		if userID := identity.Get(); userID != "" {
 			scheduleRecoveredObservations(userID)
 		}
@@ -349,6 +363,15 @@ func main() {
 				select {
 				case <-connectionCtx.Done():
 					return
+				case clock := <-clockUpdates:
+					writer.SendJSON(map[string]interface{}{
+						"type": "match_clock",
+						"data": clock,
+					})
+					writer.SendJSON(map[string]interface{}{
+						"type": "match_snapshot",
+						"data": matchStore.PublicSnapshot(matchIDStr),
+					})
 				case ev := <-matchEvents:
 					eventKey := matchstate.DeliveryKey(ev)
 					if _, duplicate := deliveredEventKeys[eventKey]; duplicate {
@@ -391,7 +414,9 @@ func main() {
 						critical := proactiveUrgency(ev.EventType) == conversation.UrgencyCritical
 						now := time.Now()
 						allowed := proactiveGate.Allow(policy, ev.EventType, critical, now)
-						if hasEventTag(ev, "proactive=manual") {
+						if hasEventTag(ev, "proactive=quiet") {
+							allowed = false
+						} else if hasEventTag(ev, "proactive=manual") {
 							allowed = proactiveGate.AllowManual(now)
 						}
 						response, err := companionAgent.HandleMatchEvent(connectionCtx, companion.MatchEventRequest{
@@ -760,6 +785,10 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 }
 
 func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+	return handleMatchAPIWithDirectorDraft(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, nil, writeServices...)
+}
+
+func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	operatorWrites := selectedOperatorWriteService(writeServices)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !applyCORS(w, r, cfg) {
@@ -897,6 +926,86 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"policy": saved})
 			})
+		case r.Method == http.MethodGet && resource == "clock" && len(parts) == 2:
+			clockStore, ok := store.(matchstate.ClockRepository)
+			if !ok {
+				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
+				return
+			}
+			writeJSON(w, http.StatusOK, map[string]interface{}{
+				"clock":    clockStore.Clock(matchID),
+				"snapshot": store.PublicSnapshot(matchID),
+			})
+		case r.Method == http.MethodPatch && resource == "clock" && len(parts) == 2:
+			if _, authorized := operatorClaims(r, cfg); !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			clockStore, ok := store.(matchstate.ClockRepository)
+			if !ok {
+				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
+				return
+			}
+			var command matchstate.ClockCommand
+			body, err := decodeOperatorJSON(w, r, &command)
+			if err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			command.Source = "operator"
+			executeOperatorWrite(w, r, operatorWrites, matchID, "match.clock", body, func(_ context.Context) (operatorwrite.Response, error) {
+				clock, err := clockStore.SetClock(matchID, command)
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrClockVersionConflict) {
+						status = http.StatusConflict
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"clock":    clock,
+					"snapshot": store.PublicSnapshot(matchID),
+				})
+			})
+		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 3 && parts[2] == "voice":
+			if _, authorized := operatorClaims(r, cfg); !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if directorDrafts == nil {
+				http.Error(w, "director voice draft unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			clockStore, ok := store.(matchstate.ClockRepository)
+			if !ok {
+				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
+				return
+			}
+			var request directordraft.Request
+			body, err := decodeOperatorJSON(w, r, &request)
+			if err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+				draftCtx, cancel := context.WithTimeout(operationCtx, 45*time.Second)
+				defer cancel()
+				result, err := directorDrafts.Build(draftCtx, request, directordraft.MatchContext{
+					MatchID: matchID,
+					Config:  store.Config(matchID),
+					Clock:   clockStore.Clock(matchID),
+				})
+				if err != nil {
+					status := http.StatusBadGateway
+					if errors.Is(err, directordraft.ErrNoInput) {
+						status = http.StatusBadRequest
+					} else if errors.Is(err, directordraft.ErrNotConfigured) || errors.Is(err, asr.ErrNotConfigured) {
+						status = http.StatusServiceUnavailable
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, result)
+			})
 		case r.Method == http.MethodPost && resource == "facts" && len(parts) == 4:
 			operator, authorized := operatorClaims(r, cfg)
 			if !authorized {
@@ -969,19 +1078,22 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 				return
 			}
 			executeOperatorWrite(w, r, operatorWrites, matchID, "config.set", body, func(_ context.Context) (operatorwrite.Response, error) {
-				saved, snapshot, err := store.SetConfig(matchID, config)
+				saved, _, err := store.SetConfig(matchID, config)
 				if err != nil {
 					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
 					"config":   saved,
-					"snapshot": snapshot,
+					"snapshot": store.PublicSnapshot(matchID),
 				})
 			})
 		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
 			events := store.PublicEvents(matchID)
 			if validAPIToken(r, cfg) {
 				events = store.Events(matchID)
+			}
+			if events == nil {
+				events = []matchstate.MatchEvent{}
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"events": events})
 		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
@@ -1061,6 +1173,14 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 					}
 					return operatorwrite.Response{}, operatorError(status, err)
 				}
+				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
+					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
+				} else {
+					snapshot = store.PublicSnapshot(matchID)
+				}
+				if err != nil {
+					return operatorwrite.Response{}, err
+				}
 				return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{
 					"event":    created,
 					"snapshot": snapshot,
@@ -1076,6 +1196,11 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 			body, err := decodeOperatorJSON(w, r, &ev)
 			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			correctionReason, _ := ev.Evidence["correctionReason"].(string)
+			if strings.TrimSpace(correctionReason) == "" {
+				http.Error(w, "correction reason is required", http.StatusBadRequest)
 				return
 			}
 			ev.OperatorID = operator.Subject
@@ -1096,6 +1221,14 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 						status = http.StatusNotFound
 					}
 					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
+					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
+				} else {
+					snapshot = store.PublicSnapshot(matchID)
+				}
+				if err != nil {
+					return operatorwrite.Response{}, err
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
 					"event":    corrected,
@@ -1614,6 +1747,11 @@ func fallbackProactiveText(ev matchstate.MatchEvent) string {
 
 func markProactiveMode(event *matchstate.MatchEvent) {
 	event.Tags = removeTagPrefix(event.Tags, "proactive=")
+	if event.EventType == "score_correction" {
+		event.ProactiveText = ""
+		event.Tags = append(event.Tags, "proactive=quiet")
+		return
+	}
 	if event.ProactiveText == "__quiet__" {
 		event.ProactiveText = ""
 		event.Tags = append(event.Tags, "proactive=quiet")

@@ -65,6 +65,7 @@ test('provisional fact stays private through confirmation, revocation, and corre
       visibility: 'public',
       factStatus: 'provisional',
       confirmed: false,
+      evidence: { correctionReason: 'Original scorer was incorrect.' },
     },
   );
   expect(corrected.event).toMatchObject({

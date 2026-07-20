@@ -139,6 +139,11 @@ func TestEvalBaselineFullMatchFlow(t *testing.T) {
 	if got := len(normalized.HomePlayers); got != 1 {
 		t.Fatalf("expected empty players to be trimmed in normalized view, got %d", got)
 	}
+	if _, err := store.SetClock(matchID, ClockCommand{
+		Action: ClockActionSet, Period: "first_half", ElapsedSeconds: intPointer(23*60 + 41), ExpectedVersion: 0,
+	}); err != nil {
+		t.Fatalf("SetClock error: %v", err)
+	}
 
 	events, unsubscribe := store.Subscribe(matchID)
 	defer unsubscribe()
@@ -200,6 +205,11 @@ func TestGoalVARCancellationRevisesTheAuthoritativeScore(t *testing.T) {
 		t.Fatalf("Create goal: %v", err)
 	}
 	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "var_result", Period: "second_half", Clock: "78:35", Score: Score{Home: 1}, Description: "VAR确认越位。",
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unreferenced VAR result error = %v, want ErrInvalid", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
 		EventType: "var_result", Period: "second_half", Clock: "78:40", Score: Score{Home: 1}, Description: "VAR确认越位。", RevisionOf: goal.ID,
 	}); err != nil {
 		t.Fatalf("Create VAR result: %v", err)
@@ -215,6 +225,63 @@ func TestGoalVARCancellationRevisesTheAuthoritativeScore(t *testing.T) {
 	}
 	if len(snapshot.KeyEvents) < 3 || snapshot.KeyEvents[0].EventType != "goal_cancelled" {
 		t.Fatalf("key events = %+v", snapshot.KeyEvents)
+	}
+}
+
+func TestGoalCancellationMustReferenceTheActiveGoalItRemoves(t *testing.T) {
+	store := NewStore()
+	matchID := "goal-cancellation-reference"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "利物浦", AwayTeam: "切尔西"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "second_half", Clock: "78:00", TeamID: "home", Score: Score{Home: 1}, Description: "萨拉赫进球。",
+	}); err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	note, _, err := store.Create(matchID, MatchEvent{
+		EventType: "operator_note", Period: "second_half", Clock: "78:10", Score: Score{Home: 1}, Description: "VAR开始检查。",
+	})
+	if err != nil {
+		t.Fatalf("Create note: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		EventType: "goal_cancelled", Period: "second_half", Clock: "78:45", TeamID: "home", Score: Score{}, Description: "进球取消。", RevisionOf: note.ID,
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("goal cancellation reference error = %v, want ErrInvalid", err)
+	}
+	if snapshot := store.PublicSnapshot(matchID); snapshot.Score != (Score{Home: 1}) || len(snapshot.RecentEvents) != 2 {
+		t.Fatalf("invalid cancellation changed public state: %+v", snapshot)
+	}
+}
+
+func TestScoreCorrectionRequiresReasonAndOverridesThePublicScore(t *testing.T) {
+	store := NewStore()
+	matchID := "audited-score-correction"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "利物浦", AwayTeam: "切尔西"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "12:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	}); err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType: "score_correction", Period: "first_half", Clock: "12:20", Score: Score{}, Description: "比分更正为0比0。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing score correction reason error = %v, want ErrInvalid", err)
+	}
+	corrected, snapshot, err := store.Create(matchID, MatchEvent{
+		EventType: "score_correction", Period: "first_half", Clock: "12:20", Score: Score{}, Description: "比分更正为0比0。",
+		Evidence: map[string]any{"correctionReason": "现场记分牌回退，原进球无效。"}, ProactiveText: "__quiet__",
+	})
+	if err != nil {
+		t.Fatalf("Create score correction: %v", err)
+	}
+	if corrected.EventType != "score_correction" || snapshot.Score != (Score{}) || snapshot.LastPublicDescription != "比分更正为0比0。" {
+		t.Fatalf("score correction result = %+v / %+v", corrected, snapshot)
 	}
 }
 
@@ -505,6 +572,36 @@ func TestRejectsScorerAssignedToWrongConfiguredTeam(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("wrong-team scorer error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRejectsSubstitutionAcrossConfiguredTeams(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-substitution-team"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam:    "西班牙",
+		AwayTeam:    "德国",
+		HomePlayers: []Player{{Name: "佩德里"}},
+		AwayPlayers: []Player{{Name: "穆西亚拉"}},
+	}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "substitution",
+		Period:      "second_half",
+		Clock:       "62:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		Score:       Score{},
+		Description: "西班牙换人。",
+		Participants: []Participant{
+			{Role: "sub_on", Name: "佩德里", TeamID: "home", TeamName: "西班牙"},
+			{Role: "sub_off", Name: "穆西亚拉", TeamID: "away", TeamName: "德国"},
+		},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("cross-team substitution error = %v, want ErrInvalid", err)
 	}
 }
 
