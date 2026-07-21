@@ -133,10 +133,12 @@ test('冲突候选采用后完成调和并只公开选中的事实', async ({ pa
   expect(conflictResponse.status()).toBe(409);
 
   await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
-  await expect(page.locator('.conflict-resolution-card')).toContainText('这两条赛况互相冲突，请确认一条');
-  await expect(page.locator('.conflict-resolution-card').getByRole('button', { name: '保留原事实' })).toBeVisible();
-  await expect(page.locator('.conflict-resolution-card').getByRole('button', { name: '采用新事实' })).toBeVisible();
+  await expect(page.locator('.conflict-resolution-card')).toContainText('多条赛况存在冲突');
+  await expect(page.locator('.conflict-resolution-card').getByRole('checkbox')).toHaveCount(2);
+  await expect(page.locator('.conflict-resolution-card').getByRole('button', { name: '确认事实选择' })).toBeVisible();
   const card = page.locator('.event-card:not(.conflict-resolution-card)').filter({ hasText: '外部源记录穆西亚拉进球' });
+	await expect(card).toContainText('上报 0-1');
+	await expect(card).toContainText('尚未生效');
   await card.getByRole('button', { name: '采用到草稿' }).click();
   await page.locator('#correctionReason').fill('已对照官方数据，采用外部源记录。');
   await page.locator('#mode').selectOption('quiet');
@@ -152,6 +154,10 @@ test('冲突候选采用后完成调和并只公开选中的事实', async ({ pa
   const operatorLedger = await apiGet(request, `/api/matches/${matchId}/events`);
   expect(operatorLedger.conflicts).toHaveLength(1);
   expect(operatorLedger.conflicts[0].status).toBe('resolved');
+	const adoptedCard = page.locator('.event-card:not(.conflict-resolution-card)').filter({ hasText: '外部源记录穆西亚拉进球' }).filter({ hasText: '事实已确认' });
+	await expect(adoptedCard).toContainText('上报 1-1');
+	await expect(adoptedCard).toContainText('生效 0-1');
+	await expect(page.locator('.event-card:not(.conflict-resolution-card)').filter({ hasText: '外部源记录穆西亚拉进球' }).filter({ hasText: '历史版本' })).toHaveCount(1);
 });
 
 test('冲突保留原事实后用户端比分不抖动', async ({ page, request }) => {
@@ -170,8 +176,9 @@ test('冲突保留原事实后用户端比分不抖动', async ({ page, request 
 
   await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
   const conflictCard = page.locator('.conflict-resolution-card');
-  await conflictCard.getByRole('button', { name: '保留原事实' }).click();
-  await expect(page.locator('#toast')).toContainText('已保留原事实');
+  await expect(conflictCard.getByRole('checkbox', { name: '选择 人工确认佩德里进球。' })).toBeChecked();
+  await conflictCard.getByRole('button', { name: '确认事实选择' }).click();
+  await expect(page.locator('#toast')).toContainText('事实选择已生效');
   await expect(conflictCard).toHaveCount(0);
 
   const state = await apiGet(request, `/api/matches/${matchId}/state`);
@@ -180,6 +187,61 @@ test('冲突保留原事实后用户端比分不抖动', async ({ page, request 
   const publicEvents = await (await request.get(`/api/matches/${matchId}/events`)).json();
   expect(publicEvents.events).toHaveLength(1);
   expect(publicEvents.events[0].description).toBe('人工确认佩德里进球。');
+});
+
+test('冲突卡默认保留兼容事实，选择候选只排除直接互斥项', async ({ page }) => {
+  const events = [
+    {
+      id: 'accepted-goal', factId: 'accepted-goal', factRevision: 1, factStatus: 'confirmed', status: 'active', confirmed: true,
+      eventType: 'goal', period: 'first_half', clock: '12:00', teamId: 'home', teamName: '西班牙', score: { home: 1, away: 0 },
+      description: '已确认主队进球。', visibility: 'public',
+    },
+    {
+      id: 'accepted-card', factId: 'accepted-card', factRevision: 1, factStatus: 'confirmed', status: 'active', confirmed: true,
+      eventType: 'yellow_card', period: 'first_half', clock: '12:20', teamId: 'away', teamName: '德国', score: { home: 1, away: 0 },
+      description: '已确认客队黄牌。', visibility: 'public',
+    },
+    {
+      id: 'candidate-goal', factId: 'candidate-goal', factRevision: 1, factStatus: 'provisional', status: 'active', confirmed: false,
+      eventType: 'goal', period: 'first_half', clock: '12:10', teamId: 'away', teamName: '德国', score: { home: 0, away: 1 },
+      description: '候选客队进球。', visibility: 'operator',
+    },
+  ];
+  await page.route('**/api/matches/test/events', async (route) => {
+    if (route.request().method() !== 'GET') return route.continue();
+    await route.fulfill({
+      status: 200,
+      contentType: 'application/json',
+      body: JSON.stringify({
+        events,
+        conflicts: [{
+          id: 'conflict-compatible-selection', matchId, status: 'open',
+          members: [
+            { factId: 'accepted-goal', role: 'accepted' },
+            { factId: 'accepted-card', role: 'accepted' },
+            { factId: 'candidate-goal', role: 'candidate' },
+          ],
+          edges: [{ leftFactId: 'accepted-goal', rightFactId: 'candidate-goal', reason: '比分与进球队冲突' }],
+        }],
+      }),
+    });
+  });
+
+  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  const card = page.locator('.conflict-resolution-card');
+  const acceptedGoal = card.getByRole('checkbox', { name: '选择 已确认主队进球。' });
+  const acceptedCard = card.getByRole('checkbox', { name: '选择 已确认客队黄牌。' });
+  const candidateGoal = card.getByRole('checkbox', { name: '选择 候选客队进球。' });
+  await expect(acceptedGoal).toBeChecked();
+  await expect(acceptedCard).toBeChecked();
+  await expect(candidateGoal).not.toBeChecked();
+  await expect(card).toContainText('保留 2 条 · 排除 1 条');
+
+  await candidateGoal.check();
+  await expect(acceptedGoal).not.toBeChecked();
+  await expect(acceptedCard).toBeChecked();
+  await expect(candidateGoal).toBeChecked();
+  await expect(card).toContainText('保留 2 条 · 排除 1 条');
 });
 
 test('比分更正作为独立审计事实发布且不触发主动话术', async ({ page, request }) => {

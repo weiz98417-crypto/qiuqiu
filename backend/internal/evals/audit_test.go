@@ -86,3 +86,29 @@ func TestAuditTracesRejectsContradictedScoreInOutput(t *testing.T) {
 		t.Fatalf("expected contradicted score output blocker: %+v", report)
 	}
 }
+
+func TestAuditTracesAcceptsExplicitSilence(t *testing.T) {
+	report := AuditTraces([]companion.Trace{{
+		ID:     "intentional-silence",
+		Intent: companion.IntentMatchReaction,
+		Reason: "relationship_match_observed_silent",
+		ToolCalls: []companion.ToolCall{
+			{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "silence"}},
+			{Name: "trace.write_decision"},
+		},
+	}})
+	if len(report.Issues) != 0 {
+		t.Fatalf("explicit silence should satisfy the trace contract: %+v", report)
+	}
+}
+
+func TestAuditTracesRejectsUnmarkedEmptyOutput(t *testing.T) {
+	report := AuditTraces([]companion.Trace{{
+		ID:     "incomplete",
+		Intent: companion.IntentMatchReaction,
+		Reason: "relationship_match_observation_pending",
+	}})
+	if report.Blockers != 1 || report.Warnings != 1 {
+		t.Fatalf("incomplete trace should be rejected: %+v", report)
+	}
+}

@@ -70,16 +70,24 @@ type FactConflictMember struct {
 	Role   ConflictMemberRole `json:"role"`
 }
 
+type FactConflictEdge struct {
+	LeftFactID  string `json:"leftFactId"`
+	RightFactID string `json:"rightFactId"`
+	Reason      string `json:"reason,omitempty"`
+}
+
 type FactConflict struct {
-	ID           string               `json:"id"`
-	MatchID      string               `json:"matchId"`
-	Status       ConflictStatus       `json:"status"`
-	ChosenFactID string               `json:"chosenFactId,omitempty"`
-	Reason       string               `json:"reason,omitempty"`
-	DetectedAt   string               `json:"detectedAt"`
-	ResolvedAt   string               `json:"resolvedAt,omitempty"`
-	ResolvedBy   string               `json:"resolvedBy,omitempty"`
-	Members      []FactConflictMember `json:"members"`
+	ID              string               `json:"id"`
+	MatchID         string               `json:"matchId"`
+	Status          ConflictStatus       `json:"status"`
+	ChosenFactID    string               `json:"chosenFactId,omitempty"`
+	SelectedFactIDs []string             `json:"selectedFactIds,omitempty"`
+	Reason          string               `json:"reason,omitempty"`
+	DetectedAt      string               `json:"detectedAt"`
+	ResolvedAt      string               `json:"resolvedAt,omitempty"`
+	ResolvedBy      string               `json:"resolvedBy,omitempty"`
+	Members         []FactConflictMember `json:"members"`
+	Edges           []FactConflictEdge   `json:"edges"`
 }
 
 const (
@@ -126,40 +134,42 @@ type Participant struct {
 }
 
 type MatchEvent struct {
-	ID                string         `json:"id"`
-	MatchID           string         `json:"matchId"`
-	Source            string         `json:"source"`
-	ProviderName      string         `json:"providerName,omitempty"`
-	ProviderEventID   string         `json:"providerEventId,omitempty"`
-	OperatorID        string         `json:"operatorId,omitempty"`
-	Period            string         `json:"period"`
-	Clock             string         `json:"clock"`
-	EventType         string         `json:"eventType"`
-	TeamID            string         `json:"teamId,omitempty"`
-	TeamName          string         `json:"teamName,omitempty"`
-	PlayerName        string         `json:"playerName,omitempty"`
-	Participants      []Participant  `json:"participants,omitempty"`
-	Score             Score          `json:"score"`
-	Intensity         int            `json:"intensity"`
-	Confirmed         bool           `json:"confirmed"`
-	Sentiment         string         `json:"sentiment,omitempty"`
-	Description       string         `json:"description"`
-	ProactiveText     string         `json:"proactiveText,omitempty"`
-	Tags              []string       `json:"tags,omitempty"`
-	RecommendedAction string         `json:"recommendedAction,omitempty"`
-	Visibility        string         `json:"visibility"`
-	CreatedAt         string         `json:"createdAt"`
-	UpdatedAt         string         `json:"updatedAt"`
-	RevisionOf        string         `json:"revisionOf,omitempty"`
-	Status            string         `json:"status"`
-	FactID            string         `json:"factId"`
-	FactRevision      int            `json:"factRevision"`
-	FactStatus        FactStatus     `json:"factStatus"`
-	Confidence        float64        `json:"confidence"`
-	Evidence          map[string]any `json:"evidence,omitempty"`
-	ConfirmedBy       string         `json:"confirmedBy,omitempty"`
-	PublicAt          string         `json:"publicAt,omitempty"`
-	RecordedSequence  int64          `json:"recordedSequence,omitempty"`
+	ID                  string         `json:"id"`
+	MatchID             string         `json:"matchId"`
+	Source              string         `json:"source"`
+	ProviderName        string         `json:"providerName,omitempty"`
+	ProviderEventID     string         `json:"providerEventId,omitempty"`
+	OperatorID          string         `json:"operatorId,omitempty"`
+	Period              string         `json:"period"`
+	Clock               string         `json:"clock"`
+	EventType           string         `json:"eventType"`
+	TeamID              string         `json:"teamId,omitempty"`
+	TeamName            string         `json:"teamName,omitempty"`
+	PlayerName          string         `json:"playerName,omitempty"`
+	Participants        []Participant  `json:"participants,omitempty"`
+	Score               Score          `json:"score"`
+	ReportedScore       *Score         `json:"reportedScore,omitempty"`
+	EffectiveScoreAfter *Score         `json:"effectiveScoreAfter,omitempty"`
+	Intensity           int            `json:"intensity"`
+	Confirmed           bool           `json:"confirmed"`
+	Sentiment           string         `json:"sentiment,omitempty"`
+	Description         string         `json:"description"`
+	ProactiveText       string         `json:"proactiveText,omitempty"`
+	Tags                []string       `json:"tags,omitempty"`
+	RecommendedAction   string         `json:"recommendedAction,omitempty"`
+	Visibility          string         `json:"visibility"`
+	CreatedAt           string         `json:"createdAt"`
+	UpdatedAt           string         `json:"updatedAt"`
+	RevisionOf          string         `json:"revisionOf,omitempty"`
+	Status              string         `json:"status"`
+	FactID              string         `json:"factId"`
+	FactRevision        int            `json:"factRevision"`
+	FactStatus          FactStatus     `json:"factStatus"`
+	Confidence          float64        `json:"confidence"`
+	Evidence            map[string]any `json:"evidence,omitempty"`
+	ConfirmedBy         string         `json:"confirmedBy,omitempty"`
+	PublicAt            string         `json:"publicAt,omitempty"`
+	RecordedSequence    int64          `json:"recordedSequence,omitempty"`
 }
 
 func DeliveryKey(event MatchEvent) string {
@@ -216,8 +226,16 @@ type FactConflictRepository interface {
 	ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error)
 }
 
+type FactConflictSelectionRepository interface {
+	ResolveFactConflictSelection(matchID, conflictID string, selectedFactIDs []string, operatorID, reason string) (FactConflict, []MatchEvent, Snapshot, error)
+}
+
 type FactConflictTransactionRepository interface {
 	ResolveFactConflictOperator(context.Context, string, string, string, string, string) (FactConflict, MatchEvent, Snapshot, error)
+}
+
+type FactConflictSelectionTransactionRepository interface {
+	ResolveFactConflictSelectionOperator(context.Context, string, string, []string, string, string) (FactConflict, []MatchEvent, Snapshot, error)
 }
 
 type OutboxRunner interface {
@@ -837,13 +855,44 @@ func (s *Store) FactConflicts(matchID string) []FactConflict {
 }
 
 func (s *Store) ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
+	var target FactConflict
+	for _, conflict := range s.FactConflicts(matchID) {
+		if conflict.ID == strings.TrimSpace(conflictID) && conflict.Status == ConflictStatusOpen {
+			target = conflict
+			break
+		}
+	}
+	if target.ID == "" {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+	}
+	selection, err := CompatibleSelectionForLegacyChoice(target, chosenFactID)
+	if err != nil {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+	}
+	resolved, published, snapshot, err := s.ResolveFactConflictSelection(matchID, conflictID, selection, operatorID, reason)
+	if err != nil {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+	}
+	for _, event := range published {
+		if event.FactID == strings.TrimSpace(chosenFactID) {
+			return resolved, event, snapshot, nil
+		}
+	}
+	for _, event := range s.Events(matchID) {
+		if event.Status == "active" && event.FactID == strings.TrimSpace(chosenFactID) {
+			return resolved, event, snapshot, nil
+		}
+	}
+	return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+}
+
+func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selectedFactIDs []string, operatorID, reason string) (FactConflict, []MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	conflictID = strings.TrimSpace(conflictID)
-	chosenFactID = strings.TrimSpace(chosenFactID)
 	operatorID = strings.TrimSpace(operatorID)
 	reason = strings.TrimSpace(reason)
-	if matchID == "" || conflictID == "" || chosenFactID == "" || operatorID == "" || reason == "" {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, conflictId, chosenFactId, operatorId and reason are required", ErrInvalid)
+	if matchID == "" || conflictID == "" || len(uniqueFactIDs(selectedFactIDs)) == 0 || operatorID == "" || reason == "" {
+		return FactConflict{}, nil, Snapshot{}, fmt.Errorf("%w: matchId, conflictId, selectedFactIds, operatorId and reason are required", ErrInvalid)
 	}
 
 	s.mu.Lock()
@@ -857,66 +906,77 @@ func (s *Store) ResolveFactConflict(matchID, conflictID, chosenFactID, operatorI
 	}
 	if conflictIndex == -1 {
 		s.mu.Unlock()
-		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+		return FactConflict{}, nil, Snapshot{}, ErrNotFound
 	}
-	memberFactIDs := make(map[string]struct{}, len(conflicts[conflictIndex].Members))
-	for _, member := range conflicts[conflictIndex].Members {
-		memberFactIDs[member.FactID] = struct{}{}
-	}
-	if _, member := memberFactIDs[chosenFactID]; !member {
-		s.mu.Unlock()
-		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: chosen fact is not a member of the conflict", ErrInvalid)
-	}
-
 	events := s.events[matchID]
-	chosenIndex := -1
-	changedSignalIndex := -1
+	transition, err := resolveConflictSelection(events, conflicts[conflictIndex], selectedFactIDs)
+	if err != nil {
+		s.mu.Unlock()
+		return FactConflict{}, nil, Snapshot{}, err
+	}
 	now := s.now().UTC().Format(time.RFC3339Nano)
+	reconcile := make(map[string]struct{}, len(transition.ReconcileFactIDs))
+	for _, factID := range transition.ReconcileFactIDs {
+		reconcile[factID] = struct{}{}
+	}
+	revoke := make(map[string]struct{}, len(transition.RevokeFactIDs))
+	for _, factID := range transition.RevokeFactIDs {
+		revoke[factID] = struct{}{}
+	}
+	release := make(map[string]struct{}, len(transition.ReleaseFactIDs))
+	for _, factID := range transition.ReleaseFactIDs {
+		release[factID] = struct{}{}
+	}
 	for index := range events {
 		if events[index].Status != "active" {
 			continue
 		}
-		if _, member := memberFactIDs[events[index].FactID]; !member {
+		if _, selected := reconcile[events[index].FactID]; selected {
+			events[index].FactStatus = FactStatusReconciled
+			events[index].Confirmed = true
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = now
+			events[index].FactRevision++
+			events[index].UpdatedAt = now
+			s.recordFactRevisionLocked(matchID, events[index])
 			continue
 		}
-		if events[index].FactID == chosenFactID {
-			chosenIndex = index
-			if events[index].FactStatus == FactStatusConflict || events[index].FactStatus == FactStatusProvisional {
-				events[index].FactStatus = FactStatusReconciled
-				events[index].Confirmed = true
-				events[index].ConfirmedBy = operatorID
-				events[index].PublicAt = now
-				events[index].FactRevision++
-				events[index].UpdatedAt = now
-				s.recordFactRevisionLocked(matchID, events[index])
-				changedSignalIndex = index
-			}
+		if _, rejected := revoke[events[index].FactID]; rejected && events[index].FactStatus != FactStatusRevoked {
+			events[index].FactStatus = FactStatusRevoked
+			events[index].Confirmed = false
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = ""
+			events[index].FactRevision++
+			events[index].UpdatedAt = now
+			s.recordFactRevisionLocked(matchID, events[index])
 			continue
 		}
-		if events[index].FactStatus == FactStatusRevoked {
-			continue
-		}
-		events[index].FactStatus = FactStatusRevoked
-		events[index].Confirmed = false
-		events[index].ConfirmedBy = operatorID
-		events[index].PublicAt = ""
-		events[index].FactRevision++
-		events[index].UpdatedAt = now
-		s.recordFactRevisionLocked(matchID, events[index])
-		if changedSignalIndex == -1 {
-			changedSignalIndex = index
+		if _, released := release[events[index].FactID]; released && events[index].FactStatus == FactStatusConflict {
+			events[index].FactStatus = FactStatusProvisional
+			events[index].Confirmed = false
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = ""
+			events[index].FactRevision++
+			events[index].UpdatedAt = now
+			s.recordFactRevisionLocked(matchID, events[index])
 		}
 	}
-	if chosenIndex == -1 {
-		s.mu.Unlock()
-		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+	conflict := &conflicts[conflictIndex]
+	conflict.SelectedFactIDs = uniqueFactIDs(append(conflict.SelectedFactIDs, transition.SelectedFactIDs...))
+	conflict.Reason = reason
+	conflict.ResolvedBy = operatorID
+	if transition.Resolved {
+		conflict.Status = ConflictStatusResolved
+		conflict.ResolvedAt = now
+		if len(conflict.SelectedFactIDs) == 1 {
+			conflict.ChosenFactID = conflict.SelectedFactIDs[0]
+		} else {
+			conflict.ChosenFactID = ""
+		}
+	} else {
+		conflict.Members = transition.RemainingMembers
+		conflict.Edges = transition.RemainingEdges
 	}
-
-	conflicts[conflictIndex].Status = ConflictStatusResolved
-	conflicts[conflictIndex].ChosenFactID = chosenFactID
-	conflicts[conflictIndex].Reason = reason
-	conflicts[conflictIndex].ResolvedAt = now
-	conflicts[conflictIndex].ResolvedBy = operatorID
 	s.factConflicts[matchID] = conflicts
 	s.events[matchID] = events
 	config := normalizeConfig(matchID, s.configs[matchID])
@@ -925,23 +985,27 @@ func (s *Store) ResolveFactConflict(matchID, conflictID, chosenFactID, operatorI
 		config.UpdatedAt = now
 		s.configs[matchID] = config
 	}
-	snapshot := resolvePublicProjection(
+	projection := resolvePublicProjection(
 		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: s.clocks[matchID], Now: s.now()},
 		s.projectedReads,
 		nil,
-	).Snapshot
-	chosen := events[chosenIndex]
-	resolved := cloneFactConflict(conflicts[conflictIndex])
+	)
+	published := make([]MatchEvent, 0, len(transition.ReconcileFactIDs))
+	for _, factID := range transition.ReconcileFactIDs {
+		for _, projected := range projection.Events {
+			if projected.FactID == factID {
+				published = append(published, projected)
+				break
+			}
+		}
+	}
+	result := cloneFactConflict(*conflict)
 	subs := s.subscriberListLocked(matchID)
-	var signal MatchEvent
-	if changedSignalIndex >= 0 {
-		signal = events[changedSignalIndex]
-	}
 	s.mu.Unlock()
-	if signal.ID != "" {
-		s.publish(subs, signal)
+	for _, event := range published {
+		s.publish(subs, event)
 	}
-	return resolved, chosen, snapshot, nil
+	return result, published, projection.Snapshot, nil
 }
 
 func (s *Store) recordFactConflictLocked(matchID string, events []MatchEvent, conflictingIndices []int, candidate MatchEvent, detectedAt string) {
@@ -953,20 +1017,35 @@ func (s *Store) recordFactConflictLocked(matchID string, events []MatchEvent, co
 			conflictingFactIDs[events[index].FactID] = struct{}{}
 		}
 	}
-	for index := range conflicts {
-		if conflicts[index].Status != ConflictStatusOpen {
-			continue
-		}
-		for _, member := range conflicts[index].Members {
-			if _, conflictsWithExisting := conflictingFactIDs[member.FactID]; conflictsWithExisting {
-				conflictIndex = index
-				break
+	merged := make([]FactConflict, 0, len(conflicts))
+	for _, conflict := range conflicts {
+		intersects := false
+		if conflict.Status == ConflictStatusOpen {
+			for _, member := range conflict.Members {
+				if _, conflictsWithExisting := conflictingFactIDs[member.FactID]; conflictsWithExisting {
+					intersects = true
+					break
+				}
 			}
 		}
-		if conflictIndex >= 0 {
-			break
+		if !intersects {
+			merged = append(merged, conflict)
+			continue
 		}
+		if conflictIndex == -1 {
+			merged = append(merged, conflict)
+			conflictIndex = len(merged) - 1
+			continue
+		}
+		for _, member := range conflict.Members {
+			merged[conflictIndex].Members = appendConflictMember(merged[conflictIndex].Members, member.FactID, member.Role)
+		}
+		for _, edge := range conflict.Edges {
+			merged[conflictIndex].Edges = appendConflictEdge(merged[conflictIndex].Edges, edge.LeftFactID, edge.RightFactID, edge.Reason)
+		}
+		merged[conflictIndex].SelectedFactIDs = uniqueFactIDs(append(merged[conflictIndex].SelectedFactIDs, conflict.SelectedFactIDs...))
 	}
+	conflicts = merged
 	if conflictIndex == -1 {
 		s.nextConflictID++
 		conflicts = append(conflicts, FactConflict{
@@ -987,9 +1066,27 @@ func (s *Store) recordFactConflictLocked(matchID string, events []MatchEvent, co
 			role = ConflictMemberAccepted
 		}
 		conflicts[conflictIndex].Members = appendConflictMember(conflicts[conflictIndex].Members, events[index].FactID, role)
+		conflicts[conflictIndex].Edges = appendConflictEdge(conflicts[conflictIndex].Edges, events[index].FactID, candidate.FactID, "cross_source_fact_conflict")
 	}
 	conflicts[conflictIndex].Members = appendConflictMember(conflicts[conflictIndex].Members, candidate.FactID, ConflictMemberCandidate)
 	s.factConflicts[matchID] = conflicts
+}
+
+func appendConflictEdge(edges []FactConflictEdge, leftFactID, rightFactID, reason string) []FactConflictEdge {
+	leftFactID = strings.TrimSpace(leftFactID)
+	rightFactID = strings.TrimSpace(rightFactID)
+	if leftFactID == "" || rightFactID == "" || leftFactID == rightFactID {
+		return edges
+	}
+	if leftFactID > rightFactID {
+		leftFactID, rightFactID = rightFactID, leftFactID
+	}
+	for _, edge := range edges {
+		if edge.LeftFactID == leftFactID && edge.RightFactID == rightFactID {
+			return edges
+		}
+	}
+	return append(edges, FactConflictEdge{LeftFactID: leftFactID, RightFactID: rightFactID, Reason: strings.TrimSpace(reason)})
 }
 
 func appendConflictMember(members []FactConflictMember, factID string, role ConflictMemberRole) []FactConflictMember {
@@ -1006,7 +1103,18 @@ func appendConflictMember(members []FactConflictMember, factID string, role Conf
 
 func cloneFactConflict(conflict FactConflict) FactConflict {
 	conflict.Members = append([]FactConflictMember(nil), conflict.Members...)
+	conflict.Edges = append([]FactConflictEdge(nil), conflict.Edges...)
+	conflict.SelectedFactIDs = append([]string(nil), conflict.SelectedFactIDs...)
 	return conflict
+}
+
+func publicEventByID(events []MatchEvent, eventID string) (MatchEvent, bool) {
+	for _, event := range events {
+		if event.ID == eventID {
+			return event, true
+		}
+	}
+	return MatchEvent{}, false
 }
 
 func hasOpenFactConflict(conflicts []FactConflict) bool {
@@ -1290,6 +1398,10 @@ func (s *Store) publish(subs []*eventSubscription, ev MatchEvent) error {
 }
 
 func normalize(ev *MatchEvent) {
+	// Audit score fields are derived from the fact ledger and must never be
+	// accepted from an event write request.
+	ev.ReportedScore = nil
+	ev.EffectiveScoreAfter = nil
 	ev.Source = defaultString(ev.Source, "operator")
 	ev.ProviderName = strings.TrimSpace(ev.ProviderName)
 	ev.ProviderEventID = strings.TrimSpace(ev.ProviderEventID)

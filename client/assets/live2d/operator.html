@@ -507,14 +507,22 @@
   .conflict-resolution-card { border-color: rgba(242,201,76,.28); background: rgba(242,201,76,.045); }
   .conflict-resolution-card::before { background: var(--warning); }
   .conflict-title { display: flex; align-items: center; gap: 7px; color: var(--warning); font-weight: 900; }
-  .conflict-options { display: grid; grid-template-columns: repeat(2, minmax(0,1fr)); gap: 8px; }
-  .conflict-option { display: grid; gap: 5px; min-width: 0; padding: 9px; border: 1px solid rgba(255,255,255,.08); border-radius: 7px; background: var(--surface-lowest); }
-  .conflict-option b, .conflict-option span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
-  .conflict-option .small-btn { width: 100%; margin-top: 2px; }
+  .conflict-options { display: grid; border-block: 1px solid rgba(255,255,255,.08); }
+  .conflict-option { display: grid; grid-template-columns: 20px minmax(0,1fr) auto; align-items: center; gap: 9px; min-width: 0; padding: 10px 2px; border-bottom: 1px solid rgba(255,255,255,.06); cursor: pointer; }
+  .conflict-option:last-child { border-bottom: 0; }
+  .conflict-option input { width: 18px; height: 18px; accent-color: var(--green); }
+  .conflict-option-copy { display: grid; gap: 3px; min-width: 0; }
+  .conflict-option-copy b, .conflict-option-copy span { overflow: hidden; text-overflow: ellipsis; white-space: nowrap; }
+  .conflict-option.selected .conflict-option-state { color: var(--green); }
+  .conflict-option.conflicting .conflict-option-state { color: var(--warning); }
+  .conflict-resolution-footer { display: flex; align-items: center; justify-content: space-between; gap: 12px; }
+  .conflict-resolution-footer .small-btn { min-width: 126px; }
   .event-top { display: flex; justify-content: space-between; align-items: flex-start; gap: 8px; font-weight: 800; }
   .mono { font-family: "JetBrains Mono", monospace; }
   .time-badge { color: var(--primary); background: rgba(255,182,147,.1); border-radius: 4px; padding: 2px 6px; font: 700 13px/16px "JetBrains Mono", monospace; }
   .score-badge { background: var(--surface-container); border: 1px solid rgba(255,255,255,.06); border-radius: 4px; padding: 2px 8px; font-weight: 800; }
+  .score-audit { display: grid; gap: 2px; min-width: 86px; color: var(--on-surface-variant); font: 700 12px/14px "JetBrains Mono", monospace; }
+  .score-audit .effective { color: var(--green); }
   .muted { color: rgba(226,191,176,.72); font-size: 12px; line-height: 17px; }
   .voice-line { color: var(--secondary); background: rgba(188,199,222,.1); border: 1px solid rgba(188,199,222,.18); border-radius: 6px; padding: 6px 8px; font-size: 12px; line-height: 17px; }
   .status { color: var(--primary); font-size: 13px; font-weight: 800; }
@@ -2083,7 +2091,7 @@ function applyPublishedSnapshot(result) {
 }
 async function restoreConfirmedScore() {
   try {
-    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
+    const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, { headers: authHeaders() });
     if (res.ok) {
       const data = await res.json();
       const score = data.snapshot?.score;
@@ -2490,7 +2498,7 @@ async function publishPreset(preset, eventSide = side, triggerElement) {
   toast(`已加入草稿：${team(side)} ${preset.label}`, 'ok');
 }
 async function loadConfig() {
-  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`);
+  const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, { headers: authHeaders() });
   if (!res.ok) return;
   const data = await res.json();
   if (data.config?.updatedAt) {
@@ -2521,6 +2529,7 @@ function openConflictForFact(factId) {
 }
 
 function factActionButtons(event) {
+  if (event.status !== 'active') return '';
   if (openConflictForFact(event.factId)) return '';
   const status = event.factStatus || (event.confirmed ? 'confirmed' : 'provisional');
   const actions = [];
@@ -2530,20 +2539,22 @@ function factActionButtons(event) {
   return actions.map(([action, label]) => `<button class="small-btn" type="button" data-fact-action="${action}">${label}</button>`).join('');
 }
 
-async function resolveFactConflict(conflict, chosenEvent, reason, triggerElement) {
-  if (!conflict?.id || !chosenEvent?.factId) return;
-  return runOperatorAction(`conflict:${currentMatchId()}:${conflict.id}:${chosenEvent.factId}`, async () => {
+async function resolveFactConflict(conflict, selectedEvents, reason, triggerElement) {
+  const selectedFactIds = (selectedEvents || []).map((event) => event?.factId).filter(Boolean).sort();
+  if (!conflict?.id || !selectedFactIds.length) return;
+  const selectionKey = selectedFactIds.join(',');
+  return runOperatorAction(`conflict:${currentMatchId()}:${conflict.id}:${selectionKey}`, async () => {
     try {
       const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/conflicts/${encodeURIComponent(conflict.id)}/resolve`, {
         method: 'POST',
         headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ chosenFactId: chosenEvent.factId, reason }),
-        inflightKey: `conflict:${currentMatchId()}:${conflict.id}:${chosenEvent.factId}`
+        body: JSON.stringify({ selectedFactIds, reason }),
+        inflightKey: `conflict:${currentMatchId()}:${conflict.id}:${selectionKey}`
       });
       applyPublishedSnapshot(result);
       updateContextPreview();
       await loadTimeline();
-      toast(chosenEvent.factStatus === 'conflict' ? '已采用新事实并同步赛况' : '已保留原事实', 'ok');
+      toast('事实选择已生效', 'ok');
     } catch (error) {
       toast(error.message || '冲突处理失败', 'bad');
     }
@@ -2557,30 +2568,70 @@ function renderFactConflict(conflict, eventsByFactId) {
   const accepted = members.filter((member) => member.role === 'accepted');
   const candidates = members.filter((member) => member.role === 'candidate');
   const options = [...accepted, ...candidates];
+  const selected = new Set(accepted.map((member) => member.factId));
+  const conflictsByFactId = new Map(options.map((member) => [member.factId, new Set()]));
+  (conflict.edges || []).forEach((edge) => {
+    if (!conflictsByFactId.has(edge.leftFactId) || !conflictsByFactId.has(edge.rightFactId)) return;
+    conflictsByFactId.get(edge.leftFactId).add(edge.rightFactId);
+    conflictsByFactId.get(edge.rightFactId).add(edge.leftFactId);
+  });
   card.innerHTML = `
-    <div class="conflict-title"><span class="material-symbols-outlined">rule</span><span>这两条赛况互相冲突，请确认一条</span></div>
-    <div class="muted">用户端仍保持上一次已确认赛况；这里的选择会一次性完成比分和事实切换。</div>
+    <div class="conflict-title"><span class="material-symbols-outlined">rule</span><span>多条赛况存在冲突</span></div>
     <div class="conflict-options">
       ${options.map((member, index) => `
-        <div class="conflict-option">
-          <span class="muted">${member.role === 'accepted' ? '当前已采用' : '新到候选'} · ${escapeHTML(member.event.clock || '')}</span>
-          <b>${escapeHTML(member.event.teamName || '')} ${escapeHTML(eventLabel(member.event.eventType))}</b>
-          <span>${escapeHTML(member.event.description || '')}</span>
-          <button class="small-btn" type="button" data-conflict-choice="${index}">${member.role === 'accepted' ? '保留原事实' : '采用新事实'}</button>
-        </div>
+        <label class="conflict-option" data-conflict-option="${index}">
+          <input type="checkbox" data-conflict-choice="${index}" aria-label="选择 ${escapeHTML(member.event.description || eventLabel(member.event.eventType))}">
+          <span class="conflict-option-copy">
+            <span class="muted">${member.role === 'accepted' ? '当前已采用' : '新到候选'} · ${escapeHTML(member.event.clock || '')}</span>
+            <b>${escapeHTML(member.event.teamName || '')} ${escapeHTML(eventLabel(member.event.eventType))}</b>
+            <span>${escapeHTML(member.event.description || '')}</span>
+          </span>
+          <span class="conflict-option-state muted" data-conflict-state="${index}"></span>
+        </label>
       `).join('')}
     </div>
+    <div class="conflict-resolution-footer">
+      <span class="muted" data-conflict-summary></span>
+      <button class="small-btn" type="button" data-conflict-submit>确认事实选择</button>
+    </div>
   `;
-  card.querySelectorAll('[data-conflict-choice]').forEach((button) => {
-    const member = options[Number(button.dataset.conflictChoice)];
-    button.dataset.busyLabel = '处理中…';
-    button.onclick = () => resolveFactConflict(
-      conflict,
-      member.event,
-      member.role === 'accepted' ? '导演确认保留原事实' : '导演确认采用新事实',
-      button
-    );
+  const submit = card.querySelector('[data-conflict-submit]');
+  const updateSelection = () => {
+    options.forEach((member, index) => {
+      const input = card.querySelector(`[data-conflict-choice="${index}"]`);
+      const row = card.querySelector(`[data-conflict-option="${index}"]`);
+      const state = card.querySelector(`[data-conflict-state="${index}"]`);
+      const isSelected = selected.has(member.factId);
+      const conflictsWithSelection = [...(conflictsByFactId.get(member.factId) || [])].some((factId) => selected.has(factId));
+      input.checked = isSelected;
+      row.classList.toggle('selected', isSelected);
+      row.classList.toggle('conflicting', !isSelected && conflictsWithSelection);
+      state.textContent = isSelected ? '保留' : conflictsWithSelection ? '选择后替换' : '不保留';
+    });
+    const selectedCount = selected.size;
+    card.querySelector('[data-conflict-summary]').textContent = `保留 ${selectedCount} 条 · 排除 ${options.length - selectedCount} 条`;
+    submit.disabled = selectedCount === 0;
+  };
+  card.querySelectorAll('[data-conflict-choice]').forEach((input) => {
+    input.onchange = () => {
+      const member = options[Number(input.dataset.conflictChoice)];
+      if (input.checked) {
+        (conflictsByFactId.get(member.factId) || []).forEach((factId) => selected.delete(factId));
+        selected.add(member.factId);
+      } else {
+        selected.delete(member.factId);
+      }
+      updateSelection();
+    };
   });
+  submit.dataset.busyLabel = '处理中…';
+  submit.onclick = () => resolveFactConflict(
+    conflict,
+    options.filter((member) => selected.has(member.factId)).map((member) => member.event),
+    '导演确认兼容事实集合',
+    submit
+  );
+  updateSelection();
   return card;
 }
 
@@ -2624,7 +2675,10 @@ async function loadTimeline() {
   events.forEach((event) => {
     const card = document.createElement('div');
     card.className = 'event-card';
+    const isActiveRevision = event.status === 'active';
     const roleText = (event.participants || []).map((p) => `${p.role}=${p.name}`).join('；');
+    const reportedScore = event.reportedScore || event.score || { home: 0, away: 0 };
+    const effectiveScore = event.effectiveScoreAfter;
     card.innerHTML = `
       <div class="event-top">
         <div style="display:flex;gap:8px;align-items:center;min-width:0">
@@ -2632,8 +2686,11 @@ async function loadTimeline() {
           <span>${escapeHTML(event.teamName || '')} ${eventLabel(event.eventType)}</span>
         </div>
         <div style="display:flex;gap:8px;align-items:center">
-          <span class="score-badge">${event.score?.home ?? 0}-${event.score?.away ?? 0}</span>
-          <button class="small-btn" type="button">${['provisional', 'conflict'].includes(event.factStatus) ? '采用到草稿' : '拉回更正'}</button>
+          <span class="score-audit">
+            <span>上报 ${Number(reportedScore.home || 0)}-${Number(reportedScore.away || 0)}</span>
+            <span class="${effectiveScore ? 'effective' : ''}">${effectiveScore ? `生效 ${Number(effectiveScore.home || 0)}-${Number(effectiveScore.away || 0)}` : '尚未生效'}</span>
+          </span>
+          <button class="small-btn" type="button" data-action="correct" ${isActiveRevision ? '' : 'disabled'}>${isActiveRevision ? (['provisional', 'conflict'].includes(event.factStatus) ? '采用到草稿' : '拉回更正') : '历史版本'}</button>
         </div>
       </div>
       <div>${escapeHTML(event.description || '')}</div>
@@ -2642,9 +2699,8 @@ async function loadTimeline() {
       ${event.evidence?.correctionReason ? `<div class="muted">更正原因：${escapeHTML(event.evidence.correctionReason)}</div>` : ''}
       <div class="muted mono">${event.confirmed ? '事实已确认' : '等待事实确认'} / ${escapeHTML(event.status || 'created')} / ${escapeHTML(event.recommendedAction || 'auto')} / ${escapeHTML(event.id || '')}</div>
     `;
-    const correctionButton = card.querySelector('button');
-    correctionButton.dataset.action = 'correct';
-    correctionButton.onclick = () => editCorrection(event);
+    const correctionButton = card.querySelector('[data-action="correct"]');
+    if (isActiveRevision) correctionButton.onclick = () => editCorrection(event);
     const actionHost = card.querySelector('.event-top > div:last-child');
     actionHost.insertAdjacentHTML('afterbegin', factActionButtons(event));
     card.querySelectorAll('[data-fact-action]').forEach((button) => {
@@ -2691,7 +2747,7 @@ async function loadMemoryPanel() {
   if (!snapshotHost || !eventsHost) return;
   try {
     const [stateRes, eventsRes] = await Promise.all([
-      fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/state`),
+      fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/state`, { headers: authHeaders() }),
       fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/events`, { headers: authHeaders() })
     ]);
     if (!stateRes.ok) throw new Error(await stateRes.text());

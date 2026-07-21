@@ -25,9 +25,19 @@ test('用户领先现场时，导播确认与撤销只跟进对应用户', async
   });
 
   await prepareClient(page);
+  const otherSessionResponse = await request.post('/api/sessions/anonymous', {
+    data: { deviceId: `observation-other-${Date.now()}` },
+  });
+  expect(otherSessionResponse.ok()).toBeTruthy();
+  const otherSession = await otherSessionResponse.json();
   const otherContext = await browser.newContext();
   const otherPage = await otherContext.newPage();
-  await prepareClient(otherPage);
+  await otherPage.goto('/health');
+  await connectTestSocket(otherPage, matchId, otherSession);
+  await otherPage.evaluate(({ userId }) => {
+    window.__testSocket.send(JSON.stringify({ type: 'identify', userId }));
+    window.__testSocket.send(JSON.stringify({ type: 'session_opened', userId }));
+  }, otherSession);
 
   await openTextMode(page);
   await sendText(page, '佩德里刚刚进球了吧');
@@ -50,7 +60,7 @@ test('用户领先现场时，导播确认与撤销只跟进对应用户', async
   await expect(operator.locator('#timeline')).toContainText('佩德里禁区前沿推射破门');
 
   await expect(page.getByText(/跟上了.*佩德里进的/).last()).toBeVisible({ timeout: 30_000 });
-  await expect(otherPage.getByText(/跟上了.*佩德里进的/)).toHaveCount(0);
+  expect(await latestSocketReply(otherPage, 'observation_resolution')).toBe('');
 
   const events = await apiGet(request, `/api/matches/${matchId}/events`);
   const goal = events.events.find((event) => event.eventType === 'goal' && event.playerName === '佩德里');
@@ -58,13 +68,14 @@ test('用户领先现场时，导播确认与撤销只跟进对应用户', async
   await apiPost(request, `/api/matches/${matchId}/facts/${goal.factId}/revoke`, {});
 
   await expect(page.getByText(/这球没算/).last()).toBeVisible({ timeout: 30_000 });
-  await expect(otherPage.getByText(/这球没算/)).toHaveCount(0);
+  expect(await latestSocketReply(otherPage, 'observation_resolution')).toBe('');
 
   const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=50`);
   const resolutions = traces.traces.filter((trace) => trace.observationResolution);
   expect(resolutions.map((trace) => trace.observationResolution.status)).toEqual(
     expect.arrayContaining(['confirmed', 'contradicted']),
   );
+  await closeTestSocket(otherPage);
   await otherContext.close();
 });
 

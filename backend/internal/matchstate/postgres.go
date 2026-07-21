@@ -1005,204 +1005,281 @@ func (s *PostgresStore) FactConflicts(matchID string) []FactConflict {
 	if err != nil {
 		return nil
 	}
-	defer rows.Close()
-	return scanFactConflicts(rows)
+	conflicts := scanFactConflicts(rows)
+	rows.Close()
+	for index := range conflicts {
+		if err := s.loadFactConflictGraph(context.Background(), s.pool, &conflicts[index]); err != nil {
+			return nil
+		}
+	}
+	return conflicts
 }
 
-func (s *PostgresStore) ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
-	return s.resolveFactConflict(context.Background(), matchID, conflictID, chosenFactID, operatorID, reason)
+func (s *PostgresStore) ResolveFactConflictSelection(matchID, conflictID string, selectedFactIDs []string, operatorID, reason string) (FactConflict, []MatchEvent, Snapshot, error) {
+	return s.resolveFactConflictSelection(context.Background(), matchID, conflictID, selectedFactIDs, operatorID, reason)
 }
 
-func (s *PostgresStore) ResolveFactConflictOperator(ctx context.Context, matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
-	return s.resolveFactConflict(ctx, matchID, conflictID, chosenFactID, operatorID, reason)
+func (s *PostgresStore) ResolveFactConflictSelectionOperator(ctx context.Context, matchID, conflictID string, selectedFactIDs []string, operatorID, reason string) (FactConflict, []MatchEvent, Snapshot, error) {
+	return s.resolveFactConflictSelection(ctx, matchID, conflictID, selectedFactIDs, operatorID, reason)
 }
 
-func (s *PostgresStore) resolveFactConflict(ctx context.Context, matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
+func (s *PostgresStore) resolveFactConflictSelection(ctx context.Context, matchID, conflictID string, selectedFactIDs []string, operatorID, reason string) (FactConflict, []MatchEvent, Snapshot, error) {
 	matchID = strings.TrimSpace(matchID)
 	conflictID = strings.TrimSpace(conflictID)
-	chosenFactID = strings.TrimSpace(chosenFactID)
 	operatorID = strings.TrimSpace(operatorID)
 	reason = strings.TrimSpace(reason)
-	if matchID == "" || conflictID == "" || chosenFactID == "" || operatorID == "" || reason == "" {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, conflictId, chosenFactId, operatorId and reason are required", ErrInvalid)
+	if matchID == "" || conflictID == "" || len(uniqueFactIDs(selectedFactIDs)) == 0 || operatorID == "" || reason == "" {
+		return FactConflict{}, nil, Snapshot{}, fmt.Errorf("%w: matchId, conflictId, selectedFactIds, operatorId and reason are required", ErrInvalid)
 	}
-
 	tx, owned, err := s.beginMutation(ctx)
 	if err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+		return FactConflict{}, nil, Snapshot{}, err
 	}
 	defer rollbackOwnedMutation(ctx, tx, owned)
 	if err := lockMatchMutation(ctx, tx, matchID); err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+		return FactConflict{}, nil, Snapshot{}, err
 	}
-
-	var conflict FactConflict
-	var detectedAt time.Time
-	var resolvedAt *time.Time
-	err = tx.QueryRow(ctx, `
-		SELECT id, match_id, status, chosen_fact_id, reason, detected_at, resolved_at, resolved_by
-		FROM fact_conflicts
-		WHERE match_id = $1 AND id = $2
-		FOR UPDATE
-	`, matchID, conflictID).Scan(
-		&conflict.ID, &conflict.MatchID, &conflict.Status, &conflict.ChosenFactID, &conflict.Reason,
-		&detectedAt, &resolvedAt, &conflict.ResolvedBy,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
-	}
+	conflict, err := loadFactConflictForUpdate(ctx, tx, matchID, conflictID)
 	if err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+		return FactConflict{}, nil, Snapshot{}, err
 	}
 	if conflict.Status != ConflictStatusOpen {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: conflict is already resolved", ErrInvalid)
+		return FactConflict{}, nil, Snapshot{}, fmt.Errorf("%w: conflict is already resolved", ErrInvalid)
 	}
-	conflict.DetectedAt = detectedAt.UTC().Format(time.RFC3339Nano)
-	if resolvedAt != nil {
-		conflict.ResolvedAt = resolvedAt.UTC().Format(time.RFC3339Nano)
+	if err := s.loadFactConflictGraph(ctx, tx, &conflict); err != nil {
+		return FactConflict{}, nil, Snapshot{}, err
 	}
-	memberRows, err := tx.Query(ctx, `
-		SELECT fact_id, role
-		FROM fact_conflict_members
-		WHERE conflict_id = $1
-		ORDER BY role ASC, fact_id ASC
-	`, conflictID)
-	if err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
-	}
-	for memberRows.Next() {
-		var member FactConflictMember
-		if err := memberRows.Scan(&member.FactID, &member.Role); err != nil {
-			memberRows.Close()
-			return FactConflict{}, MatchEvent{}, Snapshot{}, err
-		}
-		conflict.Members = append(conflict.Members, member)
-	}
-	if err := memberRows.Err(); err != nil {
-		memberRows.Close()
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
-	}
-	memberRows.Close()
-	memberFactIDs := make(map[string]struct{}, len(conflict.Members))
-	for _, member := range conflict.Members {
-		memberFactIDs[member.FactID] = struct{}{}
-	}
-	if _, member := memberFactIDs[chosenFactID]; !member {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, fmt.Errorf("%w: chosen fact is not a member of the conflict", ErrInvalid)
-	}
-
 	events, err := s.eventsInTransaction(ctx, tx, matchID, true)
 	if err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+		return FactConflict{}, nil, Snapshot{}, err
 	}
-	chosenIndex := -1
-	changedSignalIndex := -1
+	transition, err := resolveConflictSelection(events, conflict, selectedFactIDs)
+	if err != nil {
+		return FactConflict{}, nil, Snapshot{}, err
+	}
 	now := time.Now().UTC()
+	reconcile := make(map[string]struct{}, len(transition.ReconcileFactIDs))
+	for _, factID := range transition.ReconcileFactIDs {
+		reconcile[factID] = struct{}{}
+	}
+	revoke := make(map[string]struct{}, len(transition.RevokeFactIDs))
+	for _, factID := range transition.RevokeFactIDs {
+		revoke[factID] = struct{}{}
+	}
+	release := make(map[string]struct{}, len(transition.ReleaseFactIDs))
+	for _, factID := range transition.ReleaseFactIDs {
+		release[factID] = struct{}{}
+	}
 	for index := range events {
 		if events[index].Status != "active" {
 			continue
 		}
-		if _, member := memberFactIDs[events[index].FactID]; !member {
-			continue
-		}
-		if events[index].FactID == chosenFactID {
-			chosenIndex = index
-			if events[index].FactStatus == FactStatusConflict || events[index].FactStatus == FactStatusProvisional {
-				if _, err := tx.Exec(ctx, `
-					UPDATE match_events
-					SET fact_status = 'reconciled', confirmed = TRUE, confirmed_by = $3,
-						public_at = $4, fact_revision = fact_revision + 1, updated_at = $4
-					WHERE match_id = $1 AND fact_id = $2 AND status = 'active'
-				`, matchID, events[index].FactID, operatorID, now); err != nil {
-					return FactConflict{}, MatchEvent{}, Snapshot{}, err
-				}
-				events[index].FactStatus = FactStatusReconciled
-				events[index].Confirmed = true
-				events[index].ConfirmedBy = operatorID
-				events[index].PublicAt = now.Format(time.RFC3339Nano)
-				events[index].FactRevision++
-				events[index].UpdatedAt = events[index].PublicAt
-				if err := insertFactRevision(ctx, tx, events[index]); err != nil {
-					return FactConflict{}, MatchEvent{}, Snapshot{}, err
-				}
-				changedSignalIndex = index
+		if _, selected := reconcile[events[index].FactID]; selected {
+			if _, err := tx.Exec(ctx, `
+				UPDATE match_events
+				SET fact_status = 'reconciled', confirmed = TRUE, confirmed_by = $3,
+					public_at = $4, fact_revision = fact_revision + 1, updated_at = $4
+				WHERE match_id = $1 AND fact_id = $2 AND status = 'active'
+			`, matchID, events[index].FactID, operatorID, now); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
+			events[index].FactStatus = FactStatusReconciled
+			events[index].Confirmed = true
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = now.Format(time.RFC3339Nano)
+			events[index].FactRevision++
+			events[index].UpdatedAt = events[index].PublicAt
+			if err := insertFactRevision(ctx, tx, events[index]); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
 			}
 			continue
 		}
-		if events[index].FactStatus == FactStatusRevoked {
+		if _, rejected := revoke[events[index].FactID]; rejected && events[index].FactStatus != FactStatusRevoked {
+			if _, err := tx.Exec(ctx, `
+				UPDATE match_events
+				SET fact_status = 'revoked', confirmed = FALSE, confirmed_by = $3,
+					public_at = NULL, fact_revision = fact_revision + 1, updated_at = $4
+				WHERE match_id = $1 AND fact_id = $2 AND status = 'active'
+			`, matchID, events[index].FactID, operatorID, now); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
+			events[index].FactStatus = FactStatusRevoked
+			events[index].Confirmed = false
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = ""
+			events[index].FactRevision++
+			events[index].UpdatedAt = now.Format(time.RFC3339Nano)
+			if err := insertFactRevision(ctx, tx, events[index]); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
 			continue
 		}
+		if _, released := release[events[index].FactID]; released && events[index].FactStatus == FactStatusConflict {
+			if _, err := tx.Exec(ctx, `
+				UPDATE match_events
+				SET fact_status = 'provisional', confirmed = FALSE, confirmed_by = $3,
+					public_at = NULL, fact_revision = fact_revision + 1, updated_at = $4
+				WHERE match_id = $1 AND fact_id = $2 AND status = 'active'
+			`, matchID, events[index].FactID, operatorID, now); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
+			events[index].FactStatus = FactStatusProvisional
+			events[index].Confirmed = false
+			events[index].ConfirmedBy = operatorID
+			events[index].PublicAt = ""
+			events[index].FactRevision++
+			events[index].UpdatedAt = now.Format(time.RFC3339Nano)
+			if err := insertFactRevision(ctx, tx, events[index]); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
+		}
+	}
+	allSelectedFactIDs := uniqueFactIDs(append(conflict.SelectedFactIDs, transition.SelectedFactIDs...))
+	for _, factID := range transition.SelectedFactIDs {
 		if _, err := tx.Exec(ctx, `
-			UPDATE match_events
-			SET fact_status = 'revoked', confirmed = FALSE, confirmed_by = $3,
-				public_at = NULL, fact_revision = fact_revision + 1, updated_at = $4
-			WHERE match_id = $1 AND fact_id = $2 AND status = 'active'
-		`, matchID, events[index].FactID, operatorID, now); err != nil {
-			return FactConflict{}, MatchEvent{}, Snapshot{}, err
-		}
-		events[index].FactStatus = FactStatusRevoked
-		events[index].Confirmed = false
-		events[index].ConfirmedBy = operatorID
-		events[index].PublicAt = ""
-		events[index].FactRevision++
-		events[index].UpdatedAt = now.Format(time.RFC3339Nano)
-		if err := insertFactRevision(ctx, tx, events[index]); err != nil {
-			return FactConflict{}, MatchEvent{}, Snapshot{}, err
-		}
-		if changedSignalIndex == -1 {
-			changedSignalIndex = index
+			INSERT INTO fact_conflict_resolution_facts (conflict_id, fact_id, selected_at, reason, resolved_by)
+			VALUES ($1, $2, $3, $4, $5)
+			ON CONFLICT (conflict_id, fact_id) DO UPDATE SET
+				selected_at = EXCLUDED.selected_at,
+				reason = EXCLUDED.reason,
+				resolved_by = EXCLUDED.resolved_by
+		`, conflictID, factID, now, reason, operatorID); err != nil {
+			return FactConflict{}, nil, Snapshot{}, err
 		}
 	}
-	if chosenIndex == -1 {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+	if transition.Resolved {
+		chosenFactID := ""
+		if len(allSelectedFactIDs) == 1 {
+			chosenFactID = allSelectedFactIDs[0]
+		}
+		if _, err := tx.Exec(ctx, `
+			UPDATE fact_conflicts
+			SET status = 'resolved', chosen_fact_id = $3, reason = $4, resolved_at = $5, resolved_by = $6
+			WHERE match_id = $1 AND id = $2 AND status = 'open'
+		`, matchID, conflictID, chosenFactID, reason, now, operatorID); err != nil {
+			return FactConflict{}, nil, Snapshot{}, err
+		}
+		conflict.Status = ConflictStatusResolved
+		conflict.ChosenFactID = chosenFactID
+		conflict.ResolvedAt = now.Format(time.RFC3339Nano)
+	} else {
+		if _, err := tx.Exec(ctx, `
+			UPDATE fact_conflicts
+			SET reason = $3, resolved_by = $4
+			WHERE match_id = $1 AND id = $2 AND status = 'open'
+		`, matchID, conflictID, reason, operatorID); err != nil {
+			return FactConflict{}, nil, Snapshot{}, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM fact_conflict_edges WHERE conflict_id = $1`, conflictID); err != nil {
+			return FactConflict{}, nil, Snapshot{}, err
+		}
+		if _, err := tx.Exec(ctx, `DELETE FROM fact_conflict_members WHERE conflict_id = $1`, conflictID); err != nil {
+			return FactConflict{}, nil, Snapshot{}, err
+		}
+		for _, member := range transition.RemainingMembers {
+			if err := upsertFactConflictMember(ctx, tx, conflictID, member.FactID, member.Role); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
+		}
+		for _, edge := range transition.RemainingEdges {
+			if err := upsertFactConflictEdge(ctx, tx, conflictID, edge.LeftFactID, edge.RightFactID, edge.Reason, now); err != nil {
+				return FactConflict{}, nil, Snapshot{}, err
+			}
+		}
+		conflict.Members = transition.RemainingMembers
+		conflict.Edges = transition.RemainingEdges
 	}
-
-	if _, err := tx.Exec(ctx, `
-		UPDATE fact_conflicts
-		SET status = 'resolved', chosen_fact_id = $3, reason = $4, resolved_at = $5, resolved_by = $6
-		WHERE match_id = $1 AND id = $2 AND status = 'open'
-	`, matchID, conflictID, chosenFactID, reason, now, operatorID); err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
-	}
-	var hasOtherOpen bool
-	if err := tx.QueryRow(ctx, `
-		SELECT EXISTS(
-			SELECT 1 FROM fact_conflicts
-			WHERE match_id = $1 AND status = 'open' AND id <> $2
-		)
-	`, matchID, conflictID).Scan(&hasOtherOpen); err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+	conflict.SelectedFactIDs = allSelectedFactIDs
+	conflict.Reason = reason
+	conflict.ResolvedBy = operatorID
+	var hasOpen bool
+	if err := tx.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM fact_conflicts WHERE match_id = $1 AND status = 'open')`, matchID).Scan(&hasOpen); err != nil {
+		return FactConflict{}, nil, Snapshot{}, err
 	}
 	config := s.Config(matchID)
-	if !hasOtherOpen {
+	if !hasOpen {
 		if err := markMatchIntegrity(ctx, tx, matchID, MatchIntegrity{Status: "ok"}); err != nil {
-			return FactConflict{}, MatchEvent{}, Snapshot{}, err
+			return FactConflict{}, nil, Snapshot{}, err
 		}
 		config.Integrity = MatchIntegrity{Status: "ok"}
 		config.UpdatedAt = now.Format(time.RFC3339Nano)
 	}
-	if changedSignalIndex >= 0 {
-		if err := enqueueMatchEvent(ctx, tx, events[changedSignalIndex]); err != nil {
-			return FactConflict{}, MatchEvent{}, Snapshot{}, err
+	projection := resolvePublicProjection(
+		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: s.Clock(matchID), Now: now},
+		s.projectedReads,
+		nil,
+	)
+	published := make([]MatchEvent, 0, len(transition.ReconcileFactIDs))
+	for _, factID := range transition.ReconcileFactIDs {
+		for _, projected := range projection.Events {
+			if projected.FactID == factID {
+				published = append(published, projected)
+				if err := enqueueMatchEvent(ctx, tx, projected); err != nil {
+					return FactConflict{}, nil, Snapshot{}, err
+				}
+				break
+			}
 		}
 	}
 	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
-		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+		return FactConflict{}, nil, Snapshot{}, err
 	}
-	conflict.Status = ConflictStatusResolved
-	conflict.ChosenFactID = chosenFactID
-	conflict.Reason = reason
-	conflict.ResolvedAt = now.Format(time.RFC3339Nano)
-	conflict.ResolvedBy = operatorID
-	snapshot := resolvePublicProjection(
-		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: s.Clock(matchID), Now: time.Now()},
-		s.projectedReads,
-		nil,
-	).Snapshot
-	if owned {
+	if owned && len(published) > 0 {
 		s.kickOutbox()
 	}
-	return conflict, events[chosenIndex], snapshot, nil
+	return conflict, published, projection.Snapshot, nil
+}
+
+func (s *PostgresStore) ResolveFactConflict(matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
+	return s.resolveLegacyFactConflict(context.Background(), matchID, conflictID, chosenFactID, operatorID, reason, false)
+}
+
+func (s *PostgresStore) ResolveFactConflictOperator(ctx context.Context, matchID, conflictID, chosenFactID, operatorID, reason string) (FactConflict, MatchEvent, Snapshot, error) {
+	return s.resolveLegacyFactConflict(ctx, matchID, conflictID, chosenFactID, operatorID, reason, true)
+}
+
+func (s *PostgresStore) resolveLegacyFactConflict(ctx context.Context, matchID, conflictID, chosenFactID, operatorID, reason string, transactional bool) (FactConflict, MatchEvent, Snapshot, error) {
+	var target FactConflict
+	for _, conflict := range s.FactConflicts(matchID) {
+		if conflict.ID == strings.TrimSpace(conflictID) && conflict.Status == ConflictStatusOpen {
+			target = conflict
+			break
+		}
+	}
+	if target.ID == "" {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
+	}
+	selection, err := CompatibleSelectionForLegacyChoice(target, chosenFactID)
+	if err != nil {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+	}
+	var selectedBefore MatchEvent
+	for _, event := range s.Events(matchID) {
+		if event.Status == "active" && event.FactID == strings.TrimSpace(chosenFactID) {
+			selectedBefore = event
+			break
+		}
+	}
+	var resolved FactConflict
+	var published []MatchEvent
+	var snapshot Snapshot
+	if transactional {
+		resolved, published, snapshot, err = s.ResolveFactConflictSelectionOperator(ctx, matchID, conflictID, selection, operatorID, reason)
+	} else {
+		resolved, published, snapshot, err = s.ResolveFactConflictSelection(matchID, conflictID, selection, operatorID, reason)
+	}
+	if err != nil {
+		return FactConflict{}, MatchEvent{}, Snapshot{}, err
+	}
+	for _, event := range published {
+		if event.FactID == strings.TrimSpace(chosenFactID) {
+			return resolved, event, snapshot, nil
+		}
+	}
+	if selectedBefore.ID != "" {
+		return resolved, selectedBefore, snapshot, nil
+	}
+	return FactConflict{}, MatchEvent{}, Snapshot{}, ErrNotFound
 }
 
 func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, operatorID string, status FactStatus) (MatchEvent, Snapshot, error) {
@@ -1231,7 +1308,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 				}
 			}
 		}
-		_, changed, snapshot, resolveErr := s.resolveFactConflict(ctx, matchID, conflictID, chosenFactID, operatorID, reason)
+		_, changed, snapshot, resolveErr := s.resolveLegacyFactConflict(ctx, matchID, conflictID, chosenFactID, operatorID, reason, true)
 		if resolveErr != nil {
 			return MatchEvent{}, Snapshot{}, resolveErr
 		}
@@ -1425,6 +1502,11 @@ func (s *PostgresStore) eventsInTransaction(ctx context.Context, tx pgx.Tx, matc
 
 type postgresRowsQueryer interface {
 	Query(context.Context, string, ...any) (pgx.Rows, error)
+}
+
+type postgresConflictQueryer interface {
+	postgresRowsQueryer
+	QueryRow(context.Context, string, ...any) pgx.Row
 }
 
 func (s *PostgresStore) eventsWithQueryer(ctx context.Context, queryer postgresRowsQueryer, matchID string, ascending bool) ([]MatchEvent, error) {
@@ -1726,8 +1808,7 @@ func createOrExtendFactConflict(ctx context.Context, tx pgx.Tx, matchID string, 
 			conflictingFactIDs = append(conflictingFactIDs, events[index].FactID)
 		}
 	}
-	var conflictID string
-	err := tx.QueryRow(ctx, `
+	rows, err := tx.Query(ctx, `
 		SELECT c.id
 		FROM fact_conflicts c
 		WHERE c.match_id = $1
@@ -1739,9 +1820,26 @@ func createOrExtendFactConflict(ctx context.Context, tx pgx.Tx, matchID string, 
 		  )
 		ORDER BY c.detected_at ASC, c.id ASC
 		FOR UPDATE
-		LIMIT 1
-	`, matchID, conflictingFactIDs).Scan(&conflictID)
-	if errors.Is(err, pgx.ErrNoRows) {
+	`, matchID, conflictingFactIDs)
+	if err != nil {
+		return err
+	}
+	var conflictIDs []string
+	for rows.Next() {
+		var conflictID string
+		if err := rows.Scan(&conflictID); err != nil {
+			rows.Close()
+			return err
+		}
+		conflictIDs = append(conflictIDs, conflictID)
+	}
+	if err := rows.Err(); err != nil {
+		rows.Close()
+		return err
+	}
+	rows.Close()
+	var conflictID string
+	if len(conflictIDs) == 0 {
 		conflictID, err = newFactConflictID()
 		if err != nil {
 			return err
@@ -1752,8 +1850,53 @@ func createOrExtendFactConflict(ctx context.Context, tx pgx.Tx, matchID string, 
 		`, conflictID, matchID, detectedAt); err != nil {
 			return err
 		}
-	} else if err != nil {
-		return err
+	} else {
+		conflictID = conflictIDs[0]
+		for _, mergedConflictID := range conflictIDs[1:] {
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO fact_conflict_members (conflict_id, fact_id, role)
+				SELECT $1, fact_id, role
+				FROM fact_conflict_members
+				WHERE conflict_id = $2
+				ON CONFLICT (conflict_id, fact_id) DO UPDATE SET
+					role = CASE
+						WHEN fact_conflict_members.role = 'accepted' OR EXCLUDED.role = 'accepted' THEN 'accepted'
+						ELSE 'candidate'
+					END
+			`, conflictID, mergedConflictID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO fact_conflict_edges (conflict_id, left_fact_id, right_fact_id, reason, detected_at)
+				SELECT $1, left_fact_id, right_fact_id, reason, detected_at
+				FROM fact_conflict_edges
+				WHERE conflict_id = $2
+				ON CONFLICT (conflict_id, left_fact_id, right_fact_id) DO NOTHING
+			`, conflictID, mergedConflictID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `
+				INSERT INTO fact_conflict_resolution_facts (conflict_id, fact_id, selected_at, reason, resolved_by)
+				SELECT $1, fact_id, selected_at, reason, resolved_by
+				FROM fact_conflict_resolution_facts
+				WHERE conflict_id = $2
+				ON CONFLICT (conflict_id, fact_id) DO UPDATE SET
+					reason = CASE
+						WHEN EXCLUDED.selected_at >= fact_conflict_resolution_facts.selected_at THEN EXCLUDED.reason
+						ELSE fact_conflict_resolution_facts.reason
+					END,
+					resolved_by = CASE
+						WHEN EXCLUDED.selected_at >= fact_conflict_resolution_facts.selected_at THEN EXCLUDED.resolved_by
+						ELSE fact_conflict_resolution_facts.resolved_by
+					END,
+					selected_at = GREATEST(fact_conflict_resolution_facts.selected_at, EXCLUDED.selected_at)
+			`, conflictID, mergedConflictID); err != nil {
+				return err
+			}
+			if _, err := tx.Exec(ctx, `DELETE FROM fact_conflicts WHERE id = $1 AND status = 'open'`, mergedConflictID); err != nil {
+				return err
+			}
+		}
 	}
 	for _, index := range conflictingIndices {
 		if index < 0 || index >= len(events) {
@@ -1767,7 +1910,18 @@ func createOrExtendFactConflict(ctx context.Context, tx pgx.Tx, matchID string, 
 			return err
 		}
 	}
-	return upsertFactConflictMember(ctx, tx, conflictID, candidate.FactID, ConflictMemberCandidate)
+	if err := upsertFactConflictMember(ctx, tx, conflictID, candidate.FactID, ConflictMemberCandidate); err != nil {
+		return err
+	}
+	for _, index := range conflictingIndices {
+		if index < 0 || index >= len(events) {
+			continue
+		}
+		if err := upsertFactConflictEdge(ctx, tx, conflictID, events[index].FactID, candidate.FactID, "cross_source_fact_conflict", detectedAt); err != nil {
+			return err
+		}
+	}
+	return nil
 }
 
 func upsertFactConflictMember(ctx context.Context, tx pgx.Tx, conflictID, factID string, role ConflictMemberRole) error {
@@ -1781,6 +1935,131 @@ func upsertFactConflictMember(ctx context.Context, tx pgx.Tx, conflictID, factID
 			END
 	`, conflictID, factID, role)
 	return err
+}
+
+func upsertFactConflictEdge(ctx context.Context, tx pgx.Tx, conflictID, leftFactID, rightFactID, reason string, detectedAt time.Time) error {
+	leftFactID = strings.TrimSpace(leftFactID)
+	rightFactID = strings.TrimSpace(rightFactID)
+	if leftFactID == "" || rightFactID == "" || leftFactID == rightFactID {
+		return fmt.Errorf("%w: conflict edge requires two distinct facts", ErrInvalid)
+	}
+	if leftFactID > rightFactID {
+		leftFactID, rightFactID = rightFactID, leftFactID
+	}
+	_, err := tx.Exec(ctx, `
+		INSERT INTO fact_conflict_edges (conflict_id, left_fact_id, right_fact_id, reason, detected_at)
+		VALUES ($1, $2, $3, $4, $5)
+		ON CONFLICT (conflict_id, left_fact_id, right_fact_id) DO UPDATE SET
+			reason = CASE WHEN fact_conflict_edges.reason = '' THEN EXCLUDED.reason ELSE fact_conflict_edges.reason END
+	`, conflictID, leftFactID, rightFactID, strings.TrimSpace(reason), detectedAt)
+	return err
+}
+
+func loadFactConflictForUpdate(ctx context.Context, tx pgx.Tx, matchID, conflictID string) (FactConflict, error) {
+	var conflict FactConflict
+	var detectedAt time.Time
+	var resolvedAt *time.Time
+	err := tx.QueryRow(ctx, `
+		SELECT id, match_id, status, chosen_fact_id, reason, detected_at, resolved_at, resolved_by
+		FROM fact_conflicts
+		WHERE match_id = $1 AND id = $2
+		FOR UPDATE
+	`, matchID, conflictID).Scan(
+		&conflict.ID, &conflict.MatchID, &conflict.Status, &conflict.ChosenFactID, &conflict.Reason,
+		&detectedAt, &resolvedAt, &conflict.ResolvedBy,
+	)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return FactConflict{}, ErrNotFound
+	}
+	if err != nil {
+		return FactConflict{}, err
+	}
+	conflict.DetectedAt = detectedAt.UTC().Format(time.RFC3339Nano)
+	if resolvedAt != nil {
+		conflict.ResolvedAt = resolvedAt.UTC().Format(time.RFC3339Nano)
+	}
+	return conflict, nil
+}
+
+func (s *PostgresStore) loadFactConflictGraph(ctx context.Context, queryer postgresConflictQueryer, conflict *FactConflict) error {
+	if conflict == nil || conflict.ID == "" {
+		return fmt.Errorf("%w: conflict is required", ErrInvalid)
+	}
+	conflict.Members = nil
+	memberRows, err := queryer.Query(ctx, `
+		SELECT fact_id, role
+		FROM fact_conflict_members
+		WHERE conflict_id = $1
+		ORDER BY role ASC, fact_id ASC
+	`, conflict.ID)
+	if err != nil {
+		return err
+	}
+	for memberRows.Next() {
+		var member FactConflictMember
+		if err := memberRows.Scan(&member.FactID, &member.Role); err != nil {
+			memberRows.Close()
+			return err
+		}
+		conflict.Members = append(conflict.Members, member)
+	}
+	if err := memberRows.Err(); err != nil {
+		memberRows.Close()
+		return err
+	}
+	memberRows.Close()
+
+	conflict.Edges = nil
+	edgeRows, err := queryer.Query(ctx, `
+		SELECT left_fact_id, right_fact_id, reason
+		FROM fact_conflict_edges
+		WHERE conflict_id = $1
+		ORDER BY left_fact_id ASC, right_fact_id ASC
+	`, conflict.ID)
+	if err != nil {
+		return err
+	}
+	for edgeRows.Next() {
+		var edge FactConflictEdge
+		if err := edgeRows.Scan(&edge.LeftFactID, &edge.RightFactID, &edge.Reason); err != nil {
+			edgeRows.Close()
+			return err
+		}
+		conflict.Edges = append(conflict.Edges, edge)
+	}
+	if err := edgeRows.Err(); err != nil {
+		edgeRows.Close()
+		return err
+	}
+	edgeRows.Close()
+
+	conflict.SelectedFactIDs = nil
+	selectedRows, err := queryer.Query(ctx, `
+		SELECT fact_id
+		FROM fact_conflict_resolution_facts
+		WHERE conflict_id = $1
+		ORDER BY fact_id ASC
+	`, conflict.ID)
+	if err != nil {
+		return err
+	}
+	for selectedRows.Next() {
+		var factID string
+		if err := selectedRows.Scan(&factID); err != nil {
+			selectedRows.Close()
+			return err
+		}
+		conflict.SelectedFactIDs = append(conflict.SelectedFactIDs, factID)
+	}
+	if err := selectedRows.Err(); err != nil {
+		selectedRows.Close()
+		return err
+	}
+	selectedRows.Close()
+	if len(conflict.SelectedFactIDs) == 0 && conflict.ChosenFactID != "" {
+		conflict.SelectedFactIDs = []string{conflict.ChosenFactID}
+	}
+	return nil
 }
 
 func scanFactConflicts(rows pgx.Rows) []FactConflict {

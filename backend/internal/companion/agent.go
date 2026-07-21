@@ -838,6 +838,10 @@ func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	}
 	trace.Output = reply
 	trace.LatencyMS = int(time.Since(start).Milliseconds())
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "trace.write_decision", Args: map[string]string{
+		"matchId": req.Event.MatchID,
+		"traceId": trace.ID,
+	}})
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
 		return ProactiveResponse{}, err
 	}
@@ -922,6 +926,9 @@ func (a *Agent) HandleFirstMeeting(ctx context.Context, req FirstMeetingRequest)
 				reply = ""
 				trace.Output = ""
 				trace.Reason = "first_meeting_already_delivered"
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
+					"mode": "silence", "reason": "already_delivered",
+				}})
 			} else if a.realizer != nil && decision.Speech != nil {
 				reply = a.realizeReply(ctx, AgentBoundaryRequest{
 					MatchID: req.MatchID,

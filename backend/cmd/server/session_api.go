@@ -34,7 +34,11 @@ func handleSessionAPI(manager *auth.Manager, cfg *config.Config) http.HandlerFun
 			}
 			session, err := manager.IssueAnonymous(r.Context(), request.DeviceID)
 			if err != nil {
-				http.Error(w, "session unavailable", http.StatusInternalServerError)
+				status := http.StatusInternalServerError
+				if errors.Is(err, auth.ErrIdentityUnavailable) {
+					status = http.StatusConflict
+				}
+				http.Error(w, "session unavailable", status)
 				return
 			}
 			writeJSON(w, http.StatusCreated, sessionResponse(session))

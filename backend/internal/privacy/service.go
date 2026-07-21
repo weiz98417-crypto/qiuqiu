@@ -31,6 +31,7 @@ type Export struct {
 	UserID               string           `json:"userId"`
 	ExportedAt           time.Time        `json:"exportedAt"`
 	Sessions             []map[string]any `json:"sessions,omitempty"`
+	AnonymousIdentities  []map[string]any `json:"anonymousIdentities,omitempty"`
 	ConversationTurns    []map[string]any `json:"conversationTurns,omitempty"`
 	AgentTraces          []map[string]any `json:"agentTraces,omitempty"`
 	RelationshipStates   []map[string]any `json:"relationshipStates,omitempty"`

@@ -98,6 +98,12 @@ func (s *PostgresStore) Export(ctx context.Context, userID string) (Export, erro
 	`, userID); err != nil {
 		return Export{}, err
 	}
+	if export.AnonymousIdentities, err = queryMaps(ctx, s.pool, `
+		SELECT device_id, user_id, created_at, updated_at, expires_at
+		FROM anonymous_device_identities WHERE user_id = $1 ORDER BY created_at ASC
+	`, userID); err != nil {
+		return Export{}, err
+	}
 	if export.ConversationTurns, err = queryMaps(ctx, s.pool, `
 		SELECT id, trace_id, match_id, user_id, role, text, event_id, created_at
 		FROM conversation_turns
@@ -234,6 +240,7 @@ func (s *PostgresStore) ProcessDeletion(ctx context.Context, userID string) (err
 		return nil
 	}
 	for _, query := range []string{
+		`DELETE FROM anonymous_device_identities WHERE user_id = $1`,
 		`DELETE FROM pending_match_observations WHERE user_id = $1`,
 		`DELETE FROM conversation_turns WHERE user_id = $1`,
 		`DELETE FROM agent_traces WHERE user_id = $1`,
@@ -275,6 +282,7 @@ func (s *PostgresStore) markDeletionFailed(ctx context.Context, userID string, d
 
 func (s *PostgresStore) CleanupExpired(ctx context.Context) error {
 	for _, query := range []string{
+		`DELETE FROM anonymous_device_identities WHERE expires_at <= now()`,
 		`DELETE FROM pending_match_observations WHERE status IN ('confirmed', 'contradicted', 'expired', 'superseded') AND reconcile_until <= now() - interval '10 minutes'`,
 		`DELETE FROM conversation_turns WHERE deleted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now())`,
 		`DELETE FROM agent_traces WHERE deleted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now())`,

@@ -390,10 +390,13 @@ func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
 	traces := companion.NewStoreMemoryTools(store)
 	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
 	matchID := "formal-conflict-api"
+	forgedReported := matchstate.Score{Home: 7, Away: 6}
+	forgedEffective := matchstate.Score{Home: 9, Away: 8}
 
 	acceptedResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
 		Source: "operator", EventType: "goal", Period: "first_half", Clock: "12:00", TeamID: "home",
-		Score: matchstate.Score{Home: 1}, Description: "人工记录主队进球。",
+		Score: matchstate.Score{Home: 1}, ReportedScore: &forgedReported, EffectiveScoreAfter: &forgedEffective,
+		Description: "人工记录主队进球。",
 	})
 	if acceptedResponse.Code != http.StatusCreated {
 		t.Fatalf("accepted status=%d body=%s", acceptedResponse.Code, acceptedResponse.Body.String())
@@ -401,7 +404,8 @@ func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
 	accepted := decodeEvent(t, acceptedResponse)
 	conflictResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
 		Source: "api-sports", ProviderEventID: "formal-conflict-api", EventType: "goal", Period: "first_half", Clock: "12:10", TeamID: "away",
-		Score: matchstate.Score{Away: 1}, Description: "外部源记录客队进球。",
+		Score: matchstate.Score{Away: 1}, ReportedScore: &forgedReported, EffectiveScoreAfter: &forgedEffective,
+		Description: "外部源记录客队进球。",
 	})
 	if conflictResponse.Code != http.StatusConflict {
 		t.Fatalf("conflict status=%d body=%s", conflictResponse.Code, conflictResponse.Body.String())
@@ -426,6 +430,50 @@ func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
 	}
 	if len(operatorPayload.Conflicts) != 1 || operatorPayload.Conflicts[0].Status != matchstate.ConflictStatusOpen {
 		t.Fatalf("operator conflicts = %+v", operatorPayload.Conflicts)
+	}
+	var operatorEventPayload struct {
+		Events []struct {
+			FactID              string                `json:"factId"`
+			FactStatus          matchstate.FactStatus `json:"factStatus"`
+			Score               matchstate.Score      `json:"score"`
+			ReportedScore       *matchstate.Score     `json:"reportedScore"`
+			EffectiveScoreAfter *matchstate.Score     `json:"effectiveScoreAfter"`
+		} `json:"events"`
+	}
+	if err := json.Unmarshal(operatorEvents.Body.Bytes(), &operatorEventPayload); err != nil {
+		t.Fatalf("decode operator event scores: %v", err)
+	}
+	for _, event := range operatorEventPayload.Events {
+		if event.ReportedScore == nil {
+			t.Fatalf("operator event omitted reported score: %+v", event)
+		}
+		if event.FactStatus == matchstate.FactStatusConfirmed && (event.EffectiveScoreAfter == nil || *event.EffectiveScoreAfter != (matchstate.Score{Home: 1})) {
+			t.Fatalf("accepted event effective score = %+v", event)
+		}
+		if event.FactStatus == matchstate.FactStatusConflict && event.EffectiveScoreAfter != nil {
+			t.Fatalf("conflict candidate should not have an effective score: %+v", event)
+		}
+	}
+
+	publicState := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/state", nil)
+	var publicStatePayload struct {
+		Snapshot matchstate.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(publicState.Body.Bytes(), &publicStatePayload); err != nil {
+		t.Fatalf("decode public state: %v", err)
+	}
+	if publicStatePayload.Snapshot.Integrity.Status == "conflict" || publicStatePayload.Snapshot.Integrity.Reason != "" || publicStatePayload.Snapshot.Integrity.DetectedAt != "" {
+		t.Fatalf("public state exposed internal conflict details: %+v", publicStatePayload.Snapshot.Integrity)
+	}
+	operatorState := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/state?token=eval-token", nil)
+	var operatorStatePayload struct {
+		Snapshot matchstate.Snapshot `json:"snapshot"`
+	}
+	if err := json.Unmarshal(operatorState.Body.Bytes(), &operatorStatePayload); err != nil {
+		t.Fatalf("decode operator state: %v", err)
+	}
+	if operatorStatePayload.Snapshot.Integrity.Status != "conflict" || operatorStatePayload.Snapshot.Integrity.Reason == "" {
+		t.Fatalf("operator state omitted conflict audit details: %+v", operatorStatePayload.Snapshot.Integrity)
 	}
 	conflict := operatorPayload.Conflicts[0]
 	var candidateFactID string
@@ -465,6 +513,59 @@ func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
 	}
 	if resolvedPayload.Event.FactID != accepted.FactID || resolvedPayload.Snapshot.Score != (matchstate.Score{Home: 1}) || resolvedPayload.Snapshot.Integrity.Status != "ok" {
 		t.Fatalf("resolution response = %+v", resolvedPayload)
+	}
+}
+
+func TestFactConflictResolutionAcceptsCompatibleFactSelection(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	matchID := "compatible-conflict-selection-api"
+
+	firstResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home",
+		Score: matchstate.Score{Home: 1}, Description: "first accepted goal",
+	})
+	if firstResponse.Code != http.StatusCreated {
+		t.Fatalf("first goal status=%d body=%s", firstResponse.Code, firstResponse.Body.String())
+	}
+	first := decodeEvent(t, firstResponse)
+	secondResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:30", TeamID: "home",
+		Score: matchstate.Score{Home: 2}, Description: "second accepted goal",
+	})
+	if secondResponse.Code != http.StatusCreated {
+		t.Fatalf("second goal status=%d body=%s", secondResponse.Code, secondResponse.Body.String())
+	}
+	second := decodeEvent(t, secondResponse)
+	conflictResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
+		Source: "provider", ProviderEventID: matchID, EventType: "goal", Period: "first_half", Clock: "10:15", TeamID: "away",
+		Score: matchstate.Score{Home: 1, Away: 1}, Description: "bridge candidate",
+	})
+	if conflictResponse.Code != http.StatusConflict {
+		t.Fatalf("conflict status=%d body=%s", conflictResponse.Code, conflictResponse.Body.String())
+	}
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 {
+		t.Fatalf("conflicts = %+v", conflicts)
+	}
+	resolveResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/conflicts/"+conflicts[0].ID+"/resolve?token=eval-token", map[string]interface{}{
+		"selectedFactIds": []string{first.FactID, second.FactID},
+		"reason":          "keep both confirmed goals",
+	})
+	if resolveResponse.Code != http.StatusOK {
+		t.Fatalf("resolve status=%d body=%s", resolveResponse.Code, resolveResponse.Body.String())
+	}
+	var payload struct {
+		Conflict matchstate.FactConflict `json:"conflict"`
+		Events   []matchstate.MatchEvent `json:"events"`
+		Snapshot matchstate.Snapshot     `json:"snapshot"`
+	}
+	if err := json.Unmarshal(resolveResponse.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode resolution: %v", err)
+	}
+	if payload.Conflict.Status != matchstate.ConflictStatusResolved || len(payload.Conflict.SelectedFactIDs) != 2 || len(payload.Events) != 0 || payload.Snapshot.Score != (matchstate.Score{Home: 2}) {
+		t.Fatalf("resolution payload = %+v", payload)
 	}
 }
 

@@ -35,6 +35,7 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 	defer func() {
 		_, _ = store.pool.Exec(context.Background(), `
 			DELETE FROM privacy_tombstones WHERE user_id = $1;
+			DELETE FROM anonymous_device_identities WHERE user_id = $1;
 			DELETE FROM user_sessions WHERE user_id = $1;
 			DELETE FROM pending_match_observations WHERE user_id = $1;
 			DELETE FROM conversation_turns WHERE user_id = $1;
@@ -48,6 +49,13 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 	}()
 
 	_, err = store.pool.Exec(ctx, `INSERT INTO matches (id, home_team, away_team, updated_at) VALUES ($1, 'Home', 'Away', now())`, matchID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	_, err = store.pool.Exec(ctx, `
+		INSERT INTO anonymous_device_identities (device_id, user_id, expires_at)
+		VALUES ('privacy-device', $1, now() + interval '1 day')
+	`, userID)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -120,8 +128,8 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(exported.Sessions) != 1 || len(exported.ConversationTurns) != 1 || len(exported.AgentTraces) != 1 || len(exported.RelationshipStates) != 1 || len(exported.RelationshipMemories) != 1 || len(exported.MatchStates) != 1 || len(exported.InteractionDecisions) != 1 || len(exported.PendingObservations) != 1 {
-		t.Fatalf("export counts = sessions %d turns %d traces %d states %d memories %d matches %d decisions %d", len(exported.Sessions), len(exported.ConversationTurns), len(exported.AgentTraces), len(exported.RelationshipStates), len(exported.RelationshipMemories), len(exported.MatchStates), len(exported.InteractionDecisions))
+	if len(exported.Sessions) != 1 || len(exported.AnonymousIdentities) != 1 || len(exported.ConversationTurns) != 1 || len(exported.AgentTraces) != 1 || len(exported.RelationshipStates) != 1 || len(exported.RelationshipMemories) != 1 || len(exported.MatchStates) != 1 || len(exported.InteractionDecisions) != 1 || len(exported.PendingObservations) != 1 {
+		t.Fatalf("export counts = sessions %d identities %d turns %d traces %d states %d memories %d matches %d decisions %d observations %d", len(exported.Sessions), len(exported.AnonymousIdentities), len(exported.ConversationTurns), len(exported.AgentTraces), len(exported.RelationshipStates), len(exported.RelationshipMemories), len(exported.MatchStates), len(exported.InteractionDecisions), len(exported.PendingObservations))
 	}
 	if exported.AgentTraces[0]["pending_observation"] == nil || exported.AgentTraces[0]["observation_resolution"] == nil {
 		t.Fatalf("agent trace export omitted observation fields: %+v", exported.AgentTraces[0])
@@ -156,5 +164,27 @@ func TestPostgresStoreExportsAndDeletesUserData(t *testing.T) {
 	}
 	if remaining != 0 {
 		t.Fatalf("pending observations remaining = %d", remaining)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM anonymous_device_identities WHERE user_id = $1`, userID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("anonymous identities remaining = %d", remaining)
+	}
+	expiredDeviceID := userID + "-expired-device"
+	if _, err := store.pool.Exec(ctx, `
+		INSERT INTO anonymous_device_identities (device_id, user_id, expires_at)
+		VALUES ($1, $2, now() - interval '1 minute')
+	`, expiredDeviceID, userID+"-expired"); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.CleanupExpired(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if err := store.pool.QueryRow(ctx, `SELECT COUNT(*) FROM anonymous_device_identities WHERE device_id = $1`, expiredDeviceID).Scan(&remaining); err != nil {
+		t.Fatal(err)
+	}
+	if remaining != 0 {
+		t.Fatalf("expired anonymous identities remaining = %d", remaining)
 	}
 }

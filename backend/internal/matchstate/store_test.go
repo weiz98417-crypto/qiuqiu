@@ -2,6 +2,7 @@ package matchstate
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
@@ -81,6 +82,32 @@ func TestPublicFactViewHidesProvisionalEvents(t *testing.T) {
 	}
 	if events := store.PublicEvents("public-facts"); len(events) != 0 {
 		t.Fatalf("public events = %+v, want none", events)
+	}
+}
+
+func TestCreateDiscardsDerivedAuditScores(t *testing.T) {
+	store := NewStore()
+	forgedReported := Score{Home: 7, Away: 6}
+	forgedEffective := Score{Home: 9, Away: 8}
+	created, _, err := store.Create("derived-score-input", MatchEvent{
+		EventType:           "goal",
+		Period:              "first_half",
+		Clock:               "12:00",
+		TeamID:              "home",
+		Score:               Score{Home: 1},
+		ReportedScore:       &forgedReported,
+		EffectiveScoreAfter: &forgedEffective,
+		Description:         "home goal",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ReportedScore != nil || created.EffectiveScoreAfter != nil {
+		t.Fatalf("derived audit scores survived create: %+v", created)
+	}
+	events := store.Events("derived-score-input")
+	if len(events) != 1 || events[0].ReportedScore != nil || events[0].EffectiveScoreAfter != nil {
+		t.Fatalf("stored event retained derived audit scores: %+v", events)
 	}
 }
 
@@ -483,6 +510,279 @@ func TestConflictSetRequiresExplicitResolution(t *testing.T) {
 		if event.FactID == candidateFactID && event.FactStatus != FactStatusRevoked {
 			t.Fatalf("candidate event = %+v", event)
 		}
+	}
+}
+
+func TestResolvingConflictPublishesOnlyAProjectedNewFact(t *testing.T) {
+	t.Run("adopting candidate publishes effective score", func(t *testing.T) {
+		store := NewStore()
+		matchID := "projected-conflict-signal"
+		if _, _, err := store.Create(matchID, MatchEvent{
+			Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+			Score: Score{Home: 1}, Description: "accepted home goal",
+		}); err != nil {
+			t.Fatalf("Create accepted goal: %v", err)
+		}
+		updates, unsubscribe := store.Subscribe(matchID)
+		defer unsubscribe()
+		_, _, err := store.Create(matchID, MatchEvent{
+			Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+			Score: Score{Home: 7, Away: 4}, Description: "candidate with an untrusted reported score",
+		})
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+		}
+		<-updates // The candidate notification is not the resolution signal under test.
+		conflict := store.FactConflicts(matchID)[0]
+		candidateFactID := conflictCandidateFact(t, conflict)
+		if _, _, _, err := store.ResolveFactConflict(matchID, conflict.ID, candidateFactID, "operator-1", "adopt verified candidate"); err != nil {
+			t.Fatalf("ResolveFactConflict: %v", err)
+		}
+		select {
+		case event := <-updates:
+			if event.FactID != candidateFactID || event.FactStatus != FactStatusReconciled || event.Score != (Score{Away: 1}) {
+				t.Fatalf("published resolution event = %+v", event)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("adopting a candidate did not publish the projected fact")
+		}
+	})
+
+	t.Run("keeping accepted fact publishes nothing", func(t *testing.T) {
+		store := NewStore()
+		matchID := "quiet-conflict-rejection"
+		accepted, _, err := store.Create(matchID, MatchEvent{
+			Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+			Score: Score{Home: 1}, Description: "accepted home goal",
+		})
+		if err != nil {
+			t.Fatalf("Create accepted goal: %v", err)
+		}
+		updates, unsubscribe := store.Subscribe(matchID)
+		defer unsubscribe()
+		_, _, err = store.Create(matchID, MatchEvent{
+			Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+			Score: Score{Away: 1}, Description: "conflicting candidate",
+		})
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+		}
+		<-updates
+		conflict := store.FactConflicts(matchID)[0]
+		if _, _, _, err := store.ResolveFactConflict(matchID, conflict.ID, accepted.FactID, "operator-1", "keep accepted fact"); err != nil {
+			t.Fatalf("ResolveFactConflict: %v", err)
+		}
+		select {
+		case event := <-updates:
+			t.Fatalf("keeping the accepted fact published an extra update: %+v", event)
+		case <-time.After(50 * time.Millisecond):
+		}
+	})
+}
+
+func TestBridgeCandidateMergesIntersectingOpenConflictSets(t *testing.T) {
+	store := NewStore()
+	matchID := "bridge-conflict-sets"
+	store.factConflicts[matchID] = []FactConflict{
+		{
+			ID: "conflict-a", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: "2026-07-20T10:00:00Z",
+			Members: []FactConflictMember{{FactID: "accepted-a", Role: ConflictMemberAccepted}, {FactID: "candidate-a", Role: ConflictMemberCandidate}},
+		},
+		{
+			ID: "conflict-b", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: "2026-07-20T10:01:00Z",
+			Members: []FactConflictMember{{FactID: "accepted-b", Role: ConflictMemberAccepted}, {FactID: "candidate-b", Role: ConflictMemberCandidate}},
+		},
+	}
+	events := []MatchEvent{
+		{FactID: "accepted-a", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		{FactID: "accepted-b", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+	}
+	store.recordFactConflictLocked(matchID, events, []int{0, 1}, MatchEvent{FactID: "bridge-candidate"}, "2026-07-20T10:02:00Z")
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || conflicts[0].ID != "conflict-a" || conflicts[0].Status != ConflictStatusOpen {
+		t.Fatalf("merged conflicts = %+v", conflicts)
+	}
+	roles := make(map[string]ConflictMemberRole)
+	for _, member := range conflicts[0].Members {
+		roles[member.FactID] = member.Role
+	}
+	if len(roles) != 5 || roles["accepted-a"] != ConflictMemberAccepted || roles["accepted-b"] != ConflictMemberAccepted || roles["bridge-candidate"] != ConflictMemberCandidate {
+		t.Fatalf("merged conflict members = %+v", conflicts[0].Members)
+	}
+}
+
+func TestBridgeConflictResolutionPreservesCompatibleAcceptedFacts(t *testing.T) {
+	store := NewStore()
+	matchID := "bridge-resolution-compatible-facts"
+	first, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "first accepted goal",
+	})
+	if err != nil {
+		t.Fatalf("Create first accepted goal: %v", err)
+	}
+	second, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:30", TeamID: "home",
+		Score: Score{Home: 2}, Description: "second accepted goal",
+	})
+	if err != nil {
+		t.Fatalf("Create second accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "10:15", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "bridge candidate",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create bridge candidate error = %v, want ErrConflict", err)
+	}
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || len(conflicts[0].Edges) != 2 {
+		t.Fatalf("bridge conflict = %+v, want two direct conflict edges", conflicts)
+	}
+	resolved, changed, snapshot, err := store.ResolveFactConflictSelection(matchID, conflicts[0].ID, []string{first.FactID, second.FactID}, "operator-1", "保留两次已确认进球")
+	if err != nil {
+		t.Fatalf("ResolveFactConflictSelection: %v", err)
+	}
+	if resolved.Status != ConflictStatusResolved || len(resolved.SelectedFactIDs) != 2 || len(changed) != 0 {
+		t.Fatalf("resolution = %+v, changed = %+v", resolved, changed)
+	}
+	if snapshot.Score != (Score{Home: 2}) {
+		t.Fatalf("snapshot after keeping compatible facts = %+v", snapshot)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == first.FactID || event.FactID == second.FactID {
+			if event.FactStatus != FactStatusConfirmed {
+				t.Fatalf("accepted fact was revoked: %+v", event)
+			}
+		}
+	}
+}
+
+func TestConflictSelectionLeavesIndependentEdgesOpen(t *testing.T) {
+	store := NewStore()
+	matchID := "partial-conflict-graph-resolution"
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	store.events[matchID] = []MatchEvent{
+		{ID: "event-a", MatchID: matchID, Source: "operator", Period: "first_half", Clock: "10:00", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Description: "accepted A", Status: "active", Visibility: "public", FactID: "accepted-a", FactRevision: 1, FactStatus: FactStatusConfirmed, Confirmed: true, CreatedAt: now, RecordedSequence: 1},
+		{ID: "event-x", MatchID: matchID, Source: "provider-x", Period: "first_half", Clock: "10:10", EventType: "goal", TeamID: "away", Score: Score{Away: 1}, Description: "candidate X", Status: "active", Visibility: "public", FactID: "candidate-x", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 2},
+		{ID: "event-b", MatchID: matchID, Source: "operator", Period: "first_half", Clock: "20:00", EventType: "goal", TeamID: "home", Score: Score{Home: 2}, Description: "accepted B", Status: "active", Visibility: "public", FactID: "accepted-b", FactRevision: 1, FactStatus: FactStatusConfirmed, Confirmed: true, CreatedAt: now, RecordedSequence: 3},
+		{ID: "event-y", MatchID: matchID, Source: "provider-y", Period: "first_half", Clock: "20:10", EventType: "goal", TeamID: "away", Score: Score{Home: 1, Away: 1}, Description: "candidate Y", Status: "active", Visibility: "public", FactID: "candidate-y", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 4},
+	}
+	store.factConflicts[matchID] = []FactConflict{{
+		ID: "conflict-graph", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: now,
+		Members: []FactConflictMember{
+			{FactID: "accepted-a", Role: ConflictMemberAccepted},
+			{FactID: "candidate-x", Role: ConflictMemberCandidate},
+			{FactID: "accepted-b", Role: ConflictMemberAccepted},
+			{FactID: "candidate-y", Role: ConflictMemberCandidate},
+		},
+		Edges: []FactConflictEdge{
+			{LeftFactID: "accepted-a", RightFactID: "candidate-x"},
+			{LeftFactID: "accepted-b", RightFactID: "candidate-y"},
+		},
+	}}
+	store.configs[matchID] = MatchConfig{MatchID: matchID, Integrity: MatchIntegrity{Status: "conflict"}}
+
+	conflict, changed, snapshot, err := store.ResolveFactConflictSelection(matchID, "conflict-graph", []string{"candidate-x"}, "operator-1", "采用候选 X")
+	if err != nil {
+		t.Fatalf("ResolveFactConflictSelection: %v", err)
+	}
+	if conflict.Status != ConflictStatusOpen || len(conflict.Edges) != 1 || conflict.Edges[0].LeftFactID != "accepted-b" || conflict.Edges[0].RightFactID != "candidate-y" {
+		t.Fatalf("remaining conflict = %+v", conflict)
+	}
+	if len(changed) != 1 || changed[0].FactID != "candidate-x" || changed[0].Score != (Score{Away: 1}) {
+		t.Fatalf("published events = %+v", changed)
+	}
+	if snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("snapshot after partial resolution = %+v", snapshot)
+	}
+	statuses := make(map[string]FactStatus)
+	for _, event := range store.Events(matchID) {
+		statuses[event.FactID] = event.FactStatus
+	}
+	if statuses["accepted-a"] != FactStatusRevoked || statuses["candidate-x"] != FactStatusReconciled || statuses["accepted-b"] != FactStatusConfirmed || statuses["candidate-y"] != FactStatusConflict {
+		t.Fatalf("fact statuses after partial resolution = %+v", statuses)
+	}
+
+	conflict, changed, snapshot, err = store.ResolveFactConflictSelection(matchID, "conflict-graph", []string{"accepted-b"}, "operator-2", "保留已确认事实 B")
+	if err != nil {
+		t.Fatalf("final ResolveFactConflictSelection: %v", err)
+	}
+	if conflict.Status != ConflictStatusResolved || !reflect.DeepEqual(conflict.SelectedFactIDs, []string{"accepted-b", "candidate-x"}) {
+		t.Fatalf("final conflict selection history = %+v", conflict)
+	}
+	if len(changed) != 0 || snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("final changed = %+v, snapshot = %+v", changed, snapshot)
+	}
+}
+
+func TestConflictSelectionReleasesUnselectedCandidateWithoutRemainingEdges(t *testing.T) {
+	store := NewStore()
+	matchID := "conflict-graph-orphan-release"
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	store.events[matchID] = []MatchEvent{
+		{ID: "event-a", MatchID: matchID, Source: "operator", Period: "first_half", Clock: "10:00", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Description: "accepted A", Status: "active", Visibility: "public", FactID: "accepted-a", FactRevision: 1, FactStatus: FactStatusConfirmed, Confirmed: true, CreatedAt: now, RecordedSequence: 1},
+		{ID: "event-b", MatchID: matchID, Source: "provider-b", Period: "first_half", Clock: "10:05", EventType: "goal", TeamID: "away", Score: Score{Away: 1}, Description: "candidate B", Status: "active", Visibility: "public", FactID: "candidate-b", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 2},
+		{ID: "event-c", MatchID: matchID, Source: "provider-c", Period: "first_half", Clock: "10:10", EventType: "goal", TeamID: "home", Score: Score{Home: 2}, Description: "candidate C", Status: "active", Visibility: "public", FactID: "candidate-c", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 3},
+	}
+	store.factConflicts[matchID] = []FactConflict{{
+		ID: "chain-conflict", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: now,
+		Members: []FactConflictMember{
+			{FactID: "accepted-a", Role: ConflictMemberAccepted},
+			{FactID: "candidate-b", Role: ConflictMemberCandidate},
+			{FactID: "candidate-c", Role: ConflictMemberCandidate},
+		},
+		Edges: []FactConflictEdge{
+			{LeftFactID: "accepted-a", RightFactID: "candidate-b"},
+			{LeftFactID: "candidate-b", RightFactID: "candidate-c"},
+		},
+	}}
+	store.configs[matchID] = MatchConfig{MatchID: matchID, Integrity: MatchIntegrity{Status: "conflict"}}
+
+	conflict, changed, snapshot, err := store.ResolveFactConflictSelection(matchID, "chain-conflict", []string{"accepted-a"}, "operator-1", "保留已确认事实")
+	if err != nil {
+		t.Fatalf("ResolveFactConflictSelection: %v", err)
+	}
+	if conflict.Status != ConflictStatusResolved || len(changed) != 0 || snapshot.Score != (Score{Home: 1}) {
+		t.Fatalf("conflict = %+v, changed = %+v, snapshot = %+v", conflict, changed, snapshot)
+	}
+	statuses := make(map[string]FactStatus)
+	for _, event := range store.Events(matchID) {
+		statuses[event.FactID] = event.FactStatus
+	}
+	if statuses["accepted-a"] != FactStatusConfirmed || statuses["candidate-b"] != FactStatusRevoked || statuses["candidate-c"] != FactStatusProvisional {
+		t.Fatalf("fact statuses after chain resolution = %+v", statuses)
+	}
+}
+
+func TestBridgeConflictMergePreservesPartialSelectionHistory(t *testing.T) {
+	store := NewStore()
+	matchID := "bridge-conflict-selection-history"
+	store.factConflicts[matchID] = []FactConflict{
+		{
+			ID: "conflict-a", MatchID: matchID, Status: ConflictStatusOpen,
+			Members:         []FactConflictMember{{FactID: "accepted-a", Role: ConflictMemberAccepted}, {FactID: "candidate-a", Role: ConflictMemberCandidate}},
+			Edges:           []FactConflictEdge{{LeftFactID: "accepted-a", RightFactID: "candidate-a"}},
+			SelectedFactIDs: []string{"accepted-a"},
+			Reason:          "partial A", ResolvedBy: "operator-a",
+		},
+		{
+			ID: "conflict-b", MatchID: matchID, Status: ConflictStatusOpen,
+			Members:         []FactConflictMember{{FactID: "accepted-b", Role: ConflictMemberAccepted}, {FactID: "candidate-b", Role: ConflictMemberCandidate}},
+			Edges:           []FactConflictEdge{{LeftFactID: "accepted-b", RightFactID: "candidate-b"}},
+			SelectedFactIDs: []string{"accepted-b"},
+			Reason:          "partial B", ResolvedBy: "operator-b",
+		},
+	}
+	events := []MatchEvent{
+		{FactID: "accepted-a", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		{FactID: "accepted-b", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+	}
+	store.recordFactConflictLocked(matchID, events, []int{0, 1}, MatchEvent{FactID: "bridge-candidate"}, time.Now().UTC().Format(time.RFC3339Nano))
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || !reflect.DeepEqual(conflicts[0].SelectedFactIDs, []string{"accepted-a", "accepted-b"}) || conflicts[0].Reason != "partial A" || conflicts[0].ResolvedBy != "operator-a" {
+		t.Fatalf("merged selection history = %+v", conflicts)
 	}
 }
 

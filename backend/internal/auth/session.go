@@ -29,10 +29,11 @@ const (
 )
 
 var (
-	ErrInvalidToken = errors.New("invalid session token")
-	ErrExpiredToken = errors.New("session token expired")
-	ErrRevoked      = errors.New("session revoked")
-	ErrNotFound     = errors.New("session not found")
+	ErrInvalidToken        = errors.New("invalid session token")
+	ErrExpiredToken        = errors.New("session token expired")
+	ErrRevoked             = errors.New("session revoked")
+	ErrNotFound            = errors.New("session not found")
+	ErrIdentityUnavailable = errors.New("anonymous identity unavailable")
 )
 
 type Claims struct {
@@ -73,6 +74,7 @@ type SessionRecord struct {
 
 type Store interface {
 	Create(context.Context, SessionRecord) error
+	CreateAnonymous(context.Context, SessionRecord) (SessionRecord, error)
 	Get(context.Context, string) (SessionRecord, error)
 	FindByRefreshHash(context.Context, []byte) (SessionRecord, error)
 	Rotate(context.Context, string, []byte, []byte, time.Time) error
@@ -101,7 +103,14 @@ func NewManager(store Store, signingKey string) (*Manager, error) {
 
 func (manager *Manager) IssueAnonymous(ctx context.Context, deviceID string) (Session, error) {
 	now := manager.now().UTC()
-	userID, err := randomIdentifier("usr_")
+	var err error
+	if !validIdentifier(deviceID, 128) {
+		deviceID, err = randomIdentifier("dev_")
+		if err != nil {
+			return Session{}, err
+		}
+	}
+	proposedUserID, err := randomIdentifier("usr_")
 	if err != nil {
 		return Session{}, err
 	}
@@ -109,26 +118,21 @@ func (manager *Manager) IssueAnonymous(ctx context.Context, deviceID string) (Se
 	if err != nil {
 		return Session{}, err
 	}
-	if !validIdentifier(deviceID, 128) {
-		deviceID, err = randomIdentifier("dev_")
-		if err != nil {
-			return Session{}, err
-		}
-	}
 	refreshToken, err := randomToken()
 	if err != nil {
 		return Session{}, err
 	}
 	record := SessionRecord{
 		SessionID:        sessionID,
-		UserID:           userID,
+		UserID:           proposedUserID,
 		DeviceID:         deviceID,
 		RefreshTokenHash: hashToken(refreshToken),
 		Scopes:           []string{ScopeUserChat, ScopeUserRead},
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(refreshTokenTTL),
 	}
-	if err := manager.store.Create(ctx, record); err != nil {
+	record, err = manager.store.CreateAnonymous(ctx, record)
+	if err != nil {
 		return Session{}, err
 	}
 	return manager.session(record, refreshToken, now), nil
@@ -351,12 +355,21 @@ func (claims Claims) String() string {
 }
 
 type MemoryStore struct {
-	mu       sync.RWMutex
-	sessions map[string]SessionRecord
+	mu         sync.RWMutex
+	sessions   map[string]SessionRecord
+	identities map[string]anonymousIdentity
 }
 
 func NewMemoryStore() *MemoryStore {
-	return &MemoryStore{sessions: make(map[string]SessionRecord)}
+	return &MemoryStore{
+		sessions:   make(map[string]SessionRecord),
+		identities: make(map[string]anonymousIdentity),
+	}
+}
+
+type anonymousIdentity struct {
+	UserID    string
+	ExpiresAt time.Time
 }
 
 func (store *MemoryStore) Create(_ context.Context, record SessionRecord) error {
@@ -367,6 +380,23 @@ func (store *MemoryStore) Create(_ context.Context, record SessionRecord) error 
 	}
 	store.sessions[record.SessionID] = cloneRecord(record)
 	return nil
+}
+
+func (store *MemoryStore) CreateAnonymous(_ context.Context, record SessionRecord) (SessionRecord, error) {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, exists := store.sessions[record.SessionID]; exists {
+		return SessionRecord{}, fmt.Errorf("session %s already exists", record.SessionID)
+	}
+	identity := store.identities[record.DeviceID]
+	if identity.UserID == "" || !identity.ExpiresAt.After(record.CreatedAt) {
+		identity.UserID = record.UserID
+	}
+	identity.ExpiresAt = record.ExpiresAt
+	store.identities[record.DeviceID] = identity
+	record.UserID = identity.UserID
+	store.sessions[record.SessionID] = cloneRecord(record)
+	return cloneRecord(record), nil
 }
 
 func (store *MemoryStore) Get(_ context.Context, sessionID string) (SessionRecord, error) {

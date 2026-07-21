@@ -3,6 +3,22 @@ import { expect, test } from '@playwright/test';
 test('HTML demo client deduplicates exact deliveries but preserves fact revisions', async ({ page }) => {
   await page.addInitScript(() => {
     window.__audioPlayCount = 0;
+    window.WebSocket = class MockWebSocket {
+      static OPEN = 1;
+
+      constructor() {
+        this.readyState = MockWebSocket.OPEN;
+        window.__testSocket = this;
+        queueMicrotask(() => this.onopen?.());
+      }
+
+      send() {}
+
+      close() {
+        this.readyState = 3;
+        this.onclose?.();
+      }
+    };
     window.Audio = class MockAudio {
       play() {
         window.__audioPlayCount += 1;
@@ -10,10 +26,18 @@ test('HTML demo client deduplicates exact deliveries but preserves fact revision
       }
     };
   });
+  await page.route('**/live2d-assets/live2d.html', async (route) => {
+    await route.fulfill({
+      status: 200,
+      contentType: 'text/html',
+      body: '<!doctype html><script>window.setMood=()=>{};window.performAction=()=>{};<\/script>',
+    });
+  });
   await page.goto('/live2d-assets/app.html');
-  await expect.poll(() => page.evaluate(() => Boolean(ws?.onmessage))).toBe(true);
+  await expect.poll(() => page.evaluate(() => Boolean(window.__testSocket?.onmessage))).toBe(true);
 
   await page.evaluate(() => {
+    const ws = window.__testSocket;
     window.__presentationActions = [];
     live2d.contentWindow.setMood = () => {};
     live2d.contentWindow.performAction = (action) => {

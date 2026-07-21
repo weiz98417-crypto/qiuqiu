@@ -87,6 +87,17 @@ func TestAgentHandlesMutedMatchEventWithoutProducingSpeech(t *testing.T) {
 	if response.Reply != "" || response.Trace.ID == "" {
 		t.Fatalf("muted event produced output: %+v", response)
 	}
+	assertToolCalled(t, response.Trace, "trace.write_decision")
+	silenceRecorded := false
+	for _, call := range response.Trace.ToolCalls {
+		if call.Name == "response.emit_companion_reply" && call.Args["mode"] == "silence" {
+			silenceRecorded = true
+			break
+		}
+	}
+	if !silenceRecorded {
+		t.Fatalf("muted event trace omitted explicit silence: %+v", response.Trace.ToolCalls)
+	}
 	if len(tools.Traces()) != 1 {
 		t.Fatalf("trace count = %d, want one silent observation trace", len(tools.Traces()))
 	}

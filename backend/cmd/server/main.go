@@ -378,7 +378,7 @@ func main() {
 
 		writer.SendJSON(map[string]interface{}{
 			"type": "match_snapshot",
-			"data": matchStore.PublicSnapshot(matchIDStr),
+			"data": clientSnapshot(matchStore.PublicSnapshot(matchIDStr)),
 		})
 		if clockStore, ok := matchStore.(matchstate.ClockRepository); ok {
 			writer.SendJSON(map[string]interface{}{
@@ -403,7 +403,7 @@ func main() {
 					})
 					writer.SendJSON(map[string]interface{}{
 						"type": "match_snapshot",
-						"data": matchStore.PublicSnapshot(matchIDStr),
+						"data": clientSnapshot(matchStore.PublicSnapshot(matchIDStr)),
 					})
 				case ev := <-matchEvents:
 					eventKey := matchstate.DeliveryKey(ev)
@@ -422,14 +422,14 @@ func main() {
 					if !matchstate.IsPublicFact(ev) {
 						writer.SendJSON(map[string]interface{}{
 							"type": "match_snapshot",
-							"data": snapshot,
+							"data": clientSnapshot(snapshot),
 						})
 						continue
 					}
 					writer.SendJSON(map[string]interface{}{
 						"type":        "match_event",
 						"data":        ev,
-						"snapshot":    snapshot,
+						"snapshot":    clientSnapshot(snapshot),
 						"deliveryKey": eventKey,
 					})
 					if ev.Visibility == "public" && ev.Status == "active" {
@@ -813,6 +813,31 @@ func runObservationExpiry(ctx context.Context, coordinator observation.Coordinat
 	}
 }
 
+func clientSnapshot(snapshot matchstate.Snapshot) matchstate.Snapshot {
+	snapshot.Integrity = matchstate.MatchIntegrity{}
+	return snapshot
+}
+
+func operatorAuditEvents(events, publicEvents []matchstate.MatchEvent) []matchstate.MatchEvent {
+	effectiveByID := make(map[string]matchstate.Score, len(publicEvents))
+	for _, event := range publicEvents {
+		effectiveByID[event.ID] = event.Score
+	}
+	for index := range events {
+		events[index].ReportedScore = nil
+		events[index].EffectiveScoreAfter = nil
+		reported := new(matchstate.Score)
+		*reported = events[index].Score
+		events[index].ReportedScore = reported
+		if effective, exists := effectiveByID[events[index].ID]; exists {
+			effectiveAfter := new(matchstate.Score)
+			*effectiveAfter = effective
+			events[index].EffectiveScoreAfter = effectiveAfter
+		}
+	}
+	return events
+}
+
 func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
 	return handleMatchAPIWithSources(store, traceReader, demoResetter, cfg, llmClient, promptMgr, nil)
 }
@@ -965,9 +990,13 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
 				return
 			}
+			snapshot := store.PublicSnapshot(matchID)
+			if !validAPIToken(r, cfg) {
+				snapshot = clientSnapshot(snapshot)
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"clock":    clockStore.Clock(matchID),
-				"snapshot": store.PublicSnapshot(matchID),
+				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodPatch && resource == "clock" && len(parts) == 2:
 			if _, authorized := operatorClaims(r, cfg); !authorized {
@@ -1098,27 +1127,61 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				return
 			}
 			var request struct {
-				ChosenFactID string `json:"chosenFactId"`
-				Reason       string `json:"reason"`
+				ChosenFactID    string   `json:"chosenFactId"`
+				SelectedFactIDs []string `json:"selectedFactIds"`
+				Reason          string   `json:"reason"`
 			}
 			body, err := decodeOperatorJSON(w, r, &request)
 			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
+			selectedFactIDs := append([]string(nil), request.SelectedFactIDs...)
+			if len(selectedFactIDs) == 0 && strings.TrimSpace(request.ChosenFactID) != "" {
+				var target matchstate.FactConflict
+				for _, conflict := range conflictStore.FactConflicts(matchID) {
+					if conflict.ID == parts[2] && conflict.Status == matchstate.ConflictStatusOpen {
+						target = conflict
+						break
+					}
+				}
+				selectedFactIDs, err = matchstate.CompatibleSelectionForLegacyChoice(target, request.ChosenFactID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+			}
+			preferredFactID := strings.TrimSpace(request.ChosenFactID)
+			if preferredFactID == "" && len(selectedFactIDs) > 0 {
+				preferredFactID = strings.TrimSpace(selectedFactIDs[0])
+			}
+			existingByFactID := make(map[string]matchstate.MatchEvent)
+			for _, event := range store.Events(matchID) {
+				if event.Status == "active" {
+					existingByFactID[event.FactID] = event
+				}
+			}
 			executeOperatorWrite(w, r, operatorWrites, matchID, "conflicts.resolve", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
 				var conflict matchstate.FactConflict
-				var changed matchstate.MatchEvent
+				var changedEvents []matchstate.MatchEvent
 				var snapshot matchstate.Snapshot
 				var err error
-				if transactionalStore, transactional := store.(matchstate.FactConflictTransactionRepository); transactional {
-					conflict, changed, snapshot, err = transactionalStore.ResolveFactConflictOperator(
-						operationCtx, matchID, parts[2], request.ChosenFactID, operator.Subject, request.Reason,
+				if transactionalStore, transactional := store.(matchstate.FactConflictSelectionTransactionRepository); transactional {
+					conflict, changedEvents, snapshot, err = transactionalStore.ResolveFactConflictSelectionOperator(
+						operationCtx, matchID, parts[2], selectedFactIDs, operator.Subject, request.Reason,
 					)
+				} else if selectionStore, selectable := store.(matchstate.FactConflictSelectionRepository); selectable {
+					conflict, changedEvents, snapshot, err = selectionStore.ResolveFactConflictSelection(
+						matchID, parts[2], selectedFactIDs, operator.Subject, request.Reason,
+					)
+				} else if len(selectedFactIDs) == 1 {
+					var changed matchstate.MatchEvent
+					conflict, changed, snapshot, err = conflictStore.ResolveFactConflict(matchID, parts[2], selectedFactIDs[0], operator.Subject, request.Reason)
+					if changed.ID != "" {
+						changedEvents = []matchstate.MatchEvent{changed}
+					}
 				} else {
-					conflict, changed, snapshot, err = conflictStore.ResolveFactConflict(
-						matchID, parts[2], request.ChosenFactID, operator.Subject, request.Reason,
-					)
+					err = fmt.Errorf("%w: compatible fact selection is unavailable", matchstate.ErrInvalid)
 				}
 				if err != nil {
 					status := http.StatusBadRequest
@@ -1129,9 +1192,17 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 					}
 					return operatorwrite.Response{}, operatorError(status, err)
 				}
+				primary := existingByFactID[preferredFactID]
+				for _, event := range changedEvents {
+					if event.FactID == preferredFactID {
+						primary = event
+						break
+					}
+				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
 					"conflict": conflict,
-					"event":    changed,
+					"event":    primary,
+					"events":   changedEvents,
 					"snapshot": snapshot,
 				})
 			})
@@ -1144,9 +1215,15 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				"revisions": store.FactRevisions(matchID, parts[2]),
 			})
 		case r.Method == http.MethodGet && resource == "config" && len(parts) == 2:
+			matchConfig := store.Config(matchID)
+			snapshot := store.PublicSnapshot(matchID)
+			if !validAPIToken(r, cfg) {
+				matchConfig.Integrity = matchstate.MatchIntegrity{}
+				snapshot = clientSnapshot(snapshot)
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"config":   store.Config(matchID),
-				"snapshot": store.PublicSnapshot(matchID),
+				"config":   matchConfig,
+				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodPost && resource == "config" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
@@ -1173,7 +1250,7 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 			events := store.PublicEvents(matchID)
 			operatorView := validAPIToken(r, cfg)
 			if operatorView {
-				events = store.Events(matchID)
+				events = operatorAuditEvents(store.Events(matchID), events)
 			}
 			if events == nil {
 				events = []matchstate.MatchEvent{}
@@ -1190,8 +1267,12 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 			}
 			writeJSON(w, http.StatusOK, response)
 		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
+			snapshot := store.PublicSnapshot(matchID)
+			if !validAPIToken(r, cfg) {
+				snapshot = clientSnapshot(snapshot)
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"snapshot": store.PublicSnapshot(matchID),
+				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {

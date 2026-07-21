@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"sync"
 	"testing"
 	"time"
 )
@@ -26,6 +27,79 @@ func TestAnonymousSessionCarriesServerAssignedIdentity(t *testing.T) {
 	}
 	if claims.Subject != session.Claims.Subject || !claims.HasScope(ScopeUserChat) {
 		t.Fatalf("authenticated claims = %+v", claims)
+	}
+}
+
+func TestAnonymousSessionKeepsIdentityForTheSameActiveDevice(t *testing.T) {
+	manager := newTestManager(t)
+	first, err := manager.IssueAnonymous(context.Background(), "device_stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+	second, err := manager.IssueAnonymous(context.Background(), "device_stable")
+	if err != nil {
+		t.Fatal(err)
+	}
+
+	if second.Claims.Subject != first.Claims.Subject {
+		t.Fatalf("same device user id changed from %q to %q", first.Claims.Subject, second.Claims.Subject)
+	}
+	if second.Claims.SessionID == first.Claims.SessionID {
+		t.Fatal("same device should receive a new session id")
+	}
+	if second.AccessToken == first.AccessToken || second.RefreshToken == first.RefreshToken {
+		t.Fatal("same device should receive newly generated credentials")
+	}
+
+	other, err := manager.IssueAnonymous(context.Background(), "device_other")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if other.Claims.Subject == first.Claims.Subject {
+		t.Fatal("different devices must not share an anonymous user id")
+	}
+}
+
+func TestAnonymousSessionClaimsOneIdentityDuringConcurrentIssue(t *testing.T) {
+	manager := newTestManager(t)
+	const count = 24
+	start := make(chan struct{})
+	results := make(chan Session, count)
+	errorsFound := make(chan error, count)
+	var wait sync.WaitGroup
+	for range count {
+		wait.Add(1)
+		go func() {
+			defer wait.Done()
+			<-start
+			session, err := manager.IssueAnonymous(context.Background(), "device_concurrent")
+			if err != nil {
+				errorsFound <- err
+				return
+			}
+			results <- session
+		}()
+	}
+	close(start)
+	wait.Wait()
+	close(results)
+	close(errorsFound)
+	for err := range errorsFound {
+		t.Fatal(err)
+	}
+	userID := ""
+	sessions := make(map[string]struct{}, count)
+	for session := range results {
+		if userID == "" {
+			userID = session.Claims.Subject
+		}
+		if session.Claims.Subject != userID {
+			t.Fatalf("concurrent issue split identity: %q != %q", session.Claims.Subject, userID)
+		}
+		sessions[session.Claims.SessionID] = struct{}{}
+	}
+	if len(sessions) != count {
+		t.Fatalf("session count = %d, want %d", len(sessions), count)
 	}
 }
 
