@@ -40,10 +40,96 @@
     __qDiv.id = '__qDiv'; __qDiv.style.display = 'none';
     document.body.appendChild(__qDiv);
     __qDiv.textContent = 'null';
+    var __qRecEvents = [];
+    window.__qRecEmit = function(event) {
+      __qRecEvents.push(event);
+      __qDiv.textContent = JSON.stringify(event);
+    };
+    window.__qRecDrain = function() {
+      var events = __qRecEvents;
+      __qRecEvents = [];
+      __qDiv.textContent = 'null';
+      return events;
+    };
+    var __qRecDeviceStorageKey = 'qiuqiu.operator.voiceDeviceId';
+    var __qRecDevicePreferenceKey = 'qiuqiu.operator.voiceDevicePreferenceSet';
+    var __qRecDeviceId = localStorage.getItem(__qRecDeviceStorageKey) || '';
+    var __qRecDevicePreferenceSet = localStorage.getItem(__qRecDevicePreferenceKey) === '1';
+    function __qRecAudioConstraints(deviceId) {
+      var audio = {channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true};
+      if(deviceId)audio.deviceId={exact:deviceId};
+      return {audio:audio};
+    }
+    function __qRecResetDevice() {
+      __qRecDeviceId='';__qRecDevicePreferenceSet=false;
+      localStorage.removeItem(__qRecDeviceStorageKey);
+      localStorage.removeItem(__qRecDevicePreferenceKey);
+    }
+    function __qRecOpenStream() {
+      var requestedDeviceId=__qRecDeviceId;
+      return navigator.mediaDevices.getUserMedia(__qRecAudioConstraints(requestedDeviceId)).catch(function(error){
+        var unavailable=error&&(
+          error.name==='OverconstrainedError'||error.name==='ConstraintNotSatisfiedError'||error.name==='NotFoundError'
+        );
+        if(!requestedDeviceId||!unavailable)throw error;
+        __qRecResetDevice();
+        return navigator.mediaDevices.getUserMedia(__qRecAudioConstraints(''));
+      });
+    }
+    function __qRecPublishDevices(inputs,activeTrack) {
+      inputs=Array.from(inputs||[]).filter(function(device){
+        return device.kind==='audioinput'&&device.deviceId!=='default';
+      });
+      var availableIds=new Set(inputs.map(function(device){return device.deviceId;}));
+      if(__qRecDeviceId&&!availableIds.has(__qRecDeviceId)){
+        __qRecResetDevice();
+      }
+      if(!__qRecDeviceId&&!__qRecDevicePreferenceSet){
+        var preferred=inputs.find(function(device){return /usb.*(condenser|microphone|麦克风)|condenser.*microphone|电容.*麦/i.test(device.label||'');});
+        if(preferred)__qRecDeviceId=preferred.deviceId;
+      }
+      var activeSettings=activeTrack&&activeTrack.getSettings?activeTrack.getSettings():{};
+      window.__qRecEmit({
+        e:'devices',selectedId:__qRecDeviceId,
+        activeId:activeTrack?(activeSettings.deviceId||''):null,
+        devices:[{id:'',label:'系统默认麦克风'}].concat(inputs.map(function(device,index){
+          return {id:device.deviceId,label:device.label||('麦克风 '+(index+1))};
+        }))
+      });
+      return inputs;
+    }
+    window.__qRecRequestDevices = async function(requestPermission) {
+      try{
+        if(!navigator.mediaDevices||!navigator.mediaDevices.enumerateDevices){
+          return __qRecPublishDevices([],null);
+        }
+        var inputs=Array.from(await navigator.mediaDevices.enumerateDevices()).filter(function(device){return device.kind==='audioinput';});
+        if(requestPermission&&inputs.some(function(device){return !device.label;})){
+          var permissionStream=await navigator.mediaDevices.getUserMedia(__qRecAudioConstraints(''));
+          permissionStream.getTracks().forEach(function(track){track.stop();});
+          inputs=Array.from(await navigator.mediaDevices.enumerateDevices()).filter(function(device){return device.kind==='audioinput';});
+        }
+        return __qRecPublishDevices(inputs,null);
+      }catch(error){
+        window.__qRecEmit({e:'deviceError',message:String(error)});
+        return [];
+      }
+    };
+    window.__qRecSelectDevice = function(deviceId) {
+      __qRecDeviceId=deviceId||'';
+      __qRecDevicePreferenceSet=true;
+      localStorage.setItem(__qRecDevicePreferenceKey,'1');
+      if(__qRecDeviceId)localStorage.setItem(__qRecDeviceStorageKey,__qRecDeviceId);
+      else localStorage.removeItem(__qRecDeviceStorageKey);
+      return window.__qRecRequestDevices(false);
+    };
+    navigator.mediaDevices&&navigator.mediaDevices.addEventListener&&navigator.mediaDevices.addEventListener('devicechange',function(){window.__qRecRequestDevices(false);});
 
     window.__qRecStart = function() {
       if (window.__qRec) window.__qRec(false);
-      var stream=null,context=null,processor=null,chunks=[],preRoll=[],preRollBytes=0,recordedBytes=0,speaking=false,silenceTimer=null,speechFrames=0,finished=false;
+      var stream=null,context=null,processor=null,chunks=[],preRoll=[],preRollBytes=0,recordedBytes=0,streamFrames=[],streamBytes=0,speaking=false,silenceTimer=null,speechFrames=0,finished=false;
+      var speechThreshold=0.006,minSpeechFrames=2;
+      var streamingChunkBytes=16000;
       var maxPreRollBytes=16000*2;
       var maxRecordingBytes=16000*2*30;
       function encodeBase64(bytes){
@@ -70,25 +156,63 @@
         if(stream){stream.getTracks().forEach(function(track){track.stop();});stream=null;}
         if(context&&context.state!=='closed'){context.close();}
       }
+      function adoptStream(mediaStream){
+        stream=mediaStream;
+        if(!finished)return true;
+        cleanup();
+        return false;
+      }
+      function emitStreamingChunk(){
+        if(!streamFrames.length)return;
+        var bytes=new Uint8Array(streamBytes),offset=0;
+        streamFrames.forEach(function(frame){bytes.set(frame,offset);offset+=frame.length;});
+        streamFrames=[];streamBytes=0;
+        window.__qRecEmit({e:'audioChunk',a:encodeBase64(bytes)});
+      }
+      function queueStreamingFrames(frames){
+        frames.forEach(function(frame){streamFrames.push(frame);streamBytes+=frame.length;});
+        if(streamBytes>=streamingChunkBytes)emitStreamingChunk();
+      }
       function finish(emitAudio){
         if(finished)return;
         finished=true;
         cleanup();
         if(emitAudio&&chunks.length){
+          emitStreamingChunk();
           var total=chunks.reduce(function(sum,chunk){return sum+chunk.length;},0);
           var bytes=new Uint8Array(total),offset=0;
           chunks.forEach(function(chunk){bytes.set(chunk,offset);offset+=chunk.length;});
-          __qDiv.textContent=JSON.stringify({e:'sentenceEnd',a:encodeBase64(bytes)});
+          window.__qRecEmit({e:'sentenceEnd',a:encodeBase64(bytes)});
         }
-          chunks=[];preRoll=[];preRollBytes=0;recordedBytes=0;
+          chunks=[];preRoll=[];preRollBytes=0;recordedBytes=0;streamFrames=[];streamBytes=0;
       }
       window.__qRec=function(flush){finish(flush===true);};
-      navigator.mediaDevices.getUserMedia({audio:{channelCount:1,echoCancellation:true,noiseSuppression:true,autoGainControl:true}}).then(function(mediaStream){
-        stream=mediaStream;
+      __qRecOpenStream().then(async function(mediaStream){
+        if(!adoptStream(mediaStream))return;
+        var inputs=navigator.mediaDevices.enumerateDevices?await navigator.mediaDevices.enumerateDevices():[];
+        if(finished){cleanup();return;}
+        __qRecPublishDevices(inputs,mediaStream.getAudioTracks?mediaStream.getAudioTracks()[0]:null);
+        var provisionalTrack=mediaStream.getAudioTracks?mediaStream.getAudioTracks()[0]:null;
+        var provisionalSettings=provisionalTrack&&provisionalTrack.getSettings?provisionalTrack.getSettings():{};
+        if(__qRecDeviceId&&provisionalSettings.deviceId!==__qRecDeviceId){
+          mediaStream.getTracks().forEach(function(track){track.stop();});
+          mediaStream=await navigator.mediaDevices.getUserMedia(__qRecAudioConstraints(__qRecDeviceId));
+          if(!adoptStream(mediaStream))return;
+        }
+        var activeTrack=mediaStream.getAudioTracks?mediaStream.getAudioTracks()[0]:null;
+        var activeSettings=activeTrack&&activeTrack.getSettings?activeTrack.getSettings():{};
+        __qRecPublishDevices(inputs,activeTrack);
         context=new(window.AudioContext||window.webkitAudioContext)();
+        if(context.state==='suspended'&&typeof context.resume==='function')await context.resume();
+        if(finished){cleanup();return;}
+        if(context.state==='suspended')throw new Error('microphone audio context is suspended');
         var source=context.createMediaStreamSource(stream);
         processor=context.createScriptProcessor(4096,1,1);
         source.connect(processor);processor.connect(context.destination);
+        window.__qRecEmit({
+          e:'listening',selectedId:__qRecDeviceId,deviceId:activeSettings.deviceId||'',
+          deviceLabel:activeTrack&&activeTrack.label?activeTrack.label:'系统默认麦克风'
+        });
         processor.onaudioprocess=function(event){
           if(finished)return;
           var input=event.inputBuffer.getChannelData(0),sum=0;
@@ -99,15 +223,18 @@
             preRoll.push(frame);preRollBytes+=frame.length;
             while(preRollBytes>maxPreRollBytes&&preRoll.length>1){preRollBytes-=preRoll.shift().length;}
           }else{
+            if(recordedBytes+frame.length>maxRecordingBytes){finish(true);return;}
             chunks.push(frame);recordedBytes+=frame.length;
+            queueStreamingFrames([frame]);
             if(recordedBytes>=maxRecordingBytes){finish(true);return;}
           }
-          if(rms>0.02){
+          if(rms>speechThreshold){
             speechFrames++;
             if(silenceTimer){clearTimeout(silenceTimer);silenceTimer=null;}
-            if(speechFrames>=4&&!speaking){
+            if(speechFrames>=minSpeechFrames&&!speaking){
               speaking=true;chunks=preRoll;recordedBytes=preRollBytes;preRoll=[];preRollBytes=0;
-              __qDiv.textContent=JSON.stringify({e:'speaking'});
+              window.__qRecEmit({e:'speaking'});
+              queueStreamingFrames(chunks);
             }
           }else if(speaking&&!silenceTimer){
             silenceTimer=setTimeout(function(){finish(true);},760);
@@ -117,7 +244,7 @@
         };
       }).catch(function(error){
         var denied=error&&error.name==='NotAllowedError';
-        __qDiv.textContent=JSON.stringify({e:denied?'permissionDenied':'error',message:String(error)});
+        window.__qRecEmit({e:denied?'permissionDenied':'error',message:String(error)});
         cleanup();
       });
     };

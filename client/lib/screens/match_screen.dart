@@ -66,6 +66,11 @@ class _MatchScreenState extends State<MatchScreen> {
   bool _firstMeetingCompleted = false;
   bool _awaitingFirstMeetingGreeting = false;
   bool _forceSubtitleFallback = false;
+  List<AudioInputDevice> _audioInputDevices = const [
+    AudioInputDevice(id: '', label: '系统默认麦克风'),
+  ];
+  String _selectedAudioInputId = '';
+  String _activeAudioInputId = '';
   String _userId = '';
   int _signalSequence = 0;
   String _expression = 'idle';
@@ -111,8 +116,28 @@ class _MatchScreenState extends State<MatchScreen> {
       _socket.onBinary.listen(_handleAudioBytes),
       _socket.statusStream.listen(_handleSocketStatus),
       _vad.events.listen(_handleVadEvent),
+      _vad.inputDevices.listen(_handleAudioInputDevices),
       _audio.stateStream.listen(_handleAudioState),
     ]);
+  }
+
+  void _handleAudioInputDevices(List<AudioInputDevice> devices) {
+    if (!mounted) return;
+    setState(() {
+      _audioInputDevices = devices;
+      _selectedAudioInputId = _vad.selectedInputDeviceId;
+      _activeAudioInputId = _vad.activeInputDeviceId;
+    });
+  }
+
+  String get _audioInputLabel {
+    final displayedId = _activeAudioInputId.isNotEmpty
+        ? _activeAudioInputId
+        : _selectedAudioInputId;
+    for (final device in _audioInputDevices) {
+      if (device.id == displayedId) return device.label;
+    }
+    return '系统默认麦克风';
   }
 
   String _socketUrl() {
@@ -651,6 +676,87 @@ class _MatchScreenState extends State<MatchScreen> {
     _vad.onSpeechDetected();
   }
 
+  Future<void> _chooseAudioInput() async {
+    late final List<AudioInputDevice> devices;
+    try {
+      devices = await _vad.refreshInputDevices();
+    } catch (_) {
+      if (!mounted) return;
+      setState(() => _notice = '无法读取麦克风列表，请检查浏览器权限。');
+      return;
+    }
+    if (!mounted) return;
+    _handleAudioInputDevices(devices);
+    final selected = await showModalBottomSheet<String>(
+      context: context,
+      showDragHandle: true,
+      builder: (sheetContext) => SafeArea(
+        top: false,
+        child: ConstrainedBox(
+          constraints: const BoxConstraints(maxHeight: 420),
+          child: Column(
+            mainAxisSize: MainAxisSize.min,
+            crossAxisAlignment: CrossAxisAlignment.stretch,
+            children: [
+              Padding(
+                padding: const EdgeInsets.fromLTRB(
+                  AppSpacing.md,
+                  AppSpacing.xs,
+                  AppSpacing.md,
+                  AppSpacing.sm,
+                ),
+                child: Text(
+                  '语音输入',
+                  style: Theme.of(sheetContext).textTheme.titleLarge,
+                ),
+              ),
+              Flexible(
+                child: ListView.builder(
+                  shrinkWrap: true,
+                  itemCount: devices.length,
+                  itemBuilder: (_, index) {
+                    final device = devices[index];
+                    final selected = device.id == _selectedAudioInputId;
+                    return ListTile(
+                      leading: Icon(
+                        selected
+                            ? Icons.radio_button_checked_rounded
+                            : Icons.radio_button_unchecked_rounded,
+                      ),
+                      title: Text(
+                        device.label,
+                        maxLines: 2,
+                        overflow: TextOverflow.ellipsis,
+                      ),
+                      onTap: () => Navigator.pop(sheetContext, device.id),
+                    );
+                  },
+                ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+    if (selected == null || !mounted) return;
+    final selectedDevice = devices.firstWhere(
+      (device) => device.id == selected,
+      orElse: () => const AudioInputDevice(
+        id: '',
+        label: '系统默认麦克风',
+      ),
+    );
+    await _vad.selectInputDevice(selected);
+    if (_continuousEnabled && !_vad.isListening) {
+      await _vad.startListening(VADMode.freeTalk);
+    }
+    if (!mounted) return;
+    setState(() {
+      _selectedAudioInputId = selected;
+      _notice = '已切换到 ${selectedDevice.label}';
+    });
+  }
+
   void _stopPushToTalk() {
     if (!_isHoldingToTalk) return;
     _isHoldingToTalk = false;
@@ -832,6 +938,8 @@ class _MatchScreenState extends State<MatchScreen> {
                       textMode: _textMode,
                       textController: _textController,
                       onToggleContinuous: _toggleContinuous,
+                      audioInputLabel: _audioInputLabel,
+                      onChooseAudioInput: _chooseAudioInput,
                       onOpenSettings: _openSettings,
                       onOpenText: () => setState(() => _textMode = true),
                       onCloseText: () => setState(() => _textMode = false),
@@ -1021,6 +1129,8 @@ class _LiveMatchExperience extends StatelessWidget {
   final bool textMode;
   final TextEditingController textController;
   final VoidCallback onToggleContinuous;
+  final String audioInputLabel;
+  final VoidCallback onChooseAudioInput;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenText;
   final VoidCallback onCloseText;
@@ -1046,6 +1156,8 @@ class _LiveMatchExperience extends StatelessWidget {
     required this.textMode,
     required this.textController,
     required this.onToggleContinuous,
+    required this.audioInputLabel,
+    required this.onChooseAudioInput,
     required this.onOpenSettings,
     required this.onOpenText,
     required this.onCloseText,
@@ -1095,6 +1207,8 @@ class _LiveMatchExperience extends StatelessWidget {
                         textMode: textMode,
                         textController: textController,
                         onToggleContinuous: onToggleContinuous,
+                        audioInputLabel: audioInputLabel,
+                        onChooseAudioInput: onChooseAudioInput,
                         onOpenSettings: onOpenSettings,
                         onOpenText: onOpenText,
                         onCloseText: onCloseText,
@@ -1476,6 +1590,8 @@ class _ConversationDock extends StatelessWidget {
   final bool textMode;
   final TextEditingController textController;
   final VoidCallback onToggleContinuous;
+  final String audioInputLabel;
+  final VoidCallback onChooseAudioInput;
   final VoidCallback onOpenSettings;
   final VoidCallback onOpenText;
   final VoidCallback onCloseText;
@@ -1491,6 +1607,8 @@ class _ConversationDock extends StatelessWidget {
     required this.textMode,
     required this.textController,
     required this.onToggleContinuous,
+    required this.audioInputLabel,
+    required this.onChooseAudioInput,
     required this.onOpenSettings,
     required this.onOpenText,
     required this.onCloseText,
@@ -1531,6 +1649,42 @@ class _ConversationDock extends StatelessWidget {
                     style: Theme.of(context).textTheme.labelMedium?.copyWith(
                           color: AppColors.paperInk,
                         ),
+                  ),
+                ),
+                const SizedBox(width: AppSpacing.xs),
+                Tooltip(
+                  message: '选择语音输入',
+                  child: InkWell(
+                    onTap: onChooseAudioInput,
+                    child: Padding(
+                      padding: const EdgeInsets.symmetric(
+                        horizontal: AppSpacing.xs,
+                        vertical: AppSpacing.xxs,
+                      ),
+                      child: Row(
+                        mainAxisSize: MainAxisSize.min,
+                        children: [
+                          const Icon(
+                            Icons.mic_external_on_outlined,
+                            size: 17,
+                            color: AppColors.paperInk,
+                          ),
+                          const SizedBox(width: AppSpacing.xxs),
+                          ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 132),
+                            child: Text(
+                              audioInputLabel,
+                              maxLines: 1,
+                              overflow: TextOverflow.ellipsis,
+                              style: Theme.of(context)
+                                  .textTheme
+                                  .labelSmall
+                                  ?.copyWith(color: AppColors.paperInk),
+                            ),
+                          ),
+                        ],
+                      ),
+                    ),
                   ),
                 ),
               ],

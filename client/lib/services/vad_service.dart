@@ -7,7 +7,9 @@ import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 
 class VADService {
-  final _eventController = StreamController<VADEvent>.broadcast();
+  final _eventController = StreamController<VADEvent>.broadcast(sync: true);
+  final _audioChunkController =
+      StreamController<Uint8List>.broadcast(sync: true);
   final _recorder = AudioRecorder();
   final _audioBuffer = <Uint8List>[];
   final _preRoll = Queue<Uint8List>();
@@ -20,20 +22,33 @@ class VADService {
   bool _finishingSentence = false;
   bool _disposed = false;
   bool _audioSessionConfigured = false;
+  String _selectedInputDeviceId = '';
   int _speechFrames = 0;
 
-  static const double silenceThreshold = 0.035;
-  static const int minSpeechFrames = 4;
+  static const double silenceThreshold = 0.006;
+  static const int minSpeechFrames = 2;
   static const int silenceTimeoutMs = 760;
   static const int maxDurationMs = 15000;
   static const int preRollFrames = 4;
 
   Stream<VADEvent> get events => _eventController.stream;
+  Stream<Uint8List> get audioChunks => _audioChunkController.stream;
+  Stream<List<AudioInputDevice>> get inputDevices => const Stream.empty();
   bool get isListening => _sessionActive;
   VADMode get mode => _mode;
   String get debugInfo => '';
+  String get selectedInputDeviceId => _selectedInputDeviceId;
+  String get activeInputDeviceId => _selectedInputDeviceId;
 
   Future<bool> hasPermission() => _recorder.hasPermission();
+
+  Future<List<AudioInputDevice>> refreshInputDevices() async => const [
+        AudioInputDevice(id: '', label: '系统默认麦克风'),
+      ];
+
+  Future<void> selectInputDevice(String deviceId) async {
+    _selectedInputDeviceId = deviceId;
+  }
 
   Future<void> startListening(VADMode mode) async {
     if (_disposed) return;
@@ -96,6 +111,7 @@ class VADService {
 
     if (_mode == VADMode.pushToTalk) {
       _audioBuffer.add(pcm);
+      _emitAudioChunk(pcm);
     } else if (_speechFrames < minSpeechFrames) {
       _preRoll.addLast(pcm);
       while (_preRoll.length > preRollFrames) {
@@ -103,6 +119,7 @@ class VADService {
       }
     } else {
       _audioBuffer.add(pcm);
+      _emitAudioChunk(pcm);
     }
 
     if (speechDetected) {
@@ -112,6 +129,9 @@ class VADService {
       if (_speechFrames == minSpeechFrames) {
         if (_mode == VADMode.freeTalk) {
           _audioBuffer.addAll(_preRoll);
+          for (final chunk in _preRoll) {
+            _emitAudioChunk(chunk);
+          }
           _preRoll.clear();
         }
         _emit(const VADEvent.speaking());
@@ -219,11 +239,18 @@ class VADService {
     }
   }
 
+  void _emitAudioChunk(Uint8List audio) {
+    if (!_disposed && !_audioChunkController.isClosed && audio.isNotEmpty) {
+      _audioChunkController.add(audio);
+    }
+  }
+
   void dispose() {
     if (_disposed) return;
     stopListening();
     _disposed = true;
     unawaited(_eventController.close());
+    unawaited(_audioChunkController.close());
     unawaited(_recorder.dispose());
   }
 }
@@ -252,4 +279,12 @@ enum VADState {
   idle,
   permissionDenied,
   failure,
+}
+
+@immutable
+class AudioInputDevice {
+  final String id;
+  final String label;
+
+  const AudioInputDevice({required this.id, required this.label});
 }
