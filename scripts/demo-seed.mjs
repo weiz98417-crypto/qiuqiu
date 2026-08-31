@@ -4,13 +4,12 @@ const baseUrl = process.env.QIUQIU_BASE_URL || 'http://localhost:8080';
 const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
 const matchId = process.env.QIUQIU_MATCH_ID || 'test';
 
-const endpoint = (path) => `${baseUrl}${path}${path.includes('?') ? '&' : '?'}token=${encodeURIComponent(token)}`;
-
 async function request(path, options = {}) {
-  const res = await fetch(endpoint(path), {
+  const res = await fetch(`${baseUrl}${path}`, {
     ...options,
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
+      ...(token ? { Authorization: `Bearer ${token}` } : {}),
       ...(options.method === 'POST' ? { 'Idempotency-Key': `seed-${Date.now()}-${Math.random().toString(16).slice(2)}` } : {}),
       ...(options.headers || {}),
     },
