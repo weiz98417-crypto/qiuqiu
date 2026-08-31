@@ -18,7 +18,7 @@ Optional MiMo environment:
 ```powershell
 $env:MIMO_API_KEY="{MIMO_API_KEY}"
 $env:MIMO_MODEL="mimo-v2.5"
-$env:MIMO_VOICE="Chloe"
+$env:MIMO_VOICE="冰糖"
 ```
 
 ## Start Backend

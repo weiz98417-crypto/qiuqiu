@@ -29,7 +29,7 @@ func NewClient(apiKey string) *Client {
 		apiKey:  apiKey,
 		baseURL: "https://api.xiaomimimo.com/v1",
 		model:   "mimo-v2.5-tts",
-		voice:   "Chloe",
+		voice:   "冰糖",
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
@@ -75,6 +75,11 @@ type SynthesizeResult struct {
 // Synthesize calls MiMo Text-to-Speech API.
 // voiceID overrides the configured MiMo voice when supplied.
 func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*SynthesizeResult, error) {
+	return c.SynthesizeWithInstruction(ctx, text, voiceID, "")
+}
+
+// SynthesizeWithInstruction asks MiMo to perform the text according to a natural-language direction.
+func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, instruction string) (*SynthesizeResult, error) {
 	start := time.Now()
 	if c == nil {
 		return nil, ErrNotConfigured
@@ -89,14 +94,17 @@ func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*Synthes
 	if voice == "" || strings.HasPrefix(voice, "cgSg") {
 		voice = c.voice
 	}
+	messages := make([]map[string]string, 0, 2)
+	if instruction = strings.TrimSpace(instruction); instruction != "" {
+		messages = append(messages, map[string]string{"role": "user", "content": instruction})
+	}
+	messages = append(messages, map[string]string{"role": "assistant", "content": text})
 	payload := map[string]interface{}{
-		"model": defaultString(c.model, "mimo-v2.5-tts"),
-		"messages": []map[string]string{
-			{"role": "assistant", "content": text},
-		},
+		"model":    defaultString(c.model, "mimo-v2.5-tts"),
+		"messages": messages,
 		"audio": map[string]string{
 			"format": "wav",
-			"voice":  defaultString(voice, "Chloe"),
+			"voice":  defaultString(voice, "冰糖"),
 		},
 	}
 

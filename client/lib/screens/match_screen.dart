@@ -437,7 +437,6 @@ class _MatchScreenState extends State<MatchScreen> {
         audioBytes,
         mime: metadata.mime,
         traceId: metadata.traceId,
-        speed: presentationPlaybackSpeed(_activePresentation),
       ),
     );
   }

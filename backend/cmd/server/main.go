@@ -648,7 +648,7 @@ func main() {
 							return
 						}
 						if ttsClient != nil {
-							ttsResult, err := ttsClient.Synthesize(replyCtx, result.Reply, "cgSgspJ2msm6clMCkdW9")
+							ttsResult, err := synthesizeReply(replyCtx, ttsClient, result.Reply, "", result.Presentation)
 							if err != nil {
 								if errors.Is(err, context.Canceled) {
 									return
@@ -1474,7 +1474,7 @@ func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent,
 	result.Trace = response.Trace
 	result.Presentation = response.Presentation
 	if synthesizer != nil {
-		ttsResult, err := synthesizer.Synthesize(ctx, result.Reply, "cgSgspJ2msm6clMCkdW9")
+		ttsResult, err := synthesizeReply(ctx, synthesizer, result.Reply, "", result.Presentation)
 		if err != nil {
 			result.TTSError = err.Error()
 			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
@@ -1576,7 +1576,7 @@ func emitScheduledResponse(ctx context.Context, writer *wsWriter, agent *compani
 		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
 		return
 	}
-	ttsResult, err := ttsClient.Synthesize(ctx, reply, "")
+	ttsResult, err := synthesizeReply(ctx, ttsClient, reply, "", presentation)
 	if err != nil {
 		if !replyContextActive(ctx) {
 			return
@@ -1646,7 +1646,7 @@ func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Ag
 		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
 		return
 	}
-	ttsResult, err := ttsClient.Synthesize(ctx, response.Reply, "")
+	ttsResult, err := synthesizeReply(ctx, ttsClient, response.Reply, "", response.Presentation)
 	if err != nil {
 		if !replyContextActive(ctx) {
 			return

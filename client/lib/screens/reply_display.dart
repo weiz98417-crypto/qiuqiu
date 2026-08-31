@@ -60,10 +60,6 @@ class CompanionPresentation {
   }
 }
 
-double presentationPlaybackSpeed(CompanionPresentation? presentation) {
-  return (presentation?.voiceSpeed ?? 1).clamp(0.8, 1.2).toDouble();
-}
-
 (String, String) presentationReturnState(
   CompanionPresentation presentation,
 ) {

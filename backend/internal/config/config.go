@@ -55,7 +55,7 @@ func Load() *Config {
 		MiMoAPIKey:                     getEnv("MIMO_API_KEY", ""),
 		MiMoBaseURL:                    getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
 		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
-		MiMoVoice:                      getEnv("MIMO_VOICE", "Chloe"),
+		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
 		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),

@@ -30,6 +30,7 @@ void main() {
     expect(presentation!.expression, 'deflated');
     expect(presentation.motion, 'settle');
     expect(presentation.voiceStyle, 'low_disappointed');
+    expect(presentation.voiceSpeed, 0.92);
     expect(presentation.hold, const Duration(milliseconds: 2800));
     expect(presentation.returnMode, 'decay_to_focus');
   });
@@ -54,22 +55,5 @@ void main() {
       presentationReturnState(base.copyWith(returnMode: 'decay_to_idle')),
       ('idle', 'idle'),
     );
-  });
-
-  test('presentation voice speed is clamped for safe playback', () {
-    const base = CompanionPresentation(
-      expression: 'chat',
-      motion: 'speak',
-      voiceStyle: 'natural',
-      voiceEnergy: 0.5,
-      voiceSpeed: 0.92,
-      hold: Duration(milliseconds: 1800),
-      returnMode: 'decay_to_focus',
-    );
-
-    expect(presentationPlaybackSpeed(base), 0.92);
-    expect(presentationPlaybackSpeed(base.copyWith(voiceSpeed: 2)), 1.2);
-    expect(presentationPlaybackSpeed(base.copyWith(voiceSpeed: 0.2)), 0.8);
-    expect(presentationPlaybackSpeed(null), 1);
   });
 }

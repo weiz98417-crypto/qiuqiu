@@ -63,3 +63,39 @@ func TestEvalTTSRequestFormatting(t *testing.T) {
 		t.Fatalf("missing expected request fields key=%v accept=%v model=%v text=%v", sawKey, sawAccept, sawModel, sawText)
 	}
 }
+
+func TestSynthesizeWithInstructionUsesBingTangAndPerformancePrompt(t *testing.T) {
+	var voice string
+	var messages []map[string]string
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		var payload struct {
+			Messages []map[string]string `json:"messages"`
+			Audio    map[string]string   `json:"audio"`
+		}
+		if err := json.NewDecoder(r.Body).Decode(&payload); err != nil {
+			t.Fatalf("decode payload: %v", err)
+		}
+		voice = payload.Audio["voice"]
+		messages = payload.Messages
+		_ = json.NewEncoder(w).Encode(map[string]interface{}{"choices": []map[string]interface{}{{"message": map[string]interface{}{"audio": map[string]string{"data": "YXVkaW8="}}}}})
+	}))
+	defer server.Close()
+
+	client := NewClient("tts-key").WithBaseURL(server.URL).WithHTTPClient(server.Client())
+	_, err := client.SynthesizeWithInstruction(context.Background(), "这球太漂亮了！", "", "用自然偏快的语速，带一点兴奋感。")
+	if err != nil {
+		t.Fatalf("SynthesizeWithInstruction error: %v", err)
+	}
+	if voice != "冰糖" {
+		t.Fatalf("voice = %q, want 冰糖", voice)
+	}
+	if len(messages) != 2 {
+		t.Fatalf("messages = %+v, want performance prompt plus spoken text", messages)
+	}
+	if messages[0]["role"] != "user" || messages[0]["content"] != "用自然偏快的语速，带一点兴奋感。" {
+		t.Fatalf("performance instruction = %+v", messages[0])
+	}
+	if messages[1]["role"] != "assistant" || messages[1]["content"] != "这球太漂亮了！" {
+		t.Fatalf("spoken text = %+v", messages[1])
+	}
+}

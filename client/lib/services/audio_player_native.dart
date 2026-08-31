@@ -38,7 +38,6 @@ class AudioPlayerService {
     Uint8List audio, {
     required String mime,
     String? traceId,
-    double speed = 1,
   }) async {
     if (_muted || _disposed || audio.isEmpty) return;
     await pause(notify: false);
@@ -51,7 +50,6 @@ class AudioPlayerService {
         mode: LoadMode.memory,
       );
       final handle = _soloud!.play(source);
-      _soloud!.setRelativePlaySpeed(handle, speed.clamp(0.8, 1.2).toDouble());
       _activeHandles.add(handle);
       _currentTraceId = traceId;
       _emit(AudioPlaybackStatus.started, traceId: traceId);
