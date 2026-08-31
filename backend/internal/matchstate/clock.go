@@ -11,6 +11,8 @@ const (
 	ClockActionPause  = "pause"
 	ClockActionSet    = "set"
 	ClockActionAdjust = "adjust"
+
+	maxClockElapsedSeconds = 6 * 60 * 60
 )
 
 type MatchClock struct {
@@ -60,6 +62,8 @@ func normalizeMatchClock(matchID string, clock MatchClock) MatchClock {
 	}
 	if clock.ElapsedSeconds < 0 {
 		clock.ElapsedSeconds = 0
+	} else if clock.ElapsedSeconds > maxClockElapsedSeconds {
+		clock.ElapsedSeconds = maxClockElapsedSeconds
 	}
 	return clock
 }
@@ -79,7 +83,7 @@ func applyClockCommand(current MatchClock, command ClockCommand, now time.Time) 
 		}
 	}
 	if command.ElapsedSeconds != nil {
-		if *command.ElapsedSeconds < 0 || *command.ElapsedSeconds > 6*60*60 {
+		if *command.ElapsedSeconds < 0 || *command.ElapsedSeconds > maxClockElapsedSeconds {
 			return MatchClock{}, fmt.Errorf("%w: elapsedSeconds must be between 0 and 21600", ErrInvalid)
 		}
 		next.ElapsedSeconds = *command.ElapsedSeconds
@@ -87,8 +91,11 @@ func applyClockCommand(current MatchClock, command ClockCommand, now time.Time) 
 
 	switch strings.ToLower(strings.TrimSpace(command.Action)) {
 	case ClockActionStart:
-		if current.Running && command.Period == "" && command.ElapsedSeconds == nil {
+		if current.Running && current.Period != "pre_match" && command.Period == "" && command.ElapsedSeconds == nil {
 			return current, nil
+		}
+		if current.Period == "pre_match" && command.Period == "" {
+			next.Period = "first_half"
 		}
 		next.Running = true
 		next.AnchorAt = timePointer(now)
@@ -112,7 +119,7 @@ func applyClockCommand(current MatchClock, command ClockCommand, now time.Time) 
 			return MatchClock{}, fmt.Errorf("%w: adjust clock requires deltaSeconds", ErrInvalid)
 		}
 		next.ElapsedSeconds += *command.DeltaSeconds
-		if next.ElapsedSeconds < 0 || next.ElapsedSeconds > 6*60*60 {
+		if next.ElapsedSeconds < 0 || next.ElapsedSeconds > maxClockElapsedSeconds {
 			return MatchClock{}, fmt.Errorf("%w: adjusted clock must be between 0 and 21600", ErrInvalid)
 		}
 		if next.Running {
@@ -140,6 +147,9 @@ func (clock MatchClock) elapsedAt(now time.Time) int {
 	}
 	if elapsed < 0 {
 		return 0
+	}
+	if elapsed > maxClockElapsedSeconds {
+		return maxClockElapsedSeconds
 	}
 	return elapsed
 }

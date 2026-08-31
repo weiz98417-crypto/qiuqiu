@@ -435,7 +435,8 @@ func TestEvalCompanionCorrectionAwareMemoryAndUnknownFallback(t *testing.T) {
 	if unknownReply.Intent != IntentUnknown {
 		t.Fatalf("expected unknown intent, got %s", unknownReply.Intent)
 	}
-	assertContains(t, unknownReply.Reply, "陪看")
+	assertContains(t, unknownReply.Reply, "没接明白")
+	assertNotContains(t, unknownReply.Reply, "按陪看")
 	assertToolNotCalled(t, unknownReply.Trace, "match.read_snapshot")
 	assertToolNotCalled(t, unknownReply.Trace, "match.search_events")
 	assertToolNotCalled(t, unknownReply.Trace, "match.get_player_timeline")

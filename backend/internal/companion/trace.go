@@ -85,6 +85,10 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 	if err != nil {
 		return err
 	}
+	schedule, err := json.Marshal(trace.Schedule)
+	if err != nil {
+		return err
+	}
 	claim, err := json.Marshal(trace.Claim)
 	if err != nil {
 		return err
@@ -134,9 +138,10 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 		INSERT INTO agent_traces (
 			id, match_id, user_id, input, intent, tool_calls,
 			retrieved_event_ids, output, reason, latency_ms, error, voice, fact_claim,
-			pending_observation, observation_resolution, relationship_decision, created_at, expires_at
+			pending_observation, observation_resolution, relationship_decision, created_at, expires_at,
+			schedule, lookup_id, parent_trace_id
 		)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, $16, $17, $18, $19, $20, $21)
 		ON CONFLICT (id) DO UPDATE SET
 			input = EXCLUDED.input,
 			intent = EXCLUDED.intent,
@@ -151,13 +156,17 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 			pending_observation = EXCLUDED.pending_observation,
 			observation_resolution = EXCLUDED.observation_resolution,
 			relationship_decision = EXCLUDED.relationship_decision,
+			schedule = EXCLUDED.schedule,
+			lookup_id = EXCLUDED.lookup_id,
+			parent_trace_id = EXCLUDED.parent_trace_id,
 			expires_at = EXCLUDED.expires_at
 		WHERE agent_traces.match_id = EXCLUDED.match_id
 			AND agent_traces.user_id = EXCLUDED.user_id
 			AND agent_traces.input = EXCLUDED.input
 	`, trace.ID, trace.MatchID, trace.UserID, trace.Input, string(trace.Intent), toolCalls,
 		retrievedEvents, trace.Output, trace.Reason, trace.LatencyMS, trace.Error, voice, claim,
-		pendingObservation, observationResolution, relationshipDecision, createdAt, expiresAt)
+		pendingObservation, observationResolution, relationshipDecision, createdAt, expiresAt,
+		schedule, trace.LookupID, trace.ParentTraceID)
 	if err != nil {
 		return err
 	}
@@ -214,6 +223,10 @@ func (w *PostgresTraceWriter) UpdateTrace(ctx context.Context, trace Trace) erro
 	if err != nil {
 		return err
 	}
+	schedule, err := json.Marshal(trace.Schedule)
+	if err != nil {
+		return err
+	}
 	claim, err := json.Marshal(trace.Claim)
 	if err != nil {
 		return err
@@ -246,10 +259,14 @@ func (w *PostgresTraceWriter) UpdateTrace(ctx context.Context, trace Trace) erro
 			fact_claim = $10,
 			pending_observation = $11,
 			observation_resolution = $12,
-			relationship_decision = $13
+			relationship_decision = $13,
+			schedule = $14,
+			lookup_id = $15,
+			parent_trace_id = $16
 		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
 	`, trace.MatchID, trace.ID, toolCalls, retrievedEvents, trace.Output, trace.Reason, trace.LatencyMS, trace.Error,
-		voice, claim, pendingObservation, observationResolution, relationshipDecision)
+		voice, claim, pendingObservation, observationResolution, relationshipDecision,
+		schedule, trace.LookupID, trace.ParentTraceID)
 	if err != nil {
 		return err
 	}
@@ -263,7 +280,7 @@ func (w *PostgresTraceWriter) ListTraces(ctx context.Context, matchID string, li
 	rows, err := w.pool.Query(ctx, `
 		SELECT id, match_id, user_id, input, intent, tool_calls, retrieved_event_ids,
 			output, reason, latency_ms, error, voice, fact_claim, pending_observation,
-			observation_resolution, relationship_decision, created_at
+			observation_resolution, relationship_decision, schedule, lookup_id, parent_trace_id, created_at
 		FROM agent_traces
 		WHERE match_id = $1 AND deleted_at IS NULL
 			AND (expires_at IS NULL OR expires_at > now())
@@ -290,7 +307,7 @@ func (w *PostgresTraceWriter) GetTrace(ctx context.Context, matchID, traceID str
 	rows, err := w.pool.Query(ctx, `
 		SELECT id, match_id, user_id, input, intent, tool_calls, retrieved_event_ids,
 			output, reason, latency_ms, error, voice, fact_claim, pending_observation,
-			observation_resolution, relationship_decision, created_at
+			observation_resolution, relationship_decision, schedule, lookup_id, parent_trace_id, created_at
 		FROM agent_traces
 		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
 			AND (expires_at IS NULL OR expires_at > now())
@@ -350,6 +367,7 @@ func scanTrace(rows pgx.Rows) (Trace, error) {
 	var pendingObservation []byte
 	var observationResolution []byte
 	var relationshipDecision []byte
+	var schedule []byte
 	var createdAt time.Time
 	err := rows.Scan(
 		&trace.ID,
@@ -368,6 +386,9 @@ func scanTrace(rows pgx.Rows) (Trace, error) {
 		&pendingObservation,
 		&observationResolution,
 		&relationshipDecision,
+		&schedule,
+		&trace.LookupID,
+		&trace.ParentTraceID,
 		&createdAt,
 	)
 	if err != nil {
@@ -412,6 +433,13 @@ func scanTrace(rows pgx.Rows) (Trace, error) {
 			return Trace{}, err
 		}
 		trace.RelationshipDecision = &decision
+	}
+	if len(schedule) > 0 && string(schedule) != "null" {
+		var intent ScheduleIntent
+		if err := json.Unmarshal(schedule, &intent); err != nil {
+			return Trace{}, err
+		}
+		trace.Schedule = &intent
 	}
 	trace.Intent = Intent(intent)
 	trace.CreatedAt = createdAt.UTC()

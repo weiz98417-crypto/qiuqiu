@@ -1,16 +1,21 @@
 import { expect, test } from '@playwright/test';
 
 const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
-const matchId = 'test';
+const matchId = 'demo-operator-control-e2e';
+const operatorURL = (view, activeMatchId = matchId) => `/operator.html?matchId=${encodeURIComponent(activeMatchId)}#${view}`;
 
-test.beforeEach(async ({ request }) => {
+test.beforeEach(async ({ request, context }) => {
+  await context.addInitScript((value) => {
+    localStorage.setItem('qiuqiu.operator.token', value);
+  }, token);
   await apiPost(request, `/api/matches/${matchId}/reset`, {});
   await apiPost(request, `/api/matches/${matchId}/config`, {
     homeTeam: '西班牙',
     awayTeam: '德国',
     homePlayers: [
-      { number: '10', name: '佩德里', position: 'CM' },
-      { number: '19', name: '亚马尔', position: 'RW' },
+      { number: '10', name: '佩德里', position: 'CM', lineup: 'starter' },
+      { number: '19', name: '亚马尔', position: 'RW', lineup: 'starter' },
+      { number: '11', name: '费兰·托雷斯', position: 'RW', lineup: 'bench' },
     ],
     awayPlayers: [
       { number: '10', name: '穆西亚拉', position: 'AM' },
@@ -23,7 +28,7 @@ test.beforeEach(async ({ request }) => {
 });
 
 test('行为按钮只更新当前草稿，不直接创建比赛事实', async ({ page, request }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#homeChips .player-chip').filter({ hasText: '亚马尔' }).click();
   await page.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
   await expect(page.locator('#toast')).toContainText('已加入草稿');
@@ -36,7 +41,7 @@ test('行为按钮只更新当前草稿，不直接创建比赛事实', async ({
 });
 
 test('切换球队清空旧球员，切换行为清空进球专属字段', async ({ page }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
   await page.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
   await page.locator('#slot_assist').fill('亚马尔');
@@ -53,8 +58,48 @@ test('切换球队清空旧球员，切换行为清空进球专属字段', async
   await expect(page.locator('#slot_offender')).toHaveValue('穆西亚拉');
 });
 
+test('主客队切换只显示当前球队名单', async ({ page }) => {
+  await page.goto(operatorURL('live'));
+
+  await expect(page.locator('#homeChips')).toBeVisible();
+  await expect(page.locator('#awayChips')).toBeHidden();
+  await expect(page.locator('#homeChips')).toContainText('佩德里');
+  await expect(page.locator('#awayChips')).toContainText('穆西亚拉');
+
+  await page.locator('#awaySideButton').click();
+  await expect(page.locator('#homeChips')).toBeHidden();
+  await expect(page.locator('#awayChips')).toBeVisible();
+  await expect(page.locator('#awayChips')).toContainText('穆西亚拉');
+});
+
+test('确认换人后才交换场上和替补席，并写入公开事实', async ({ page, request }) => {
+  await page.goto(operatorURL('live'));
+  await page.locator('#behaviorGroups .behavior-button[data-event-type="substitution"]').click();
+
+  await expect(page.locator('#homeChips')).toContainText('费兰·托雷斯');
+  await expect(page.locator('#homeChips')).not.toContainText('佩德里');
+  await page.locator('#homeChips .player-chip').filter({ hasText: '费兰·托雷斯' }).click();
+  await expect(page.locator('#homeChips')).toContainText('佩德里');
+  await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
+  await page.locator('#mode').selectOption('quiet');
+  await page.locator('#draftSubmit').click();
+  await expect(page.locator('#toast')).toContainText('已确认并发送：换人');
+
+  const timeline = await apiGet(request, `/api/matches/${matchId}/events`);
+  expect(timeline.events).toHaveLength(1);
+  expect(timeline.events[0]).toMatchObject({ eventType: 'substitution', factStatus: 'confirmed', visibility: 'public' });
+  expect(timeline.events[0].participants).toEqual(expect.arrayContaining([
+    expect.objectContaining({ role: 'sub_on', name: '费兰·托雷斯' }),
+    expect.objectContaining({ role: 'sub_off', name: '佩德里' }),
+  ]));
+
+  await page.locator('#behaviorGroups .behavior-button[data-event-type="substitution"]').click();
+  await expect(page.locator('#homeChips')).toContainText('佩德里');
+  await expect(page.locator('#homeChips')).not.toContainText('费兰·托雷斯');
+});
+
 test('候选进球不改公开比分，确认后只增加一次', async ({ page, request }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
   await page.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
   await page.locator('#mode').selectOption('quiet');
@@ -98,7 +143,7 @@ test('候选事实采用到草稿时必须留下更正原因', async ({ page, re
     evidence: { providerPayload: 'raw-shot-12' },
   });
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   const card = page.locator('.event-card').filter({ hasText: '外部源识别为佩德里射门' });
   await card.getByRole('button', { name: '采用到草稿' }).click();
   await expect(page.locator('#correctionReasonField')).toBeVisible();
@@ -132,7 +177,7 @@ test('冲突候选采用后完成调和并只公开选中的事实', async ({ pa
   });
   expect(conflictResponse.status()).toBe(409);
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await expect(page.locator('.conflict-resolution-card')).toContainText('多条赛况存在冲突');
   await expect(page.locator('.conflict-resolution-card').getByRole('checkbox')).toHaveCount(2);
   await expect(page.locator('.conflict-resolution-card').getByRole('button', { name: '确认事实选择' })).toBeVisible();
@@ -174,7 +219,7 @@ test('冲突保留原事实后用户端比分不抖动', async ({ page, request 
   });
   expect(conflictResponse.status()).toBe(409);
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   const conflictCard = page.locator('.conflict-resolution-card');
   await expect(conflictCard.getByRole('checkbox', { name: '选择 人工确认佩德里进球。' })).toBeChecked();
   await conflictCard.getByRole('button', { name: '确认事实选择' }).click();
@@ -207,7 +252,7 @@ test('冲突卡默认保留兼容事实，选择候选只排除直接互斥项',
       description: '候选客队进球。', visibility: 'operator',
     },
   ];
-  await page.route('**/api/matches/test/events', async (route) => {
+  await page.route(`**/api/matches/${matchId}/events`, async (route) => {
     if (route.request().method() !== 'GET') return route.continue();
     await route.fulfill({
       status: 200,
@@ -227,7 +272,7 @@ test('冲突卡默认保留兼容事实，选择候选只排除直接互斥项',
     });
   });
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   const card = page.locator('.conflict-resolution-card');
   const acceptedGoal = card.getByRole('checkbox', { name: '选择 已确认主队进球。' });
   const acceptedCard = card.getByRole('checkbox', { name: '选择 已确认客队黄牌。' });
@@ -250,7 +295,7 @@ test('比分更正作为独立审计事实发布且不触发主动话术', async
     playerName: '佩德里', participants: [{ role: 'scorer', name: '佩德里', teamId: 'home', teamName: '西班牙' }],
     score: { home: 1, away: 0 }, description: '佩德里进球。', proactiveText: '__quiet__',
   });
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#behaviorGroups .behavior-button').filter({ hasText: '比分更正' }).click();
   await expect(page.locator('#scoreCorrectionFields')).toBeVisible();
   await expect(page.locator('#draftSubmit')).toBeDisabled();
@@ -281,7 +326,7 @@ test('导演可将已确认进球拉回为进球取消并回退比分', async ({
     factStatus: 'provisional', confirmed: false,
   });
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   const goalCard = page.locator('#timeline .event-card').filter({ hasText: '佩德里推射破门' });
   await goalCard.getByRole('button', { name: '拉回更正' }).click();
   await expect(page.locator('#mode')).toHaveValue('quiet');
@@ -312,7 +357,7 @@ test('VAR 结果必须从时间线引用被审查事实', async ({ page, request
     score: { home: 0, away: 0 }, description: 'VAR 正在检查禁区内接触。', proactiveText: '__quiet__',
   });
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#behaviorGroups .behavior-button[data-event-type="var_result"]').click();
   await expect(page.locator('#draftSubmit')).toBeDisabled();
   await expect(page.locator('#draftErrors')).toContainText('请选择 VAR 正在审查的原事实');
@@ -333,7 +378,7 @@ test('VAR 结果必须从时间线引用被审查事实', async ({ page, request
 });
 
 test('信号源可以切换，并通过人工接管同时暂停自动播报', async ({ page, request }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#sources`);
+  await page.goto(operatorURL('sources'));
   await expect(page.locator('[data-view-panel="sources"]')).toBeVisible();
   await expect(page.locator('[data-view-link="sources"]')).toHaveCount(2);
   await expect(page.locator('#activeSourceBadge')).not.toHaveText('读取中');
@@ -361,7 +406,7 @@ test('信号源可以切换，并通过人工接管同时暂停自动播报', as
 
 test('1280px 保持参与者、行为、当前事件三列同时可见', async ({ page }) => {
   await page.setViewportSize({ width: 1280, height: 900 });
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   const layout = await page.evaluate(() => {
     const participant = document.querySelector('.participant-panel').getBoundingClientRect();
     const behavior = document.querySelector('.behavior-panel').getBoundingClientRect();
@@ -378,7 +423,7 @@ test('1280px 保持参与者、行为、当前事件三列同时可见', async (
 });
 
 test('比赛主时钟由后端推进，事件发生时间不会把主时钟跳回', async ({ page, request }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await expect(page.locator('#clock')).toHaveValue('12:00');
   await expect(page.locator('#occurredClock')).toHaveValue('12:00');
   await page.locator('#clockStart').click();
@@ -402,10 +447,37 @@ test('比赛主时钟由后端推进，事件发生时间不会把主时钟跳�
 
 test('导演语音只补全草稿，不创建比赛事实', async ({ page, request }) => {
   await page.addInitScript(() => {
+    const track = {
+      stop() {},
+      label: '评测麦克风',
+      getSettings: () => ({ deviceId: 'eval-mic', sampleRate: 16000 }),
+    };
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
-      value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+      value: {
+        getUserMedia: async () => ({
+          getTracks: () => [track],
+          getAudioTracks: () => [track],
+        }),
+        enumerateDevices: async () => [{ deviceId: 'eval-mic', kind: 'audioinput', label: '评测麦克风' }],
+      },
     });
+    class RecorderAudioContext {
+      constructor() { this.sampleRate = 16000; this.destination = {}; }
+      createMediaStreamSource() {
+        return {
+          connect(node) {
+            setTimeout(() => node.onaudioprocess?.({
+              inputBuffer: { getChannelData: () => new Float32Array(8000).fill(0.25) },
+            }), 0);
+          },
+          disconnect() {},
+        };
+      }
+      createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
+      close() { return Promise.resolve(); }
+    }
+    window.AudioContext = RecorderAudioContext;
     class Recorder {
       static isTypeSupported() { return true; }
       constructor() { this.state = 'inactive'; this.mimeType = 'audio/webm'; }
@@ -418,7 +490,10 @@ test('导演语音只补全草稿，不创建比赛事实', async ({ page, reque
     }
     window.MediaRecorder = Recorder;
   });
-  await page.route('**/api/matches/test/drafts/voice', async (route) => {
+  await page.route(`**/api/matches/${matchId}/drafts/voice`, async (route) => {
+    const payload = route.request().postDataJSON();
+    expect(payload.audioMime).toBe('audio/wav');
+    expect(Buffer.from(payload.audioBase64.split(',')[1], 'base64').subarray(0, 4).toString()).toBe('RIFF');
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -433,21 +508,48 @@ test('导演语音只补全草稿，不创建比赛事实', async ({ page, reque
       }),
     });
   });
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#voiceInput').click();
   await expect(page.locator('#voiceInput')).toContainText('停止录音');
   await page.locator('#voiceInput').click();
-  await expect(page.locator('#voiceStatus')).toContainText('已填入草稿');
+  await expect(page.locator('#voiceStatus')).toContainText('语音已转成文字');
   await expect(page.locator('#draftSummary')).toContainText('佩德里');
   expect((await apiGet(request, `/api/matches/${matchId}/events`)).events || []).toHaveLength(0);
 });
 
 test('导演必须逐项处理语音冲突后才能发布', async ({ page, request }) => {
   await page.addInitScript(() => {
+    const track = {
+      stop() {},
+      label: '评测麦克风',
+      getSettings: () => ({ deviceId: 'eval-mic', sampleRate: 16000 }),
+    };
     Object.defineProperty(navigator, 'mediaDevices', {
       configurable: true,
-      value: { getUserMedia: async () => ({ getTracks: () => [{ stop() {} }] }) },
+      value: {
+        getUserMedia: async () => ({
+          getTracks: () => [track],
+          getAudioTracks: () => [track],
+        }),
+        enumerateDevices: async () => [{ deviceId: 'eval-mic', kind: 'audioinput', label: '评测麦克风' }],
+      },
     });
+    class RecorderAudioContext {
+      constructor() { this.sampleRate = 16000; this.destination = {}; }
+      createMediaStreamSource() {
+        return {
+          connect(node) {
+            setTimeout(() => node.onaudioprocess?.({
+              inputBuffer: { getChannelData: () => new Float32Array(8000).fill(0.25) },
+            }), 0);
+          },
+          disconnect() {},
+        };
+      }
+      createScriptProcessor() { return { connect() {}, disconnect() {}, onaudioprocess: null }; }
+      close() { return Promise.resolve(); }
+    }
+    window.AudioContext = RecorderAudioContext;
     class Recorder {
       static isTypeSupported() { return true; }
       constructor() { this.state = 'inactive'; this.mimeType = 'audio/webm'; }
@@ -460,7 +562,7 @@ test('导演必须逐项处理语音冲突后才能发布', async ({ page, reque
     }
     window.MediaRecorder = Recorder;
   });
-  await page.route('**/api/matches/test/drafts/voice', async (route) => {
+  await page.route(`**/api/matches/${matchId}/drafts/voice`, async (route) => {
     await route.fulfill({
       status: 200,
       contentType: 'application/json',
@@ -475,7 +577,7 @@ test('导演必须逐项处理语音冲突后才能发布', async ({ page, reque
       }),
     });
   });
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
   await page.locator('#behaviorGroups .behavior-button').filter({ hasText: '射门' }).click();
   await page.locator('#voiceInput').click();
@@ -492,18 +594,28 @@ test('导演必须逐项处理语音冲突后才能发布', async ({ page, reque
   expect((await apiGet(request, `/api/matches/${matchId}/events`)).events || []).toHaveLength(0);
 });
 
-test('候选事实不打扰用户，导演确认后同步比分、事件和主时钟', async ({ page, context }) => {
+test('候选事实不打扰用户，导演确认后同步比分、事件和主时钟', async ({ page, context, request }) => {
+  const userMatchId = 'test';
+  await apiPost(request, `/api/matches/${userMatchId}/reset`, {});
+  await apiPost(request, `/api/matches/${userMatchId}/config`, {
+    homeTeam: '西班牙',
+    awayTeam: '德国',
+    homePlayers: [{ number: '10', name: '佩德里', position: 'CM', lineup: 'starter' }],
+    awayPlayers: [{ number: '10', name: '穆西亚拉', position: 'AM', lineup: 'starter' }],
+  });
+  await apiPatch(request, `/api/matches/${userMatchId}/clock`, {
+    action: 'set', period: 'first_half', elapsedSeconds: 720, expectedVersion: 0,
+  });
   await page.addInitScript(() => {
     localStorage.setItem('flutter.first_meeting_completed', 'true');
   });
   await page.emulateMedia({ reducedMotion: 'reduce' });
   await page.goto('/');
   await enableFlutterAccessibility(page);
-  await expect(page.getByRole('button', { name: '更多陪看方式' })).toBeVisible();
   await expect(page.getByText(/^0\s*—\s*0$/).first()).toBeVisible();
 
   const operator = await context.newPage();
-  await operator.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await operator.goto(operatorURL('live', userMatchId));
   await operator.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
   await operator.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
   const occurredAt = await operator.locator('#occurredClock').inputValue();
@@ -513,12 +625,13 @@ test('候选事实不打扰用户，导演确认后同步比分、事件和主�
 
   await page.waitForTimeout(500);
   await expect(page.getByText(/^0\s*—\s*0$/).first()).toBeVisible();
-  await expect(page.getByText(`${occurredAt} · 进球了！`)).toHaveCount(0);
+  const eventText = new RegExp(`${occurredAt}.*进球`);
+  await expect(page.getByText(eventText)).toHaveCount(0);
 
   await operator.locator('#timeline .event-card').filter({ hasText: '进球' })
     .getByRole('button', { name: '确认', exact: true }).click();
   await expect(operator.locator('#toast')).toContainText('事实已确认');
-  await expect(page.getByText(`${occurredAt} · 进球了！`).first()).toBeVisible({ timeout: 5_000 });
+  await expect(page.getByText(eventText).first()).toBeVisible({ timeout: 5_000 });
   await expect(page.getByText(/^1\s*—\s*0$/).first()).toBeVisible({ timeout: 10_000 });
   await page.waitForTimeout(500);
   await expect(page.getByText('佩德里进了！', { exact: true })).toHaveCount(0);
@@ -528,7 +641,7 @@ test('候选事实不打扰用户，导演确认后同步比分、事件和主�
 });
 
 test('自动化策略页面保存事件范围和冷却时间', async ({ page, request }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#automation`);
+  await page.goto(operatorURL('automation'));
   await expect(page.locator('[data-view-panel="automation"]')).toBeVisible();
   await expect(page.locator('#automationBadge')).not.toHaveText('读取中');
   for (const checkbox of await page.locator('#automationEventTypes input').all()) {
@@ -561,7 +674,7 @@ test('实时监控展示真实服务状态和比赛事件', async ({ page, reque
     proactiveText: '__quiet__',
   });
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#monitor`);
+  await page.goto(operatorURL('monitor'));
   await expect(page.locator('#monitorHealthValue')).toHaveText('可用');
   await expect(page.locator('#monitorMatchValue')).toHaveText('1-0');
   await expect(page.locator('#monitorEvents')).toContainText('佩德里推射破门');
@@ -569,13 +682,13 @@ test('实时监控展示真实服务状态和比赛事件', async ({ page, reque
 });
 
 test('operator write buttons expose a busy state while submission is pending', async ({ page }) => {
-  await page.route('**/api/matches/test/config', async (route) => {
+  await page.route(`**/api/matches/${matchId}/config`, async (route) => {
     if (route.request().method() === 'POST') {
       await new Promise((resolve) => setTimeout(resolve, 400));
     }
     await route.continue();
   });
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
+  await page.goto(operatorURL('live'));
   const saveButton = page.locator('#saveConfig');
   await saveButton.click();
   await expect(saveButton).toBeDisabled();

@@ -2,6 +2,7 @@ package main
 
 import (
 	"encoding/json"
+	"strings"
 	"testing"
 
 	"qiuqiu/internal/conversation"
@@ -48,6 +49,25 @@ func TestQiuqiuReplyDataCarriesDirectorPresentation(t *testing.T) {
 		if _, exists := decoded[internalKey]; exists {
 			t.Fatalf("internal key %q leaked in payload: %+v", internalKey, decoded)
 		}
+	}
+}
+
+func TestSubstitutionFallbackNamesPlayersWithoutInventingTactics(t *testing.T) {
+	text := fallbackProactiveText(matchstate.MatchEvent{
+		EventType: "substitution",
+		TeamName:  "Spain",
+		Participants: []matchstate.Participant{
+			{Role: "sub_on", Name: "Olmo"},
+			{Role: "sub_off", Name: "Pedri"},
+		},
+	})
+	for _, expected := range []string{"Spain", "Olmo", "Pedri"} {
+		if !strings.Contains(text, expected) {
+			t.Fatalf("substitution fallback %q does not contain %q", text, expected)
+		}
+	}
+	if strings.Contains(text, "because") || strings.Contains(text, "tactic") {
+		t.Fatalf("substitution fallback must not invent a reason: %q", text)
 	}
 }
 

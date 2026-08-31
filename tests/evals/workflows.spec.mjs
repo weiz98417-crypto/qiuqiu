@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openTextMode } from './support/open-text-mode.mjs';
 
 const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
 const matchId = 'test';
@@ -42,7 +43,7 @@ test.beforeEach(async ({ page, request }) => {
 test('用户侧展示导演主动线、基于记忆回答追问，并在日志中可追溯', async ({ page, request }) => {
   await page.goto('/');
   await enableAccessibility(page);
-  await expect(page.getByRole('button', { name: '更多陪看方式' })).toBeVisible();
+  await expect(page.getByText('比赛已连接')).toBeVisible({ timeout: 10_000 });
 
   await apiPost(request, `/api/matches/${matchId}/events`, {
     eventType: 'operator_note',
@@ -59,7 +60,7 @@ test('用户侧展示导演主动线、基于记忆回答追问，并在日志�
   await expect(page.getByText(/浏览器主动线评测/).last()).toBeVisible();
 
   await openTextMode(page);
-  await page.getByRole('textbox').fill('刚才谁助攻？');
+  await page.getByLabel('直接和球球说…').fill('刚才谁助攻？');
   await page.getByRole('button', { name: '发送这句话' }).click();
   await expect(page.getByText(/法比安/).last()).toBeVisible({ timeout: 30_000 });
   await expect(page.getByText(/亚马尔/).last()).toBeVisible({ timeout: 30_000 });
@@ -80,7 +81,7 @@ test('用户错误赛况不会覆盖比赛事实，并留下核验记录', async
   await page.goto('/');
   await enableAccessibility(page);
   await openTextMode(page);
-  await page.getByRole('textbox').fill('德国已经3比0领先了');
+  await page.getByLabel('直接和球球说…').fill('德国已经3比0领先了');
   await page.getByRole('button', { name: '发送这句话' }).click();
   await expect(page.getByText(/西班牙 1-0 德国/).last()).toBeVisible({ timeout: 30_000 });
 
@@ -105,7 +106,7 @@ test('错误进球者会被纠正，玩笑不会进入事实核验', async ({ pa
   await expect(page.getByText(/不是哈兰德.*佩德里/).last()).toBeVisible({ timeout: 30_000 });
 
   await sendText(page, '开玩笑，德国3比0了');
-  await expect(page.getByText(/我在，陪你看/).last()).toBeVisible({ timeout: 30_000 });
+  await expect(page.getByText(/逗我|陪你看/).last()).toBeVisible({ timeout: 30_000 });
   const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=30`);
   const scorerTrace = traces.traces.find((item) => item.input === '刚才哈兰德进球了');
   expect(scorerTrace.claim).toMatchObject({ kind: 'event', status: 'contradicted', claimedPlayer: '哈兰德', actualPlayer: '佩德里' });
@@ -153,6 +154,77 @@ test('没有比赛事件时，指代式赞美不会被球球顺着认同', async
   expect(trace.claim).toMatchObject({ kind: 'event_reference', status: 'unverified', certainty: 'uncertain' });
   expect(JSON.stringify(trace.toolCalls)).toContain('match.search_events');
   expect(JSON.stringify(trace.toolCalls)).toContain('match.verify_user_claim');
+});
+
+test('运行中的比赛时钟不会阻塞客户端状态轮播', async ({ page, request }) => {
+  await apiPost(request, `/api/matches/${matchId}/reset`, {});
+  await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
+  await setAndStartMatchClock(request, 1500);
+  await apiPost(request, `/api/matches/${matchId}/events`, {
+    eventType: 'shot',
+    period: 'first_half',
+    clock: '25:00',
+    teamId: 'home',
+    teamName: '西班牙',
+    playerName: '佩德里',
+    score: { home: 0, away: 0 },
+    description: '佩德里完成一次射门。',
+    proactiveText: '__quiet__',
+    visibility: 'public',
+  });
+
+  await page.goto('/');
+  await enableAccessibility(page);
+  await expect.poll(() => page.locator('body').innerText()).toContain('比赛动态：25:00 · 佩德里完成一次射门。');
+  await expect.poll(() => page.locator('body').innerText(), { timeout: 7_000 })
+    .toContain('比赛动态：上半场 · 西班牙 0—0 德国');
+});
+
+test('比赛情况和时间提问读取正在运行的后台时钟', async ({ page, request }) => {
+  await apiPost(request, `/api/matches/${matchId}/reset`, {});
+  await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
+  await setAndStartMatchClock(request, 1500);
+
+  await page.goto('/');
+  await enableAccessibility(page);
+  await openTextMode(page);
+  await sendText(page, '比赛什么情况了');
+  await expect(page.getByText(/现在是西班牙 0-0 德国，时间在上半场 25:/).last()).toBeVisible({ timeout: 30_000 });
+  await sendText(page, '比赛时间是多少了？');
+  await expect(page.getByText(/现在是西班牙 0-0 德国，时间在上半场 25:/).last()).toBeVisible({ timeout: 30_000 });
+
+  const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=20`);
+  for (const input of ['比赛什么情况了', '比赛时间是多少了？']) {
+    const trace = traces.traces.find((item) => item.input === input);
+    expect(trace?.intent).toBe('match_status_question');
+    expect(trace?.output).not.toBe('嗯，我在。');
+  }
+});
+
+test('零比零时用户说好球会得到赛场回应且不会被当成进球', async ({ page, request }) => {
+  await apiPost(request, `/api/matches/${matchId}/reset`, {});
+  await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
+  await setAndStartMatchClock(request, 1500);
+
+  await page.goto('/');
+  await enableAccessibility(page);
+  await openTextMode(page);
+  await sendText(page, '好球！');
+
+  await expect.poll(async () => {
+    const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=20`);
+    const trace = traces.traces.find((item) => item.input === '好球！');
+    return Boolean(trace && trace.output && trace.output !== '嗯，我在。');
+  }, { timeout: 30_000 }).toBe(true);
+
+  const traces = await apiGet(request, `/api/matches/${matchId}/traces?limit=20`);
+  const trace = traces.traces.find((item) => item.input === '好球！');
+  expect(trace.intent).toBe('emotion_reaction');
+  expect(trace.output).not.toMatch(/进球|破门|领先/);
+  await expect(page.getByText(trace.output).last()).toBeVisible();
+
+  const state = await apiGet(request, `/api/matches/${matchId}/state`);
+  expect(state.snapshot.score).toEqual({ home: 0, away: 0 });
 });
 
 test('人工与外部源冲突时，球球暂停确认赛况', async ({ page, request }) => {
@@ -204,13 +276,29 @@ test('导演赛前配置通过页面保存，并同步到事实 API', async ({ p
   await page.locator('#preHomePlayers').fill('10 测试前锋 ST');
   await page.locator('#preAwayPlayers').fill('9 测试门将 GK');
   await page.locator('#preSubmit').click();
-  await expect(page.locator('#toast')).toContainText('赛前配置已同步到导演台');
+  await expect(page.locator('#toast')).toContainText('新比赛已开始');
   await expect(page.locator('#homeTeam')).toHaveValue('评测主队');
 
   const config = await apiGet(request, `/api/matches/${matchId}/config`);
   expect(config.config.homeTeam).toBe('评测主队');
   expect(config.config.awayTeam).toBe('评测客队');
   expect(config.config.homePlayers[0].name).toBe('测试前锋');
+
+  const state = await apiGet(request, `/api/matches/${matchId}/state`);
+  expect(state.snapshot.score).toEqual({ home: 0, away: 0 });
+  const ledger = await apiGet(request, `/api/matches/${matchId}/events`);
+  expect(ledger.events).toHaveLength(0);
+
+  const clock = await apiGet(request, `/api/matches/${matchId}/clock`);
+  expect(clock.clock).toMatchObject({
+    period: 'pre_match',
+    elapsedSeconds: 0,
+    running: false,
+  });
+
+  await expect(page.locator('#homeScore')).toHaveValue('0');
+  await expect(page.locator('#awayScore')).toHaveValue('0');
+  await expect(page.locator('#clock')).toHaveValue('00:00');
 });
 
 test('麦克风未授权时，用户侧保留可用的文字输入降级路径', async ({ page }) => {
@@ -238,14 +326,8 @@ async function enableAccessibility(page) {
     .evaluate((element) => element.click());
 }
 
-async function openTextMode(page) {
-  await page.getByRole('button', { name: '更多陪看方式' }).click();
-  await page.getByRole('menuitem', { name: '改用文字说' }).click();
-  await expect(page.getByRole('textbox')).toBeVisible();
-}
-
 async function sendText(page, text) {
-  const textbox = page.getByRole('textbox');
+  const textbox = page.getByLabel('直接和球球说…');
   await expect(textbox).toBeVisible();
   await textbox.click();
   await textbox.pressSequentially(text, { delay: 5 });
@@ -282,5 +364,16 @@ async function startMatchClock(request, elapsedSeconds) {
   });
   if (!response.ok()) {
     throw new Error(`PATCH clock failed: ${response.status()} ${await response.text()}`);
+  }
+}
+
+async function setAndStartMatchClock(request, elapsedSeconds) {
+  await startMatchClock(request, elapsedSeconds);
+  const response = await request.patch(`/api/matches/${matchId}/clock`, {
+    data: { action: 'start', expectedVersion: 1 },
+    headers: { Authorization: `Bearer ${token}`, 'Idempotency-Key': testIdempotencyKey() },
+  });
+  if (!response.ok()) {
+    throw new Error(`PATCH clock start failed: ${response.status()} ${await response.text()}`);
   }
 }

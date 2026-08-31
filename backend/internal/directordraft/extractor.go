@@ -26,7 +26,7 @@ func (extractor *LLMExtractor) Extract(ctx context.Context, transcript string, m
 只输出一个 JSON 对象，不要 Markdown：
 {"team":"球队名称或home/away","eventType":"事件类型","participants":[{"role":"角色","name":"球员姓名"}],"description":"简洁事实描述","occurredClock":"MM:SS或空字符串","confidence":0到1}
 允许的事件类型：goal, shot, big_chance, save, miss, foul, yellow_card, red_card, var_check, var_result, goal_cancelled, penalty, penalty_awarded, substitution, injury, tactical_shift, pressure, kickoff, halftime, fulltime, match_end, operator_note。
-角色必须与行为匹配，例如换人为 sub_on/sub_off，进球为 scorer/assist，射门为 shooter/assist，犯规为 offender/fouled。
+角色必须与行为匹配，例如换人为 sub_on/sub_off，进球为 scorer/assist，射门为 shooter/assist，犯规为 offender/fouled。description 只能是一句来自口述的比赛事实；不得输出引用格式、作者年份页码、任务说明、解释或其他元文本。无法确定时 description 留空。
 比赛：%s 对 %s。
 主队名单：%s。
 客队名单：%s。`, match.Config.HomeTeam, match.Config.AwayTeam, rosterNames(match.Config.HomePlayers), rosterNames(match.Config.AwayPlayers))

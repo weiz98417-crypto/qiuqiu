@@ -113,6 +113,36 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	}
 }
 
+func TestAutoGoalProactiveTextAnchorsConfirmedScorerAndScore(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+
+	response := doJSON(t, handler, http.MethodPost, "/api/matches/goal-proactive/events?token=eval-token", matchstate.MatchEvent{
+		EventType:    "goal",
+		Period:       "first_half",
+		Clock:        "45:18",
+		TeamID:       "home",
+		TeamName:     "西班牙",
+		PlayerName:   "佩德里",
+		Participants: []matchstate.Participant{{Role: "scorer", Name: "佩德里", TeamID: "home", TeamName: "西班牙"}},
+		Score:        matchstate.Score{Home: 1, Away: 0},
+		Description:  "佩德里进球了。",
+		Confirmed:    true,
+		FactStatus:   matchstate.FactStatusConfirmed,
+	})
+	if response.Code != http.StatusCreated {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	event := decodeEvent(t, response)
+	if !strings.Contains(event.ProactiveText, "佩德里") {
+		t.Fatalf("proactiveText = %q, want confirmed scorer", event.ProactiveText)
+	}
+	if !strings.Contains(event.ProactiveText, "1比0") {
+		t.Fatalf("proactiveText = %q, want current score", event.ProactiveText)
+	}
+}
+
 func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
@@ -179,6 +209,20 @@ func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
 	}
 }
 
+func TestMatchFactRetractedMessageCarriesFactIdentity(t *testing.T) {
+	message := matchFactRetractedMessage(matchstate.MatchEvent{
+		ID:     "event-123",
+		FactID: "fact-456",
+	})
+	if got := message["type"]; got != "match_fact_retracted" {
+		t.Fatalf("type = %v", got)
+	}
+	data, ok := message["data"].(map[string]string)
+	if !ok || data["eventId"] != "event-123" || data["factId"] != "fact-456" {
+		t.Fatalf("retraction data = %#v", message["data"])
+	}
+}
+
 func TestMatchClockAPIKeepsEventTimeIndependentAndRejectsStaleWrites(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
@@ -228,11 +272,11 @@ func TestMatchClockAPIKeepsEventTimeIndependentAndRejectsStaleWrites(t *testing.
 	}
 }
 
-func TestDirectorVoiceDraftAPIProducesDraftWithoutCreatingFact(t *testing.T) {
+func TestDirectorVoiceDraftAPITranscribesThenPublishesConfirmedFact(t *testing.T) {
 	store := matchstate.NewStore()
 	if _, _, err := store.SetConfig("voice-draft-api", matchstate.MatchConfig{
 		HomeTeam: "西班牙", AwayTeam: "德国",
-		AwayPlayers: []matchstate.Player{{Name: "菲尔克鲁格"}, {Name: "哈弗茨"}},
+		AwayPlayers: []matchstate.Player{{Name: "菲尔克鲁格", Lineup: "bench"}, {Name: "哈弗茨", Lineup: "starter"}},
 	}); err != nil {
 		t.Fatalf("SetConfig: %v", err)
 	}
@@ -254,15 +298,42 @@ func TestDirectorVoiceDraftAPIProducesDraftWithoutCreatingFact(t *testing.T) {
 	if response.Code != http.StatusOK {
 		t.Fatalf("voice draft status=%d body=%s", response.Code, response.Body.String())
 	}
-	var result directordraft.Result
+	var result directordraft.Transcription
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
-		t.Fatalf("decode voice draft: %v", err)
+		t.Fatalf("decode voice transcription: %v", err)
 	}
-	if result.Draft.TeamID != "away" || result.Draft.EventType != "substitution" || !result.Ready {
-		t.Fatalf("voice draft result = %+v", result)
+	if result.Transcript != "德国换人，菲尔克鲁格换下哈弗茨" {
+		t.Fatalf("voice transcription = %+v", result)
 	}
 	if events := store.Events("voice-draft-api"); len(events) != 0 {
-		t.Fatalf("voice draft created public facts: %+v", events)
+		t.Fatalf("voice transcription created public facts: %+v", events)
+	}
+
+	published := doJSON(t, handler, http.MethodPost, "/api/matches/voice-draft-api/drafts/voice/publish?token=eval-token", directordraft.Request{
+		Text: "德国换人，菲尔克鲁格换下哈弗茨", OccurredPeriod: "second_half", OccurredSeconds: testIntPointer(66 * 60), CapturedClockVersion: testInt64Pointer(1),
+	})
+	if published.Code != http.StatusCreated {
+		t.Fatalf("voice publish status=%d body=%s", published.Code, published.Body.String())
+	}
+	if events := store.Events("voice-draft-api"); len(events) != 1 || events[0].EventType != "substitution" || events[0].Clock != "66:00" {
+		t.Fatalf("voice publish events: %+v", events)
+	}
+}
+
+func TestVoicePublishGoalUsesCapturedTimeAndUpdatesScore(t *testing.T) {
+	event, err := eventFromVoiceDraft(directordraft.Result{
+		Ready: true,
+		Draft: directordraft.Draft{
+			EventType: "goal", TeamID: "home", TeamName: "Spain", Description: "Fabian Ruiz scores.",
+			OccurredPeriod: "first_half", OccurredSeconds: 45*60 + 18, CapturedClockVersion: 12,
+			Participants: []directordraft.DraftParticipant{{Role: "scorer", Name: "Fabian Ruiz", TeamID: "home", TeamName: "Spain", Resolved: true}},
+		},
+	}, matchstate.Score{Home: 0, Away: 0})
+	if err != nil {
+		t.Fatalf("eventFromVoiceDraft: %v", err)
+	}
+	if event.Clock != "45:18" || event.Score != (matchstate.Score{Home: 1, Away: 0}) || event.PlayerName != "Fabian Ruiz" {
+		t.Fatalf("voice goal event = %+v", event)
 	}
 }
 
@@ -912,6 +983,55 @@ func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
 	}
 }
 
+func TestStartMatchEndpointResetsRunningStateForAnAuthorizedOperator(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	observations := observation.NewMemoryCoordinator()
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil, pipeline.NewPromptManager())
+
+	const matchID = "real-match"
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Old Home", AwayTeam: "Old Away"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "24:10", TeamID: "home", TeamName: "Old Home",
+		Score: matchstate.Score{Home: 1, Away: 0}, Description: "Old Home scored.",
+	}); err != nil {
+		t.Fatalf("Create event error: %v", err)
+	}
+	elapsed := 1450
+	if _, err := store.SetClock(matchID, matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: "first_half", ElapsedSeconds: &elapsed, ExpectedVersion: 0,
+	}); err != nil {
+		t.Fatalf("SetClock error: %v", err)
+	}
+
+	unauthorized := doJSON(t, handler, http.MethodPost, "/api/matches/real-match/start", matchstate.MatchConfig{})
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("expected unauthorized start, got %d", unauthorized.Code)
+	}
+
+	started := doJSON(t, handler, http.MethodPost, "/api/matches/real-match/start?token=eval-token", matchstate.MatchConfig{
+		HomeTeam: "New Home", AwayTeam: "New Away", HomePlayers: []matchstate.Player{{Name: "New Player"}},
+	})
+	if started.Code != http.StatusOK {
+		t.Fatalf("start status=%d body=%s", started.Code, started.Body.String())
+	}
+	if got := store.Config(matchID); got.HomeTeam != "New Home" || got.AwayTeam != "New Away" {
+		t.Fatalf("start config = %+v", got)
+	}
+	if got := store.Events(matchID); len(got) != 0 {
+		t.Fatalf("start must clear prior events, got %+v", got)
+	}
+	if got := store.PublicSnapshot(matchID).Score; got != (matchstate.Score{}) {
+		t.Fatalf("start score = %+v, want zero", got)
+	}
+	if got := store.Clock(matchID); got.Period != "pre_match" || got.ElapsedSeconds != 0 || got.Running {
+		t.Fatalf("start clock = %+v", got)
+	}
+}
+
 func doJSON(t *testing.T, handler http.HandlerFunc, method, target string, body any) *httptest.ResponseRecorder {
 	t.Helper()
 	payload, err := json.Marshal(body)
@@ -935,6 +1055,10 @@ func doJSON(t *testing.T, handler http.HandlerFunc, method, target string, body 
 }
 
 func testIntPointer(value int) *int {
+	return &value
+}
+
+func testInt64Pointer(value int64) *int64 {
 	return &value
 }
 

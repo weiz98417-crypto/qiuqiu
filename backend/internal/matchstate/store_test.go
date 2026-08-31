@@ -513,7 +513,7 @@ func TestConflictSetRequiresExplicitResolution(t *testing.T) {
 	}
 }
 
-func TestResolvingConflictPublishesOnlyAProjectedNewFact(t *testing.T) {
+func TestResolvingConflictPublishesRetractionsAndProjectedFacts(t *testing.T) {
 	t.Run("adopting candidate publishes effective score", func(t *testing.T) {
 		store := NewStore()
 		matchID := "projected-conflict-signal"
@@ -538,17 +538,17 @@ func TestResolvingConflictPublishesOnlyAProjectedNewFact(t *testing.T) {
 		if _, _, _, err := store.ResolveFactConflict(matchID, conflict.ID, candidateFactID, "operator-1", "adopt verified candidate"); err != nil {
 			t.Fatalf("ResolveFactConflict: %v", err)
 		}
-		select {
-		case event := <-updates:
-			if event.FactID != candidateFactID || event.FactStatus != FactStatusReconciled || event.Score != (Score{Away: 1}) {
-				t.Fatalf("published resolution event = %+v", event)
-			}
-		case <-time.After(time.Second):
-			t.Fatal("adopting a candidate did not publish the projected fact")
+		first := waitForMatchEvent(t, updates)
+		second := waitForMatchEvent(t, updates)
+		if first.FactStatus != FactStatusRevoked {
+			t.Fatalf("first resolution event = %+v, want retraction", first)
+		}
+		if second.FactID != candidateFactID || second.FactStatus != FactStatusReconciled || second.Score != (Score{Away: 1}) {
+			t.Fatalf("published resolution event = %+v", second)
 		}
 	})
 
-	t.Run("keeping accepted fact publishes nothing", func(t *testing.T) {
+	t.Run("keeping accepted fact publishes candidate retraction", func(t *testing.T) {
 		store := NewStore()
 		matchID := "quiet-conflict-rejection"
 		accepted, _, err := store.Create(matchID, MatchEvent{
@@ -574,10 +574,24 @@ func TestResolvingConflictPublishesOnlyAProjectedNewFact(t *testing.T) {
 		}
 		select {
 		case event := <-updates:
-			t.Fatalf("keeping the accepted fact published an extra update: %+v", event)
-		case <-time.After(50 * time.Millisecond):
+			if event.FactStatus != FactStatusRevoked {
+				t.Fatalf("keeping accepted fact published %+v, want retraction", event)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("keeping accepted fact did not publish candidate retraction")
 		}
 	})
+}
+
+func waitForMatchEvent(t *testing.T, updates <-chan MatchEvent) MatchEvent {
+	t.Helper()
+	select {
+	case event := <-updates:
+		return event
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for match event")
+		return MatchEvent{}
+	}
 }
 
 func TestBridgeCandidateMergesIntersectingOpenConflictSets(t *testing.T) {
@@ -1104,6 +1118,46 @@ func TestRejectsSubstitutionAcrossConfiguredTeams(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("cross-team substitution error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestSubstitutionRequiresBenchPlayerAndReplaysConfirmedLineup(t *testing.T) {
+	store := NewStore()
+	const matchID = "lineup-substitution"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam: "Spain",
+		AwayTeam: "Germany",
+		HomePlayers: []Player{
+			{Name: "Starter One", Lineup: "starter"},
+			{Name: "Starter Two", Lineup: "starter"},
+			{Name: "Bench One", Lineup: "bench"},
+		},
+	}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	newSubstitution := func(clock, subOn, subOff string) MatchEvent {
+		return MatchEvent{
+			EventType: "substitution", Period: "second_half", Clock: clock,
+			TeamID: "home", TeamName: "Spain", Score: Score{}, Description: "Spain substitution",
+			Participants: []Participant{
+				{Role: "sub_on", Name: subOn, TeamID: "home", TeamName: "Spain"},
+				{Role: "sub_off", Name: subOff, TeamID: "home", TeamName: "Spain"},
+			},
+		}
+	}
+
+	if _, _, err := store.Create(matchID, newSubstitution("60:00", "Starter Two", "Starter One")); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("starter cannot be sub_on: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("61:00", "Bench One", "Starter One")); err != nil {
+		t.Fatalf("valid substitution error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("62:00", "Starter One", "Starter One")); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("same player substitution should be rejected: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("63:00", "Starter One", "Bench One")); err != nil {
+		t.Fatalf("confirmed lineup should allow the reverse change: %v", err)
 	}
 }
 

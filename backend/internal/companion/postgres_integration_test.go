@@ -96,6 +96,23 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 	if claimReply.Trace.Claim == nil || claimReply.Trace.Claim.Status != ClaimStatusContradicted {
 		t.Fatalf("claim trace mismatch: %+v", claimReply.Trace)
 	}
+	scheduleTraceID := "schedule-result-" + matchID
+	if err := traces.WriteTrace(ctx, Trace{
+		ID:            scheduleTraceID,
+		MatchID:       matchID,
+		UserID:        "pg-user",
+		Intent:        IntentSchedule,
+		Output:        "明天有一场比赛。",
+		Reason:        "schedule_lookup_result",
+		LookupID:      "lookup-" + matchID,
+		ParentTraceID: "schedule-ack-" + matchID,
+		Schedule: &ScheduleIntent{
+			Topic: "football_schedule", Action: "query", Scope: ScheduleScopeTomorrow, Confidence: 0.9,
+		},
+		CreatedAt: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("WriteTrace schedule result error: %v", err)
+	}
 	if err := traces.WriteTrace(ctx, Trace{
 		ID:        "trace-other-" + matchID,
 		MatchID:   otherMatchID,
@@ -145,6 +162,14 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 	}
 	if persistedClaim == nil || persistedClaim.Status != ClaimStatusContradicted {
 		t.Fatalf("claim assessment did not persist: %+v", traceList)
+	}
+	persistedSchedule, err := reopenedTraces.GetTrace(ctx, matchID, scheduleTraceID)
+	if err != nil {
+		t.Fatalf("GetTrace schedule result error: %v", err)
+	}
+	if persistedSchedule.Schedule == nil || persistedSchedule.Schedule.Scope != ScheduleScopeTomorrow ||
+		persistedSchedule.LookupID != "lookup-"+matchID || persistedSchedule.ParentTraceID != "schedule-ack-"+matchID {
+		t.Fatalf("schedule trace linkage did not persist: %+v", persistedSchedule)
 	}
 	turns, err := reopenedTraces.RecentTurns(ctx, matchID, "pg-user", 10)
 	if err != nil {

@@ -124,6 +124,9 @@ type Player struct {
 	Name     string `json:"name"`
 	Number   string `json:"number,omitempty"`
 	Position string `json:"position,omitempty"`
+	// Lineup is "starter" or "bench". Empty is kept backward compatible and
+	// treated as a starter for existing match configurations.
+	Lineup string `json:"lineup,omitempty"`
 }
 
 type Participant struct {
@@ -180,6 +183,7 @@ type Snapshot struct {
 	MatchID               string         `json:"matchId"`
 	HomeTeam              string         `json:"homeTeam"`
 	AwayTeam              string         `json:"awayTeam"`
+	Competition           string         `json:"competition,omitempty"`
 	Score                 Score          `json:"score"`
 	Period                string         `json:"period"`
 	Clock                 string         `json:"clock"`
@@ -602,6 +606,10 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 		return MatchEvent{}, Snapshot{}, err
 	}
 	config := normalizeConfig(matchID, s.configs[matchID])
+	if err := validateSubstitutionLineup(ev, config, s.events[matchID]); err != nil {
+		s.mu.Unlock()
+		return MatchEvent{}, Snapshot{}, err
+	}
 	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
 		MatchID: matchID, Events: s.events[matchID], Config: config, Clock: s.clocks[matchID], Now: s.now(),
 	})
@@ -804,6 +812,9 @@ func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Sna
 	if err := validateAgainstSnapshot(events[found], projection.Snapshot, normalizeConfig(matchID, s.configs[matchID])); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	if err := validateSubstitutionLineup(events[found], normalizeConfig(matchID, s.configs[matchID]), events); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
 	now := time.Now().UTC().Format(time.RFC3339Nano)
 	events[found].FactStatus = FactStatusConfirmed
 	events[found].Confirmed = true
@@ -927,6 +938,7 @@ func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selecte
 	for _, factID := range transition.ReleaseFactIDs {
 		release[factID] = struct{}{}
 	}
+	retracted := make([]MatchEvent, 0, len(transition.RevokeFactIDs))
 	for index := range events {
 		if events[index].Status != "active" {
 			continue
@@ -949,6 +961,7 @@ func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selecte
 			events[index].FactRevision++
 			events[index].UpdatedAt = now
 			s.recordFactRevisionLocked(matchID, events[index])
+			retracted = append(retracted, events[index])
 			continue
 		}
 		if _, released := release[events[index].FactID]; released && events[index].FactStatus == FactStatusConflict {
@@ -1002,6 +1015,9 @@ func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selecte
 	result := cloneFactConflict(*conflict)
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
+	for _, event := range retracted {
+		s.publish(subs, event)
+	}
 	for _, event := range published {
 		s.publish(subs, event)
 	}
@@ -1169,6 +1185,7 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	}
 	previousStatus := events[found].FactStatus
 	now := time.Now().UTC().Format(time.RFC3339Nano)
+	retracted := make([]MatchEvent, 0)
 	events[found].FactStatus = status
 	events[found].Confirmed = status == FactStatusReconciled
 	events[found].ConfirmedBy = operatorID
@@ -1191,6 +1208,7 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 			events[index].FactRevision++
 			events[index].UpdatedAt = now
 			s.recordFactRevisionLocked(matchID, events[index])
+			retracted = append(retracted, events[index])
 		}
 	}
 	if (status == FactStatusReconciled || previousStatus == FactStatusConflict) && !hasActiveFactConflict(events) {
@@ -1211,6 +1229,9 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 	).Snapshot
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
+	for _, event := range retracted {
+		s.publish(subs, event)
+	}
 	s.publish(subs, changed)
 	s.mu.Lock()
 	return changed, snapshot, nil
@@ -1808,6 +1829,94 @@ func validateSubstitutionParticipants(ev MatchEvent, config MatchConfig) error {
 	return nil
 }
 
+// validateSubstitutionLineup applies only to an explicitly configured roster.
+// This preserves historical imports and older matches that only supplied a
+// partial player list, while making the operator workflow safe when starters
+// and substitutes are known.
+func validateSubstitutionLineup(ev MatchEvent, config MatchConfig, events []MatchEvent) error {
+	if ev.EventType != "substitution" || ev.TeamID == "" {
+		return nil
+	}
+	var players []Player
+	if ev.TeamID == "home" {
+		players = config.HomePlayers
+	} else if ev.TeamID == "away" {
+		players = config.AwayPlayers
+	}
+	if len(players) == 0 {
+		return nil
+	}
+	subOn, subOff := substitutionParticipants(ev)
+	if subOn == "" || subOff == "" {
+		return nil
+	}
+	onPitch, bench := currentLineupForTeam(players, events, ev.TeamID)
+	if !containsPlayerName(onPitch, subOff) {
+		return fmt.Errorf("%w: sub_off %q is not currently on the pitch", ErrInvalid, subOff)
+	}
+	if !containsPlayerName(bench, subOn) {
+		return fmt.Errorf("%w: sub_on %q is not currently on the bench", ErrInvalid, subOn)
+	}
+	return nil
+}
+
+func currentLineupForTeam(players []Player, events []MatchEvent, teamID string) (map[string]bool, map[string]bool) {
+	onPitch := make(map[string]bool, len(players))
+	bench := make(map[string]bool, len(players))
+	for _, player := range players {
+		if player.Lineup == "bench" {
+			bench[player.Name] = true
+		} else {
+			onPitch[player.Name] = true
+		}
+	}
+	for _, event := range events {
+		if event.EventType != "substitution" || event.TeamID != teamID || !IsPublicFact(event) {
+			continue
+		}
+		subOn, subOff := substitutionParticipants(event)
+		if subOff != "" {
+			deletePlayerName(onPitch, subOff)
+			bench[subOff] = true
+		}
+		if subOn != "" {
+			deletePlayerName(bench, subOn)
+			onPitch[subOn] = true
+		}
+	}
+	return onPitch, bench
+}
+
+func substitutionParticipants(event MatchEvent) (subOn, subOff string) {
+	for _, participant := range event.Participants {
+		switch participant.Role {
+		case "sub_on":
+			subOn = participant.Name
+		case "sub_off":
+			subOff = participant.Name
+		}
+	}
+	return subOn, subOff
+}
+
+func containsPlayerName(players map[string]bool, name string) bool {
+	for candidate := range players {
+		if strings.EqualFold(candidate, name) {
+			return true
+		}
+	}
+	return false
+}
+
+func deletePlayerName(players map[string]bool, name string) {
+	for candidate := range players {
+		if strings.EqualFold(candidate, name) {
+			delete(players, candidate)
+			return
+		}
+	}
+}
+
 func validateEventRelations(events []MatchEvent, candidate MatchEvent) error {
 	if candidate.EventType != "var_result" && candidate.EventType != "goal_cancelled" {
 		return nil
@@ -1953,6 +2062,7 @@ func buildLegacySnapshot(matchID string, events []MatchEvent, config MatchConfig
 		MatchID:              matchID,
 		HomeTeam:             config.HomeTeam,
 		AwayTeam:             config.AwayTeam,
+		Competition:          config.Competition,
 		Score:                Score{},
 		Period:               clock.Period,
 		Clock:                clock.displayAt(now),
@@ -2078,6 +2188,10 @@ func normalizePlayers(players []Player) []Player {
 		player.Name = strings.TrimSpace(player.Name)
 		player.Number = strings.TrimSpace(player.Number)
 		player.Position = strings.TrimSpace(player.Position)
+		player.Lineup = strings.ToLower(strings.TrimSpace(player.Lineup))
+		if player.Lineup != "bench" && player.Lineup != "starter" {
+			player.Lineup = ""
+		}
 		if player.Name == "" {
 			continue
 		}

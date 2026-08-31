@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"regexp"
@@ -25,12 +26,14 @@ var traceSequence atomic.Uint64
 
 const (
 	IntentSmalltalk       Intent = "smalltalk"
+	IntentSchedule        Intent = "schedule_question"
 	IntentMatchStatus     Intent = "match_status_question"
 	IntentRecentEvent     Intent = "recent_event_question"
 	IntentMatchReaction   Intent = "match_reaction"
 	IntentFollowUp        Intent = "follow_up_question"
 	IntentPlayerQuestion  Intent = "player_question"
 	IntentEmotionReaction Intent = "emotion_reaction"
+	IntentPersonalShare   Intent = "personal_share"
 	IntentControlCommand  Intent = "control_command"
 	IntentMatchClaim      Intent = "match_fact_claim"
 	IntentUnknown         Intent = "unknown"
@@ -59,19 +62,22 @@ type FactClaim struct {
 }
 
 type MessageRequest struct {
-	SignalID string
-	MatchID  string
-	UserID   string
-	Text     string
-	Now      time.Time
-	Voice    *VoiceTraceMetadata
+	SignalID            string
+	MatchID             string
+	UserID              string
+	Text                string
+	Timezone            string
+	ProgressiveSchedule bool
+	Now                 time.Time
+	Voice               *VoiceTraceMetadata
 }
 
 type Response struct {
-	Intent       Intent
-	Reply        string
-	Trace        Trace
-	Presentation relationship.PresentationPlan
+	Intent         Intent
+	Reply          string
+	Trace          Trace
+	Presentation   relationship.PresentationPlan
+	ScheduleLookup *ScheduleLookup
 }
 
 type ProactiveResponse struct {
@@ -121,6 +127,9 @@ type Trace struct {
 	LatencyMS             int                             `json:"latencyMs"`
 	Error                 string                          `json:"error"`
 	Voice                 *VoiceTraceMetadata             `json:"voice,omitempty"`
+	Schedule              *ScheduleIntent                 `json:"schedule,omitempty"`
+	LookupID              string                          `json:"lookupId,omitempty"`
+	ParentTraceID         string                          `json:"parentTraceId,omitempty"`
 	Claim                 *FactClaim                      `json:"claim,omitempty"`
 	Observation           *observation.PendingObservation `json:"observation,omitempty"`
 	ObservationResolution *observation.Resolution         `json:"observationResolution,omitempty"`
@@ -155,6 +164,73 @@ type ConversationTurn struct {
 	CreatedAt time.Time `json:"createdAt"`
 }
 
+type ScheduleMatch struct {
+	FixtureID   string    `json:"fixtureId,omitempty"`
+	HomeTeam    string    `json:"homeTeam"`
+	AwayTeam    string    `json:"awayTeam"`
+	Competition string    `json:"competition,omitempty"`
+	KickoffAt   time.Time `json:"kickoffAt,omitempty"`
+	Status      string    `json:"status,omitempty"`
+	HomeScore   *int      `json:"homeScore,omitempty"`
+	AwayScore   *int      `json:"awayScore,omitempty"`
+	Source      string    `json:"source,omitempty"`
+	SourceURL   string    `json:"sourceUrl,omitempty"`
+	Freshness   string    `json:"freshness,omitempty"`
+}
+
+type ScheduleReader interface {
+	TodayFixtures(context.Context) ([]ScheduleMatch, error)
+}
+
+type ScheduleScope string
+
+const (
+	ScheduleScopeCurrent  ScheduleScope = "current"
+	ScheduleScopeToday    ScheduleScope = "today"
+	ScheduleScopeTomorrow ScheduleScope = "tomorrow"
+	ScheduleScopeNearby   ScheduleScope = "nearby"
+)
+
+type ScheduleIntent struct {
+	Topic       string        `json:"topic"`
+	Action      string        `json:"action"`
+	Scope       ScheduleScope `json:"scope"`
+	Competition string        `json:"competition,omitempty"`
+	Confidence  float64       `json:"confidence"`
+}
+
+type ScheduleSearchRequest struct {
+	From        time.Time `json:"from"`
+	To          time.Time `json:"to"`
+	Timezone    string    `json:"timezone"`
+	Competition string    `json:"competition,omitempty"`
+	Query       string    `json:"query,omitempty"`
+}
+
+type ScheduleSearchResult struct {
+	Fixtures  []ScheduleMatch `json:"fixtures"`
+	Source    string          `json:"source"`
+	FetchedAt time.Time       `json:"fetchedAt"`
+	Freshness string          `json:"freshness"`
+}
+
+type ScheduleSearchReader interface {
+	Search(context.Context, ScheduleSearchRequest) (ScheduleSearchResult, error)
+}
+
+type ScheduleLookup struct {
+	ID            string                `json:"lookupId"`
+	ParentTraceID string                `json:"parentTraceId"`
+	MatchID       string                `json:"matchId"`
+	UserID        string                `json:"userId"`
+	Query         string                `json:"query"`
+	Intent        ScheduleIntent        `json:"intent"`
+	Search        ScheduleSearchRequest `json:"search"`
+	ExpiresAt     time.Time             `json:"expiresAt"`
+}
+
+var ErrScheduleLookupExpired = errors.New("schedule lookup expired")
+
 type RealizationRequest struct {
 	UserInput    string
 	Intent       Intent
@@ -183,6 +259,7 @@ type MemoryTools interface {
 type Agent struct {
 	tools                      MemoryTools
 	realizer                   ReplyRealizer
+	scheduleReader             ScheduleReader
 	director                   relationship.CompanionDirector
 	observations               observation.Coordinator
 	observationReconcileWindow func(string, string) time.Duration
@@ -198,6 +275,11 @@ func (a *Agent) WithRealizer(realizer ReplyRealizer, timeout time.Duration) *Age
 	if timeout > 0 {
 		a.realizeTimeout = timeout
 	}
+	return a
+}
+
+func (a *Agent) WithScheduleReader(reader ScheduleReader) *Agent {
+	a.scheduleReader = reader
 	return a
 }
 
@@ -314,12 +396,14 @@ func observationPresentation(status observation.Status) relationship.Presentatio
 
 func (a *Agent) HandleMessage(ctx context.Context, req MessageRequest) (Response, error) {
 	return a.HandleBoundaryRequest(ctx, AgentBoundaryRequest{
-		SignalID: req.SignalID,
-		MatchID:  req.MatchID,
-		UserID:   req.UserID,
-		Text:     req.Text,
-		Now:      req.Now,
-		Voice:    req.Voice,
+		SignalID:            req.SignalID,
+		MatchID:             req.MatchID,
+		UserID:              req.UserID,
+		Text:                req.Text,
+		Timezone:            req.Timezone,
+		ProgressiveSchedule: req.ProgressiveSchedule,
+		Now:                 req.Now,
+		Voice:               req.Voice,
 	})
 }
 
@@ -342,9 +426,14 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	if trace.CreatedAt.IsZero() {
 		trace.CreatedAt = time.Now()
 	}
+	if intent == IntentSchedule {
+		scheduleIntent := ClassifyScheduleIntent(req.Text)
+		trace.Schedule = &scheduleIntent
+	}
 
 	var reply string
 	var requiredAnchors []string
+	var scheduleLookup *ScheduleLookup
 	allowRealize := true
 	deterministicReason := "policy"
 	switch intent {
@@ -479,6 +568,73 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		requiredAnchors = append(requiredAnchors, anchorsForEvents(events, trace.RetrievedEvent, reply)...)
 	case IntentControlCommand:
 		reply = "收到，我会少说一点，关键变化再提醒你。"
+	case IntentSchedule:
+		allowRealize = false
+		deterministicReason = "schedule_policy"
+		scheduleIntent := *trace.Schedule
+		if scheduleIntent.Scope == ScheduleScopeCurrent || scheduleIntent.Scope == ScheduleScopeNearby {
+			if snapshot, err := a.tools.Snapshot(ctx, req.MatchID); err == nil {
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
+				if currentReply, ok := activeMatchScheduleReply(snapshot); ok {
+					deterministicReason = "active_match_context"
+					trace.Reason = "active_match_context"
+					reply = currentReply
+					break
+				}
+			}
+		}
+		searchRequest := BuildScheduleSearchRequest(scheduleIntent, req.Now, req.Timezone)
+		searchRequest.Competition = scheduleIntent.Competition
+		searchRequest.Query = req.Text
+		if searchReader, ok := a.scheduleReader.(ScheduleSearchReader); ok {
+			if req.ProgressiveSchedule {
+				lookupID := "schedule:" + trace.ID
+				trace.LookupID = lookupID
+				scheduleLookup = &ScheduleLookup{
+					ID:            lookupID,
+					ParentTraceID: trace.ID,
+					MatchID:       req.MatchID,
+					UserID:        req.UserID,
+					Query:         req.Text,
+					Intent:        scheduleIntent,
+					Search:        searchRequest,
+					ExpiresAt:     trace.CreatedAt.Add(20 * time.Second),
+				}
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{
+					Name: "schedule.lookup_pending",
+					Args: map[string]string{"lookupId": lookupID, "scope": string(scheduleIntent.Scope)},
+				})
+				trace.Reason = "schedule_lookup_acknowledgement"
+				reply = scheduleLookupAcknowledgement(scheduleIntent.Scope)
+				break
+			}
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{
+				Name: "schedule.search",
+				Args: scheduleSearchToolArgs(searchRequest),
+			})
+			result, err := searchReader.Search(ctx, searchRequest)
+			if err != nil {
+				trace.Error = strings.TrimSpace(err.Error())
+				trace.Reason = "schedule_unavailable"
+				reply = "赛程源这次没接上，我不先乱报。"
+				break
+			}
+			reply = formatScheduleSearchResult(result, scheduleIntent.Scope)
+			break
+		}
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "schedule.read_today", Args: map[string]string{"scope": "today"}})
+		if a.scheduleReader == nil {
+			reply = "今天的赛程我还没拿到，你想查哪个联赛？"
+			break
+		}
+		fixtures, err := a.scheduleReader.TodayFixtures(ctx)
+		if err != nil {
+			trace.Error = strings.TrimSpace(err.Error())
+			trace.Reason = "schedule_unavailable"
+			reply = "今天的赛程查询没接上，你想查哪个联赛？"
+			break
+		}
+		reply = formatTodaySchedule(fixtures)
 	case IntentEmotionReaction:
 		if isGroundedMatchReaction(req.Text) {
 			allowRealize = false
@@ -500,12 +656,14 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		} else {
 			reply = emotionReactionReply(req.Text)
 		}
+	case IntentPersonalShare:
+		reply = personalShareReply(req.Text)
 	case IntentSmalltalk:
-		reply = "我在，陪你看。你想聊比赛我就跟着场上节奏走，想闲聊也行。"
+		reply = smalltalkFallbackReply(req.Text)
 	default:
-		reply = "这个我先按陪看来理解。要是你问这场比赛，我会根据已经确认的比赛信息回答。"
+		reply = "这句我没接明白，你换个说法？"
 	}
-	if containsMatchFactLanguage(req.Text) && len(requiredAnchors) == 0 {
+	if intent != IntentPersonalShare && containsMatchFactLanguage(req.Text) && len(requiredAnchors) == 0 {
 		allowRealize = false
 		if deterministicReason == "policy" {
 			deterministicReason = "fact_language_policy"
@@ -554,7 +712,128 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	if decision != nil {
 		presentation = decision.Presentation
 	}
-	return Response{Intent: intent, Reply: reply, Trace: trace, Presentation: presentation}, nil
+	return Response{Intent: intent, Reply: reply, Trace: trace, Presentation: presentation, ScheduleLookup: scheduleLookup}, nil
+}
+
+func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup) (Response, error) {
+	if !lookup.ExpiresAt.IsZero() && !lookup.ExpiresAt.After(time.Now()) {
+		return Response{}, ErrScheduleLookupExpired
+	}
+	searchReader, ok := a.scheduleReader.(ScheduleSearchReader)
+	if !ok {
+		return Response{}, fmt.Errorf("schedule search reader is unavailable")
+	}
+	startedAt := time.Now()
+	createdAt := startedAt.UTC()
+	intent := lookup.Intent
+	trace := Trace{
+		ID:            stableTraceID(lookup.UserID, lookup.MatchID, "schedule-result:"+lookup.ID),
+		LookupID:      lookup.ID,
+		ParentTraceID: lookup.ParentTraceID,
+		MatchID:       lookup.MatchID,
+		UserID:        lookup.UserID,
+		Intent:        IntentSchedule,
+		Schedule:      &intent,
+		CreatedAt:     createdAt,
+	}
+	if intent.Scope == ScheduleScopeCurrent || intent.Scope == ScheduleScopeNearby {
+		if snapshot, err := a.tools.Snapshot(ctx, lookup.MatchID); err == nil {
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": lookup.MatchID}})
+			if reply, active := activeMatchScheduleReply(snapshot); active {
+				trace.Output = reply
+				trace.Reason = "schedule_lookup_context_updated"
+				trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
+				trace.ToolCalls = append(trace.ToolCalls,
+					ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
+					ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
+				)
+				if err := a.tools.WriteTrace(ctx, trace); err != nil {
+					return Response{}, err
+				}
+				return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
+			}
+		}
+	}
+
+	searchArgs := scheduleSearchToolArgs(lookup.Search)
+	result, err := searchReader.Search(ctx, lookup.Search)
+	if ctx.Err() != nil {
+		return Response{}, ctx.Err()
+	}
+	if intent.Scope == ScheduleScopeCurrent || intent.Scope == ScheduleScopeNearby {
+		if snapshot, snapshotErr := a.tools.Snapshot(ctx, lookup.MatchID); snapshotErr == nil {
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": lookup.MatchID}})
+			if currentReply, active := activeMatchScheduleReply(snapshot); active {
+				searchArgs["state"] = "superseded"
+				searchArgs["source"] = strings.TrimSpace(result.Source)
+				searchArgs["durationMs"] = strconv.Itoa(int(time.Since(startedAt).Milliseconds()))
+				trace.ToolCalls = append(trace.ToolCalls,
+					ToolCall{Name: "schedule.search", Args: searchArgs},
+					ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
+					ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
+				)
+				trace.Output = currentReply
+				trace.Reason = "schedule_lookup_context_updated"
+				trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
+				if err := a.tools.WriteTrace(ctx, trace); err != nil {
+					return Response{}, err
+				}
+				return Response{Intent: IntentSchedule, Reply: currentReply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
+			}
+		}
+	}
+	reply := ""
+	if err != nil {
+		trace.Error = strings.TrimSpace(err.Error())
+		trace.Reason = "schedule_lookup_unavailable"
+		reply = "赛程源这次没接上，我不先乱报。"
+		searchArgs["state"] = "failed"
+	} else {
+		reply = formatScheduleSearchResult(result, intent.Scope)
+		trace.Reason = "schedule_lookup_result"
+		searchArgs["state"] = "completed"
+		searchArgs["source"] = strings.TrimSpace(result.Source)
+		searchArgs["freshness"] = strings.TrimSpace(result.Freshness)
+		searchArgs["fixtureCount"] = strconv.Itoa(len(result.Fixtures))
+		if !result.FetchedAt.IsZero() {
+			searchArgs["fetchedAt"] = result.FetchedAt.UTC().Format(time.RFC3339)
+		}
+	}
+	searchArgs["durationMs"] = strconv.Itoa(int(time.Since(startedAt).Milliseconds()))
+	trace.ToolCalls = append(trace.ToolCalls,
+		ToolCall{Name: "schedule.search", Args: searchArgs},
+		ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
+		ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
+	)
+	trace.Output = reply
+	trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
+	if err := a.tools.WriteTrace(ctx, trace); err != nil {
+		return Response{}, err
+	}
+	return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
+}
+
+func scheduleLookupAcknowledgement(scope ScheduleScope) string {
+	switch scope {
+	case ScheduleScopeToday:
+		return "我去找找今天的比赛，找到后告诉你。"
+	case ScheduleScopeTomorrow:
+		return "我去找找明天的比赛，找到后告诉你。"
+	default:
+		return "我去找找今天和明天的比赛，找到后告诉你。"
+	}
+}
+
+func scheduleLookupPresentation() relationship.PresentationPlan {
+	return relationship.PresentationPlan{
+		Expression:  "focus",
+		Motion:      "speak",
+		VoiceStyle:  "calm",
+		VoiceEnergy: 0.55,
+		VoiceSpeed:  1,
+		HoldMS:      1400,
+		ReturnMode:  "watching",
+	}
 }
 
 func (a *Agent) recordObservation(ctx context.Context, req AgentBoundaryRequest, traceID string, claim FactClaim, trace *Trace) {
@@ -615,19 +894,61 @@ func reliableFallbackForDecision(input string, intent Intent, original string, d
 	if intent == IntentEmotionReaction {
 		return emotionReactionReply(input)
 	}
+	if intent == IntentPersonalShare {
+		return personalShareReply(input)
+	}
 	if intent == IntentSmalltalk {
-		switch {
-		case containsAny(input, "在吗", "在不在"):
-			return "在，看着呢。"
-		case containsAny(input, "你好", "嗨", "哈喽"):
-			return "嗨，来了。先看球。"
-		case containsAny(input, "继续", "接着"):
-			return "嗯，接着看。"
-		default:
-			return "嗯，我在。"
-		}
+		return smalltalkFallbackReply(input)
 	}
 	return original
+}
+
+func smalltalkFallbackReply(input string) string {
+	switch {
+	case isAudioConnectionCheck(input):
+		return "听得到。"
+	case isPresenceCheck(input):
+		return "在，听着呢。"
+	case isCompanionStateCompliment(input):
+		return "被你看出来了，今天状态确实不错。"
+	case isCompanionDirectedSmalltalk(input) && containsAny(input, "有点意思", "挺有意思", "真有意思"):
+		return "那我就当你是在夸我了。"
+	case isCompanionDirectedSmalltalk(input):
+		return "这句我收下了。"
+	case isNonLiteralMatchAside(input):
+		return "知道，你是在逗我。"
+	case isGreeting(input):
+		return greetingReply(input)
+	case containsAny(input, "陪我看", "一起看", "陪我聊"):
+		return "行，陪你看着。"
+	case containsAny(input, "继续", "接着"):
+		return "嗯，接着看。"
+	case containsAny(input, "先看", "看看比赛", "看球"):
+		return "行，先看着。"
+	case containsAny(input, "谢谢", "谢了", "多谢"):
+		return "客气什么。"
+	case containsAny(input, "累", "困", "难受", "烦", "不舒服"):
+		return "听着就不太顺，先缓口气。"
+	case containsAny(input, "开心", "高兴", "爽", "兴奋"):
+		return "听出来了，你这会儿心情是真不错。"
+	default:
+		return "嗯，我听着呢。"
+	}
+}
+
+func personalShareReply(input string) string {
+	switch {
+	case containsAny(input, "打进", "踢进", "进球", "赢了", "赢啦", "拿下", "成功", "做到了"):
+		return "可以啊，这下够你得意一阵了。"
+	case containsAny(input, "累", "困", "难受", "烦", "输了", "不舒服"):
+		return "听着就不太顺，先缓口气。"
+	case containsAny(input, "开心", "高兴", "爽", "兴奋"):
+		return "听出来了，你这会儿心情是真不错。"
+	case containsAny(input, "喜欢", "支持", "更看好"):
+		return "行，这个立场我记住了。"
+	default:
+		return "这话我听进去了。"
+	}
 }
 
 func emotionReactionReply(input string) string {
@@ -636,6 +957,8 @@ func emotionReactionReply(input string) string {
 		return "真的假的？你是说刚刚那一下吗？"
 	case containsAny(input, "紧张", "悬", "绷"):
 		return "这一下是真绷着。先看这波。"
+	case containsAny(input, "好球", "精彩", "厉害", "太棒", "神了", "绝了"):
+		return "这一下有点东西。"
 	case containsAny(input, "漂亮", "舒服"):
 		return "嗯，这一下真漂亮。"
 	case containsAny(input, "牛", "太激动", "上头"):
@@ -647,11 +970,18 @@ func emotionReactionReply(input string) string {
 
 func isGroundedMatchReaction(input string) bool {
 	lower := strings.ToLower(strings.TrimSpace(input))
-	if !containsAny(lower, "漂亮", "舒服", "精彩", "好球", "牛", "厉害", "关键", "太棒", "神了", "绝了", "可惜", "离谱") {
+	if !containsMatchReactionCue(lower) {
 		return false
 	}
 	return containsMatchFactLanguage(lower) || containsAny(lower,
 		"这球", "这个球", "这一球", "那球", "那个球", "那一球", "这一下", "那一下", "这脚", "那脚", "这一脚", "那一脚",
+	)
+}
+
+func containsMatchReactionCue(input string) bool {
+	return containsAny(strings.ToLower(strings.TrimSpace(input)),
+		"漂亮", "舒服", "精彩", "好球", "牛", "厉害", "关键",
+		"太棒", "神了", "绝了", "可惜", "离谱",
 	)
 }
 
@@ -698,7 +1028,7 @@ func shouldRealizeUserTurn(intent Intent, decision relationship.Decision) bool {
 	if decision.Speech == nil {
 		return false
 	}
-	return intent == IntentSmalltalk || intent == IntentEmotionReaction || hasCommunicationAct(decision.Actions, relationship.ActRecall) || hasCommunicationAct(decision.Actions, relationship.ActRepair) || hasCommunicationAct(decision.Actions, relationship.ActAsk)
+	return intent == IntentSmalltalk || intent == IntentEmotionReaction || intent == IntentPersonalShare || hasCommunicationAct(decision.Actions, relationship.ActRecall) || hasCommunicationAct(decision.Actions, relationship.ActRepair) || hasCommunicationAct(decision.Actions, relationship.ActAsk)
 }
 
 func recalledOpenThreadTopic(memories []relationship.RelationshipMemory) string {
@@ -1035,6 +1365,12 @@ func Classify(text string) Intent {
 	if containsAny(lower, "把比分改成", "比分改成", "修改比分", "记录进球", "记一条进球") {
 		return IntentUnknown
 	}
+	if isPresenceCheck(lower) {
+		return IntentSmalltalk
+	}
+	if isNonLiteralMatchAside(lower) {
+		return IntentSmalltalk
+	}
 	if isScoreClaim(lower) || isEventClaim(lower) {
 		return IntentMatchClaim
 	}
@@ -1044,20 +1380,29 @@ func Classify(text string) Intent {
 	if containsAny(lower, "别说", "少说", "闭嘴", "安静", "别播报") {
 		return IntentControlCommand
 	}
+	if isMatchStatusQuestion(lower) {
+		return IntentMatchStatus
+	}
+	if isScheduleQuestion(lower) {
+		return IntentSchedule
+	}
+	if isCompanionDirectedSmalltalk(lower) {
+		return IntentSmalltalk
+	}
 	if isDisbeliefReaction(lower) {
 		return IntentEmotionReaction
 	}
-	if containsAny(lower, "哈哈", "太激动", "紧张", "舒服", "漂亮", "牛") {
+	if containsAny(lower, "哈哈", "太激动", "紧张", "上头") || containsMatchReactionCue(lower) {
 		return IntentEmotionReaction
 	}
-	if containsAny(lower, "几比几", "比分", "现在多少", "现在几") {
-		return IntentMatchStatus
+	if isRecentGoalScorerQuestion(lower) {
+		return IntentRecentEvent
+	}
+	if isPersonalShare(lower) {
+		return IntentPersonalShare
 	}
 	if containsAny(lower, "进球了吗", "表现", "有没有进球", "有进球") {
 		return IntentPlayerQuestion
-	}
-	if containsAny(lower, "谁进的球", "谁进的", "谁破门", "进球是谁", "谁打进", "谁得分") {
-		return IntentRecentEvent
 	}
 	if containsAny(lower, "谁助攻", "谁主攻", "助攻", "刚才谁", "上一个", "刚刚") {
 		return IntentRecentEvent
@@ -1068,10 +1413,342 @@ func Classify(text string) Intent {
 	if containsAny(lower, "谁策动", "策动", "谁传的", "谁参与", "那球呢", "然后呢") {
 		return IntentFollowUp
 	}
-	if len([]rune(trimmed)) <= 12 {
+	if isGreeting(lower) {
+		return IntentSmalltalk
+	}
+	if isSimpleSocialTurn(lower) {
 		return IntentSmalltalk
 	}
 	return IntentUnknown
+}
+
+func isScheduleQuestion(text string) bool {
+	normalized := normalizeConversationText(text)
+	if containsAny(normalized, "比分", "进球", "分钟", "赛况", "球员", "比赛怎么样", "比赛什么情况", "比赛现在什么情况", "现在什么情况") {
+		return false
+	}
+	footballTopic := containsAny(normalized, "比赛", "球赛", "赛程", "对阵", "足球", "有球", "什么球", "啥球", "哪些球")
+	questionAct := containsAny(normalized, "有", "什么", "哪些", "哪场", "哪几场", "安排", "踢", "开赛")
+	return footballTopic && questionAct
+}
+
+func ClassifyScheduleIntent(text string) ScheduleIntent {
+	normalized := normalizeConversationText(text)
+	scope := ScheduleScopeNearby
+	switch {
+	case containsAny(normalized, "明天", "明日"):
+		scope = ScheduleScopeTomorrow
+	case containsAny(normalized, "今天", "今日", "今晚"):
+		scope = ScheduleScopeToday
+	case containsAny(normalized, "现在", "当前", "正在"):
+		scope = ScheduleScopeCurrent
+	}
+	return ScheduleIntent{
+		Topic:      "football_schedule",
+		Action:     "query",
+		Scope:      scope,
+		Confidence: 0.9,
+	}
+}
+
+func BuildScheduleSearchRequest(intent ScheduleIntent, now time.Time, timezone string) ScheduleSearchRequest {
+	location := scheduleLocation(now, timezone)
+	if now.IsZero() {
+		now = time.Now()
+	}
+	localNow := now.In(location)
+	start := time.Date(localNow.Year(), localNow.Month(), localNow.Day(), 0, 0, 0, 0, location)
+	switch intent.Scope {
+	case ScheduleScopeTomorrow:
+		start = start.AddDate(0, 0, 1)
+	case ScheduleScopeNearby:
+		return ScheduleSearchRequest{
+			From:        start,
+			To:          start.AddDate(0, 0, 2),
+			Timezone:    location.String(),
+			Competition: intent.Competition,
+		}
+	}
+	return ScheduleSearchRequest{
+		From:        start,
+		To:          start.AddDate(0, 0, 1),
+		Timezone:    location.String(),
+		Competition: intent.Competition,
+	}
+}
+
+func scheduleLocation(now time.Time, timezone string) *time.Location {
+	if name := strings.TrimSpace(timezone); name != "" {
+		if location, err := time.LoadLocation(name); err == nil {
+			return location
+		}
+		normalized := strings.ToUpper(name)
+		if strings.HasPrefix(normalized, "UTC") {
+			if parsed, err := time.Parse("Z07:00", strings.TrimPrefix(normalized, "UTC")); err == nil {
+				_, offsetSeconds := parsed.Zone()
+				return time.FixedZone(normalized, offsetSeconds)
+			}
+		}
+	}
+	if now.Location() != nil {
+		return now.Location()
+	}
+	return time.UTC
+}
+
+func scheduleSearchToolArgs(request ScheduleSearchRequest) map[string]string {
+	return map[string]string{
+		"from":     request.From.Format(time.RFC3339),
+		"to":       request.To.Format(time.RFC3339),
+		"timezone": request.Timezone,
+	}
+}
+
+func isSimpleSocialTurn(text string) bool {
+	normalized := normalizeConversationText(text)
+	if normalized == "" || containsAny(strings.ToLower(strings.TrimSpace(text)),
+		"吗", "么", "是不是", "为什么", "怎么", "什么", "哪", "多少", "?", "？",
+	) {
+		return false
+	}
+	for _, exact := range []string{
+		"好", "好的", "好呀", "好啊", "好吧", "行", "行吧", "嗯", "嗯嗯", "收到", "谢谢", "谢了", "多谢",
+		"继续", "接着", "你说", "看球", "累", "困", "难受", "烦", "不舒服", "开心", "高兴", "爽", "兴奋",
+	} {
+		if normalized == exact {
+			return true
+		}
+	}
+	return hasAnyPrefix(normalized,
+		"谢谢", "谢了", "多谢", "继续", "接着", "先看", "看球", "收到", "辛苦", "你说",
+		"陪我看", "陪我聊", "一起看", "接着看", "继续看", "累", "困", "难受", "烦", "不舒服",
+		"开心", "高兴", "爽", "兴奋",
+	)
+}
+
+func isNonLiteralMatchAside(text string) bool {
+	return isNonLiteralMatchTalk(text) && (scoreClaimPattern.FindStringSubmatch(text) != nil || containsAny(text,
+		"进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了",
+	))
+}
+
+func formatTodaySchedule(fixtures []ScheduleMatch) string {
+	if len(fixtures) == 0 {
+		return "我这边查到今天暂时没有赛程。"
+	}
+	pairs := make([]string, 0, minInt(len(fixtures), 5))
+	for _, fixture := range fixtures {
+		home := strings.TrimSpace(fixture.HomeTeam)
+		away := strings.TrimSpace(fixture.AwayTeam)
+		if home == "" || away == "" {
+			continue
+		}
+		pairs = append(pairs, home+"对"+away)
+		if len(pairs) >= 5 {
+			break
+		}
+	}
+	if len(pairs) == 0 {
+		return "我这边查到今天暂时没有赛程。"
+	}
+	return "今天有：" + strings.Join(pairs, "、") + "。"
+}
+
+func formatScheduleSearchResult(result ScheduleSearchResult, scope ScheduleScope) string {
+	if scheduleFreshnessUnreliable(result.Freshness) {
+		return "赛程数据现在有延迟或冲突，我先不拿它当准确信息报给你。"
+	}
+	if len(result.Fixtures) == 0 {
+		if scope == ScheduleScopeNearby {
+			return "我查到今天和明天暂时没有可靠的赛程。"
+		}
+		return "我查到这个时间段暂时没有可靠的赛程。"
+	}
+	pairs := make([]string, 0, minInt(len(result.Fixtures), 5))
+	for _, fixture := range result.Fixtures {
+		if scheduleFreshnessUnreliable(fixture.Freshness) {
+			continue
+		}
+		home := strings.TrimSpace(fixture.HomeTeam)
+		away := strings.TrimSpace(fixture.AwayTeam)
+		if home == "" || away == "" {
+			continue
+		}
+		label := home + "对" + away
+		details := make([]string, 0, 3)
+		if competition := strings.TrimSpace(fixture.Competition); competition != "" {
+			details = append(details, competition)
+		}
+		if !fixture.KickoffAt.IsZero() {
+			details = append(details, fixture.KickoffAt.Format("15:04")+"开球")
+		}
+		if status := scheduleStatusLabel(fixture.Status); status != "" {
+			details = append(details, status)
+		}
+		if len(details) > 0 {
+			label += "（" + strings.Join(details, "，") + "）"
+		}
+		if fixture.HomeScore != nil && fixture.AwayScore != nil {
+			label += fmt.Sprintf(" %d-%d", *fixture.HomeScore, *fixture.AwayScore)
+		}
+		pairs = append(pairs, label)
+		if len(pairs) >= 5 {
+			break
+		}
+	}
+	if len(pairs) == 0 {
+		return "我查到这个时间段暂时没有可靠的赛程。"
+	}
+	label := "这个时间段"
+	switch scope {
+	case ScheduleScopeToday:
+		label = "今天"
+	case ScheduleScopeTomorrow:
+		label = "明天"
+	case ScheduleScopeNearby:
+		label = "今天和明天"
+	}
+	reply := label + "有：" + strings.Join(pairs, "、") + "。"
+	source := strings.TrimSpace(result.Source)
+	if source == "" {
+		for _, fixture := range result.Fixtures {
+			if source = strings.TrimSpace(fixture.Source); source != "" {
+				break
+			}
+		}
+	}
+	metadata := make([]string, 0, 2)
+	if source != "" {
+		metadata = append(metadata, "来源："+source)
+	}
+	if freshness := scheduleFreshnessLabel(result.Freshness); freshness != "" {
+		metadata = append(metadata, freshness)
+	}
+	if len(metadata) > 0 {
+		reply += strings.Join(metadata, "，") + "。"
+	}
+	return reply
+}
+
+func scheduleFreshnessUnreliable(freshness string) bool {
+	switch strings.ToLower(strings.TrimSpace(freshness)) {
+	case "stale", "conflict", "conflicted", "unreliable", "error":
+		return true
+	default:
+		return false
+	}
+}
+
+func scheduleFreshnessLabel(freshness string) string {
+	switch strings.ToLower(strings.TrimSpace(freshness)) {
+	case "fresh":
+		return "数据刚刚更新"
+	case "cached":
+		return "缓存数据"
+	default:
+		return ""
+	}
+}
+
+func scheduleStatusLabel(status string) string {
+	switch strings.ToUpper(strings.TrimSpace(status)) {
+	case "", "NS", "TBD", "SCHEDULED":
+		return ""
+	case "FT", "AET", "PEN", "FINISHED":
+		return "已结束"
+	case "CANC", "PST", "CANCELED", "POSTPONED":
+		return "已调整"
+	default:
+		return "进行中"
+	}
+}
+
+func activeMatchScheduleReply(snapshot matchstate.Snapshot) (string, bool) {
+	integrity := strings.ToLower(strings.TrimSpace(snapshot.Integrity.Status))
+	if integrity != "" && integrity != "ok" {
+		return "", false
+	}
+	homeTeam := strings.TrimSpace(snapshot.HomeTeam)
+	awayTeam := strings.TrimSpace(snapshot.AwayTeam)
+	if homeTeam == "" || awayTeam == "" {
+		return "", false
+	}
+	period := strings.TrimSpace(snapshot.Period)
+	if period == "" {
+		period = strings.TrimSpace(snapshot.MatchClock.Period)
+	}
+	switch strings.ToLower(period) {
+	case "", "pre_match", "fulltime", "full_time", "finished":
+		return "", false
+	}
+	matchLabel := homeTeam + "对" + awayTeam
+	if competition := strings.TrimSpace(snapshot.Competition); competition != "" {
+		matchLabel += "的" + competition
+	}
+	return fmt.Sprintf("现在正在看%s，%s %d-%d %s，时间在%s %s。",
+		matchLabel,
+		homeTeam,
+		snapshot.Score.Home,
+		snapshot.Score.Away,
+		awayTeam,
+		displayPeriod(period),
+		snapshot.Clock,
+	), true
+}
+
+func minInt(a, b int) int {
+	if a < b {
+		return a
+	}
+	return b
+}
+
+func isMatchStatusQuestion(text string) bool {
+	return containsAny(text,
+		"几比几", "比分", "现在多少", "现在几",
+		"比赛什么情况", "比赛现在什么情况", "比赛怎么样", "赛况", "比赛时间",
+		"踢到第几分钟", "进行到第几分钟", "第几分钟了", "多少分钟了",
+	)
+}
+
+func isRecentGoalScorerQuestion(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	hasScorerQuestion := containsAny(normalized,
+		"谁", "哪个球员", "哪位球员", "哪一个球员", "进球者",
+	)
+	hasGoalAction := containsAny(normalized,
+		"进了", "进啦", "进咯", "进喽", "进的", "进球", "破门", "打进", "得分",
+	)
+	return hasScorerQuestion && hasGoalAction
+}
+
+func isPersonalShare(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	if containsAny(normalized,
+		"吗", "么", "是不是", "为什么", "怎么", "谁", "什么", "哪", "多少", "几", "?", "？",
+	) {
+		return false
+	}
+	return isFirstPersonGoalAchievement(normalized) || containsAny(normalized,
+		"我刚", "我今天", "我昨天", "我也", "我赢", "我输", "我累", "我困", "我开心", "我高兴",
+		"我喜欢", "我支持", "我更看好", "我感觉", "我觉得", "我状态", "我们刚", "我们今天", "我们赢", "我们输",
+	) || isAffectShare(normalized)
+}
+
+func isAffectShare(text string) bool {
+	if containsAny(text, "你", "球球", "比赛", "球员", "球队", "场上") {
+		return false
+	}
+	return containsAny(text, "我", "今天", "最近", "这会儿", "现在", "刚刚") && containsAny(text,
+		"累", "困", "难受", "烦", "不舒服", "开心", "高兴", "爽", "兴奋",
+	)
+}
+
+func isFirstPersonGoalAchievement(text string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(text))
+	return containsAny(normalized,
+		"我打进", "我踢进", "我进球", "我刚进", "我也进", "我们打进", "我们踢进", "我们进球",
+	)
 }
 
 var scoreClaimPattern = regexp.MustCompile(`(\d{1,2})\s*(?:比|:|：|-)\s*(\d{1,2})`)
@@ -1087,7 +1764,10 @@ func isScoreClaim(text string) bool {
 }
 
 func isEventClaim(text string) bool {
-	if !containsAny(text, "进球了", "破门了", "得分了") {
+	if isFirstPersonGoalAchievement(text) {
+		return false
+	}
+	if !containsAny(text, "进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了") {
 		return false
 	}
 	if isNonLiteralMatchTalk(text) {
@@ -1102,7 +1782,7 @@ func isNonLiteralMatchTalk(text string) bool {
 
 func containsMatchFactLanguage(text string) bool {
 	return scoreClaimPattern.FindStringSubmatch(text) != nil || containsAny(text,
-		"比分", "进球", "破门", "得分", "领先", "扳平", "反超", "红牌", "黄牌", "VAR", "var",
+		"比分", "进球", "进啦", "进咯", "进喽", "球进了", "破门", "得分", "领先", "扳平", "反超", "红牌", "黄牌", "VAR", "var",
 		"分钟", "换人", "换下", "换上", "上场", "下场", "首发", "替补", "点球", "判罚", "越位", "半场", "终场", "开场",
 		"梅开二度", "帽子戏法", "伤退", "受伤", "停赛", "绝杀", "绝平", "助攻", "扑救", "扑出", "射门", "射正", "犯规",
 	)
@@ -1181,7 +1861,7 @@ func inferClaimedPlayer(text string, snapshot matchstate.Snapshot) string {
 		return known
 	}
 	prefix := text
-	for _, marker := range []string{"进球了", "破门了", "得分了"} {
+	for _, marker := range []string{"进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了"} {
 		if index := strings.Index(prefix, marker); index >= 0 {
 			prefix = prefix[:index]
 			break
@@ -1327,7 +2007,7 @@ func claimCertainty(text string) string {
 }
 
 func answerRecentEvent(text string, events []matchstate.MatchEvent) (string, []string) {
-	if containsAny(text, "谁进的球", "谁进的", "谁破门", "进球是谁", "谁打进", "谁得分") {
+	if isRecentGoalScorerQuestion(text) {
 		for _, ev := range events {
 			if ev.EventType != "goal" {
 				continue
@@ -1486,11 +2166,11 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 }
 
 func validateRealizedConversationTurn(input string, intent Intent, text string) error {
+	if isPresenceOnlyReply(text) && !isPresenceCheck(input) {
+		return fmt.Errorf("realized natural turn became a presence acknowledgement")
+	}
 	if intent != IntentEmotionReaction || !isDisbeliefReaction(input) {
 		return nil
-	}
-	if isPresenceOnlyReply(text) {
-		return fmt.Errorf("realized disbelief reaction became a presence acknowledgement")
 	}
 	if !containsAny(text, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧", "刚刚", "那一下", "这一下", "这球") {
 		return fmt.Errorf("realized disbelief reaction dropped its conversational context")
@@ -1501,6 +2181,76 @@ func validateRealizedConversationTurn(input string, intent Intent, text string) 
 func isPresenceOnlyReply(text string) bool {
 	normalized := strings.NewReplacer("，", "", "。", "", "！", "", "？", "", "!", "", "?", "", " ", "").Replace(strings.TrimSpace(text))
 	return len([]rune(normalized)) <= 8 && containsAny(normalized, "我在", "在呢", "在呀", "在的", "看着呢")
+}
+
+func isPresenceCheck(input string) bool {
+	normalized := strings.NewReplacer("，", "", "。", "", "！", "", "？", "", "!", "", "?", "", " ", "").Replace(strings.ToLower(strings.TrimSpace(input)))
+	if normalized == "喂" || normalized == "球球" || normalized == "人呢" {
+		return true
+	}
+	return containsAny(normalized, "在吗", "在不在", "还在吗") || isAudioConnectionCheck(normalized)
+}
+
+func isAudioConnectionCheck(input string) bool {
+	normalized := normalizeConversationText(input)
+	if !containsAny(normalized, "听到", "听见", "听得见", "听得到") {
+		return false
+	}
+	return containsAny(normalized, "我说话", "我讲话", "到我", "见我", "到吗", "见吗", "得到吗", "得见吗")
+}
+
+func isGreeting(input string) bool {
+	normalized := normalizeConversationText(input)
+	if !containsAny(normalized,
+		"你好", "您好", "嗨", "哈喽", "hello", "hi", "早安", "早上好", "上午好", "中午好", "下午好", "晚上好", "晚安",
+	) {
+		return false
+	}
+	return !containsAny(normalized,
+		"分析", "解释", "为什么", "怎么", "帮我", "请问", "请你", "能不能", "可以吗", "比赛怎么样", "比分", "进球", "分钟",
+	)
+}
+
+func greetingReply(input string) string {
+	normalized := normalizeConversationText(input)
+	switch {
+	case containsAny(normalized, "下午好"):
+		return "下午好，来了。"
+	case containsAny(normalized, "早安", "早上好"):
+		return "早上好，来了。"
+	case containsAny(normalized, "上午好"):
+		return "上午好，来了。"
+	case containsAny(normalized, "中午好"):
+		return "中午好，来了。"
+	case containsAny(normalized, "晚上好"):
+		return "晚上好，来了。"
+	case containsAny(normalized, "晚安"):
+		return "晚安，先休息。"
+	default:
+		return "嗨，来了。先看球。"
+	}
+}
+
+func normalizeConversationText(input string) string {
+	return strings.NewReplacer(
+		"，", "", "。", "", "！", "", "？", "", "!", "", "?", "", " ", "", "\t", "", "\n", "",
+	).Replace(strings.ToLower(strings.TrimSpace(input)))
+}
+
+func isCompanionStateCompliment(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	return containsAny(normalized, "你", "球球") && containsAny(normalized, "精神不错", "状态不错", "看起来不错", "气色不错")
+}
+
+func isCompanionDirectedSmalltalk(input string) bool {
+	normalized := strings.ToLower(strings.TrimSpace(input))
+	if !containsAny(normalized, "你", "球球") {
+		return false
+	}
+	return isCompanionStateCompliment(normalized) || containsAny(normalized,
+		"有点意思", "挺有意思", "真有意思", "说你呢", "我是说你", "我说的是你", "我觉得你",
+		"你很", "你真", "你挺", "你有点", "你也是", "你才", "夸你",
+	)
 }
 
 func validateRealizedText(text, allowedSource string, decision relationship.Decision) error {
@@ -1790,6 +2540,15 @@ func displayPeriod(period string) string {
 func containsAny(text string, needles ...string) bool {
 	for _, needle := range needles {
 		if strings.Contains(text, needle) {
+			return true
+		}
+	}
+	return false
+}
+
+func hasAnyPrefix(text string, prefixes ...string) bool {
+	for _, prefix := range prefixes {
+		if strings.HasPrefix(text, prefix) {
 			return true
 		}
 	}

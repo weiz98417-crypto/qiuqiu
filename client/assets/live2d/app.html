@@ -413,7 +413,12 @@ function sendText(text, preferredAction) {
   if (!value || !ws || ws.readyState !== WebSocket.OPEN) return;
   addMessage('user', value);
   liveCall('performAction', preferredAction || inferAction(value) || 'listen');
-  ws.send(JSON.stringify({ type: 'user_speech', text: value, talkativeness: talk.value }));
+  ws.send(JSON.stringify({
+    type: 'user_speech',
+    text: value,
+    talkativeness: talk.value,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+  }));
 }
 
 async function toggleMic() {
@@ -481,7 +486,12 @@ function readVAD() {
     vadPoll = null;
     setVoiceStatus('球球正在理解。', 'processing');
     liveCall('performAction', 'analysis');
-    ws.send(JSON.stringify({ type: 'user_speech', audio: result.audio, talkativeness: talk.value }));
+    ws.send(JSON.stringify({
+      type: 'user_speech',
+      audio: result.audio,
+      talkativeness: talk.value,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    }));
   }
 }
 

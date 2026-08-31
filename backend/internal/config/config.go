@@ -8,6 +8,7 @@ import (
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
@@ -23,7 +24,9 @@ type Config struct {
 	MiMoBaseURL                    string
 	MiMoModel                      string
 	MiMoVoice                      string
+	CompanionRealizerTimeoutMS     int
 	APISportsAPIKey                string
+	APISportsBaseURL               string
 	PrivacyRetentionDays           int
 	PendingObservationCoordination bool
 	FactLedgerPublicReads          bool
@@ -56,7 +59,9 @@ func Load() *Config {
 		MiMoBaseURL:                    getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
 		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
 		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
+		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
 		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		APISportsBaseURL:               getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
 		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),
@@ -65,6 +70,10 @@ func Load() *Config {
 
 func (c *Config) RedisEnabled() bool {
 	return c.RedisAddr != ""
+}
+
+func (c *Config) CompanionRealizerTimeout() time.Duration {
+	return time.Duration(c.CompanionRealizerTimeoutMS) * time.Millisecond
 }
 
 func (c *Config) WSReadLimit() int64 {
@@ -84,6 +93,12 @@ func (c *Config) MaxConnsPerIP() int {
 }
 
 func (c *Config) Validate() error {
+	if c.CompanionRealizerTimeoutMS == 0 {
+		c.CompanionRealizerTimeoutMS = 5000
+	}
+	if c.CompanionRealizerTimeoutMS < 0 || c.CompanionRealizerTimeoutMS > 10000 {
+		return fmt.Errorf("COMPANION_REALIZER_TIMEOUT_MS must be between 1 and 10000")
+	}
 	if c.PrivacyRetentionDays == 0 {
 		c.PrivacyRetentionDays = 30
 	}

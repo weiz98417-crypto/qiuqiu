@@ -73,7 +73,8 @@ func (FactLedgerEngine) Project(input FactLedgerProjectInput) (FactLedgerProject
 	clock := normalizeMatchClock(matchID, input.Clock)
 	snapshot := Snapshot{
 		MatchID: matchID, HomeTeam: config.HomeTeam, AwayTeam: config.AwayTeam,
-		Period: clock.Period, Clock: clock.displayAt(now), MatchClock: clock,
+		Competition: config.Competition,
+		Period:      clock.Period, Clock: clock.displayAt(now), MatchClock: clock,
 		Momentum: "neutral", EmotionalTemperature: 1,
 		LastUpdatedAt: now.UTC().Format(time.RFC3339Nano), Integrity: config.Integrity,
 	}

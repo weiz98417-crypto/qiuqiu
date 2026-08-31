@@ -236,6 +236,7 @@
     if (definition.scoreDelta && draft.teamId) score[draft.teamId] += definition.scoreDelta;
     const primaryRole = definition.roles?.[0]?.[0];
     const primary = draft.participants.find((item) => item.role === primaryRole) || draft.primaryParticipant;
+    const description = publicEventDescription(draft.eventType, draft.description, primary?.name || '');
     return {
       source: draft.source || 'operator',
       providerName: draft.source === 'operator_voice' ? 'director-voice' : 'director-console',
@@ -250,13 +251,20 @@
       intensity: Number(draft.intensity || definition.intensity || 3),
       confirmed: draft.factStatus === 'confirmed',
       factStatus: draft.factStatus,
-      description: String(draft.description || '').trim(),
+      description,
       recommendedAction: draft.recommendedAction || definition.action,
       tags: [`clockVersion=${draft.capturedClockVersion}`, `input=${draft.source || 'operator'}`],
       proactiveText: draft.deliveryMode === 'quiet' ? '__quiet__' : draft.deliveryMode === 'manual' ? String(draft.proactiveText || '').trim() : '',
       revisionOf: draft.revisionOf || '',
       evidence: draft.revisionOf || draft.eventType === 'score_correction' ? { correctionReason: String(draft.correctionReason || '').trim() } : {},
     };
+  }
+
+  function publicEventDescription(eventType, description, playerName) {
+    const text = String(description || '').trim();
+    const player = String(playerName || '').trim();
+    if (eventType !== 'goal' || !player || text.includes(player)) return text;
+    return `${player}${text || '进球了。'}`;
   }
 
   function setParticipant(draft, role, name, teamId, teamName, resolved) {

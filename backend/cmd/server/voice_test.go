@@ -57,6 +57,87 @@ func TestEvalVoiceSessionTextAndMockASRReachCompanion(t *testing.T) {
 	}
 }
 
+func TestStreamingTranscriptReachesCompanionWithASRTraceMetadata(t *testing.T) {
+	agent := seededVoiceAgent(t, "streaming-voice-eval")
+	result, err := handleTranscribedVoiceSessionWithSignalID(
+		context.Background(),
+		agent,
+		nil,
+		"streaming-voice-eval",
+		"user-1",
+		"现在比分多少？",
+		"mimo",
+		fixedVoiceTime(),
+		"signal-stream-1",
+	)
+	if err != nil {
+		t.Fatalf("handleTranscribedVoiceSessionWithSignalID: %v", err)
+	}
+	if !strings.Contains(result.Reply, "1-0") {
+		t.Fatalf("streaming transcript did not reach companion: %+v", result)
+	}
+	if result.Trace.Voice == nil {
+		t.Fatalf("streaming trace identity = %+v", result.Trace)
+	}
+	if result.Trace.Voice.ASRStatus != "ok" || result.Trace.Voice.ASRText != "现在比分多少？" || result.Trace.Voice.ASRProvider != "mimo" {
+		t.Fatalf("streaming ASR trace metadata = %+v", result.Trace.Voice)
+	}
+}
+
+func TestProgressiveVoiceSessionReturnsPendingScheduleLookup(t *testing.T) {
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithScheduleReader(voiceScheduleReader{})
+	result, err := handleTranscribedVoiceSessionWithSignalIDOptions(
+		context.Background(),
+		agent,
+		nil,
+		"progressive-schedule-voice",
+		"user-1",
+		"明天有什么比赛？",
+		"mimo",
+		time.Now().UTC(),
+		"signal-progressive-schedule",
+		voiceSessionOptions{ProgressiveSchedule: true},
+	)
+	if err != nil {
+		t.Fatalf("handleTranscribedVoiceSessionWithSignalIDOptions: %v", err)
+	}
+	if result.ScheduleLookup == nil || result.ScheduleLookup.ParentTraceID != result.Trace.ID {
+		t.Fatalf("progressive voice result = %+v", result)
+	}
+	if result.Reply == "" {
+		t.Fatal("progressive voice session did not return an acknowledgement")
+	}
+}
+
+func TestVoiceSessionUsesClientTimezoneForScheduleSearch(t *testing.T) {
+	reader := &voiceTimezoneScheduleReader{}
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithScheduleReader(reader)
+	now := time.Date(2026, 7, 23, 18, 0, 0, 0, time.UTC)
+
+	_, err := handleTranscribedVoiceSessionWithSignalIDOptions(
+		context.Background(),
+		agent,
+		nil,
+		"timezone-schedule-voice",
+		"user-1",
+		"明天有什么比赛？",
+		"mimo",
+		now,
+		"signal-timezone-schedule",
+		voiceSessionOptions{Timezone: "Asia/Shanghai"},
+	)
+	if err != nil {
+		t.Fatalf("handleTranscribedVoiceSessionWithSignalIDOptions: %v", err)
+	}
+	if reader.lastRequest.Timezone != "Asia/Shanghai" {
+		t.Fatalf("schedule timezone = %q, want Asia/Shanghai", reader.lastRequest.Timezone)
+	}
+	wantFrom := time.Date(2026, 7, 25, 0, 0, 0, 0, time.FixedZone("CST", 8*60*60))
+	if !reader.lastRequest.From.Equal(wantFrom) {
+		t.Fatalf("schedule from = %s, want %s", reader.lastRequest.From, wantFrom)
+	}
+}
+
 func TestEvalVoiceSessionASRFallbackAndFailuresDoNotBreakText(t *testing.T) {
 	agent := seededVoiceAgent(t, "voice-fallback-eval")
 	audio := base64.StdEncoding.EncodeToString([]byte{1, 2, 3, 4})
@@ -284,6 +365,29 @@ func (failingTTS) Synthesize(ctx context.Context, text, voiceID string) (*tts.Sy
 	_ = text
 	_ = voiceID
 	return nil, errors.New("tts unavailable")
+}
+
+type voiceScheduleReader struct{}
+
+func (voiceScheduleReader) TodayFixtures(context.Context) ([]companion.ScheduleMatch, error) {
+	return nil, nil
+}
+
+func (voiceScheduleReader) Search(context.Context, companion.ScheduleSearchRequest) (companion.ScheduleSearchResult, error) {
+	return companion.ScheduleSearchResult{}, nil
+}
+
+type voiceTimezoneScheduleReader struct {
+	lastRequest companion.ScheduleSearchRequest
+}
+
+func (reader *voiceTimezoneScheduleReader) TodayFixtures(context.Context) ([]companion.ScheduleMatch, error) {
+	return nil, nil
+}
+
+func (reader *voiceTimezoneScheduleReader) Search(_ context.Context, request companion.ScheduleSearchRequest) (companion.ScheduleSearchResult, error) {
+	reader.lastRequest = request
+	return companion.ScheduleSearchResult{}, nil
 }
 
 func fixedVoiceTime() time.Time {

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'client_timezone.dart';
+
 enum SocketStatus { connecting, connected, reconnecting, disconnected, failed }
 
 class WebSocketService {
@@ -152,7 +154,9 @@ class WebSocketService {
   bool send(Map<String, dynamic> message) {
     if (_disposed || !_connected || _channel == null) return false;
     try {
-      _channel!.sink.add(jsonEncode(message));
+      _channel!.sink.add(
+        jsonEncode(withClientContext(message, clientTimezone())),
+      );
       return true;
     } catch (_) {
       return false;
@@ -178,4 +182,17 @@ class WebSocketService {
     await _binaryController.close();
     await _statusController.close();
   }
+}
+
+Map<String, dynamic> withClientContext(
+  Map<String, dynamic> message,
+  String timezone,
+) {
+  final type = message['type'];
+  if ((type != 'user_speech' && type != 'asr_start') ||
+      timezone.trim().isEmpty ||
+      message.containsKey('timezone')) {
+    return message;
+  }
+  return {...message, 'timezone': timezone.trim()};
 }

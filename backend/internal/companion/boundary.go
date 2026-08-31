@@ -5,12 +5,14 @@ import "time"
 // AgentBoundaryRequest is the stable in-process DTO that can later cross a
 // process boundary if the companion agent moves out of the Go backend.
 type AgentBoundaryRequest struct {
-	SignalID string              `json:"signalId"`
-	MatchID  string              `json:"matchId"`
-	UserID   string              `json:"userId"`
-	Text     string              `json:"text"`
-	Now      time.Time           `json:"now"`
-	Voice    *VoiceTraceMetadata `json:"voice,omitempty"`
+	SignalID            string              `json:"signalId"`
+	MatchID             string              `json:"matchId"`
+	UserID              string              `json:"userId"`
+	Text                string              `json:"text"`
+	Timezone            string              `json:"timezone,omitempty"`
+	ProgressiveSchedule bool                `json:"progressiveSchedule,omitempty"`
+	Now                 time.Time           `json:"now"`
+	Voice               *VoiceTraceMetadata `json:"voice,omitempty"`
 }
 
 type AgentBoundaryResponse struct {

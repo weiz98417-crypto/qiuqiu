@@ -74,6 +74,57 @@ func TestRunningClockAdvancesAndPauseMaterializesElapsedTime(t *testing.T) {
 	}
 }
 
+func TestRunningClockCapsElapsedTimeAtDatabaseMaximumWhenPaused(t *testing.T) {
+	store := NewStore()
+	matchID := "running-clock-at-maximum"
+	now := time.Date(2026, 7, 17, 20, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+
+	clock, err := store.SetClock(matchID, ClockCommand{
+		Action: ClockActionSet, Period: "first_half", ElapsedSeconds: intPointer(maxClockElapsedSeconds), ExpectedVersion: 0,
+	})
+	if err != nil {
+		t.Fatalf("set clock: %v", err)
+	}
+	clock, err = store.SetClock(matchID, ClockCommand{Action: ClockActionStart, ExpectedVersion: clock.Version})
+	if err != nil {
+		t.Fatalf("start clock: %v", err)
+	}
+	now = now.Add(7 * time.Second)
+	clock, err = store.SetClock(matchID, ClockCommand{Action: ClockActionPause, ExpectedVersion: clock.Version})
+	if err != nil {
+		t.Fatalf("pause clock at maximum: %v", err)
+	}
+	if clock.Running || clock.ElapsedSeconds != maxClockElapsedSeconds || clock.AnchorAt != nil {
+		t.Fatalf("paused clock = %+v, want capped at %d seconds", clock, maxClockElapsedSeconds)
+	}
+}
+
+func TestStartingPreMatchClockBeginsFirstHalf(t *testing.T) {
+	store := NewStore()
+	now := time.Date(2026, 7, 22, 14, 0, 0, 0, time.UTC)
+	store.now = func() time.Time { return now }
+
+	clock, err := store.SetClock("kickoff-clock", ClockCommand{Action: ClockActionStart, ExpectedVersion: 0})
+	if err != nil {
+		t.Fatalf("start clock: %v", err)
+	}
+	if !clock.Running || clock.Period != "first_half" || clock.ElapsedSeconds != 0 {
+		t.Fatalf("started clock = %+v, want running first_half at 00:00", clock)
+	}
+
+	// Repair the state produced by the old start behavior without resetting elapsed time.
+	legacy := MatchClock{MatchID: "legacy-kickoff-clock", Period: "pre_match", ElapsedSeconds: 75, Running: true, AnchorAt: timePointer(now), Version: 4}
+	store.clocks[legacy.MatchID] = legacy
+	clock, err = store.SetClock(legacy.MatchID, ClockCommand{Action: ClockActionStart, ExpectedVersion: legacy.Version})
+	if err != nil {
+		t.Fatalf("repair legacy start: %v", err)
+	}
+	if !clock.Running || clock.Period != "first_half" || clock.ElapsedSeconds != 75 || clock.Version != 5 {
+		t.Fatalf("repaired clock = %+v, want running first_half preserving elapsed time", clock)
+	}
+}
+
 func TestClockRejectsStaleVersion(t *testing.T) {
 	store := NewStore()
 	clock, err := store.SetClock("versioned-clock", ClockCommand{

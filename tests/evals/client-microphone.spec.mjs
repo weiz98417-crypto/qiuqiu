@@ -4,6 +4,9 @@ import { readFile } from 'node:fs/promises';
 test.use({
   permissions: ['microphone'],
   launchOptions: {
+    ...(process.env.PLAYWRIGHT_EXECUTABLE_PATH
+      ? { executablePath: process.env.PLAYWRIGHT_EXECUTABLE_PATH }
+      : {}),
     args: [
       '--use-fake-device-for-media-stream',
       '--use-fake-ui-for-media-stream',
@@ -21,12 +24,12 @@ test('普通说话音量会触发说话和句子结束事件', async ({ page }) 
     const frames = [
       0,
       0,
-      0.012,
-      0.009,
-      0.014,
-      0.008,
-      0.013,
-      0.01,
+      0.024,
+      0.018,
+      0.026,
+      0.017,
+      0.022,
+      0.019,
       0,
       0,
     ];
@@ -132,7 +135,7 @@ test('部署客户端能从浏览器麦克风接收说话事件', async ({ page 
   await page.addInitScript(() => {
     localStorage.setItem('flutter.first_meeting_completed', 'true');
     window.__qReleaseSpeech = false;
-    const frames = [0, 0, 0.012, 0.009, 0.014, 0.008, 0.013, 0.01, 0, 0];
+    const frames = [0, 0, 0.024, 0.018, 0.026, 0.017, 0.022, 0.019, 0, 0];
     const track = {
       label: '测试麦克风',
       getSettings: () => ({ deviceId: 'test-microphone' }),
@@ -505,7 +508,7 @@ test('欢迎流程不会阻塞部署客户端的流式语音转写', async ({ pa
     localStorage.setItem('qiuqiu.operator.voiceDevicePreferenceSet', '1');
     window.__qReleaseSpeech = false;
     window.__qRequestedAudioDevices = [];
-    const frames = [0, 0, 0.012, 0.009, 0.014, 0.008, 0.013, 0.01, 0, 0];
+    const frames = [0, 0, 0.024, 0.018, 0.026, 0.017, 0.022, 0.019, 0, 0];
     const devices = [
       { kind: 'audioinput', deviceId: 'built-in', label: '内置麦克风' },
       { kind: 'audioinput', deviceId: 'usb-condenser', label: 'USB 电容麦克风' },
@@ -604,6 +607,15 @@ test('欢迎流程不会阻塞部署客户端的流式语音转写', async ({ pa
     .poll(() => page.evaluate(() => window.__qRequestedAudioDevices.at(-1)))
     .toBe('usb-condenser');
   await expect.poll(() => countSent('asr_start'), { timeout: 8000 }).toBeGreaterThan(0);
+  await expect.poll(() => {
+    for (const frame of sentFrames) {
+      try {
+        const message = JSON.parse(String(frame));
+        if (message.type === 'asr_start') return message.timezone || '';
+      } catch {}
+    }
+    return '';
+  }).not.toBe('');
   await expect
     .poll(
       () =>

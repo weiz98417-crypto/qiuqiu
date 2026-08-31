@@ -1,5 +1,6 @@
 import { expect, test } from '@playwright/test';
 import { qiuqiuBaseURL } from './support/base-url.mjs';
+import { openTextMode } from './support/open-text-mode.mjs';
 
 const token = process.env.APP_TOKEN;
 const voiceRuntimeEnabled = process.env.QIUQIU_RUNTIME_TTS === '1';
@@ -52,7 +53,6 @@ test('客户端连续问答使用正确比赛事实并保留文字兜底', async
     .getByRole('button', { name: 'Enable accessibility' })
     .evaluate((element) => element.click());
   await expect(page.getByText('进入球球的看台')).toHaveCount(0);
-  await expect(page.getByRole('button', { name: '更多陪看方式' })).toBeVisible();
   await openTextMode(page);
 
   const goalQuestion = '刚才谁进的球？';
@@ -89,14 +89,8 @@ test('浏览器拦截首屏语音后，首次触碰会恢复播放', async ({ pa
   await waitForPlaybackStatus(request, 'first_meeting', 'ok');
 });
 
-async function openTextMode(page) {
-  await page.getByRole('button', { name: '更多陪看方式' }).click();
-  await page.getByRole('menuitem', { name: '改用文字说' }).click();
-  await expect(page.getByRole('textbox')).toBeVisible();
-}
-
 async function sendText(page, text) {
-  const textbox = page.getByRole('textbox');
+  const textbox = page.getByLabel('直接和球球说…');
   await textbox.click();
   await textbox.pressSequentially(text, { delay: 5 });
   await page.getByRole('button', { name: '发送这句话' }).click();

@@ -48,3 +48,7 @@ artifacts/evals/
 node_modules/
 test-results/
 playwright-report/
+
+# Local analysis and ad-hoc backend build outputs
+graphify-out/
+/qiuqiu-backend-*

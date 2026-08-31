@@ -26,7 +26,7 @@ func TestAgentUsesRelationshipDecisionFallbackWithoutRealizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleMessage: %v", err)
 	}
-	wantReply := "嗯，我在。"
+	wantReply := "行，先看着。"
 	if response.Reply != wantReply {
 		t.Fatalf("reply = %q, want relationship fallback %q", response.Reply, wantReply)
 	}

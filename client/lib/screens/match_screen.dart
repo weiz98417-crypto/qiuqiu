@@ -2,16 +2,18 @@ import 'dart:async';
 import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb, listEquals;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../services/audio_player.dart';
 import '../services/preferences_service.dart';
 import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
+import '../services/streaming_transcription.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
+import '../widgets/reply_subtitle_card.dart';
 import 'reply_display.dart';
 import 'settings_screen.dart';
 
@@ -36,12 +38,15 @@ class MatchScreen extends StatefulWidget {
 
 class _MatchScreenState extends State<MatchScreen> {
   static const _configuredSocketUrl = String.fromEnvironment('QIUQIU_WS_URL');
+  static const _maxReconnectVoiceFallbacks = 4;
 
   final WebSocketService _socket = WebSocketService();
   final AudioPlayerService _audio = AudioPlayerService();
   final PreferencesService _preferences = PreferencesService();
   final SessionService _sessions = SessionService();
   final VADService _vad = VADService();
+  final StreamingTranscription _streamingTranscription =
+      StreamingTranscription();
   final TextEditingController _textController = TextEditingController();
   final GlobalKey<Live2dViewState> _live2dKey = GlobalKey<Live2dViewState>();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
@@ -60,6 +65,9 @@ class _MatchScreenState extends State<MatchScreen> {
   final DeliveryDeduplicator _seenReactions = DeliveryDeduplicator();
   final DeliveryDeduplicator _seenPresentations = DeliveryDeduplicator();
   final DeliveryDeduplicator _seenAudio = DeliveryDeduplicator();
+  final LinkedHashSet<String> _retractedMatchEventIds = LinkedHashSet<String>();
+  final Queue<TranscriptionFallback> _reconnectVoiceFallbacks =
+      Queue<TranscriptionFallback>();
   bool _insideMatch = true;
   bool _textMode = false;
   bool _isHoldingToTalk = false;
@@ -84,6 +92,7 @@ class _MatchScreenState extends State<MatchScreen> {
   String _userLine = '';
   String? _notice;
   String _deviceId = '';
+  String? _activeMatchReactionEventId;
 
   bool get _continuousEnabled => _profile.continuousConversation;
   bool get _isSpeaking => _phase == ConversationPhase.speaking;
@@ -116,6 +125,7 @@ class _MatchScreenState extends State<MatchScreen> {
       _socket.onBinary.listen(_handleAudioBytes),
       _socket.statusStream.listen(_handleSocketStatus),
       _vad.events.listen(_handleVadEvent),
+      _vad.audioChunks.listen(_handleAudioChunk),
       _vad.inputDevices.listen(_handleAudioInputDevices),
       _audio.stateStream.listen(_handleAudioState),
     ]);
@@ -203,6 +213,11 @@ class _MatchScreenState extends State<MatchScreen> {
 
   void _handleSocketStatus(SocketStatus status) {
     if (!mounted) return;
+    if (status != SocketStatus.connected) {
+      for (final fallback in _streamingTranscription.cancelAll(_socket.send)) {
+        _queueReconnectVoiceFallback(fallback);
+      }
+    }
     setState(() {
       _socketStatus = status;
       if (status == SocketStatus.connected) {
@@ -218,6 +233,7 @@ class _MatchScreenState extends State<MatchScreen> {
       }
     });
     if (status == SocketStatus.connected) {
+      _flushReconnectVoiceFallbacks();
       unawaited(_enterMatchAfterProfile());
     }
   }
@@ -232,6 +248,11 @@ class _MatchScreenState extends State<MatchScreen> {
     if (!mounted) return;
     final type = message['type'] as String? ?? '';
     switch (type) {
+      case 'transcript_partial':
+      case 'transcript_final':
+      case 'transcript_error':
+        _handleTranscriptMessage(message);
+        break;
       case 'match_snapshot':
         final snapshot = _map(message['data']);
         if (snapshot != null) {
@@ -275,6 +296,9 @@ class _MatchScreenState extends State<MatchScreen> {
           }
         });
         break;
+      case 'match_fact_retracted':
+        _handleMatchFactRetracted(message);
+        break;
       case 'presentation':
         if (message['source'] == 'match_reaction' &&
             !_seenPresentations.remember(message['deliveryKey']?.toString())) {
@@ -284,6 +308,13 @@ class _MatchScreenState extends State<MatchScreen> {
           'presentation': _map(message['data']),
         });
         if (presentation != null) {
+          if (message['source'] == 'match_reaction') {
+            final eventId = message['eventId']?.toString();
+            if (isRetractedMatchReaction(eventId, _retractedMatchEventIds)) {
+              break;
+            }
+            _activeMatchReactionEventId = eventId?.trim();
+          }
           _applyPresentation(presentation);
         }
         break;
@@ -301,15 +332,25 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'voice_audio':
         final duplicateAudio = message['source'] == 'match_reaction' &&
             !_seenAudio.remember(message['deliveryKey']?.toString());
+        final eventId = message['eventId']?.toString();
         _pendingAudio.add(PendingAudio(
           mime: message['mime'] as String? ?? 'audio/wav',
           traceId: message['traceId'] as String?,
+          eventId: eventId,
           byteLength: _integer(message['byteLength']),
-          skip: duplicateAudio,
+          skip: duplicateAudio ||
+              (message['source'] == 'match_reaction' &&
+                  isRetractedMatchReaction(
+                    eventId,
+                    _retractedMatchEventIds,
+                  )),
         ));
         break;
       case 'voice_status':
         _handleVoiceStatus(message);
+        break;
+      case 'first_meeting_status':
+        _handleFirstMeetingStatus(message);
         break;
       case 'interrupt':
         _pendingAudio.clear();
@@ -336,19 +377,27 @@ class _MatchScreenState extends State<MatchScreen> {
     if (eventType == 'qiuqiu_reply') {
       final reply = data?['text'] as String?;
       if (reply == null || reply.trim().isEmpty) return;
-      if (data?['source'] == 'match_reaction' &&
-          !_seenReactions.remember(data?['deliveryKey']?.toString() ??
-              data?['eventId']?.toString())) {
+      final source = data?['source']?.toString();
+      final eventId = data?['eventId']?.toString();
+      if (source == 'match_reaction' &&
+          !_seenReactions
+              .remember(data?['deliveryKey']?.toString() ?? eventId)) {
+        return;
+      }
+      if (source == 'match_reaction' &&
+          isRetractedMatchReaction(eventId, _retractedMatchEventIds)) {
         return;
       }
       final traceId = data?['traceId'] as String?;
-      final isFirstMeeting = data?['source'] == 'first_meeting';
+      final isFirstMeeting = source == 'first_meeting';
       final presentation = CompanionPresentation.fromReplyData(data);
       final parts = splitReplyForDisplay(reply.trim());
       setState(() {
         _forceSubtitleFallback = false;
         _qiuqiuLine = parts.$1;
         _qiuqiuDetail = parts.$2;
+        _activeMatchReactionEventId =
+            source == 'match_reaction' ? eventId?.trim() : null;
         _phase = isFirstMeeting
             ? ConversationPhase.welcoming
             : ConversationPhase.understanding;
@@ -386,6 +435,38 @@ class _MatchScreenState extends State<MatchScreen> {
     });
   }
 
+  void _handleMatchFactRetracted(Map<String, dynamic> message) {
+    final data = _map(message['data']);
+    final eventIds = [
+      data?['eventId']?.toString(),
+      data?['factId']?.toString(),
+    ]
+        .whereType<String>()
+        .map((value) => value.trim())
+        .where((value) => value.isNotEmpty)
+        .toSet();
+    if (eventIds.isEmpty) return;
+    for (final eventId in eventIds) {
+      _retractedMatchEventIds.add(eventId);
+      _pendingAudio.removeForEvent(eventId);
+    }
+    while (_retractedMatchEventIds.length > 256) {
+      _retractedMatchEventIds.remove(_retractedMatchEventIds.first);
+    }
+    if (!eventIds.contains(_activeMatchReactionEventId)) return;
+    unawaited(_audio.pause());
+    setState(() {
+      _clearPresentationFields();
+      _activeMatchReactionEventId = null;
+      _qiuqiuLine = _match.eventLabel;
+      _qiuqiuDetail = '';
+      _notice = null;
+      _phase = _continuousEnabled
+          ? ConversationPhase.listening
+          : ConversationPhase.idle;
+    });
+  }
+
   void _handleVoiceStatus(Map<String, dynamic> message) {
     final state = message['state'] as String? ?? '';
     setState(() {
@@ -406,6 +487,18 @@ class _MatchScreenState extends State<MatchScreen> {
         _schedulePresentationReturn();
       }
     });
+  }
+
+  void _handleFirstMeetingStatus(Map<String, dynamic> message) {
+    final state = message['state'] as String? ?? '';
+    if (state != 'delivered' && state != 'skipped') return;
+    if (!_firstMeetingCompleted) {
+      setState(() => _firstMeetingCompleted = true);
+      unawaited(_preferences.markFirstMeetingCompleted());
+    }
+    if (state == 'skipped') {
+      _finishFirstMeetingGreeting();
+    }
   }
 
   void _handleAudioBytes(Uint8List audioBytes) {
@@ -441,25 +534,155 @@ class _MatchScreenState extends State<MatchScreen> {
     );
   }
 
+  void _startStreamingCapture() {
+    if (_userId.trim().isEmpty) return;
+    final signalId = _nextSignalId();
+    _streamingTranscription.startCapture(
+      utteranceId: 'utterance_$signalId',
+      signalId: signalId,
+      userId: _userId,
+      send: _socket.send,
+    );
+  }
+
+  void _handleAudioChunk(Uint8List audio) {
+    _streamingTranscription.append(audio, _socket.send);
+  }
+
+  void _handleTranscriptMessage(Map<String, dynamic> message) {
+    final update = _streamingTranscription.accept(message);
+    if (update == null || !mounted) return;
+    final activeUtteranceId = _streamingTranscription.activeUtteranceId;
+    final anotherUtteranceIsBeingSpoken =
+        _phase == ConversationPhase.userSpeaking &&
+            activeUtteranceId != null &&
+            activeUtteranceId != update.utteranceId;
+    switch (update.kind) {
+      case TranscriptUpdateKind.partialTranscript:
+        if (anotherUtteranceIsBeingSpoken) return;
+        final text = update.text.trim();
+        if (text.isEmpty) return;
+        setState(() {
+          _userLine = text;
+          _notice = null;
+        });
+        break;
+      case TranscriptUpdateKind.finalTranscript:
+        if (_phase == ConversationPhase.userSpeaking) return;
+        final text = update.text.trim();
+        setState(() {
+          _userLine = text.isEmpty ? '刚刚说的话' : text;
+          _phase = ConversationPhase.understanding;
+          _expression = 'thinking';
+          _motion = 'think';
+          _notice = null;
+        });
+        break;
+      case TranscriptUpdateKind.recoverableError:
+        if (anotherUtteranceIsBeingSpoken) return;
+        setState(() => _notice = '实时转写暂时有点慢，正在继续识别…');
+        break;
+      case TranscriptUpdateKind.fallback:
+        final fallbackAudio = update.fallbackAudio;
+        if (fallbackAudio != null && fallbackAudio.isNotEmpty) {
+          _submitLegacyVoice(
+            fallbackAudio,
+            preserveCurrentCapture: _phase == ConversationPhase.userSpeaking,
+            signalId: update.fallbackSignalId,
+          );
+        } else {
+          setState(() => _notice = '实时转写中断，句尾会自动重试。');
+        }
+        break;
+    }
+  }
+
+  bool _submitLegacyVoice(
+    Uint8List audio, {
+    bool preserveCurrentCapture = false,
+    bool queueIfOffline = true,
+    String? signalId,
+  }) {
+    if (audio.isEmpty) return false;
+    final turnSignalId = signalId ?? _nextSignalId();
+    final sent = _socket.send({
+      'type': 'user_speech',
+      'userId': _userId,
+      'signalId': turnSignalId,
+      'text': '',
+      'mode': 'voice',
+      'audio': base64Encode(audio),
+      'talkativeness': _profile.talkativeness,
+    });
+    setState(() {
+      if (!preserveCurrentCapture) {
+        _phase =
+            sent ? ConversationPhase.understanding : ConversationPhase.offline;
+        if (_userLine.trim().isEmpty || _userLine == '正在识别…') {
+          _userLine = '刚刚说的话';
+        }
+        if (sent) {
+          _expression = 'thinking';
+          _motion = 'think';
+        }
+      }
+      _notice = sent ? null : '现在还没连上，稍后再试一次。';
+    });
+    if (!sent && queueIfOffline) {
+      _queueReconnectVoiceFallback(
+        TranscriptionFallback(audio: audio, signalId: turnSignalId),
+      );
+    }
+    return sent;
+  }
+
+  void _flushReconnectVoiceFallbacks() {
+    while (_reconnectVoiceFallbacks.isNotEmpty) {
+      final fallback = _reconnectVoiceFallbacks.first;
+      if (!_submitLegacyVoice(
+        fallback.audio,
+        queueIfOffline: false,
+        signalId: fallback.signalId,
+      )) {
+        return;
+      }
+      _reconnectVoiceFallbacks.removeFirst();
+    }
+  }
+
+  void _queueReconnectVoiceFallback(TranscriptionFallback fallback) {
+    while (_reconnectVoiceFallbacks.length >= _maxReconnectVoiceFallbacks) {
+      _reconnectVoiceFallbacks.removeFirst();
+    }
+    _reconnectVoiceFallbacks.addLast(fallback);
+  }
+
   void _handleVadEvent(VADEvent event) {
     if (!mounted) return;
     switch (event.state) {
       case VADState.listening:
         _socket.send({'type': 'user_activity', 'state': 'idle'});
+        _startStreamingCapture();
+        final nextPhase = phaseWhenCaptureReady(
+          _phase,
+          hasPendingTranscript: _streamingTranscription.hasPendingFinal,
+        );
         setState(() {
-          _phase = ConversationPhase.listening;
-          if (_activePresentation == null) {
+          _phase = nextPhase;
+          if (nextPhase == ConversationPhase.listening &&
+              _activePresentation == null) {
             _expression = 'listening';
             _motion = 'listen';
           }
-          _notice = null;
+          if (nextPhase == ConversationPhase.listening) _notice = null;
         });
         break;
       case VADState.speaking:
         _socket.send({'type': 'user_activity', 'state': 'speaking'});
-        if (_isSpeaking) {
+        if (_isSpeaking || _awaitingFirstMeetingGreeting) {
           _socket.send({'type': 'interrupt'});
           unawaited(_audio.pause());
+          _finishFirstMeetingGreeting();
         }
         setState(() {
           _clearPresentationFields();
@@ -470,29 +693,23 @@ class _MatchScreenState extends State<MatchScreen> {
         break;
       case VADState.sentenceEnd:
         final audio = _vad.drainAudio();
-        if (audio == null || audio.isEmpty) return;
-        final sent = _socket.send({
-          'type': 'user_speech',
-          'userId': _userId,
-          'signalId': _nextSignalId(),
-          'text': '',
-          'mode': 'voice',
-          'audio': base64Encode(audio),
-          'talkativeness': _profile.talkativeness,
-        });
-        setState(() {
-          _phase = sent
-              ? ConversationPhase.understanding
-              : ConversationPhase.offline;
-          _userLine = '刚刚说的话';
-          if (sent) {
+        final finish = _streamingTranscription.finish(audio, _socket.send);
+        if (finish.streamed) {
+          setState(() {
+            _phase = ConversationPhase.understanding;
+            if (_userLine.trim().isEmpty) _userLine = '正在识别…';
             _expression = 'thinking';
             _motion = 'think';
-          }
-          if (!sent) _notice = '现在还没连上，稍后再试一次。';
-        });
+          });
+        } else if (finish.fallbackAudio case final fallbackAudio?) {
+          _submitLegacyVoice(
+            fallbackAudio,
+            signalId: finish.fallbackSignalId,
+          );
+        }
         break;
       case VADState.idle:
+        _streamingTranscription.cancelActive(_socket.send);
         _socket.send({'type': 'user_activity', 'state': 'idle'});
         setState(() {
           if (_phase != ConversationPhase.offline) {
@@ -501,6 +718,7 @@ class _MatchScreenState extends State<MatchScreen> {
         });
         break;
       case VADState.permissionDenied:
+        _streamingTranscription.cancelActive(_socket.send);
         setState(() {
           _phase = ConversationPhase.permissionDenied;
           _textMode = true;
@@ -508,6 +726,7 @@ class _MatchScreenState extends State<MatchScreen> {
         });
         break;
       case VADState.failure:
+        _streamingTranscription.cancelActive(_socket.send);
         setState(() {
           _phase = ConversationPhase.failed;
           _notice = '麦克风暂时没准备好，可以重试或打字。';
@@ -609,6 +828,7 @@ class _MatchScreenState extends State<MatchScreen> {
               : ConversationPhase.idle;
         });
         _schedulePresentationReturn();
+        _finishFirstMeetingGreeting();
         break;
     }
   }
@@ -636,6 +856,9 @@ class _MatchScreenState extends State<MatchScreen> {
           _qiuqiuDetail = '第一次见面，先让我认真和你打个招呼。';
           _notice = null;
         });
+        if (_continuousEnabled) {
+          await _vad.startListening(VADMode.freeTalk);
+        }
         return;
       }
     }
@@ -660,7 +883,7 @@ class _MatchScreenState extends State<MatchScreen> {
       _notice = enabled ? null : '连续对话已关闭，按住麦克风仍能说话。';
     });
     await _preferences.save(updated);
-    if (enabled && !_awaitingFirstMeetingGreeting) {
+    if (enabled) {
       await _vad.startListening(VADMode.freeTalk);
     } else {
       _vad.stopListening();
@@ -669,7 +892,13 @@ class _MatchScreenState extends State<MatchScreen> {
   }
 
   Future<void> _startPushToTalk() async {
-    if (_continuousEnabled || _isHoldingToTalk) return;
+    if (_isHoldingToTalk) return;
+    if (_continuousEnabled) {
+      if (!_vad.isListening) {
+        await _vad.startListening(VADMode.freeTalk);
+      }
+      return;
+    }
     _isHoldingToTalk = true;
     await _vad.startListening(VADMode.pushToTalk);
     _vad.onSpeechDetected();
@@ -745,6 +974,7 @@ class _MatchScreenState extends State<MatchScreen> {
         label: '系统默认麦克风',
       ),
     );
+    _streamingTranscription.cancelActive(_socket.send);
     await _vad.selectInputDevice(selected);
     if (_continuousEnabled && !_vad.isListening) {
       await _vad.startListening(VADMode.freeTalk);
@@ -803,7 +1033,7 @@ class _MatchScreenState extends State<MatchScreen> {
     setState(() => _profile = saved);
     await _audio.setMuted(!saved.soundEnabled);
     if (_insideMatch && continuousChanged) {
-      if (saved.continuousConversation && !_awaitingFirstMeetingGreeting) {
+      if (saved.continuousConversation) {
         await _vad.startListening(VADMode.freeTalk);
       } else {
         _vad.stopListening();
@@ -897,6 +1127,7 @@ class _MatchScreenState extends State<MatchScreen> {
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
+    _streamingTranscription.cancelAll(_socket.send);
     _textController.dispose();
     _vad.dispose();
     unawaited(_audio.dispose());
@@ -1340,85 +1571,64 @@ class _CharacterStage extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    return Stack(
-      fit: StackFit.expand,
-      children: [
-        const ColoredBox(color: AppColors.stage),
-        Live2dView(
-          key: live2dKey,
-          expression: expression,
-          isSpeaking: isSpeaking,
-          motion: motion,
-        ),
-        Positioned(
-          top: AppSpacing.md,
-          left: AppSpacing.md,
-          right: AppSpacing.sm,
-          child: Row(
-            crossAxisAlignment: CrossAxisAlignment.start,
-            children: [
-              Expanded(
-                child: _MatchStatusCarousel(items: match.statusCarouselItems),
-              ),
-              const SizedBox(width: AppSpacing.xs),
-              _ConnectionMark(status: socketStatus),
-            ],
-          ),
-        ),
-        if (subtitlesEnabled)
-          Positioned(
-            left: AppSpacing.md,
-            right: AppSpacing.sm,
-            bottom: AppSpacing.md,
-            child: Semantics(
-              liveRegion: true,
-              label: '球球说：$qiuqiuLine $qiuqiuDetail',
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: AppColors.night.withValues(alpha: 0.82),
-                  borderRadius: BorderRadius.circular(8),
-                ),
-                child: Padding(
-                  padding: const EdgeInsets.all(AppSpacing.sm),
-                  child: Column(
-                    crossAxisAlignment: CrossAxisAlignment.start,
-                    mainAxisSize: MainAxisSize.min,
-                    children: [
-                      Text(
-                        qiuqiuLine,
-                        maxLines: 2,
-                        overflow: TextOverflow.ellipsis,
-                        style: Theme.of(context).textTheme.headlineMedium,
-                      ),
-                      if (qiuqiuDetail.isNotEmpty) ...[
-                        const SizedBox(height: AppSpacing.xs),
-                        Text(
-                          qiuqiuDetail,
-                          maxLines: 2,
-                          overflow: TextOverflow.ellipsis,
-                          style: Theme.of(
-                            context,
-                          )
-                              .textTheme
-                              .bodyMedium
-                              ?.copyWith(color: AppColors.ink),
-                        ),
-                      ],
-                    ],
+    return LayoutBuilder(
+      builder: (context, constraints) {
+        final subtitleMaxHeight =
+            (constraints.maxHeight * 0.42).clamp(128.0, 240.0).toDouble();
+        return Stack(
+          fit: StackFit.expand,
+          children: [
+            const ColoredBox(color: AppColors.stage),
+            Live2dView(
+              key: live2dKey,
+              expression: expression,
+              isSpeaking: isSpeaking,
+              motion: motion,
+            ),
+            Positioned(
+              top: AppSpacing.md,
+              left: AppSpacing.md,
+              right: AppSpacing.sm,
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  Expanded(
+                    child: _MatchStatusCarousel(
+                      items: match.statusCarouselItems,
+                      contentRevision: match.statusCarouselContentRevision,
+                    ),
                   ),
-                ),
+                  const SizedBox(width: AppSpacing.xs),
+                  _ConnectionMark(status: socketStatus),
+                ],
               ),
             ),
-          ),
-      ],
+            if (subtitlesEnabled)
+              Positioned(
+                left: AppSpacing.md,
+                right: AppSpacing.sm,
+                bottom: AppSpacing.md,
+                child: ReplySubtitleCard(
+                  primaryText: qiuqiuLine,
+                  secondaryText: qiuqiuDetail,
+                  maxHeight: subtitleMaxHeight,
+                ),
+              ),
+          ],
+        );
+      },
     );
   }
 }
 
 class _MatchStatusCarousel extends StatefulWidget {
   final List<String> items;
+  final String contentRevision;
 
-  const _MatchStatusCarousel({required this.items});
+  const _MatchStatusCarousel({
+    required this.items,
+    required this.contentRevision,
+  });
 
   @override
   State<_MatchStatusCarousel> createState() => _MatchStatusCarouselState();
@@ -1457,7 +1667,7 @@ class _MatchStatusCarouselState extends State<_MatchStatusCarousel>
   @override
   void didUpdateWidget(_MatchStatusCarousel oldWidget) {
     super.didUpdateWidget(oldWidget);
-    if (!listEquals(widget.items, oldWidget.items)) {
+    if (widget.contentRevision != oldWidget.contentRevision) {
       _index = 0;
       _previousIndex = 0;
       _controller.reset();
@@ -1982,12 +2192,14 @@ class _ConnectionMark extends StatelessWidget {
 class PendingAudio {
   final String mime;
   final String? traceId;
+  final String? eventId;
   final int? byteLength;
   final bool skip;
 
   const PendingAudio({
     required this.mime,
     this.traceId,
+    this.eventId,
     this.byteLength,
     this.skip = false,
   });
@@ -2045,6 +2257,20 @@ ConversationPhase phaseAfterInterrupt(ConversationPhase current) {
   return ConversationPhase.listening;
 }
 
+ConversationPhase phaseWhenCaptureReady(
+  ConversationPhase current, {
+  required bool hasPendingTranscript,
+}) {
+  if (hasPendingTranscript ||
+      current == ConversationPhase.userSpeaking ||
+      current == ConversationPhase.understanding ||
+      current == ConversationPhase.speaking ||
+      current == ConversationPhase.welcoming) {
+    return current;
+  }
+  return ConversationPhase.listening;
+}
+
 bool shouldClearTextInput(bool sent) => sent;
 
 bool shouldShowReplyText({
@@ -2054,12 +2280,23 @@ bool shouldShowReplyText({
   return subtitlesEnabled || playbackFallback;
 }
 
+bool isRetractedMatchReaction(String? eventId, Set<String> retractedEventIds) {
+  final normalized = eventId?.trim() ?? '';
+  return normalized.isNotEmpty && retractedEventIds.contains(normalized);
+}
+
 class PendingAudioQueue {
   final Queue<PendingAudio> _items = Queue<PendingAudio>();
 
   void add(PendingAudio metadata) => _items.addLast(metadata);
 
   PendingAudio? take() => _items.isEmpty ? null : _items.removeFirst();
+
+  void removeForEvent(String eventId) {
+    final normalized = eventId.trim();
+    if (normalized.isEmpty) return;
+    _items.removeWhere((item) => item.eventId?.trim() == normalized);
+  }
 
   void clear() => _items.clear();
 }
@@ -2119,6 +2356,20 @@ class MatchViewData {
       if (!items.contains(timing)) items.add(timing);
     }
     return List.unmodifiable(items);
+  }
+
+  String get statusCarouselContentRevision {
+    final items = statusCarouselItems.toList(growable: false);
+    if (clock.trim().isEmpty || items.isEmpty) {
+      return items.join('\u001f');
+    }
+    final stableItems = items.toList();
+    stableItems[stableItems.length - 1] = [
+      'live-clock',
+      competition.trim(),
+      liveLabel,
+    ].join('\u001e');
+    return stableItems.join('\u001f');
   }
 
   MatchViewData withSnapshot(Map<String, dynamic> snapshot) {

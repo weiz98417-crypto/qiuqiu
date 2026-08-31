@@ -597,6 +597,9 @@ func (s *PostgresStore) create(ctx context.Context, matchID string, ev MatchEven
 	if err := validateAgainstSnapshot(ev, projection.Snapshot, config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	if err := validateSubstitutionLineup(ev, config, existingEvents); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
 	if err := insertEvent(ctx, tx, &ev); err != nil {
 		var pgErr *pgconn.PgError
 		if errors.As(err, &pgErr) && pgErr.Code == "23505" && pgErr.ConstraintName == "idx_match_events_provider_event" {
@@ -896,6 +899,9 @@ func (s *PostgresStore) confirmFact(ctx context.Context, matchID, factID, operat
 	if err := validateAgainstSnapshot(events[found], projection.Snapshot, config); err != nil {
 		return MatchEvent{}, Snapshot{}, err
 	}
+	if err := validateSubstitutionLineup(events[found], config, events); err != nil {
+		return MatchEvent{}, Snapshot{}, err
+	}
 	now := time.Now().UTC()
 	tag, err := tx.Exec(ctx, `
 		UPDATE match_events
@@ -1070,6 +1076,7 @@ func (s *PostgresStore) resolveFactConflictSelection(ctx context.Context, matchI
 	for _, factID := range transition.ReleaseFactIDs {
 		release[factID] = struct{}{}
 	}
+	retracted := make([]MatchEvent, 0, len(transition.RevokeFactIDs))
 	for index := range events {
 		if events[index].Status != "active" {
 			continue
@@ -1112,6 +1119,7 @@ func (s *PostgresStore) resolveFactConflictSelection(ctx context.Context, matchI
 			if err := insertFactRevision(ctx, tx, events[index]); err != nil {
 				return FactConflict{}, nil, Snapshot{}, err
 			}
+			retracted = append(retracted, events[index])
 			continue
 		}
 		if _, released := release[events[index].FactID]; released && events[index].FactStatus == FactStatusConflict {
@@ -1210,6 +1218,11 @@ func (s *PostgresStore) resolveFactConflictSelection(ctx context.Context, matchI
 		nil,
 	)
 	published := make([]MatchEvent, 0, len(transition.ReconcileFactIDs))
+	for _, event := range retracted {
+		if err := enqueueMatchEvent(ctx, tx, event); err != nil {
+			return FactConflict{}, nil, Snapshot{}, err
+		}
+	}
 	for _, factID := range transition.ReconcileFactIDs {
 		for _, projected := range projection.Events {
 			if projected.FactID == factID {
@@ -1224,7 +1237,7 @@ func (s *PostgresStore) resolveFactConflictSelection(ctx context.Context, matchI
 	if err := commitOwnedMutation(ctx, tx, owned); err != nil {
 		return FactConflict{}, nil, Snapshot{}, err
 	}
-	if owned && len(published) > 0 {
+	if owned && (len(retracted) > 0 || len(published) > 0) {
 		s.kickOutbox()
 	}
 	return conflict, published, projection.Snapshot, nil
@@ -1353,6 +1366,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 	}
 	previousStatus := events[found].FactStatus
 	now := time.Now().UTC()
+	retracted := make([]MatchEvent, 0)
 	confirmed := status == FactStatusReconciled
 	publicAt := any(nil)
 	if confirmed {
@@ -1397,6 +1411,7 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 			if err := insertFactRevision(ctx, tx, events[index]); err != nil {
 				return MatchEvent{}, Snapshot{}, err
 			}
+			retracted = append(retracted, events[index])
 		}
 	}
 	if (status == FactStatusReconciled || previousStatus == FactStatusConflict) && !hasActiveFactConflict(events) {
@@ -1405,6 +1420,11 @@ func (s *PostgresStore) transitionFact(ctx context.Context, matchID, factID, ope
 		}
 		config.Integrity = MatchIntegrity{Status: "ok"}
 		config.UpdatedAt = now.Format(time.RFC3339Nano)
+	}
+	for _, event := range retracted {
+		if err := enqueueMatchEvent(ctx, tx, event); err != nil {
+			return MatchEvent{}, Snapshot{}, err
+		}
 	}
 	if err := enqueueMatchEvent(ctx, tx, events[found]); err != nil {
 		return MatchEvent{}, Snapshot{}, err
@@ -1580,7 +1600,7 @@ func (s *PostgresStore) attachParticipantsWithQueryer(ctx context.Context, query
 
 func (s *PostgresStore) players(ctx context.Context, matchID, teamID string) []Player {
 	rows, err := s.pool.Query(ctx, `
-		SELECT number, name, position
+		SELECT number, name, position, lineup
 		FROM match_players
 		WHERE match_id = $1 AND team_id = $2
 		ORDER BY NULLIF(regexp_replace(number, '\D', '', 'g'), '')::int NULLS LAST, name ASC
@@ -1593,7 +1613,7 @@ func (s *PostgresStore) players(ctx context.Context, matchID, teamID string) []P
 	var players []Player
 	for rows.Next() {
 		var p Player
-		if err := rows.Scan(&p.Number, &p.Name, &p.Position); err != nil {
+		if err := rows.Scan(&p.Number, &p.Name, &p.Position, &p.Lineup); err != nil {
 			return players
 		}
 		players = append(players, p)
@@ -1665,9 +1685,9 @@ func runMigrations(ctx context.Context, pool *pgxpool.Pool, dir string) error {
 func insertPlayers(ctx context.Context, tx pgx.Tx, matchID, teamID, teamName string, players []Player) error {
 	for _, player := range normalizePlayers(players) {
 		if _, err := tx.Exec(ctx, `
-			INSERT INTO match_players (match_id, team_id, team_name, number, name, position)
-			VALUES ($1, $2, $3, $4, $5, $6)
-		`, matchID, teamID, teamName, player.Number, player.Name, player.Position); err != nil {
+			INSERT INTO match_players (match_id, team_id, team_name, number, name, position, lineup)
+			VALUES ($1, $2, $3, $4, $5, $6, $7)
+		`, matchID, teamID, teamName, player.Number, player.Name, player.Position, defaultString(player.Lineup, "starter")); err != nil {
 			return err
 		}
 	}

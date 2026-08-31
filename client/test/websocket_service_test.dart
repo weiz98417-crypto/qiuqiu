@@ -82,4 +82,29 @@ void main() {
 
     expect(refreshCount, 1);
   });
+
+  test('speech protocol messages carry the client timezone', () {
+    expect(
+      withClientContext(
+        {'type': 'user_speech', 'text': '明天有什么比赛？'},
+        'Asia/Shanghai',
+      ),
+      {
+        'type': 'user_speech',
+        'text': '明天有什么比赛？',
+        'timezone': 'Asia/Shanghai',
+      },
+    );
+    expect(
+      withClientContext(
+        {'type': 'asr_start', 'timezone': 'Europe/Berlin'},
+        'Asia/Shanghai',
+      )['timezone'],
+      'Europe/Berlin',
+    );
+    expect(
+      withClientContext({'type': 'ping'}, 'Asia/Shanghai'),
+      {'type': 'ping'},
+    );
+  });
 }

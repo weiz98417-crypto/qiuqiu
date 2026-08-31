@@ -1,6 +1,28 @@
 package config
 
-import "testing"
+import (
+	"testing"
+	"time"
+)
+
+func TestCompanionRealizerTimeoutDefaultsToFiveSecondsAndCanBeConfigured(t *testing.T) {
+	t.Setenv("COMPANION_REALIZER_TIMEOUT_MS", "")
+	if got := Load().CompanionRealizerTimeout(); got != 5*time.Second {
+		t.Fatalf("default companion realizer timeout = %s, want 5s", got)
+	}
+
+	t.Setenv("COMPANION_REALIZER_TIMEOUT_MS", "7500")
+	if got := Load().CompanionRealizerTimeout(); got != 7500*time.Millisecond {
+		t.Fatalf("configured companion realizer timeout = %s, want 7.5s", got)
+	}
+}
+
+func TestCompanionRealizerTimeoutCannotExceedHTTPClientTimeout(t *testing.T) {
+	cfg := &Config{CompanionRealizerTimeoutMS: 10001}
+	if err := cfg.Validate(); err == nil {
+		t.Fatal("companion realizer timeout above the HTTP client limit should fail validation")
+	}
+}
 
 func TestPendingObservationCoordinationDefaultsOnAndCanBeDisabled(t *testing.T) {
 	t.Setenv("PENDING_OBSERVATION_COORDINATION", "")
@@ -91,6 +113,18 @@ func TestLoadReadsAPISportsKey(t *testing.T) {
 	t.Setenv("APISPORTS_API_KEY", "sports-key")
 	if got := Load().APISportsAPIKey; got != "sports-key" {
 		t.Fatalf("APISportsAPIKey = %q, want configured key", got)
+	}
+}
+
+func TestLoadReadsAPISportsBaseURL(t *testing.T) {
+	t.Setenv("APISPORTS_BASE_URL", "")
+	if got := Load().APISportsBaseURL; got != "https://v3.football.api-sports.io" {
+		t.Fatalf("default APISportsBaseURL = %q", got)
+	}
+
+	t.Setenv("APISPORTS_BASE_URL", "http://127.0.0.1:19090")
+	if got := Load().APISportsBaseURL; got != "http://127.0.0.1:19090" {
+		t.Fatalf("configured APISportsBaseURL = %q", got)
 	}
 }
 

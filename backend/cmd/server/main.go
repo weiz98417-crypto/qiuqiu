@@ -47,16 +47,89 @@ type speechSynthesizer interface {
 	Synthesize(ctx context.Context, text, voiceID string) (*tts.SynthesizeResult, error)
 }
 
-type voiceSessionResult struct {
-	Text         string
-	Reply        string
-	Trace        companion.Trace
-	Presentation relationship.PresentationPlan
-	AudioData    []byte
-	AudioMIME    string
-	ASRError     string
-	TTSError     string
+type todayFixturesClient interface {
+	GetTodayFixturesContext(context.Context) ([]datasource.Fixture, error)
 }
+
+type scheduleFixturesClient interface {
+	todayFixturesClient
+	GetFixturesContext(context.Context, time.Time, time.Time, string) ([]datasource.Fixture, error)
+}
+
+type apiSportsScheduleReader struct {
+	client todayFixturesClient
+}
+
+func (reader apiSportsScheduleReader) TodayFixtures(ctx context.Context) ([]companion.ScheduleMatch, error) {
+	fixtures, err := reader.client.GetTodayFixturesContext(ctx)
+	if err != nil {
+		return nil, err
+	}
+	matches := make([]companion.ScheduleMatch, 0, len(fixtures))
+	for _, fixture := range fixtures {
+		matches = append(matches, companion.ScheduleMatch{
+			HomeTeam: fixture.HomeTeam,
+			AwayTeam: fixture.AwayTeam,
+			Status:   fixture.Status,
+		})
+	}
+	return matches, nil
+}
+
+func (reader apiSportsScheduleReader) Search(ctx context.Context, request companion.ScheduleSearchRequest) (companion.ScheduleSearchResult, error) {
+	client, ok := reader.client.(scheduleFixturesClient)
+	if !ok {
+		return companion.ScheduleSearchResult{}, fmt.Errorf("schedule date-range search is unavailable")
+	}
+	fixtures, err := client.GetFixturesContext(ctx, request.From, request.To, request.Timezone)
+	if err != nil {
+		return companion.ScheduleSearchResult{}, err
+	}
+	result := companion.ScheduleSearchResult{
+		Fixtures:  make([]companion.ScheduleMatch, 0, len(fixtures)),
+		Source:    "api-sports",
+		FetchedAt: time.Now().UTC(),
+		Freshness: "fresh",
+	}
+	for _, fixture := range fixtures {
+		if competition := strings.TrimSpace(request.Competition); competition != "" &&
+			!strings.Contains(strings.ToLower(fixture.Competition), strings.ToLower(competition)) {
+			continue
+		}
+		var homeScore, awayScore *int
+		if fixture.HomeGoalKnown && fixture.AwayGoalKnown {
+			home, away := fixture.HomeGoal, fixture.AwayGoal
+			homeScore, awayScore = &home, &away
+		}
+		result.Fixtures = append(result.Fixtures, companion.ScheduleMatch{
+			FixtureID:   strconv.Itoa(fixture.ID),
+			HomeTeam:    fixture.HomeTeam,
+			AwayTeam:    fixture.AwayTeam,
+			Competition: fixture.Competition,
+			KickoffAt:   fixture.KickoffAt,
+			Status:      fixture.Status,
+			HomeScore:   homeScore,
+			AwayScore:   awayScore,
+			Source:      fixture.Source,
+			Freshness:   fixture.Freshness,
+		})
+	}
+	return result, nil
+}
+
+type voiceSessionResult struct {
+	Text           string
+	Reply          string
+	Trace          companion.Trace
+	Presentation   relationship.PresentationPlan
+	ScheduleLookup *companion.ScheduleLookup
+	AudioData      []byte
+	AudioMIME      string
+	ASRError       string
+	TTSError       string
+}
+
+var submittedUserSignals = newSignalDeduper(userSignalDedupeTTL, userSignalDedupeMaxEntries)
 
 func qiuqiuReplyData(text, traceID, source, eventID, deliveryKey string, presentation relationship.PresentationPlan) map[string]interface{} {
 	data := map[string]interface{}{
@@ -217,7 +290,7 @@ func main() {
 	defer operatorWrites.Close()
 	var sportsClient datasource.EventsClient
 	if cfg.APISportsAPIKey != "" {
-		sportsClient = datasource.NewClient(cfg.APISportsAPIKey)
+		sportsClient = datasource.NewClient(cfg.APISportsAPIKey).WithBaseURL(cfg.APISportsBaseURL)
 	}
 	sourceManager := datasource.NewManager(context.Background(), matchStore, sportsClient, datasource.ManagerConfig{})
 	defer sourceManager.Close()
@@ -249,6 +322,11 @@ func main() {
 		go runObservationExpiry(cleanupCtx, observationCoordinator)
 	}
 	companionAgent := companion.NewAgent(companionTools)
+	if reader, ok := sportsClient.(scheduleFixturesClient); ok {
+		companionAgent.WithScheduleReader(apiSportsScheduleReader{client: reader})
+	} else if reader, ok := sportsClient.(todayFixturesClient); ok {
+		companionAgent.WithScheduleReader(apiSportsScheduleReader{client: reader})
+	}
 	if observationCoordinator != nil {
 		companionAgent.WithObservationCoordinator(observationCoordinator)
 		companionAgent.WithObservationReconcileWindow(func(matchID, eventType string) time.Duration {
@@ -269,7 +347,7 @@ func main() {
 	observationResetter, _ := observationCoordinator.(observation.MatchResetter)
 	demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter, observations: observationResetter}
 	if llmClient != nil {
-		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), 3*time.Second)
+		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), cfg.CompanionRealizerTimeout())
 	}
 	if registrar, ok := matchStore.(matchstate.EventObserverRegistrar); ok && observationCoordinator != nil {
 		registrar.SetEventObserver(func(event matchstate.MatchEvent) error {
@@ -342,6 +420,8 @@ func main() {
 		connectionCtx, connectionCancel := context.WithCancel(r.Context())
 		defer connectionCancel()
 		conversationScheduler := conversation.NewScheduler(connectionCtx, conversation.Config{})
+		var scheduleLookups scheduleLookupLifecycle
+		defer scheduleLookups.Cancel()
 		proactiveGate := conversation.NewProactiveGate()
 		deliveryTracker := newReplyDeliveryTracker()
 		var userSpeaking atomic.Bool
@@ -424,6 +504,9 @@ func main() {
 							"type": "match_snapshot",
 							"data": clientSnapshot(snapshot),
 						})
+						if ev.FactStatus == matchstate.FactStatusRevoked {
+							writer.SendJSON(matchFactRetractedMessage(ev))
+						}
 						continue
 					}
 					writer.SendJSON(map[string]interface{}{
@@ -487,6 +570,159 @@ func main() {
 			}
 		}()
 
+		submitUserTurn := func(userID, text, audioB64, signalID, asrProvider, timezone string) {
+			if normalizedSignalID := strings.TrimSpace(signalID); normalizedSignalID != "" {
+				signalKey := strings.Join([]string{userID, matchIDStr, normalizedSignalID}, "\x00")
+				if !submittedUserSignals.Claim(signalKey, time.Now()) {
+					return
+				}
+			}
+			turnGeneration := scheduleLookups.BeginTurn()
+			writer.SendJSON(map[string]interface{}{
+				"type":       "interrupt",
+				"expression": "listening",
+			})
+			userTurnActive.Store(true)
+			conversationScheduler.SubmitUser(func(replyCtx context.Context, playback conversation.Playback) {
+				defer userTurnActive.Store(false)
+				result, err := handleVoiceTurnWithFactRefresh(
+					func() matchstate.Snapshot { return matchStore.PublicSnapshot(matchIDStr) },
+					func(turnText, turnAudio string) (voiceSessionResult, error) {
+						if strings.TrimSpace(asrProvider) != "" {
+							return handleTranscribedVoiceSessionWithSignalIDOptions(
+								replyCtx,
+								companionAgent,
+								nil,
+								matchIDStr,
+								userID,
+								turnText,
+								asrProvider,
+								time.Now(),
+								signalID,
+								voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone},
+							)
+						}
+						return handleVoiceSessionWithSignalIDOptions(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone})
+					},
+					func(observationID string) bool {
+						if err := companionAgent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
+							log.Printf("observation in-band suppression error: %v", err)
+							return false
+						}
+						return true
+					},
+					text,
+					audioB64,
+				)
+				if err != nil {
+					state := "failed"
+					if errors.Is(err, context.Canceled) {
+						state = "interrupted"
+						cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+						_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+						cleanupCancel()
+						return
+					}
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+					cleanupCancel()
+					log.Printf("companion voice reply error: %v", err)
+					if result.ASRError != "" {
+						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": result.ASRError})
+					}
+					return
+				}
+				if result.Trace.Observation != nil {
+					_ = companionAgent.UpdateTrace(replyCtx, result.Trace)
+				}
+				if replyCtx.Err() != nil {
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "interrupted", time.Now().UTC())
+					cleanupCancel()
+					return
+				}
+				if result.ASRError != "" {
+					writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "text_fallback", "reason": result.ASRError})
+				}
+				if strings.TrimSpace(result.Reply) == "" {
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "skipped", time.Now().UTC())
+					cleanupCancel()
+					return
+				}
+				deliveryTracker.Track(result.Trace, userID, matchIDStr)
+				if err := writer.SendJSON(map[string]interface{}{
+					"type":  "event",
+					"event": "qiuqiu_reply",
+					"data":  qiuqiuReplyData(result.Reply, result.Trace.ID, "conversation", "", "", result.Presentation),
+				}); err != nil {
+					deliveryTracker.Remove(result.Trace.ID)
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "failed", time.Now().UTC())
+					cleanupCancel()
+					return
+				}
+				if result.ScheduleLookup != nil && replyCtx.Err() == nil {
+					lookup := *result.ScheduleLookup
+					lookupCtx, started := scheduleLookups.Start(connectionCtx, turnGeneration, lookup.ID, lookup.ExpiresAt)
+					if started {
+						go func() {
+							response, resolveErr := companionAgent.ResolveScheduleLookup(lookupCtx, lookup)
+							if resolveErr != nil {
+								if !errors.Is(resolveErr, context.Canceled) && !errors.Is(resolveErr, context.DeadlineExceeded) && !errors.Is(resolveErr, companion.ErrScheduleLookupExpired) {
+									log.Printf("schedule lookup error: %v", resolveErr)
+								}
+								return
+							}
+							if lookupCtx.Err() != nil || !scheduleLookups.IsCurrent(lookup.ID) {
+								return
+							}
+							ttl := time.Until(lookup.ExpiresAt)
+							if ttl <= 0 {
+								scheduleLookups.Complete(lookup.ID)
+								return
+							}
+							conversationScheduler.SubmitProactive(lookup.ID, conversation.UrgencyNormal, ttl, func(resultCtx context.Context, resultPlayback conversation.Playback) {
+								if !scheduleLookups.Complete(lookup.ID) {
+									return
+								}
+								emitScheduledResponse(resultCtx, writer, companionAgent, ttsClient, resultPlayback, response.Reply, response.Trace, response.Presentation, "schedule_lookup", "", lookup.ID)
+							})
+						}()
+					}
+				}
+				if ttsClient != nil {
+					ttsResult, err := synthesizeReply(replyCtx, ttsClient, result.Reply, "", result.Presentation)
+					if err != nil {
+						if errors.Is(err, context.Canceled) {
+							return
+						}
+						log.Printf("voice reply tts error: %v", err)
+						result.TTSError = err.Error()
+						recordVoiceTTS(replyCtx, companionAgent, result, "", 0, err.Error())
+						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
+						return
+					}
+					if len(ttsResult.AudioData) > 0 {
+						recordVoiceTTS(replyCtx, companionAgent, result, fallbackString(ttsResult.MimeType, "audio/mpeg"), len(ttsResult.AudioData), "")
+						playback(result.Trace.ID)
+						writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": fallbackString(ttsResult.MimeType, "audio/mpeg"), "traceId": result.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
+					}
+				}
+			})
+		}
+
+		transcriptions := newTranscriptionSessions(
+			connectionCtx,
+			asrClient,
+			asr.StreamOptions{},
+			func(message map[string]interface{}) { _ = writer.SendJSON(message) },
+			func(completion transcriptionCompletion) {
+				submitUserTurn(completion.UserID, completion.Text, "", completion.SignalID, completion.Provider, completion.Timezone)
+			},
+		)
+		defer transcriptions.Close()
+
 		// Read loop
 		go func() {
 			defer connectionCancel()
@@ -513,7 +749,12 @@ func main() {
 						scheduleRecoveredObservations(identity.Get())
 					}
 				case "user_activity":
-					userSpeaking.Store(str(req, "state") == "speaking")
+					speaking := str(req, "state") == "speaking"
+					userSpeaking.Store(speaking)
+					if speaking {
+						scheduleLookups.Cancel()
+						conversationScheduler.Interrupt()
+					}
 				case "session_opened":
 					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
 					if !identityMatches {
@@ -556,6 +797,7 @@ func main() {
 					})
 
 				case "interrupt":
+					scheduleLookups.Cancel()
 					conversationScheduler.Interrupt()
 
 					writer.SendJSON(map[string]interface{}{
@@ -577,95 +819,43 @@ func main() {
 					}
 					generatedSignalID := fmt.Sprintf("turn_%s_%d", userID, time.Now().UnixNano())
 					turnSignalID := stableSignalID(str(req, "signalId"), generatedSignalID)
-					writer.SendJSON(map[string]interface{}{
-						"type":       "interrupt",
-						"expression": "listening",
-					})
-					userTurnActive.Store(true)
-					conversationScheduler.SubmitUser(func(replyCtx context.Context, playback conversation.Playback) {
-						defer userTurnActive.Store(false)
-						result, err := handleVoiceTurnWithFactRefresh(
-							func() matchstate.Snapshot { return matchStore.PublicSnapshot(matchIDStr) },
-							func(turnText, turnAudio string) (voiceSessionResult, error) {
-								return handleVoiceSessionWithSignalID(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), turnSignalID)
-							},
-							func(observationID string) bool {
-								if err := companionAgent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
-									log.Printf("observation in-band suppression error: %v", err)
-									return false
-								}
-								return true
-							},
-							text,
-							audioB64,
-						)
-						if err != nil {
-							state := "failed"
-							if errors.Is(err, context.Canceled) {
-								state = "interrupted"
-								cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-								_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
-								cleanupCancel()
-								return
-							}
-							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
-							cleanupCancel()
-							log.Printf("companion voice reply error: %v", err)
-							if result.ASRError != "" {
-								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": result.ASRError})
-							}
-							return
-						}
-						if result.Trace.Observation != nil {
-							_ = companionAgent.UpdateTrace(replyCtx, result.Trace)
-						}
-						if replyCtx.Err() != nil {
-							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "interrupted", time.Now().UTC())
-							cleanupCancel()
-							return
-						}
-						if result.ASRError != "" {
-							writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "text_fallback", "reason": result.ASRError})
-						}
-						if strings.TrimSpace(result.Reply) == "" {
-							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "skipped", time.Now().UTC())
-							cleanupCancel()
-							return
-						}
-						deliveryTracker.Track(result.Trace, userID, matchIDStr)
-						if err := writer.SendJSON(map[string]interface{}{
-							"type":  "event",
-							"event": "qiuqiu_reply",
-							"data":  qiuqiuReplyData(result.Reply, result.Trace.ID, "conversation", "", "", result.Presentation),
-						}); err != nil {
-							deliveryTracker.Remove(result.Trace.ID)
-							cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-							_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "failed", time.Now().UTC())
-							cleanupCancel()
-							return
-						}
-						if ttsClient != nil {
-							ttsResult, err := synthesizeReply(replyCtx, ttsClient, result.Reply, "", result.Presentation)
-							if err != nil {
-								if errors.Is(err, context.Canceled) {
-									return
-								}
-								log.Printf("voice reply tts error: %v", err)
-								result.TTSError = err.Error()
-								recordVoiceTTS(replyCtx, companionAgent, result, "", 0, err.Error())
-								writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
-								return
-							}
-							if len(ttsResult.AudioData) > 0 {
-								recordVoiceTTS(replyCtx, companionAgent, result, fallbackString(ttsResult.MimeType, "audio/mpeg"), len(ttsResult.AudioData), "")
-								playback(result.Trace.ID)
-								writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": fallbackString(ttsResult.MimeType, "audio/mpeg"), "traceId": result.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
-							}
-						}
-					})
+					submitUserTurn(userID, text, audioB64, turnSignalID, "", strings.TrimSpace(str(req, "timezone")))
+				case "asr_start":
+					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
+					if !identityMatches {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "user identity does not match session"})
+						return
+					}
+					utteranceID := strings.TrimSpace(str(req, "utteranceId"))
+					generatedSignalID := fmt.Sprintf("turn_%s_%d", userID, time.Now().UnixNano())
+					signalID := stableSignalID(str(req, "signalId"), generatedSignalID)
+					if err := validateTranscriptionStart(req); err != nil {
+						writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
+						continue
+					}
+					if err := transcriptions.Start(utteranceID, signalID, userID, strings.TrimSpace(str(req, "timezone")), voiceRecognitionHints(matchStore.Config(matchIDStr))); err != nil {
+						writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
+					}
+				case "asr_chunk":
+					utteranceID := strings.TrimSpace(str(req, "utteranceId"))
+					sequence, ok := intField(req, "sequence")
+					audio, err := base64.StdEncoding.DecodeString(str(req, "audio"))
+					if !ok || err != nil || len(audio) == 0 || len(audio)%2 != 0 {
+						_ = transcriptions.Cancel(utteranceID)
+						writer.SendJSON(transcriptErrorMessage(utteranceID, errors.New("invalid audio chunk"), false))
+						continue
+					}
+					if err := transcriptions.Append(utteranceID, sequence, audio); err != nil {
+						writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
+					}
+				case "asr_finish":
+					utteranceID := strings.TrimSpace(str(req, "utteranceId"))
+					if err := transcriptions.Finish(utteranceID); err != nil {
+						writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
+					}
+				case "asr_cancel":
+					utteranceID := strings.TrimSpace(str(req, "utteranceId"))
+					_ = transcriptions.Cancel(utteranceID)
 				case "voice_playback":
 					traceID := strings.TrimSpace(str(req, "traceId"))
 					state := strings.TrimSpace(str(req, "state"))
@@ -813,6 +1003,18 @@ func runObservationExpiry(ctx context.Context, coordinator observation.Coordinat
 	}
 }
 
+// matchFactRetractedMessage lets a client remove a proactive reply that was
+// generated from a fact which is no longer part of the public match record.
+func matchFactRetractedMessage(event matchstate.MatchEvent) map[string]interface{} {
+	return map[string]interface{}{
+		"type": "match_fact_retracted",
+		"data": map[string]string{
+			"eventId": event.ID,
+			"factId":  event.FactID,
+		},
+	}
+}
+
 func clientSnapshot(snapshot matchstate.Snapshot) matchstate.Snapshot {
 	snapshot.Integrity = matchstate.MatchIntegrity{}
 	return snapshot
@@ -867,6 +1069,40 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 		matchID := parts[0]
 		resource := parts[1]
 		switch {
+		case r.Method == http.MethodPost && resource == "start" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			var matchConfig matchstate.MatchConfig
+			body, err := decodeOperatorJSON(w, r, &matchConfig)
+			if err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			executeOperatorWrite(w, r, operatorWrites, matchID, "match.start", body, func(_ context.Context) (operatorwrite.Response, error) {
+				if sources != nil {
+					sources.Stop(matchID)
+				}
+				if err := store.Reset(matchID); err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				if demoResetter != nil {
+					if err := demoResetter.Reset(matchID); err != nil {
+						return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+					}
+				}
+				savedConfig, snapshot, err := store.SetConfig(matchID, matchConfig)
+				if err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"ok":       true,
+					"matchId":  matchID,
+					"config":   savedConfig,
+					"snapshot": snapshot,
+				})
+			})
 		case r.Method == http.MethodPost && resource == "reset" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -1029,8 +1265,9 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 					"snapshot": store.PublicSnapshot(matchID),
 				})
 			})
-		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 3 && parts[2] == "voice":
-			if _, authorized := operatorClaims(r, cfg); !authorized {
+		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 4 && parts[2] == "voice" && parts[3] == "publish":
+			operator, authorized := operatorClaims(r, cfg)
+			if !authorized {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
@@ -1049,7 +1286,7 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice.publish", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
 				draftCtx, cancel := context.WithTimeout(operationCtx, 45*time.Second)
 				defer cancel()
 				result, err := directorDrafts.Build(draftCtx, request, directordraft.MatchContext{
@@ -1059,7 +1296,68 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				})
 				if err != nil {
 					status := http.StatusBadGateway
-					if errors.Is(err, directordraft.ErrNoInput) {
+					if errors.Is(err, directordraft.ErrNoInput) || errors.Is(err, directordraft.ErrInvalidTranscript) {
+						status = http.StatusBadRequest
+					} else if errors.Is(err, directordraft.ErrNotConfigured) || errors.Is(err, asr.ErrNotConfigured) {
+						status = http.StatusServiceUnavailable
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				event, err := eventFromVoiceDraft(result, store.PublicSnapshot(matchID).Score)
+				if err != nil {
+					return operatorwrite.Response{}, operatorError(http.StatusUnprocessableEntity, err)
+				}
+				event.OperatorID = operator.Subject
+				applyRequestedFactStatus(&event)
+				markProactiveMode(&event)
+				var created matchstate.MatchEvent
+				var snapshot matchstate.Snapshot
+				if sources != nil {
+					created, snapshot, err = sources.Ingest(operationCtx, matchID, event)
+				} else if transactionalStore, supported := store.(matchstate.OperatorTransactionRepository); supported {
+					created, snapshot, err = transactionalStore.CreateOperator(operationCtx, matchID, event)
+				} else {
+					created, snapshot, err = store.Create(matchID, event)
+				}
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrNotFound) {
+						status = http.StatusNotFound
+					} else if errors.Is(err, matchstate.ErrConflict) {
+						status = http.StatusConflict
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				if transactionalStore, supported := store.(matchstate.OperatorTransactionRepository); supported {
+					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
+				} else {
+					snapshot = store.PublicSnapshot(matchID)
+				}
+				if err != nil {
+					return operatorwrite.Response{}, err
+				}
+				return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{"event": created, "snapshot": snapshot})
+			})
+		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 3 && parts[2] == "voice":
+			if _, authorized := operatorClaims(r, cfg); !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if directorDrafts == nil {
+				http.Error(w, "director voice draft unavailable", http.StatusServiceUnavailable)
+				return
+			}
+			var request directordraft.Request
+			body, err := decodeOperatorJSON(w, r, &request)
+			if err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+				result, err := directorDrafts.Transcribe(operationCtx, request, store.Config(matchID))
+				if err != nil {
+					status := http.StatusBadGateway
+					if errors.Is(err, directordraft.ErrNoInput) || errors.Is(err, directordraft.ErrInvalidTranscript) {
 						status = http.StatusBadRequest
 					} else if errors.Is(err, directordraft.ErrNotConfigured) || errors.Is(err, asr.ErrNotConfigured) {
 						status = http.StatusServiceUnavailable
@@ -1420,6 +1718,10 @@ func handleVoiceSession(ctx context.Context, agent *companion.Agent, recognizer 
 }
 
 func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time, signalID string) (voiceSessionResult, error) {
+	return handleVoiceSessionWithSignalIDOptions(ctx, agent, recognizer, synthesizer, matchID, userID, text, audioB64, now, signalID, voiceSessionOptions{})
+}
+
+func handleVoiceSessionWithSignalIDOptions(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time, signalID string, options voiceSessionOptions) (voiceSessionResult, error) {
 	result := voiceSessionResult{Text: strings.TrimSpace(text)}
 	voiceMeta := &companion.VoiceTraceMetadata{}
 	if audioB64 != "" {
@@ -1453,6 +1755,44 @@ func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent,
 			}
 		}
 	}
+	return completeVoiceSessionWithOptions(ctx, agent, synthesizer, matchID, userID, now, signalID, result, voiceMeta, options)
+}
+
+func handleTranscribedVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID, text, provider string, now time.Time, signalID string) (voiceSessionResult, error) {
+	return handleTranscribedVoiceSessionWithSignalIDOptions(ctx, agent, synthesizer, matchID, userID, text, provider, now, signalID, voiceSessionOptions{})
+}
+
+func handleTranscribedVoiceSessionWithSignalIDOptions(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID, text, provider string, now time.Time, signalID string, options voiceSessionOptions) (voiceSessionResult, error) {
+	text = strings.TrimSpace(text)
+	voiceMeta := &companion.VoiceTraceMetadata{
+		ASRStatus:   "ok",
+		ASRText:     text,
+		ASRProvider: strings.TrimSpace(provider),
+	}
+	return completeVoiceSessionWithOptions(
+		ctx,
+		agent,
+		synthesizer,
+		matchID,
+		userID,
+		now,
+		signalID,
+		voiceSessionResult{Text: text},
+		voiceMeta,
+		options,
+	)
+}
+
+type voiceSessionOptions struct {
+	ProgressiveSchedule bool
+	Timezone            string
+}
+
+func completeVoiceSession(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID string, now time.Time, signalID string, result voiceSessionResult, voiceMeta *companion.VoiceTraceMetadata) (voiceSessionResult, error) {
+	return completeVoiceSessionWithOptions(ctx, agent, synthesizer, matchID, userID, now, signalID, result, voiceMeta, voiceSessionOptions{})
+}
+
+func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID string, now time.Time, signalID string, result voiceSessionResult, voiceMeta *companion.VoiceTraceMetadata, options voiceSessionOptions) (voiceSessionResult, error) {
 	if result.Text == "" {
 		if result.ASRError == "" {
 			result.ASRError = "empty voice input"
@@ -1460,12 +1800,14 @@ func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent,
 		return result, fmt.Errorf("no usable user text")
 	}
 	response, err := agent.HandleMessage(ctx, companion.MessageRequest{
-		SignalID: signalID,
-		MatchID:  matchID,
-		UserID:   userID,
-		Text:     result.Text,
-		Now:      now,
-		Voice:    nonEmptyVoiceMeta(voiceMeta),
+		SignalID:            signalID,
+		MatchID:             matchID,
+		UserID:              userID,
+		Text:                result.Text,
+		Timezone:            strings.TrimSpace(options.Timezone),
+		ProgressiveSchedule: options.ProgressiveSchedule,
+		Now:                 now,
+		Voice:               nonEmptyVoiceMeta(voiceMeta),
 	})
 	if err != nil {
 		return result, err
@@ -1473,6 +1815,7 @@ func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent,
 	result.Reply = response.Reply
 	result.Trace = response.Trace
 	result.Presentation = response.Presentation
+	result.ScheduleLookup = response.ScheduleLookup
 	if synthesizer != nil {
 		ttsResult, err := synthesizeReply(ctx, synthesizer, result.Reply, "", result.Presentation)
 		if err != nil {
@@ -1630,6 +1973,13 @@ func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Ag
 		return
 	}
 	if strings.TrimSpace(response.Reply) == "" {
+		if replyContextActive(ctx) {
+			writer.SendJSON(map[string]interface{}{
+				"type":   "first_meeting_status",
+				"state":  "skipped",
+				"reason": response.Trace.Reason,
+			})
+		}
 		return
 	}
 	if !replyContextActive(ctx) {
@@ -1639,6 +1989,13 @@ func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Ag
 		"type":  "event",
 		"event": "qiuqiu_reply",
 		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "first_meeting", "", "", response.Presentation),
+	}); err != nil {
+		return
+	}
+	if err := writer.SendJSON(map[string]interface{}{
+		"type":    "first_meeting_status",
+		"state":   "delivered",
+		"traceId": response.Trace.ID,
 	}); err != nil {
 		return
 	}
@@ -1900,6 +2257,12 @@ func newTextLLMClient(cfg *config.Config) *llm.Client {
 func fallbackProactiveText(ev matchstate.MatchEvent) string {
 	switch ev.EventType {
 	case "goal":
+		if scorer := goalScorerName(ev); scorer != "" {
+			if ev.Score.Home > 0 || ev.Score.Away > 0 {
+				return fmt.Sprintf("%s进了！比分来到%d比%d。", scorer, ev.Score.Home, ev.Score.Away)
+			}
+			return scorer + "进了！"
+		}
 		return "进了！这一下气氛直接被点起来了。"
 	case "red_card":
 		return "红牌来了，比赛走势一下子变得很微妙。"
@@ -1911,11 +2274,136 @@ func fallbackProactiveText(ev matchstate.MatchEvent) string {
 		return "这波很危险，我们盯紧一点。"
 	case "miss":
 		return "哎呀，就差一点点，这球太可惜了。"
+	case "substitution":
+		subOn, subOff := substitutionNames(ev)
+		teamName := strings.TrimSpace(ev.TeamName)
+		if teamName == "" {
+			teamName = "这边"
+		}
+		switch {
+		case subOn != "" && subOff != "":
+			return fmt.Sprintf("%s换人，%s上场，%s下场。", teamName, subOn, subOff)
+		case subOn != "":
+			return fmt.Sprintf("%s换人，%s上场。", teamName, subOn)
+		case subOff != "":
+			return fmt.Sprintf("%s换人，%s下场。", teamName, subOff)
+		}
+		return teamName + "正在调整人员。"
 	default:
 		if ev.Description != "" {
 			return ev.Description
 		}
 		return "场上有新情况，我们一起看下去。"
+	}
+}
+
+func substitutionNames(event matchstate.MatchEvent) (subOn, subOff string) {
+	for _, participant := range event.Participants {
+		switch participant.Role {
+		case "sub_on":
+			subOn = strings.TrimSpace(participant.Name)
+		case "sub_off":
+			subOff = strings.TrimSpace(participant.Name)
+		}
+	}
+	return subOn, subOff
+}
+
+func goalScorerName(event matchstate.MatchEvent) string {
+	if player := strings.TrimSpace(event.PlayerName); player != "" {
+		return player
+	}
+	for _, participant := range event.Participants {
+		if participant.Role == "scorer" && strings.TrimSpace(participant.Name) != "" {
+			return strings.TrimSpace(participant.Name)
+		}
+	}
+	return ""
+}
+
+func eventFromVoiceDraft(result directordraft.Result, currentScore matchstate.Score) (matchstate.MatchEvent, error) {
+	if !result.Ready {
+		return matchstate.MatchEvent{}, errors.New("语音内容无法确认完整赛事事件，请补充球队、球员或行为后重试")
+	}
+	draft := result.Draft
+	event := matchstate.MatchEvent{
+		Source:            "operator_voice",
+		ProviderName:      "director-voice",
+		EventType:         draft.EventType,
+		Period:            draft.OccurredPeriod,
+		Clock:             fmt.Sprintf("%02d:%02d", draft.OccurredSeconds/60, draft.OccurredSeconds%60),
+		TeamID:            draft.TeamID,
+		TeamName:          draft.TeamName,
+		Score:             currentScore,
+		Intensity:         3,
+		Confirmed:         true,
+		FactStatus:        matchstate.FactStatusConfirmed,
+		Description:       draft.Description,
+		RecommendedAction: recommendedActionForVoiceEvent(draft.EventType),
+		Tags:              []string{fmt.Sprintf("clockVersion=%d", draft.CapturedClockVersion), "input=operator_voice"},
+	}
+	for _, participant := range draft.Participants {
+		event.Participants = append(event.Participants, matchstate.Participant{
+			Role: participant.Role, Name: participant.Name, TeamID: participant.TeamID, TeamName: participant.TeamName,
+		})
+	}
+	primaryRole := primaryRoleForVoiceEvent(draft.EventType)
+	for _, participant := range event.Participants {
+		if participant.Role == primaryRole {
+			event.PlayerName = participant.Name
+			break
+		}
+	}
+	if event.EventType == "goal" {
+		switch event.TeamID {
+		case "home":
+			event.Score.Home++
+		case "away":
+			event.Score.Away++
+		default:
+			return matchstate.MatchEvent{}, errors.New("进球事件缺少进球队伍")
+		}
+	}
+	return event, nil
+}
+
+func primaryRoleForVoiceEvent(eventType string) string {
+	switch eventType {
+	case "goal":
+		return "scorer"
+	case "shot", "miss":
+		return "shooter"
+	case "save":
+		return "keeper"
+	case "foul", "yellow_card", "red_card":
+		return "offender"
+	case "substitution":
+		return "sub_on"
+	case "injury":
+		return "injured"
+	default:
+		return ""
+	}
+}
+
+func recommendedActionForVoiceEvent(eventType string) string {
+	switch eventType {
+	case "goal":
+		return "celebrate"
+	case "shot", "pressure":
+		return "focus"
+	case "save":
+		return "surprise"
+	case "miss":
+		return "miss"
+	case "foul", "yellow_card":
+		return "complain"
+	case "red_card":
+		return "angry"
+	case "injury":
+		return "comfort"
+	default:
+		return "analysis"
 	}
 }
 
@@ -2058,36 +2546,5 @@ func (w *wsWriter) Ping() error {
 
 // pcmToWav wraps raw PCM 16bit 16kHz mono in a WAV header.
 func pcmToWav(pcm []byte) []byte {
-	dataSize := len(pcm)
-	wav := make([]byte, 44+dataSize)
-	// RIFF
-	copy(wav[0:4], "RIFF")
-	le32(wav[4:8], uint32(36+dataSize))
-	copy(wav[8:12], "WAVE")
-	// fmt
-	copy(wav[12:16], "fmt ")
-	le32(wav[16:20], 16)    // chunk size
-	le16(wav[20:22], 1)     // PCM
-	le16(wav[22:24], 1)     // mono
-	le32(wav[24:28], 16000) // sample rate
-	le32(wav[28:32], 32000) // byte rate (16000 * 2)
-	le16(wav[32:34], 2)     // block align
-	le16(wav[34:36], 16)    // bits per sample
-	// data
-	copy(wav[36:40], "data")
-	le32(wav[40:44], uint32(dataSize))
-	copy(wav[44:], pcm)
-	return wav
-}
-
-func le16(b []byte, v uint16) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-}
-
-func le32(b []byte, v uint32) {
-	b[0] = byte(v)
-	b[1] = byte(v >> 8)
-	b[2] = byte(v >> 16)
-	b[3] = byte(v >> 24)
+	return asr.PCM16ToWAV(pcm)
 }

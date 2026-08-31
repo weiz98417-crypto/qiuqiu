@@ -68,6 +68,24 @@ void main() {
     expect(updated.liveLabel, '等待开赛');
   });
 
+  test('retracted match reactions do not leave queued audio behind', () {
+    final queue = PendingAudioQueue()
+      ..add(const PendingAudio(mime: 'audio/wav', eventId: 'old-substitution'))
+      ..add(const PendingAudio(mime: 'audio/wav', eventId: 'current-goal'));
+
+    queue.removeForEvent('old-substitution');
+
+    expect(queue.take()!.eventId, 'current-goal');
+    expect(
+      isRetractedMatchReaction('old-substitution', {'old-substitution'}),
+      isTrue,
+    );
+    expect(
+      isRetractedMatchReaction('current-goal', {'old-substitution'}),
+      isFalse,
+    );
+  });
+
   test('match clock advances independently from event occurrence time', () {
     final clock = MatchClockViewData.tryParse({
       'period': 'second_half',
@@ -98,6 +116,25 @@ void main() {
     expect(afterDelayedEvent.clock, '70:05');
     expect(afterDelayedEvent.period, 'second_half');
     expect(afterDelayedEvent.eventLabel, '69:41 · 一次延迟录入的射门');
+  });
+
+  test('live clock ticks do not create new carousel content', () {
+    const firstSecond = MatchViewData(
+      homeTeam: '西班牙',
+      awayTeam: '德国',
+      period: 'first_half',
+      clock: '25:01',
+      recentEventLabels: ['25:00 · 佩德里完成一次射门。'],
+      hasMatchInfo: true,
+    );
+    final nextSecond = firstSecond.copyWith(clock: '25:02');
+
+    expect(
+        nextSecond.statusCarouselItems, isNot(firstSecond.statusCarouselItems));
+    expect(
+      nextSecond.statusCarouselContentRevision,
+      firstSecond.statusCarouselContentRevision,
+    );
   });
 
   test('profile preferences preserve the continuous conversation choice', () {

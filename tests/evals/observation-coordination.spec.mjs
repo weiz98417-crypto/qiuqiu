@@ -1,4 +1,5 @@
 import { expect, test } from '@playwright/test';
+import { openTextMode } from './support/open-text-mode.mjs';
 
 const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
 const matchId = 'test';
@@ -224,21 +225,10 @@ async function prepareClient(page) {
   }, token);
   await page.goto('/');
   await page.getByRole('button', { name: 'Enable accessibility' }).evaluate((element) => element.click());
-  await expect(page.getByRole('button', { name: '更多陪看方式' })).toBeVisible();
-}
-
-async function openTextMode(page) {
-  const moreButton = page.getByRole('button', { name: '更多陪看方式' });
-  await expect(moreButton).toBeVisible();
-  await moreButton.evaluate((element) => element.click());
-  const textModeItem = page.getByRole('menuitem', { name: '改用文字说' });
-  await expect(textModeItem).toBeVisible();
-  await textModeItem.evaluate((element) => element.click());
-  await expect(page.getByRole('textbox')).toBeVisible();
 }
 
 async function sendText(page, text) {
-  const textbox = page.getByRole('textbox');
+  const textbox = page.getByLabel('直接和球球说…');
   await textbox.fill(text);
   await page.getByRole('button', { name: '发送这句话' }).click();
 }

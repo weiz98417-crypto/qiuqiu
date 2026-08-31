@@ -6,6 +6,55 @@ import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 
+typedef VoiceActivityDecision = ({bool detected, bool started});
+
+const voiceRecordConfig = RecordConfig(
+  encoder: AudioEncoder.pcm16bits,
+  sampleRate: 16000,
+  numChannels: 1,
+  echoCancel: true,
+  noiseSuppress: true,
+);
+
+class VoiceActivityGate {
+  static const double defaultStartThreshold = 0.015;
+  static const double defaultContinueThreshold = 0.006;
+  static const int defaultMinimumSpeechFrames = 2;
+
+  VoiceActivityGate({
+    this.startThreshold = defaultStartThreshold,
+    this.continueThreshold = defaultContinueThreshold,
+    this.minimumSpeechFrames = defaultMinimumSpeechFrames,
+  });
+
+  final double startThreshold;
+  final double continueThreshold;
+  final int minimumSpeechFrames;
+  int _speechFrames = 0;
+
+  int get speechFrames => _speechFrames;
+  bool get hasConfirmedSpeech => _speechFrames >= minimumSpeechFrames;
+
+  VoiceActivityDecision observe(double rms) {
+    final wasConfirmed = hasConfirmedSpeech;
+    final threshold = wasConfirmed ? continueThreshold : startThreshold;
+    final detected = rms > threshold;
+    if (detected) {
+      _speechFrames++;
+    } else if (!wasConfirmed) {
+      _speechFrames = 0;
+    }
+    return (
+      detected: detected,
+      started: !wasConfirmed && hasConfirmedSpeech,
+    );
+  }
+
+  void reset() {
+    _speechFrames = 0;
+  }
+}
+
 class VADService {
   final _eventController = StreamController<VADEvent>.broadcast(sync: true);
   final _audioChunkController =
@@ -13,6 +62,7 @@ class VADService {
   final _recorder = AudioRecorder();
   final _audioBuffer = <Uint8List>[];
   final _preRoll = Queue<Uint8List>();
+  final _voiceActivity = VoiceActivityGate();
 
   StreamSubscription<Uint8List>? _recordSubscription;
   Timer? _silenceTimer;
@@ -23,11 +73,8 @@ class VADService {
   bool _disposed = false;
   bool _audioSessionConfigured = false;
   String _selectedInputDeviceId = '';
-  int _speechFrames = 0;
 
-  static const double silenceThreshold = 0.006;
-  static const int minSpeechFrames = 2;
-  static const int silenceTimeoutMs = 760;
+  static const int silenceTimeoutMs = 1400;
   static const int maxDurationMs = 15000;
   static const int preRollFrames = 4;
 
@@ -73,16 +120,12 @@ class VADService {
       return;
     }
 
-    _speechFrames = 0;
+    _voiceActivity.reset();
     _preRoll.clear();
     _silenceTimer?.cancel();
     try {
       final stream = await _recorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: 16000,
-          numChannels: 1,
-        ),
+        voiceRecordConfig,
       );
       if (!_sessionActive || _disposed) {
         await _recorder.stop();
@@ -107,12 +150,12 @@ class VADService {
   void _processAudio(Uint8List pcm) {
     if (!_sessionActive || !_captureActive || pcm.isEmpty) return;
     final rms = _calculateRms(pcm);
-    final speechDetected = rms > silenceThreshold;
+    final hadConfirmedSpeech = _voiceActivity.hasConfirmedSpeech;
 
     if (_mode == VADMode.pushToTalk) {
       _audioBuffer.add(pcm);
       _emitAudioChunk(pcm);
-    } else if (_speechFrames < minSpeechFrames) {
+    } else if (!hadConfirmedSpeech) {
       _preRoll.addLast(pcm);
       while (_preRoll.length > preRollFrames) {
         _preRoll.removeFirst();
@@ -122,11 +165,11 @@ class VADService {
       _emitAudioChunk(pcm);
     }
 
-    if (speechDetected) {
-      _speechFrames++;
+    final activity = _voiceActivity.observe(rms);
+    if (activity.detected) {
       _silenceTimer?.cancel();
       _silenceTimer = null;
-      if (_speechFrames == minSpeechFrames) {
+      if (activity.started) {
         if (_mode == VADMode.freeTalk) {
           _audioBuffer.addAll(_preRoll);
           for (final chunk in _preRoll) {
@@ -136,10 +179,10 @@ class VADService {
         }
         _emit(const VADEvent.speaking());
       }
-      if (_speechFrames >= maxDurationMs ~/ 50) {
+      if (_voiceActivity.speechFrames >= maxDurationMs ~/ 50) {
         unawaited(_finishSentence());
       }
-    } else if (_speechFrames >= minSpeechFrames) {
+    } else if (_voiceActivity.hasConfirmedSpeech) {
       _silenceTimer ??= Timer(
         const Duration(milliseconds: silenceTimeoutMs),
         () => unawaited(_finishSentence()),
@@ -167,7 +210,7 @@ class VADService {
     _silenceTimer = null;
     await _stopCapture();
 
-    final hasSpeech = _speechFrames >= minSpeechFrames;
+    final hasSpeech = _voiceActivity.hasConfirmedSpeech;
     if (hasSpeech || _mode == VADMode.pushToTalk) {
       _emit(const VADEvent.sentenceEnd());
     }
@@ -190,7 +233,7 @@ class VADService {
     _sessionActive = false;
     _silenceTimer?.cancel();
     _silenceTimer = null;
-    _speechFrames = 0;
+    _voiceActivity.reset();
     _preRoll.clear();
     unawaited(_stopCapture());
     _emit(const VADEvent.idle());

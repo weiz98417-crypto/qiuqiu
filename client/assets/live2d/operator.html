@@ -409,6 +409,7 @@
   .search-field .material-symbols-outlined { color: var(--on-variant); font-size: 18px; }
   .search-field input { width: 100%; border: 0; background: transparent; box-shadow: none; }
   .roster-list { max-height: none; min-height: 0; align-content: flex-start; }
+  .roster-list[hidden] { display: none; }
   .quick-combinations { display: flex; gap: 6px; flex-wrap: wrap; margin-top: auto; }
   .behavior-group { display: grid; gap: 8px; }
   .behavior-group + .behavior-group { padding-top: 12px; border-top: 1px solid rgba(255,255,255,.06); }
@@ -430,7 +431,7 @@
   .behavior-button:hover { border-color: rgba(255,182,147,.55); }
   .behavior-button.active { border-color: var(--primary); background: rgba(255,107,0,.12); color: var(--primary); }
   .behavior-key { color: var(--on-variant); font: 700 10px/14px "JetBrains Mono", monospace; }
-  .draft-head-actions { display: flex; align-items: center; gap: 5px; }
+  .draft-head-actions { display: flex; align-items: center; justify-content: flex-end; flex-wrap: wrap; gap: 5px; }
   .draft-meta { margin-top: 2px; color: var(--on-variant); font-size: 11px; line-height: 16px; }
   .voice-entry {
     min-height: 36px;
@@ -446,6 +447,21 @@
   }
   .voice-entry.recording { border-color: var(--error); background: rgba(127,29,29,.25); color: var(--error); }
   .voice-entry .material-symbols-outlined { font-size: 18px; }
+  .voice-device-picker {
+    height: 36px;
+    max-width: 190px;
+    border: 1px solid rgba(188,199,222,.24);
+    border-radius: 7px;
+    background: var(--surface-lowest);
+    color: var(--on-variant);
+    display: inline-flex;
+    align-items: center;
+    gap: 4px;
+    padding: 0 7px;
+  }
+  .voice-device-picker .material-symbols-outlined { font-size: 17px; }
+  .voice-device-picker select { min-width: 0; border: 0; padding: 0 16px 0 0; background: transparent; color: var(--on-surface); font-size: 11px; }
+  .voice-device-picker select:disabled { color: var(--on-variant); opacity: 1; }
   .voice-draft {
     border: 1px solid rgba(188,199,222,.22);
     border-radius: 7px;
@@ -456,7 +472,7 @@
   }
   .voice-draft[hidden] { display: none; }
   .voice-draft-head { display: flex; align-items: center; justify-content: space-between; gap: 8px; color: var(--secondary); font-weight: 800; }
-  .voice-transcript { color: var(--on-surface); line-height: 20px; }
+  .voice-transcript { width: 100%; min-height: 68px; resize: vertical; color: var(--on-surface); line-height: 20px; }
   .voice-conflicts { display: grid; gap: 5px; color: var(--warning); font-size: 12px; line-height: 17px; }
   .voice-conflict-row { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 6px; align-items: center; padding: 7px; border: 1px solid rgba(242,201,76,.24); background: rgba(242,201,76,.05); }
   .voice-conflict-row .small-btn { min-height: 34px; padding: 6px 9px; }
@@ -940,6 +956,7 @@
               <div class="draft-meta" id="draftMeta">等待选择球队、球员和行为</div>
             </div>
             <div class="draft-head-actions">
+              <label class="voice-device-picker" title="点击加载并选择语音录入麦克风"><span class="material-symbols-outlined">settings_voice</span><select id="voiceDevice" aria-label="语音录入麦克风"><option value="">点击加载麦克风</option></select></label>
               <button class="voice-entry" id="voiceInput" type="button" data-busy-label="整理中…"><span class="material-symbols-outlined">mic</span><span>语音录入</span></button>
               <button class="icon-btn" id="clearDraft" title="清空当前草稿" type="button"><span class="material-symbols-outlined">delete_sweep</span></button>
               <button class="icon-btn" id="reload" title="刷新比赛状态" type="button"><span class="material-symbols-outlined">refresh</span></button>
@@ -948,7 +965,7 @@
           <div class="panel-body">
             <section class="voice-draft" id="voiceDraft" hidden>
               <div class="voice-draft-head"><span id="voiceStatus">准备录音</span><button class="small-btn" id="undoVoice" type="button" hidden>撤回本次语音</button></div>
-              <div id="voiceTranscript" class="voice-transcript"></div>
+              <textarea id="voiceTranscript" class="voice-transcript" aria-label="语音转写内容" placeholder="语音转写会显示在这里，可直接修改"></textarea>
               <div id="voiceConflicts" class="voice-conflicts"></div>
             </section>
 
@@ -957,14 +974,45 @@
 
             <div hidden>
               <input id="matchId" value="test">
-              <textarea id="homePlayers">10 佩德里 CM
-7 莫拉塔 ST
-19 亚马尔 RW
-8 法比安 CM</textarea>
-              <textarea id="awayPlayers">10 穆西亚拉 AM
-9 菲尔克鲁格 ST
-7 哈弗茨 FW
-22 吕迪格 CB</textarea>
+              <textarea id="homePlayers">23 乌奈·西蒙 GK 首发
+2 丹尼·卡瓦哈尔 RB 首发
+3 勒诺尔芒 CB 首发
+14 拉波尔特 CB 首发
+24 库库雷利亚 LB 首发
+16 罗德里 DM 首发
+8 法比安·鲁伊斯 CM 首发
+20 佩德里 CM 首发
+19 拉明·亚马尔 RW 首发
+7 莫拉塔 ST 首发
+17 尼科·威廉斯 LW 首发
+1 大卫·拉亚 GK 替补
+4 纳乔 CB 替补
+6 梅里诺 CM 替补
+10 奥尔莫 AM 替补
+11 费兰·托雷斯 RW 替补
+15 巴埃纳 LW 替补
+18 苏比门迪 DM 替补
+21 奥亚萨瓦尔 ST 替补</textarea>
+              <textarea id="awayPlayers">1 诺伊尔 GK 首发
+6 基米希 RB 首发
+4 若纳坦·塔 CB 首发
+2 吕迪格 CB 首发
+3 劳姆 LB 首发
+8 克罗斯 CM 首发
+23 安德里希 DM 首发
+10 穆西亚拉 AM 首发
+7 哈弗茨 ST 首发
+17 维尔茨 AM 首发
+19 萨内 RW 首发
+12 鲍曼 GK 替补
+5 施洛特贝克 CB 替补
+9 菲尔克鲁格 ST 替补
+11 菲里希 LW 替补
+13 托马斯·穆勒 AM 替补
+14 拜尔 ST 替补
+15 聚勒 CB 替补
+18 米特尔施泰特 LB 替补
+20 亨里希斯 RB 替补</textarea>
               <input id="homeActive"><input id="awayActive">
               <span id="homeTitle"></span><span id="awayTitle"></span>
               <span id="homeSelected"></span><span id="awaySelected"></span>
@@ -1065,7 +1113,7 @@
                 <label>事实员 <input id="homeFactOperator" value="HOME-DESK-01"></label>
               </div>
               <label>批量粘贴录入
-                <textarea class="mono" id="preHomePlayers" placeholder="10 佩德里 CM&#10;7 莫拉塔 ST"></textarea>
+                <textarea class="mono" id="preHomePlayers" placeholder="20 佩德里 CM 首发&#10;10 奥尔莫 AM 替补"></textarea>
               </label>
               <div class="roster-preview" id="preHomePreview"></div>
             </div>
@@ -1084,7 +1132,7 @@
                 <label>事实员 <input id="awayFactOperator" value="AWAY-DESK-01"></label>
               </div>
               <label>批量粘贴录入
-                <textarea class="mono" id="preAwayPlayers" placeholder="10 穆西亚拉 AM&#10;9 菲尔克鲁格 ST"></textarea>
+                <textarea class="mono" id="preAwayPlayers" placeholder="10 穆西亚拉 AM 首发&#10;9 菲尔克鲁格 ST 替补"></textarea>
               </label>
               <div class="roster-preview" id="preAwayPreview"></div>
             </div>
@@ -1407,6 +1455,8 @@ function authHeaders(headers = {}) {
   return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
 }
 const $ = (id) => document.getElementById(id);
+const matchIDFromURL = new URL(window.location.href).searchParams.get('matchId')?.trim();
+if (matchIDFromURL) $('matchId').value = matchIDFromURL;
 
 const presets = [
   { key: '1', type: 'goal', label: '进球', level: 'major', action: 'celebrate', intensity: 5, score: 1, text: '进球了！' },
@@ -1486,15 +1536,20 @@ let correctingId = '';
 let correctingFactStatus = '';
 let correctingConflictId = '';
 let latestFactConflicts = [];
+let latestTimelineEvents = [];
 let matchClock = { period: 'pre_match', elapsedSeconds: 0, running: false, anchorAt: null, version: 0 };
 let clockTimer = null;
 let liveDraft = OperatorLiveState.createDraft({ matchId: 'test', teamId: 'home' });
 let voiceRecorder = null;
-let voiceChunks = [];
 let voiceDraftBeforeApply = null;
 let voiceConflicts = [];
 let voiceWarnings = [];
 let voiceCapture = null;
+const VOICE_DEVICE_STORAGE_KEY = 'qiuqiu.operator.voiceDeviceId';
+const VOICE_DEVICE_PREFERENCE_KEY = 'qiuqiu.operator.voiceDevicePreferenceSet';
+let voiceDeviceId = localStorage.getItem(VOICE_DEVICE_STORAGE_KEY) || '';
+let voiceDevicePreferenceSet = localStorage.getItem(VOICE_DEVICE_PREFERENCE_KEY) === '1';
+let voiceDeviceName = '默认麦克风';
 let activeView = 'live';
 let traceItems = [];
 let traceFilter = 'all';
@@ -1646,16 +1701,20 @@ function parsePlayers(text) {
     const parts = line.trim().split(/\s+/).filter(Boolean);
     if (!parts.length) return null;
     const hasNumber = /^\d{1,3}$/.test(parts[0]);
-    const nameParts = hasNumber ? parts.slice(1, -1) : parts.slice(0, -1);
+    const lineupToken = String(parts.at(-1) || '').toLowerCase();
+    const lineup = ['替补', 'bench'].includes(lineupToken) ? 'bench' : ['首发', 'starter'].includes(lineupToken) ? 'starter' : '';
+    const core = lineup ? parts.slice(0, -1) : parts;
+    const nameParts = hasNumber ? core.slice(1, -1) : core.slice(0, -1);
     return {
       number: hasNumber ? parts[0] : '',
       name: nameParts.join(' ') || (hasNumber ? parts[1] : parts[0]) || '',
-      position: parts.length > 1 ? parts[parts.length - 1] : ''
+      position: core.length > 1 ? core[core.length - 1] : '',
+      lineup
     };
   }).filter((p) => p && p.name);
 }
 function playersToText(players = []) {
-  return players.map((p) => [p.number, p.name, p.position].filter(Boolean).join(' ')).join('\n');
+  return players.map((p) => [p.number, p.name, p.position, p.lineup === 'bench' ? '替补' : '首发'].filter(Boolean).join(' ')).join('\n');
 }
 function activePlayer(sideName = side) {
   return sideName === 'away' ? value('awayActive') : value('homeActive');
@@ -1748,16 +1807,65 @@ function setPlayer(nextSide, name, button) {
     });
   }
   $('mainPlayer').value = liveDraft.primaryParticipant?.name || name;
+  if (liveDraft.eventType === 'substitution' && focusedRole === 'sub_on') focusedRole = 'sub_off';
   renderSlots();
   renderPlayers();
   renderCurrentDraft();
   toast(`已选择：${team(nextSide)} ${name}`);
 }
+function activeLineup(sideName) {
+  const roster = parsePlayers(value(sideName === 'away' ? 'awayPlayers' : 'homePlayers'));
+  const onPitch = new Map();
+  const bench = new Map();
+  roster.forEach((player) => (player.lineup === 'bench' ? bench : onPitch).set(player.name, player));
+  [...latestTimelineEvents]
+    .filter((event) => event.eventType === 'substitution' && event.teamId === sideName && event.status === 'active' && ['confirmed', 'reconciled'].includes(event.factStatus || (event.confirmed ? 'confirmed' : '')))
+    .sort((left, right) => Number(left.recordedSequence || 0) - Number(right.recordedSequence || 0))
+    .forEach((event) => {
+      const subOn = (event.participants || []).find((item) => item.role === 'sub_on')?.name;
+      const subOff = (event.participants || []).find((item) => item.role === 'sub_off')?.name;
+      if (subOff && onPitch.has(subOff)) {
+        const player = onPitch.get(subOff);
+        onPitch.delete(subOff);
+        bench.set(subOff, player);
+      }
+      if (subOn && bench.has(subOn)) {
+        const player = bench.get(subOn);
+        bench.delete(subOn);
+        onPitch.set(subOn, player);
+      }
+    });
+  return { onPitch: [...onPitch.values()], bench: [...bench.values()] };
+}
+function selectablePlayers(sideName) {
+  const lineup = activeLineup(sideName);
+  if (liveDraft.eventType === 'substitution') return focusedRole === 'sub_on' ? lineup.bench : lineup.onPitch;
+  return lineup.onPitch;
+}
+function substitutionSelectionError() {
+  if (liveDraft.eventType !== 'substitution') return '';
+  const lineup = activeLineup(liveDraft.teamId || side);
+  const subOn = liveDraft.participants.find((item) => item.role === 'sub_on')?.name;
+  const subOff = liveDraft.participants.find((item) => item.role === 'sub_off')?.name;
+  if (subOn && !lineup.bench.some((player) => player.name === subOn)) return `${subOn} 不在替补席`;
+  if (subOff && !lineup.onPitch.some((player) => player.name === subOff)) return `${subOff} 不在场上`;
+  return '';
+}
+function discardInvalidSubstitutionSelection() {
+  if (liveDraft.eventType !== 'substitution') return;
+  const lineup = activeLineup(liveDraft.teamId || side);
+  liveDraft.participants = liveDraft.participants.filter((item) => {
+    if (item.role === 'sub_on') return lineup.bench.some((player) => player.name === item.name);
+    if (item.role === 'sub_off') return lineup.onPitch.some((player) => player.name === item.name);
+    return true;
+  });
+  liveDraft.primaryParticipant = liveDraft.participants.find((item) => item.role === 'sub_on') || null;
+}
 function renderPlayers() {
   const query = ($('playerSearch')?.value || '').trim().toLowerCase();
   const matches = (player) => !query || `${player.number} ${player.name} ${player.position}`.toLowerCase().includes(query);
-  renderPlayerGroup('homeChips', parsePlayers(value('homePlayers')).filter(matches), 'home');
-  renderPlayerGroup('awayChips', parsePlayers(value('awayPlayers')).filter(matches), 'away');
+  renderPlayerGroup('homeChips', selectablePlayers('home').filter(matches), 'home');
+  renderPlayerGroup('awayChips', selectablePlayers('away').filter(matches), 'away');
   if ($('homeChips')) $('homeChips').hidden = side !== 'home';
   if ($('awayChips')) $('awayChips').hidden = side !== 'away';
 }
@@ -1774,7 +1882,8 @@ function renderPlayerGroup(id, list, listSide) {
     const selected = liveDraft.participants.some((item) => item.name === p.name) || liveDraft.primaryParticipant?.name === p.name;
     btn.className = `player-chip ${selected ? 'selected' : ''}`;
     btn.dataset.playerName = p.name;
-    btn.innerHTML = `${p.number ? `<span class="chip-num">${escapeHTML(p.number)}</span>` : ''}<span>${escapeHTML(p.name)}</span>${p.position ? `<span class="event-meta">${escapeHTML(p.position)}</span>` : ''}`;
+    const status = liveDraft.eventType === 'substitution' ? (focusedRole === 'sub_on' ? '替补' : '场上') : '场上';
+    btn.innerHTML = `${p.number ? `<span class="chip-num">${escapeHTML(p.number)}</span>` : ''}<span>${escapeHTML(p.name)}</span>${p.position ? `<span class="event-meta">${escapeHTML(p.position)}</span>` : ''}<span class="event-meta">${status}</span>`;
     btn.onclick = () => setPlayer(listSide, p.name, btn);
     host.appendChild(btn);
   });
@@ -1831,6 +1940,7 @@ function renderSlots() {
 function focusRole(role) {
   focusedRole = role;
   document.querySelectorAll('.slot').forEach((slot) => slot.classList.toggle('active', slot.dataset.role === role));
+  renderPlayers();
 }
 function setSlot(role, name, slotSide = side) {
   liveDraft = OperatorLiveState.updateDraft(liveDraft, {
@@ -1990,7 +2100,9 @@ function renderCurrentDraft(options = {}) {
   $('correctionReasonField').hidden = !liveDraft.revisionOf && liveDraft.eventType !== 'score_correction';
   const definition = OperatorLiveState.eventDefinitions[liveDraft.eventType];
   const validation = OperatorLiveState.validateDraft(liveDraft);
+  const lineupError = substitutionSelectionError();
   const unresolvedVoiceReview = voiceConflicts.length > 0 || voiceWarnings.length > 0;
+  const directVoicePublish = hasPublishableVoiceTranscript();
   const teamName = liveDraft.eventType === 'score_correction' ? '全场' : liveDraft.teamId ? team(liveDraft.teamId) : '未选球队';
   const participantText = liveDraft.participants.length
     ? liveDraft.participants.map((item) => `${roleLabel(item.role)}：${item.name}${item.resolved === false ? '（待确认）' : ''}`).join(' · ')
@@ -2005,13 +2117,16 @@ function renderCurrentDraft(options = {}) {
     <div class="draft-summary-line"><strong>${escapeHTML(teamName)} · ${escapeHTML(definition?.label || liveDraft.eventType)}</strong><span class="time-badge">${escapeHTML(periodLabel(liveDraft.occurredPeriod))} ${OperatorLiveState.formatClock(liveDraft.occurredSeconds)}</span></div>
     <div class="muted">${escapeHTML(participantText)}</div>
     <div class="muted">公开比分 ${confirmedScore.home}-${confirmedScore.away}${definition?.scoreDelta || liveDraft.eventType === 'score_correction' ? ` · 确认后 ${expectedScore.home}-${expectedScore.away}` : ''}</div>
+  ` : directVoicePublish ? `
+    <div class="draft-summary-line"><strong>语音赛事口述待确认</strong><span class="time-badge">${escapeHTML(periodLabel(liveDraft.occurredPeriod))} ${OperatorLiveState.formatClock(liveDraft.occurredSeconds)}</span></div>
+    <div class="muted">确认发布后才会识别事件；若识别为进球，比分会同步更新。</div>
   ` : '还没有事件草稿。先选球队和球员，再选择行为。';
   $('draftMeta').textContent = liveDraft.eventType
     ? `${liveDraft.source === 'operator_voice' ? '语音草稿' : '人工草稿'} · 捕获主时钟版本 ${liveDraft.capturedClockVersion}`
-    : '等待选择球队、球员和行为';
-  $('draftErrors').textContent = [...validation.errors, ...(unresolvedVoiceReview ? ['请先完成语音草稿核对'] : [])].join('；');
-  $('saveCandidate').disabled = !validation.ready || unresolvedVoiceReview;
-  $('draftSubmit').disabled = !validation.ready || unresolvedVoiceReview;
+    : directVoicePublish ? `语音口述 · 事件时间已锁定在 ${OperatorLiveState.formatClock(liveDraft.occurredSeconds)}` : '等待选择球队、球员和行为';
+  $('draftErrors').textContent = [...(directVoicePublish ? [] : validation.errors), ...(lineupError ? [lineupError] : []), ...(unresolvedVoiceReview ? ['请先完成语音草稿核对'] : [])].join('；');
+  $('saveCandidate').disabled = !validation.ready || Boolean(lineupError) || unresolvedVoiceReview;
+  $('draftSubmit').disabled = !(validation.ready || directVoicePublish) || Boolean(lineupError) || unresolvedVoiceReview;
   renderVoiceInferredFields();
   syncSelected();
   renderQuickCombinations();
@@ -2074,6 +2189,7 @@ function syncEventTypeUI() {
       clockVersion: Number(matchClock.version || 0)
     });
     liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: preset.text });
+    discardInvalidSubstitutionSelection();
   }
   renderTemplates();
   renderSlots();
@@ -2102,10 +2218,10 @@ async function restoreConfirmedScore() {
   $('awayScore').value = confirmedScore.away;
   updateContextPreview();
 }
-async function saveConfig() {
+function configPayload() {
   syncSelected();
   renderPlayers();
-  const body = {
+  return {
     homeTeam: team('home'),
     awayTeam: team('away'),
     competition: value('competition'),
@@ -2113,12 +2229,36 @@ async function saveConfig() {
     homePlayers: parsePlayers(value('homePlayers')),
     awayPlayers: parsePlayers(value('awayPlayers'))
   };
+}
+async function saveConfig() {
+  const body = configPayload();
   return operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, {
     method: 'POST',
     headers: { 'Content-Type': 'application/json' },
     body: JSON.stringify(body),
     inflightKey: `config:${currentMatchId()}:${JSON.stringify(body)}`
   });
+}
+async function startNewMatch() {
+  const body = configPayload();
+  return operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/start`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify(body),
+    inflightKey: `start-match:${currentMatchId()}:${JSON.stringify(body)}`
+  });
+}
+function clearLiveRunState() {
+  confirmedScore = { home: 0, away: 0 };
+  matchClock = { period: 'pre_match', elapsedSeconds: 0, running: false, anchorAt: null, version: 0 };
+  latestFactConflicts = [];
+  side = 'home';
+  liveDraft = OperatorLiveState.createDraft({ matchId: currentMatchId(), teamId: side });
+  voiceDraftBeforeApply = null;
+  $('homeScore').value = '0';
+  $('awayScore').value = '0';
+  setClock(0);
+  clearDraft(true);
 }
 function renderBehaviorGroups() {
   const host = $('behaviorGroups');
@@ -2158,8 +2298,10 @@ async function savePrematchConfig() {
     homeFactOperator: value('homeFactOperator'),
     awayFactOperator: value('awayFactOperator')
   }));
-  const saved = await saveConfig();
-  toast('赛前配置已同步到导演台', 'ok');
+  const saved = await startNewMatch();
+  clearLiveRunState();
+  await Promise.all([loadConfig(), loadMatchClock(), loadTimeline()]);
+  toast('新比赛已开始，上一场的比分、事件和时间已清空', 'ok');
   setView('live');
   return saved;
 }
@@ -2485,6 +2627,7 @@ async function publishPreset(preset, eventSide = side, triggerElement) {
   });
   liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: preset.text });
   liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'source', value: 'operator' });
+  discardInvalidSubstitutionSelection();
   if (preset.type === 'score_correction') {
     liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'scoreBefore', value: { ...confirmedScore } });
     liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'scoreOverride', value: { ...confirmedScore } });
@@ -2660,7 +2803,10 @@ async function loadTimeline() {
   const host = $('timeline');
   host.innerHTML = '';
   const events = data.events || [];
+  latestTimelineEvents = events;
   latestFactConflicts = data.conflicts || [];
+  renderPlayers();
+  renderCurrentDraft({ preserveForm: true, preserveSlots: true });
   if (!events.length) {
     host.innerHTML = '<div class="muted">暂无事件。选择球员和事件后，最新记录会出现在这里。</div>';
     return;
@@ -3080,8 +3226,47 @@ function updateScoreCorrectionDraft() {
   });
   renderCurrentDraft({ preserveForm: true });
 }
+function hasPublishableVoiceTranscript() {
+  return liveDraft.source === 'operator_voice'
+    && !liveDraft.eventType
+    && !correctingId
+    && Boolean(String(liveDraft.description || '').trim());
+}
+async function publishVoiceTranscript(triggerElement) {
+  captureDraftFromForm('confirmed');
+  const text = cleanDirectorDescription();
+  if (!text) {
+    toast('请先确认或补充语音转写内容', 'bad');
+    return;
+  }
+  return runOperatorAction(`voice-publish:${currentMatchId()}:${text}`, async () => {
+    try {
+      const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/drafts/voice/publish`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          text,
+          occurredPeriod: liveDraft.occurredPeriod,
+          occurredSeconds: liveDraft.occurredSeconds,
+          capturedClockVersion: liveDraft.capturedClockVersion
+        }),
+        inflightKey: `voice-publish:${currentMatchId()}:${text}:${liveDraft.capturedClockVersion}`
+      });
+      applyPublishedSnapshot(result);
+      toast(`已确认并发送：${result.event?.eventType || '赛事事件'}`, 'ok');
+      clearDraft(true);
+      await loadTimeline();
+    } catch (error) {
+      renderCurrentDraft({ preserveForm: true });
+      toast(error.message || '语音事件发布失败，转写内容已保留', 'bad');
+    }
+  }, triggerElement);
+}
 async function publishCurrentDraft(factStatus, triggerElement) {
   captureDraftFromForm(correctingFactStatus === 'conflict' ? 'conflict' : factStatus);
+  if (factStatus === 'confirmed' && hasPublishableVoiceTranscript()) {
+    return publishVoiceTranscript(triggerElement);
+  }
   const validation = OperatorLiveState.validateDraft(liveDraft);
   if (!validation.ready) {
     renderCurrentDraft({ preserveForm: true });
@@ -3138,65 +3323,276 @@ function blobToDataURL(blob) {
     reader.readAsDataURL(blob);
   });
 }
+
+function pcmToWAV(chunks, sampleRate) {
+  const sampleCount = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const buffer = new ArrayBuffer(44 + sampleCount * 2);
+  const view = new DataView(buffer);
+  const writeText = (offset, text) => [...text].forEach((character, index) => view.setUint8(offset + index, character.charCodeAt(0)));
+  writeText(0, 'RIFF');
+  view.setUint32(4, 36 + sampleCount * 2, true);
+  writeText(8, 'WAVE');
+  writeText(12, 'fmt ');
+  view.setUint32(16, 16, true);
+  view.setUint16(20, 1, true);
+  view.setUint16(22, 1, true);
+  view.setUint32(24, sampleRate, true);
+  view.setUint32(28, sampleRate * 2, true);
+  view.setUint16(32, 2, true);
+  view.setUint16(34, 16, true);
+  writeText(36, 'data');
+  view.setUint32(40, sampleCount * 2, true);
+  let offset = 44;
+  chunks.forEach((chunk) => {
+    chunk.forEach((sample) => {
+      const normalized = Math.max(-1, Math.min(1, sample));
+      view.setInt16(offset, normalized < 0 ? normalized * 32768 : normalized * 32767, true);
+      offset += 2;
+    });
+  });
+  return new Blob([buffer], { type: 'audio/wav' });
+}
+
+function resamplePCM(chunks, sourceRate, targetRate = 16000) {
+  const sampleCount = chunks.reduce((total, chunk) => total + chunk.length, 0);
+  const source = new Float32Array(sampleCount);
+  let sourceOffset = 0;
+  chunks.forEach((chunk) => {
+    source.set(chunk, sourceOffset);
+    sourceOffset += chunk.length;
+  });
+  if (sourceRate === targetRate) return source;
+  const target = new Float32Array(Math.max(1, Math.round(source.length * targetRate / sourceRate)));
+  const ratio = sourceRate / targetRate;
+  for (let index = 0; index < target.length; index++) {
+    const start = Math.floor(index * ratio);
+    const end = Math.min(source.length, Math.max(start + 1, Math.floor((index + 1) * ratio)));
+    let total = 0;
+    for (let sourceIndex = start; sourceIndex < end; sourceIndex++) total += source[sourceIndex];
+    target[index] = total / Math.max(1, end - start);
+  }
+  return target;
+}
+
+function audioMetrics(chunks, sampleRate) {
+  let sampleCount = 0;
+  let sumSquares = 0;
+  for (const chunk of chunks) {
+    sampleCount += chunk.length;
+    for (const sample of chunk) sumSquares += sample * sample;
+  }
+  return {
+    durationSeconds: sampleCount / Math.max(1, Number(sampleRate || 1)),
+    rms: sampleCount ? Math.sqrt(sumSquares / sampleCount) : 0
+  };
+}
+
+function voiceAudioConstraints(deviceId = '') {
+  const audio = {
+    channelCount: 1,
+    echoCancellation: true,
+    noiseSuppression: true,
+    autoGainControl: true
+  };
+  if (deviceId) audio.deviceId = { exact: deviceId };
+  return { audio };
+}
+
+async function refreshVoiceDevices() {
+  const select = $('voiceDevice');
+  if (!select || !navigator.mediaDevices?.enumerateDevices) return [];
+  const inputs = (await navigator.mediaDevices.enumerateDevices()).filter((device) => device.kind === 'audioinput');
+  const availableIds = new Set(inputs.map((device) => device.deviceId));
+  if (voiceDeviceId && !availableIds.has(voiceDeviceId)) {
+    voiceDeviceId = '';
+    voiceDevicePreferenceSet = false;
+    localStorage.removeItem(VOICE_DEVICE_STORAGE_KEY);
+    localStorage.removeItem(VOICE_DEVICE_PREFERENCE_KEY);
+  }
+  if (!voiceDeviceId && !voiceDevicePreferenceSet) {
+    const preferred = inputs.find((device) => /usb.*(condenser|microphone)|condenser.*microphone/i.test(device.label));
+    if (preferred) voiceDeviceId = preferred.deviceId;
+  }
+  select.innerHTML = '<option value="">默认麦克风</option>';
+  inputs.forEach((device, index) => {
+    const option = document.createElement('option');
+    option.value = device.deviceId;
+    option.textContent = device.label || `麦克风 ${index + 1}`;
+    select.appendChild(option);
+  });
+  select.disabled = false;
+  select.value = voiceDeviceId;
+  const selected = inputs.find((device) => device.deviceId === voiceDeviceId);
+  voiceDeviceName = selected?.label || '默认麦克风';
+  return inputs;
+}
+
+function saveVoiceDeviceSelection() {
+  voiceDeviceId = $('voiceDevice').value || '';
+  voiceDevicePreferenceSet = true;
+  localStorage.setItem(VOICE_DEVICE_PREFERENCE_KEY, '1');
+  if (voiceDeviceId) localStorage.setItem(VOICE_DEVICE_STORAGE_KEY, voiceDeviceId);
+  else localStorage.removeItem(VOICE_DEVICE_STORAGE_KEY);
+  const option = $('voiceDevice').selectedOptions[0];
+  voiceDeviceName = option?.textContent || '默认麦克风';
+}
+
+async function prepareVoiceDevicePicker(event) {
+  const select = $('voiceDevice');
+  if (select.options.length > 1) return;
+  event.preventDefault();
+  select.disabled = true;
+  try {
+    const permissionStream = await navigator.mediaDevices.getUserMedia(voiceAudioConstraints());
+    permissionStream.getTracks().forEach((track) => track.stop());
+    const inputs = await refreshVoiceDevices();
+    if (!inputs.length) throw new Error('未找到可用麦克风');
+    toast('已加载麦克风列表，请再次点击选择', 'ok');
+    select.focus();
+  } catch (error) {
+    toast(error.name === 'NotAllowedError' ? '麦克风权限未开启' : (error.message || '无法加载麦克风列表'), 'bad');
+  } finally {
+    select.disabled = false;
+  }
+}
+
+function updateVoiceRecordingLevel(recording, samples) {
+  let sumSquares = 0;
+  let peak = 0;
+  for (const sample of samples) {
+    sumSquares += sample * sample;
+    peak = Math.max(peak, Math.abs(sample));
+  }
+  const level = samples.length ? Math.sqrt(sumSquares / samples.length) : 0;
+  recording.latestRms = level;
+  recording.peak = Math.max(recording.peak || 0, peak);
+  const now = Date.now();
+  if (now - (recording.lastLevelUpdate || 0) < 180) return;
+  recording.lastLevelUpdate = now;
+  const percent = Math.min(100, Math.round(level * 900));
+  $('voiceStatus').textContent = `正在录音 · ${recording.deviceName} · 音量 ${percent}%`;
+}
+
+function containsChineseText(text) {
+  return /[\u3400-\u9fff]/.test(String(text || ''));
+}
+
+async function finishVoiceRecording() {
+  const recording = voiceRecorder;
+  if (!recording || recording.state !== 'recording') return;
+  recording.state = 'inactive';
+  recording.processor.onaudioprocess = null;
+  recording.source.disconnect();
+  recording.processor.disconnect();
+  recording.sink?.disconnect();
+  recording.stream.getTracks().forEach((track) => track.stop());
+  if (recording.context.state !== 'closed') await recording.context.close();
+  $('voiceInput').classList.remove('recording');
+  $('voiceInput').innerHTML = '<span class="material-symbols-outlined">progress_activity</span><span>正在整理</span>';
+  $('voiceInput').disabled = true;
+  $('voiceStatus').textContent = '正在转写语音';
+  try {
+    const metrics = audioMetrics(recording.chunks, recording.context.sampleRate);
+    if (metrics.durationSeconds < .4 || metrics.rms < .002) {
+      throw new Error(`没有采集到足够清晰的人声（${recording.deviceName}，平均音量 ${metrics.rms.toFixed(4)}），请切换麦克风后重试`);
+    }
+    const normalizedPCM = resamplePCM(recording.chunks, recording.context.sampleRate);
+    const blob = pcmToWAV([normalizedPCM], 16000);
+    if (blob.size <= 44) throw new Error('没有采集到可识别的语音，请说完后再停止录音');
+    const audioBase64 = await blobToDataURL(blob);
+    const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/drafts/voice`, {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        audioBase64,
+        audioMime: 'audio/wav',
+        audioDurationMs: Math.round(metrics.durationSeconds * 1000),
+        audioRMS: Number(metrics.rms.toFixed(4)),
+        audioSampleRate: 16000,
+        ...voiceCapture
+      }),
+      inflightKey: `voice-draft:${currentMatchId()}:${Date.now()}`
+    });
+    const transcript = result.transcript || '';
+    const structuredDraft = result.draft && typeof result.draft === 'object' ? result.draft : {};
+    const incoming = {
+      ...structuredDraft,
+      source: 'operator_voice',
+      transcript,
+      description: structuredDraft.description || transcript,
+      ...(voiceCapture || {})
+    };
+    const applied = OperatorLiveState.applyVoiceDraft(liveDraft, incoming);
+    liveDraft = applied.draft;
+    liveDraft.source = 'operator_voice';
+    voiceConflicts = applied.conflicts || [];
+    voiceWarnings = result.warnings || [];
+    if (!containsChineseText(transcript)) voiceWarnings.push(`转写结果未包含中文（录音 ${metrics.durationSeconds.toFixed(1)} 秒，音量 ${metrics.rms.toFixed(3)}），请重试或手动更正。`);
+    $('voiceTranscript').value = transcript;
+    $('voiceStatus').textContent = voiceWarnings.length ? '转写结果可能异常，请重试或手动更正' : '语音已转成文字；可直接修改，确认后发布事件';
+    $('undoVoice').hidden = false;
+    renderVoiceConflicts();
+    focusedRole = roleSet()[0]?.[0] || '';
+    renderSlots();
+    renderPlayers();
+    renderCurrentDraft();
+  } catch (error) {
+    $('voiceStatus').textContent = `语音整理失败：${error.message || '未知错误'}`;
+    $('voiceConflicts').textContent = '原草稿没有改动，可以重试或继续手工填写。';
+    toast(error.message || '语音整理失败', 'bad');
+  } finally {
+    $('voiceInput').disabled = false;
+    $('voiceInput').innerHTML = '<span class="material-symbols-outlined">mic</span><span>语音录入</span>';
+    voiceRecorder = null;
+  }
+}
+
 async function stopVoiceRecording() {
-  if (voiceRecorder?.state === 'recording') voiceRecorder.stop();
+  await voiceRecorder?.stop();
 }
 async function startVoiceRecording() {
-  if (!navigator.mediaDevices?.getUserMedia || !window.MediaRecorder) throw new Error('当前浏览器不支持麦克风录音');
-  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
-  const preferredType = ['audio/webm;codecs=opus', 'audio/webm', 'audio/mp4'].find((type) => MediaRecorder.isTypeSupported(type));
+  const AudioContext = window.AudioContext || window.webkitAudioContext;
+  if (!navigator.mediaDevices?.getUserMedia || !AudioContext) throw new Error('当前浏览器不支持兼容的麦克风录音');
+  let stream = await navigator.mediaDevices.getUserMedia(voiceAudioConstraints());
+  await refreshVoiceDevices();
+  const provisionalTrack = stream.getAudioTracks()[0];
+  const provisionalDeviceId = provisionalTrack?.getSettings?.().deviceId || '';
+  if (voiceDeviceId && provisionalDeviceId !== voiceDeviceId) {
+    stream.getTracks().forEach((track) => track.stop());
+    stream = await navigator.mediaDevices.getUserMedia(voiceAudioConstraints(voiceDeviceId));
+  }
+  const activeTrack = stream.getAudioTracks()[0];
+  const activeSettings = activeTrack?.getSettings?.() || {};
+  voiceDeviceName = activeTrack?.label || voiceDeviceName;
+  const context = new AudioContext({ sampleRate: 16000 });
+  await context.resume?.();
+  const source = context.createMediaStreamSource(stream);
+  const processor = context.createScriptProcessor(4096, 1, 1);
+  const sink = context.createGain?.();
+  if (sink) sink.gain.value = 0;
   voiceDraftBeforeApply = cloneLiveDraft();
   voiceCapture = {
     occurredPeriod: matchClock.period,
     occurredSeconds: currentClockElapsed(),
     capturedClockVersion: Number(matchClock.version || 0)
   };
-  voiceChunks = [];
-  voiceRecorder = preferredType ? new MediaRecorder(stream, { mimeType: preferredType }) : new MediaRecorder(stream);
-  voiceRecorder.ondataavailable = (event) => { if (event.data.size) voiceChunks.push(event.data); };
-  voiceRecorder.onstop = async () => {
-    stream.getTracks().forEach((track) => track.stop());
-    $('voiceInput').classList.remove('recording');
-    $('voiceInput').innerHTML = '<span class="material-symbols-outlined">progress_activity</span><span>正在整理</span>';
-    $('voiceInput').disabled = true;
-    $('voiceStatus').textContent = '正在识别并整理成事件草稿';
-    try {
-      const blob = new Blob(voiceChunks, { type: voiceRecorder.mimeType || 'audio/webm' });
-      const audioBase64 = await blobToDataURL(blob);
-      const result = await operatorRequestJSON(`/api/matches/${encodeURIComponent(currentMatchId())}/drafts/voice`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({ audioBase64, audioMime: blob.type, ...voiceCapture }),
-        inflightKey: `voice-draft:${currentMatchId()}:${Date.now()}`
-      });
-      const incoming = { ...(result.draft || {}), ...(voiceCapture || {}) };
-      const applied = OperatorLiveState.applyVoiceDraft(liveDraft, incoming);
-      liveDraft = applied.draft;
-      voiceConflicts = applied.conflicts || [];
-      voiceWarnings = result.warnings || [];
-      $('voiceTranscript').textContent = result.transcript || incoming.transcript || '未识别到文字';
-      $('voiceStatus').textContent = result.ready && !voiceConflicts.length ? '语音内容已填入草稿，请核对后发布' : '已生成草稿，仍有内容需要人工核对';
-      $('undoVoice').hidden = false;
-      renderVoiceConflicts();
-      focusedRole = roleSet()[0]?.[0] || '';
-      renderSlots();
-      renderPlayers();
-      renderCurrentDraft();
-    } catch (error) {
-      $('voiceStatus').textContent = `语音整理失败：${error.message || '未知错误'}`;
-      $('voiceConflicts').textContent = '原草稿没有改动，可以重试或继续手工填写。';
-      toast(error.message || '语音整理失败', 'bad');
-    } finally {
-      $('voiceInput').disabled = false;
-      $('voiceInput').innerHTML = '<span class="material-symbols-outlined">mic</span><span>语音录入</span>';
-      voiceRecorder = null;
-      voiceChunks = [];
-    }
+  voiceRecorder = { state: 'recording', stream, context, source, processor, sink, chunks: [], deviceName: voiceDeviceName, inputSampleRate: activeSettings.sampleRate || context.sampleRate, peak: 0, stop: finishVoiceRecording };
+  processor.onaudioprocess = (event) => {
+    const samples = new Float32Array(event.inputBuffer.getChannelData(0));
+    if (!voiceRecorder || voiceRecorder.state !== 'recording') return;
+    voiceRecorder.chunks.push(samples);
+    updateVoiceRecordingLevel(voiceRecorder, samples);
   };
-  voiceRecorder.start();
+  source.connect(processor);
+  if (sink) {
+    processor.connect(sink);
+    sink.connect(context.destination);
+  } else {
+    processor.connect(context.destination);
+  }
   $('voiceDraft').hidden = false;
-  $('voiceStatus').textContent = `正在录音 · ${periodLabel(voiceCapture.occurredPeriod)} ${OperatorLiveState.formatClock(voiceCapture.occurredSeconds)}`;
-  $('voiceTranscript').textContent = '说完后再次点击停止。';
+  $('voiceStatus').textContent = `正在录音 · ${voiceDeviceName} · ${periodLabel(voiceCapture.occurredPeriod)} ${OperatorLiveState.formatClock(voiceCapture.occurredSeconds)}`;
+  $('voiceTranscript').value = '说完后再次点击停止。';
   $('voiceConflicts').textContent = '';
   $('voiceInput').classList.add('recording');
   $('voiceInput').innerHTML = '<span class="material-symbols-outlined">stop_circle</span><span>停止录音</span>';
@@ -3294,6 +3690,17 @@ $('hint').addEventListener('click', () => {
   toast('已套用导演话术', 'ok');
 });
 $('voiceInput').addEventListener('click', toggleVoiceInput);
+$('voiceDevice').addEventListener('change', saveVoiceDeviceSelection);
+$('voiceDevice').addEventListener('pointerdown', prepareVoiceDevicePicker);
+navigator.mediaDevices?.addEventListener?.('devicechange', () => refreshVoiceDevices().catch(() => {}));
+$('voiceTranscript').addEventListener('input', () => {
+  const transcript = value('voiceTranscript');
+  if (containsChineseText(transcript)) voiceWarnings = [];
+  $('description').value = transcript;
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'transcript', value: transcript });
+  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: transcript });
+  renderCurrentDraft({ preserveForm: true });
+});
 $('undoVoice').addEventListener('click', () => {
   if (!voiceDraftBeforeApply) return;
   liveDraft = cloneLiveDraft(voiceDraftBeforeApply);
@@ -3360,7 +3767,7 @@ $('mainPlayer').addEventListener('input', () => {
 $('intensity').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'intensity', value: Number(value('intensity') || 3) }); renderCurrentDraft({ preserveForm: true }); });
 $('confirmation').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'factStatus', value: value('confirmation') === 'pending' ? 'provisional' : 'confirmed' }); renderCurrentDraft({ preserveForm: true }); });
 $('action').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'recommendedAction', value: value('action') }); renderCurrentDraft({ preserveForm: true }); });
-$('description').addEventListener('input', () => { markDraftFieldReviewed('description'); liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: value('description') }); renderCurrentDraft({ preserveForm: true }); });
+$('description').addEventListener('input', () => { markDraftFieldReviewed('description'); liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'description', value: value('description') }); if (liveDraft.source === 'operator_voice') $('voiceTranscript').value = value('description'); renderCurrentDraft({ preserveForm: true }); });
 $('correctionReason').addEventListener('input', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'correctionReason', value: value('correctionReason') }); renderCurrentDraft({ preserveForm: true }); });
 $('scoreCorrectionHome').addEventListener('input', updateScoreCorrectionDraft);
 $('scoreCorrectionAway').addEventListener('input', updateScoreCorrectionDraft);

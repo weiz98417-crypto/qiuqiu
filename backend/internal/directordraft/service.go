@@ -7,14 +7,16 @@ import (
 	"fmt"
 	"strings"
 	"time"
+	"unicode"
 
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/matchstate"
 )
 
 var (
-	ErrNoInput       = errors.New("director draft input is empty")
-	ErrNotConfigured = errors.New("director draft provider is not configured")
+	ErrNoInput           = errors.New("director draft input is empty")
+	ErrInvalidTranscript = errors.New("语音转写不是赛事口述，请重试")
+	ErrNotConfigured     = errors.New("director draft provider is not configured")
 )
 
 type Recognizer interface {
@@ -86,6 +88,12 @@ type Result struct {
 	Ready         bool     `json:"ready"`
 }
 
+type Transcription struct {
+	Transcript    string  `json:"transcript"`
+	ASRProvider   string  `json:"asrProvider,omitempty"`
+	ASRConfidence float64 `json:"asrConfidence,omitempty"`
+}
+
 type Service struct {
 	recognizer Recognizer
 	extractor  Extractor
@@ -95,27 +103,44 @@ func NewService(recognizer Recognizer, extractor Extractor) *Service {
 	return &Service{recognizer: recognizer, extractor: extractor}
 }
 
-func (service *Service) Build(ctx context.Context, request Request, match MatchContext) (Result, error) {
+func (service *Service) Transcribe(ctx context.Context, request Request, config matchstate.MatchConfig) (Transcription, error) {
 	transcript := strings.TrimSpace(request.Text)
-	result := Result{}
+	result := Transcription{}
 	if transcript == "" {
 		if service == nil || service.recognizer == nil {
-			return Result{}, ErrNotConfigured
+			return Transcription{}, ErrNotConfigured
 		}
 		audio, err := decodeAudio(request.AudioBase64)
 		if err != nil {
-			return Result{}, err
+			return Transcription{}, err
 		}
-		asrResult, err := service.recognizer.Transcribe(ctx, audio, matchHints(match.Config))
+		asrResult, err := service.recognizer.Transcribe(ctx, audio, matchHints(config))
 		if err != nil {
-			return Result{}, err
+			return Transcription{}, err
 		}
 		transcript = strings.TrimSpace(asrResult.Text)
 		result.ASRProvider = asrResult.Provider
 		result.ASRConfidence = asrResult.Confidence
 	}
 	if transcript == "" {
-		return Result{}, ErrNoInput
+		return Transcription{}, ErrNoInput
+	}
+	result.Transcript = transcript
+	return result, nil
+}
+
+func (service *Service) Build(ctx context.Context, request Request, match MatchContext) (Result, error) {
+	transcription, err := service.Transcribe(ctx, request, match.Config)
+	if err != nil {
+		return Result{}, err
+	}
+	transcript := transcription.Transcript
+	result := Result{ASRProvider: transcription.ASRProvider, ASRConfidence: transcription.ASRConfidence}
+	if isNonEventDescription(transcript) {
+		return Result{}, ErrInvalidTranscript
+	}
+	if !isPlausibleMatchTranscript(transcript, match.Config) {
+		return Result{}, ErrInvalidTranscript
 	}
 	if service == nil || service.extractor == nil {
 		return Result{}, ErrNotConfigured
@@ -123,6 +148,11 @@ func (service *Service) Build(ctx context.Context, request Request, match MatchC
 	extraction, err := service.extractor.Extract(ctx, transcript, match)
 	if err != nil {
 		return Result{}, err
+	}
+	description := strings.TrimSpace(extraction.Description)
+	if isNonEventDescription(description) {
+		description = ""
+		result.Warnings = append(result.Warnings, "语音描述不是比赛事实，已留空等待人工核对")
 	}
 
 	result.Transcript = transcript
@@ -134,7 +164,7 @@ func (service *Service) Build(ctx context.Context, request Request, match MatchC
 		OccurredSeconds:      match.Clock.CurrentElapsed(time.Now()),
 		CapturedClockVersion: match.Clock.Version,
 		Participants:         []DraftParticipant{},
-		Description:          strings.TrimSpace(extraction.Description),
+		Description:          description,
 		InferredFields:       []string{},
 		FieldConfidence:      map[string]float64{},
 	}
@@ -216,6 +246,65 @@ func decodeAudio(value string) ([]byte, error) {
 		return nil, fmt.Errorf("%w: invalid audio", ErrNoInput)
 	}
 	return audio, nil
+}
+
+func isNonEventDescription(value string) bool {
+	value = strings.ToLower(strings.TrimSpace(value))
+	if value == "" {
+		return false
+	}
+	for _, marker := range []string{
+		"unless there is a specific request",
+		"citations should",
+		"author, year",
+		"page number",
+		"citation",
+		"bibliography",
+		"除非有明确要求",
+		"引用均按常规方式列出",
+		"作者、年份和页码",
+		"作者、年份、页码",
+	} {
+		if strings.Contains(value, marker) {
+			return true
+		}
+	}
+	return false
+}
+
+func isPlausibleMatchTranscript(value string, config matchstate.MatchConfig) bool {
+	value = strings.TrimSpace(value)
+	meaningfulRunes := 0
+	for _, character := range value {
+		if unicode.IsLetter(character) || unicode.IsDigit(character) {
+			meaningfulRunes++
+		}
+	}
+	if meaningfulRunes < 2 {
+		return false
+	}
+
+	normalized := strings.ToLower(value)
+	for _, hint := range matchHints(config) {
+		hint = strings.TrimSpace(hint)
+		if utf8RuneCount(hint) >= 2 && strings.Contains(normalized, strings.ToLower(hint)) {
+			return true
+		}
+	}
+	for _, keyword := range []string{
+		"进球", "进了", "射门", "防守", "扑救", "换人", "犯规", "黄牌", "红牌", "点球", "助攻",
+		"越位", "传球", "角球", "任意球", "门柱", "开球", "绝杀", "补时", "goal", "shoot",
+		"shot", "save", "substitution", "foul", "yellow card", "red card", "penalty", "offside",
+	} {
+		if strings.Contains(normalized, keyword) {
+			return true
+		}
+	}
+	return false
+}
+
+func utf8RuneCount(value string) int {
+	return len([]rune(value))
 }
 
 func matchHints(config matchstate.MatchConfig) []string {

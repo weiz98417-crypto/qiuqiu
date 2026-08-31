@@ -120,6 +120,22 @@ test('score correction is a quiet audited fact command', () => {
   assert.equal(payload.evidence.correctionReason, '现场记分牌回退，原进球无效。');
 });
 
+test('goal payload keeps the selected scorer in the public event description', () => {
+	let draft = state.createDraft({ teamId: 'home', occurredPeriod: 'first_half', occurredSeconds: 2718 });
+	draft = state.updateDraft(draft, { type: 'select_player', teamId: 'home', teamName: '西班牙', name: '佩德里' });
+	draft = state.updateDraft(draft, { type: 'select_event', eventType: 'goal', period: 'first_half', elapsedSeconds: 2718, clockVersion: 7 });
+	draft = state.updateDraft(draft, { type: 'set_field', field: 'description', value: '进球了！' });
+
+	const payload = state.toEventPayload(draft, {
+		score: { home: 0, away: 0 },
+		homeTeam: '西班牙',
+		awayTeam: '德国',
+	});
+	assert.equal(payload.playerName, '佩德里');
+	assert.match(payload.description, /佩德里/);
+	assert.match(payload.description, /进球/);
+});
+
 test('goal cancellation must revise the referenced goal and remove its score', () => {
   const draft = state.createDraft({
     teamId: 'home',

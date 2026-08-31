@@ -109,6 +109,55 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 }
 
+func TestPostgresStorePersistsAndValidatesSubstitutionLineup(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	store, err := OpenPostgresStore(context.Background(), databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer store.Close()
+	matchID := "pg-lineup-" + time.Now().UTC().Format("20060102150405.000000000")
+	defer store.Reset(matchID)
+	config, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam: "Spain",
+		AwayTeam: "Germany",
+		HomePlayers: []Player{
+			{Name: "Starter One", Lineup: "starter"},
+			{Name: "Starter Two", Lineup: "starter"},
+			{Name: "Bench One", Lineup: "bench"},
+		},
+	})
+	if err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	if got := config.HomePlayers[2].Lineup; got != "bench" {
+		t.Fatalf("bench lineup did not round-trip: %+v", config.HomePlayers)
+	}
+
+	newSubstitution := func(clock, subOn, subOff string) MatchEvent {
+		return MatchEvent{
+			EventType: "substitution", Period: "second_half", Clock: clock,
+			TeamID: "home", TeamName: "Spain", Score: Score{}, Description: "Spain substitution",
+			Participants: []Participant{
+				{Role: "sub_on", Name: subOn, TeamID: "home", TeamName: "Spain"},
+				{Role: "sub_off", Name: subOff, TeamID: "home", TeamName: "Spain"},
+			},
+		}
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("60:00", "Starter Two", "Starter One")); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("starter cannot be sub_on: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("61:00", "Bench One", "Starter One")); err != nil {
+		t.Fatalf("valid substitution error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("62:00", "Starter One", "Bench One")); err != nil {
+		t.Fatalf("confirmed lineup should allow the reverse change: %v", err)
+	}
+}
+
 func TestPostgresStoreReportsProjectionMismatchWithoutChangingPublicSnapshot(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -1131,8 +1180,8 @@ func TestPostgresResolvesMultipleFactConflictsIndependently(t *testing.T) {
 	`, secondCandidateEvent.ID+":2:revoked").Scan(&rejectedUpdateCount); err != nil {
 		t.Fatalf("count rejected candidate outbox updates: %v", err)
 	}
-	if rejectedUpdateCount != 0 {
-		t.Fatalf("keeping accepted fact enqueued %d public updates", rejectedUpdateCount)
+	if rejectedUpdateCount != 1 {
+		t.Fatalf("keeping accepted fact enqueued %d retractions, want 1", rejectedUpdateCount)
 	}
 	for _, conflict := range store.FactConflicts(matchID) {
 		if conflict.Status != ConflictStatusResolved {
