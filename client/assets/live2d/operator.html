@@ -1672,6 +1672,7 @@ async function operatorRequestJSON(path, options = {}) {
         const rawMessage = (await response.text()).trim();
         let message = rawMessage;
         try { message = JSON.parse(rawMessage).error || rawMessage; } catch {}
+        if (response.status === 401) throw new Error('导播口令缺失或已失效，请重新打开带口令的导演台链接');
         if (response.status === 409) throw new Error(`提交内容冲突：${message || '请刷新后重试'}`);
         if (response.status < 500 || attempt > 0) throw new Error(message || `请求失败 ${response.status}`);
         lastError = new Error(message || `请求失败 ${response.status}`);
@@ -1766,16 +1767,34 @@ function syncMainFromPre() {
   renderPlayers();
 }
 function renderPreviews() {
-  renderRosterPreview('preHomePreview', parsePlayers(value('preHomePlayers')), 'home');
-  renderRosterPreview('preAwayPreview', parsePlayers(value('preAwayPlayers')), 'away');
-  const homeCount = parsePlayers(value('preHomePlayers')).length;
-  const awayCount = parsePlayers(value('preAwayPlayers')).length;
-  $('preHomeStatus').textContent = `主队: ${homeCount}人`;
-  $('preAwayStatus').textContent = awayCount ? `客队: ${awayCount}人` : '客队: 缺失';
-  $('preHomeDot').classList.toggle('warn', homeCount === 0);
-  $('preAwayDot').classList.toggle('warn', awayCount === 0);
+  const homePlayers = parsePlayers(value('preHomePlayers'));
+  const awayPlayers = parsePlayers(value('preAwayPlayers'));
+  renderRosterPreview('preHomePreview', homePlayers, 'home');
+  renderRosterPreview('preAwayPreview', awayPlayers, 'away');
+  const homeCounts = rosterCounts(homePlayers);
+  const awayCounts = rosterCounts(awayPlayers);
+  $('preHomeStatus').textContent = `主队: ${homeCounts.starters}首发 / ${homeCounts.bench}替补`;
+  $('preAwayStatus').textContent = `客队: ${awayCounts.starters}首发 / ${awayCounts.bench}替补`;
+  $('preHomeDot').classList.toggle('warn', homeCounts.starters < 11);
+  $('preAwayDot').classList.toggle('warn', awayCounts.starters < 11);
   $('preHomeTeamBadge').textContent = value('preHomeTeam') || '主队';
   $('preAwayTeamBadge').textContent = value('preAwayTeam') || '客队';
+}
+function rosterCounts(players) {
+  return players.reduce((counts, player) => {
+    counts[player.lineup === 'bench' ? 'bench' : 'starters'] += 1;
+    return counts;
+  }, { starters: 0, bench: 0 });
+}
+function prematchValidationError() {
+  if (!token) return '缺少导播口令，请使用带口令的导演台链接重新打开';
+  if (!value('preHomeTeam') || !value('preAwayTeam')) return '请填写主队和客队名称';
+  const homeCounts = rosterCounts(parsePlayers(value('preHomePlayers')));
+  const awayCounts = rosterCounts(parsePlayers(value('preAwayPlayers')));
+  const missing = [];
+  if (homeCounts.starters < 11) missing.push(`主队还缺 ${11 - homeCounts.starters} 名首发`);
+  if (awayCounts.starters < 11) missing.push(`客队还缺 ${11 - awayCounts.starters} 名首发`);
+  return missing.length ? `${missing.join('，')}；双方至少各需 11 名首发` : '';
 }
 function renderRosterPreview(id, list, sideName) {
   const host = $(id);
@@ -2288,6 +2307,8 @@ function renderBehaviorGroups() {
   });
 }
 async function savePrematchConfig() {
+  const validationError = prematchValidationError();
+  if (validationError) throw new Error(validationError);
   syncMainFromPre();
   localStorage.setItem('qiuqiu.operator.meta', JSON.stringify({
     venue: value('venue'),

@@ -4,6 +4,7 @@ import (
 	"bytes"
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strconv"
@@ -1013,7 +1014,8 @@ func TestStartMatchEndpointResetsRunningStateForAnAuthorizedOperator(t *testing.
 	}
 
 	started := doJSON(t, handler, http.MethodPost, "/api/matches/real-match/start?token=eval-token", matchstate.MatchConfig{
-		HomeTeam: "New Home", AwayTeam: "New Away", HomePlayers: []matchstate.Player{{Name: "New Player"}},
+		HomeTeam: "New Home", AwayTeam: "New Away",
+		HomePlayers: startingEleven("Home"), AwayPlayers: startingEleven("Away"),
 	})
 	if started.Code != http.StatusOK {
 		t.Fatalf("start status=%d body=%s", started.Code, started.Body.String())
@@ -1030,6 +1032,60 @@ func TestStartMatchEndpointResetsRunningStateForAnAuthorizedOperator(t *testing.
 	if got := store.Clock(matchID); got.Period != "pre_match" || got.ElapsedSeconds != 0 || got.Running {
 		t.Fatalf("start clock = %+v", got)
 	}
+}
+
+func TestStartMatchEndpointRejectsIncompleteLineupsWithoutResettingRunningState(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	observations := observation.NewMemoryCoordinator()
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil, pipeline.NewPromptManager())
+
+	const matchID = "real-match"
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Old Home", AwayTeam: "Old Away"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "24:10", TeamID: "home", TeamName: "Old Home",
+		Score: matchstate.Score{Home: 1, Away: 0}, Description: "Old Home scored.",
+	}); err != nil {
+		t.Fatalf("Create event error: %v", err)
+	}
+	elapsed := 1450
+	if _, err := store.SetClock(matchID, matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: "first_half", ElapsedSeconds: &elapsed, ExpectedVersion: 0,
+	}); err != nil {
+		t.Fatalf("SetClock error: %v", err)
+	}
+
+	started := doJSON(t, handler, http.MethodPost, "/api/matches/real-match/start?token=eval-token", matchstate.MatchConfig{
+		HomeTeam: "New Home", AwayTeam: "New Away",
+		HomePlayers: []matchstate.Player{{Name: "Home 1"}, {Name: "Home 2"}, {Name: "Home 3"}},
+		AwayPlayers: []matchstate.Player{{Name: "Away 1"}, {Name: "Away 2"}},
+	})
+	if started.Code != http.StatusBadRequest {
+		t.Fatalf("start status=%d body=%s, want 400", started.Code, started.Body.String())
+	}
+	if got := store.Config(matchID); got.HomeTeam != "Old Home" || got.AwayTeam != "Old Away" {
+		t.Fatalf("invalid start must preserve config, got %+v", got)
+	}
+	if got := store.Events(matchID); len(got) != 1 {
+		t.Fatalf("invalid start must preserve prior events, got %+v", got)
+	}
+	if got := store.PublicSnapshot(matchID).Score; got != (matchstate.Score{Home: 1, Away: 0}) {
+		t.Fatalf("invalid start must preserve score, got %+v", got)
+	}
+	if got := store.Clock(matchID); got.Period != "first_half" || got.ElapsedSeconds != elapsed {
+		t.Fatalf("invalid start must preserve clock, got %+v", got)
+	}
+}
+
+func startingEleven(prefix string) []matchstate.Player {
+	players := make([]matchstate.Player, 11)
+	for index := range players {
+		players[index] = matchstate.Player{Name: fmt.Sprintf("%s %d", prefix, index+1), Lineup: "starter"}
+	}
+	return players
 }
 
 func doJSON(t *testing.T, handler http.HandlerFunc, method, target string, body any) *httptest.ResponseRecorder {

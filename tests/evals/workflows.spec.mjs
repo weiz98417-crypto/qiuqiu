@@ -273,8 +273,18 @@ test('导演赛前配置通过页面保存，并同步到事实 API', async ({ p
   await page.goto(`/operator.html?token=${encodeURIComponent(token)}#setup`);
   await page.locator('#preHomeTeam').fill('评测主队');
   await page.locator('#preAwayTeam').fill('评测客队');
-  await page.locator('#preHomePlayers').fill('10 测试前锋 ST');
-  await page.locator('#preAwayPlayers').fill('9 测试门将 GK');
+  await page.locator('#preHomePlayers').fill(rosterText('主队', 3));
+  await page.locator('#preAwayPlayers').fill(rosterText('客队', 2));
+  await page.locator('#preSubmit').click();
+  await expect(page.locator('#toast')).toContainText('主队还缺 8 名首发，客队还缺 9 名首发');
+
+  const preservedState = await apiGet(request, `/api/matches/${matchId}/state`);
+  expect(preservedState.snapshot.score).toEqual({ home: 1, away: 0 });
+  const preservedLedger = await apiGet(request, `/api/matches/${matchId}/events`);
+  expect(preservedLedger.events).toHaveLength(1);
+
+  await page.locator('#preHomePlayers').fill(rosterText('主队', 11));
+  await page.locator('#preAwayPlayers').fill(rosterText('客队', 11));
   await page.locator('#preSubmit').click();
   await expect(page.locator('#toast')).toContainText('新比赛已开始');
   await expect(page.locator('#homeTeam')).toHaveValue('评测主队');
@@ -282,7 +292,7 @@ test('导演赛前配置通过页面保存，并同步到事实 API', async ({ p
   const config = await apiGet(request, `/api/matches/${matchId}/config`);
   expect(config.config.homeTeam).toBe('评测主队');
   expect(config.config.awayTeam).toBe('评测客队');
-  expect(config.config.homePlayers[0].name).toBe('测试前锋');
+  expect(config.config.homePlayers[0].name).toBe('主队球员1');
 
   const state = await apiGet(request, `/api/matches/${matchId}/state`);
   expect(state.snapshot.score).toEqual({ home: 0, away: 0 });
@@ -300,6 +310,10 @@ test('导演赛前配置通过页面保存，并同步到事实 API', async ({ p
   await expect(page.locator('#awayScore')).toHaveValue('0');
   await expect(page.locator('#clock')).toHaveValue('00:00');
 });
+
+function rosterText(prefix, count) {
+  return Array.from({ length: count }, (_, index) => `${index + 1} ${prefix}球员${index + 1} ${index === 0 ? 'GK' : 'MF'} 首发`).join('\n');
+}
 
 test('麦克风未授权时，用户侧保留可用的文字输入降级路径', async ({ page }) => {
   await page.addInitScript(() => {

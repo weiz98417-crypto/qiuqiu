@@ -1048,6 +1048,29 @@ func handleMatchAPIWithSources(store matchstate.Repository, traceReader companio
 	return handleMatchAPIWithDirectorDraft(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, nil, writeServices...)
 }
 
+func validateNewMatchConfig(config matchstate.MatchConfig) error {
+	if strings.TrimSpace(config.HomeTeam) == "" || strings.TrimSpace(config.AwayTeam) == "" {
+		return errors.New("新比赛必须填写主队和客队名称")
+	}
+	homeStarters := countStartingPlayers(config.HomePlayers)
+	awayStarters := countStartingPlayers(config.AwayPlayers)
+	if homeStarters < 11 || awayStarters < 11 {
+		return fmt.Errorf("新比赛双方至少需要 11 名首发，当前主队 %d 名、客队 %d 名", homeStarters, awayStarters)
+	}
+	return nil
+}
+
+func countStartingPlayers(players []matchstate.Player) int {
+	count := 0
+	for _, player := range players {
+		if strings.TrimSpace(player.Name) == "" || strings.EqualFold(strings.TrimSpace(player.Lineup), "bench") {
+			continue
+		}
+		count++
+	}
+	return count
+}
+
 func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	operatorWrites := selectedOperatorWriteService(writeServices)
 	return func(w http.ResponseWriter, r *http.Request) {
@@ -1078,6 +1101,10 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 			body, err := decodeOperatorJSON(w, r, &matchConfig)
 			if err != nil {
 				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			if err := validateNewMatchConfig(matchConfig); err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
 			executeOperatorWrite(w, r, operatorWrites, matchID, "match.start", body, func(_ context.Context) (operatorwrite.Response, error) {
