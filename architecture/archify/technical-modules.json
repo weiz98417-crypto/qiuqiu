@@ -1,0 +1,53 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜技术模块地图（真实运行边界）", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1380, 820] },
+  "components": [
+    { "id": "flutter", "type": "frontend", "label": "Flutter Client", "sublabel": "VAD · Live2D · Audio", "pos": [35, 70], "size": [250, 82] },
+    { "id": "operator", "type": "frontend", "label": "Operator Console", "sublabel": "Fact · Clock · Conflict · Draft", "pos": [365, 70], "size": [250, 82] },
+    { "id": "auth", "type": "security", "label": "Auth / Session", "sublabel": "Access · Refresh · Scope", "pos": [695, 70], "size": [250, 82] },
+    { "id": "source-manager", "type": "backend", "label": "Data Source Manager", "sublabel": "Poll · Replay · Freshness", "pos": [1025, 70], "size": [300, 82] },
+    { "id": "clock", "type": "backend", "label": "Match Clock", "sublabel": "Versioned period / time", "pos": [1025, 255], "size": [300, 82] },
+    { "id": "voice", "type": "backend", "label": "Voice Session", "sublabel": "VAD → ASR → TTS", "pos": [695, 255], "size": [250, 82] },
+    { "id": "scheduler", "type": "backend", "label": "Scheduler + Proactive Gate", "sublabel": "Priority · Interrupt · TTL · 是否打扰", "pos": [365, 255], "size": [250, 82] },
+    { "id": "gateway", "type": "backend", "label": "Realtime Gateway", "sublabel": "HTTP · WebSocket · Subs", "pos": [35, 255], "size": [250, 82] },
+    { "id": "agent", "type": "backend", "label": "Companion Agent｜事实认知", "sublabel": "Intent · Tools · Grounding · Fact State", "pos": [35, 440], "size": [250, 82] },
+    { "id": "ledger", "type": "backend", "label": "Fact Ledger", "sublabel": "Projection · Revision · Conflict", "pos": [365, 440], "size": [250, 82] },
+    { "id": "observation", "type": "backend", "label": "Observation", "sublabel": "Pending · Reconcile · Follow-up", "pos": [695, 440], "size": [250, 82] },
+    { "id": "director", "type": "backend", "label": "Companion Director｜陪伴决策", "sublabel": "宪法边界 · 关系状态 · 当前场景 · 是否回应", "pos": [1025, 440], "size": [300, 82] },
+    { "id": "realizer", "type": "backend", "label": "Reply Realizer", "sublabel": "SpeechPlan → Text", "pos": [1025, 625], "size": [300, 82] },
+    { "id": "presentation", "type": "backend", "label": "Presentation", "sublabel": "Speech · Motion · Hold", "pos": [695, 625], "size": [250, 82] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL + Outbox", "sublabel": "Facts · Relation · Trace · Audit", "pos": [365, 625], "size": [250, 82] },
+    { "id": "privacy", "type": "security", "label": "Privacy / Retention", "sublabel": "Export · Delete · Cleanup", "pos": [35, 625], "size": [250, 82] },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "短期协调状态", "pos": [1025, 715], "size": [300, 70] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "控制面与接入", "wraps": ["flutter", "operator", "auth", "source-manager", "clock"], "pad": 18 },
+    { "kind": "region", "label": "实时连接与语音", "wraps": ["voice", "scheduler", "gateway"], "pad": 18 },
+    { "kind": "region", "label": "智能体、事实与关系", "wraps": ["agent", "ledger", "observation", "director"], "pad": 18 },
+    { "kind": "region", "label": "表现、持久化与隐私", "wraps": ["realizer", "presentation", "postgres", "privacy", "redis"], "pad": 18 }
+  ],
+  "connections": [
+    { "id": "flutter-gateway", "from": "flutter", "to": "gateway", "label": "user voice / session", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [160, 190] },
+    { "id": "operator-auth", "from": "operator", "to": "auth", "label": "operator scope", "variant": "security" },
+    { "id": "auth-source", "from": "auth", "to": "source-manager", "label": "authorized source", "variant": "security", "labelAt": [985, 170] },
+    { "id": "source-clock", "from": "source-manager", "to": "clock", "label": "freshness / time", "variant": "default", "fromSide": "bottom", "toSide": "top", "labelAt": [1175, 180] },
+    { "id": "clock-voice", "from": "clock", "to": "voice", "label": "match context", "variant": "default" },
+    { "id": "voice-scheduler", "from": "voice", "to": "scheduler", "label": "transcript / cancel", "variant": "emphasis", "labelAt": [655, 350] },
+    { "id": "scheduler-gateway", "from": "scheduler", "to": "gateway", "label": "turn / playback", "variant": "emphasis", "labelAt": [325, 350] },
+    { "id": "gateway-agent", "from": "gateway", "to": "agent", "label": "user turn", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [245, 380] },
+    { "id": "agent-ledger", "from": "agent", "to": "ledger", "label": "read / append fact", "variant": "default", "labelAt": [325, 540] },
+    { "id": "ledger-observation", "from": "ledger", "to": "observation", "label": "fact revision", "variant": "security", "labelAt": [655, 540] },
+    { "id": "observation-director", "from": "observation", "to": "director", "label": "follow-up signal", "variant": "dashed", "labelAt": [985, 540] },
+    { "id": "director-realizer", "from": "director", "to": "realizer", "label": "SpeechPlan", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [1175, 540] },
+    { "id": "realizer-presentation", "from": "realizer", "to": "presentation", "label": "final text", "variant": "default", "labelAt": [980, 720] },
+    { "id": "presentation-postgres", "from": "presentation", "to": "postgres", "label": "trace / delivery", "variant": "dashed", "labelAt": [655, 720] },
+    { "id": "postgres-privacy", "from": "postgres", "to": "privacy", "label": "retention policy", "variant": "security", "labelAt": [325, 720] },
+    { "id": "gateway-redis", "from": "gateway", "to": "redis", "label": "coordination", "variant": "dashed", "fromSide": "bottom", "toSide": "left", "via": [[160,360],[1360,360],[1360,750],[1000,750]], "labelAt": [1100, 350] }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "读图方式", "items": ["蛇形主链表达责任顺序，跨行边只表示真实数据或控制关系", "模块当前可在 Go 单体内运行，边界先于拆进程"] },
+    { "dot": "emerald", "title": "事实与人味", "items": ["Source / Operator → Fact Ledger → Grounding", "人格宪法定边界，Relationship + Context 提供变化", "Director 决定是否回应、怎么陪，再交给 Reply Realizer"] },
+    { "dot": "slate", "title": "近期演进", "items": ["Redis 保留为短期协调层", "Outbox、共享调度和重放能力按生产扩容补齐"] }
+  ]
+}

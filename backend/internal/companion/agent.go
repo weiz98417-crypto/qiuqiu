@@ -15,6 +15,7 @@ import (
 	"time"
 	"unicode"
 
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/relationship"
@@ -63,6 +64,7 @@ type FactClaim struct {
 
 type MessageRequest struct {
 	SignalID            string
+	FactRefresh         string
 	MatchID             string
 	UserID              string
 	Text                string
@@ -78,6 +80,57 @@ type Response struct {
 	Trace          Trace
 	Presentation   relationship.PresentationPlan
 	ScheduleLookup *ScheduleLookup
+}
+
+type TurnKind string
+
+const (
+	TurnKindUser         TurnKind = "user"
+	TurnKindMatchEvent   TurnKind = "match_event"
+	TurnKindFirstMeeting TurnKind = "first_meeting"
+	TurnKindObservation  TurnKind = "observation_resolution"
+	TurnKindDelivery     TurnKind = "delivery"
+)
+
+type DeliveryInput struct {
+	SignalID      string
+	TraceID       string
+	UserID        string
+	MatchID       string
+	DecisionID    string
+	State         string
+	Purpose       string
+	UsedMemoryIDs []string
+	Now           time.Time
+}
+
+type TurnInput struct {
+	Kind         TurnKind
+	Message      *MessageRequest
+	MatchEvent   *MatchEventRequest
+	FirstMeeting *FirstMeetingRequest
+	Observation  *ObservationInput
+	Delivery     *DeliveryInput
+}
+
+type ObservationInput struct {
+	Resolution observation.Resolution
+	EventID    string
+	Now        time.Time
+}
+
+type TurnPlan struct {
+	Kind           TurnKind                      `json:"kind"`
+	Intent         Intent                        `json:"intent,omitempty"`
+	Reply          string                        `json:"reply,omitempty"`
+	Trace          Trace                         `json:"trace"`
+	Decision       *relationship.Decision        `json:"decision,omitempty"`
+	Presentation   relationship.PresentationPlan `json:"presentation"`
+	ScheduleLookup *ScheduleLookup               `json:"scheduleLookup,omitempty"`
+}
+
+type TurnPlanner interface {
+	Plan(context.Context, TurnInput) (TurnPlan, error)
 }
 
 type ProactiveResponse struct {
@@ -264,10 +317,22 @@ type Agent struct {
 	observations               observation.Coordinator
 	observationReconcileWindow func(string, string) time.Duration
 	realizeTimeout             time.Duration
+	interactions               interaction.Ledger
 }
 
 func NewAgent(tools MemoryTools) *Agent {
-	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond}
+	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger()}
+}
+
+func (a *Agent) WithInteractionLedger(ledger interaction.Ledger) *Agent {
+	if ledger != nil {
+		a.interactions = ledger
+	}
+	return a
+}
+
+func (a *Agent) RecordMediaDelivery(ctx context.Context, event interaction.Event) error {
+	return a.recordInteraction(ctx, event)
 }
 
 func (a *Agent) WithRealizer(realizer ReplyRealizer, timeout time.Duration) *Agent {
@@ -300,6 +365,53 @@ func (a *Agent) WithObservationReconcileWindow(provider func(string, string) tim
 
 func (a *Agent) UpdateTrace(ctx context.Context, trace Trace) error {
 	return a.tools.UpdateTrace(ctx, trace)
+}
+
+func (a *Agent) recordInteraction(ctx context.Context, event interaction.Event) error {
+	if a == nil || a.interactions == nil || event.ID == "" || event.UserID == "" || event.MatchID == "" {
+		return nil
+	}
+	_, err := a.interactions.Append(ctx, event)
+	return err
+}
+
+func (a *Agent) recordTurn(ctx context.Context, event interaction.Event, trace Trace) error {
+	payload, err := json.Marshal(trace)
+	if err != nil {
+		return err
+	}
+	event.TracePayload = payload
+	return a.recordInteraction(ctx, event)
+}
+
+func (a *Agent) recordScheduleLookupTurn(ctx context.Context, lookup ScheduleLookup, trace Trace) error {
+	return a.recordTurn(ctx, interaction.Event{
+		ID:         trace.ID,
+		Kind:       interaction.KindTurnPlanned,
+		SignalID:   lookup.ID,
+		UserID:     lookup.UserID,
+		MatchID:    lookup.MatchID,
+		TraceID:    trace.ID,
+		InputText:  lookup.Query,
+		OutputText: trace.Output,
+		Source:     "schedule_lookup",
+		CreatedAt:  trace.CreatedAt,
+	}, trace)
+}
+
+func decisionID(decision *relationship.Decision) string {
+	if decision == nil {
+		return ""
+	}
+	return decision.ID
+}
+
+func presentationPointer(presentation relationship.PresentationPlan) *relationship.PresentationPlan {
+	if presentation == (relationship.PresentationPlan{}) {
+		return nil
+	}
+	value := presentation
+	return &value
 }
 
 func (a *Agent) HandleObservationFactChanged(ctx context.Context, event matchstate.MatchEvent, now time.Time) ([]ObservationResponse, error) {
@@ -354,30 +466,23 @@ func (a *Agent) observationResponses(ctx context.Context, resolutions []observat
 		if strings.TrimSpace(resolution.ReliableText) == "" {
 			continue
 		}
-		trace := Trace{
-			ID:                    stableTraceID(resolution.UserID, resolution.MatchID, "observation:"+resolution.DeliveryKey),
-			MatchID:               resolution.MatchID,
-			UserID:                resolution.UserID,
-			Intent:                IntentRecentEvent,
-			RetrievedEvent:        compactAnchors(eventID),
-			Output:                resolution.ReliableText,
-			Reason:                "observation_" + string(resolution.Status),
-			ObservationResolution: &resolution,
-			CreatedAt:             now.UTC(),
-			ToolCalls: []ToolCall{
-				{Name: "observation.reconcile", Args: map[string]string{"observationId": resolution.ObservationID, "status": string(resolution.Status)}},
-				{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "observation_resolution"}},
-				{Name: "trace.write_decision", Args: map[string]string{"matchId": resolution.MatchID}},
-			},
+		anchor := strings.TrimSpace(resolution.FactID)
+		if anchor == "" {
+			anchor = eventID
 		}
-		if err := a.tools.WriteTrace(ctx, trace); err != nil {
+		plan, err := a.Plan(ctx, TurnInput{Kind: TurnKindObservation, Observation: &ObservationInput{
+			Resolution: resolution,
+			EventID:    anchor,
+			Now:        now,
+		}})
+		if err != nil {
 			return responses, err
 		}
 		responses = append(responses, ObservationResponse{
 			Resolution:   resolution,
-			Reply:        resolution.ReliableText,
-			Trace:        trace,
-			Presentation: observationPresentation(resolution.Status),
+			Reply:        plan.Reply,
+			Trace:        plan.Trace,
+			Presentation: plan.Presentation,
 		})
 	}
 	return responses, nil
@@ -394,9 +499,279 @@ func observationPresentation(status observation.Status) relationship.Presentatio
 	}
 }
 
+func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
+	if event, ok := interactionEventForInput(input); ok {
+		if err := a.recordInteraction(ctx, event); err != nil {
+			if errors.Is(err, interaction.ErrConflict) {
+				return TurnPlan{}, ErrTraceConflict
+			}
+			return TurnPlan{}, err
+		}
+	}
+	switch input.Kind {
+	case TurnKindUser:
+		if input.Message == nil {
+			return TurnPlan{}, errors.New("user turn input is required")
+		}
+		response, err := a.handleMessage(ctx, *input.Message)
+		if err != nil {
+			return TurnPlan{}, err
+		}
+		plan := TurnPlan{Kind: input.Kind, Intent: response.Intent, Reply: response.Reply, Trace: response.Trace, Presentation: response.Presentation, ScheduleLookup: response.ScheduleLookup, Decision: response.Trace.RelationshipDecision}
+		factRevision := a.factRevisionFor(ctx, input.Message.MatchID, response.Trace.RetrievedEvent)
+		if input.Message.FactRefresh != "" {
+			if err := a.markPriorFactTurnsStale(ctx, input.Message.UserID, input.Message.MatchID, input.Message.SignalID, response.Trace.ID, response.Trace.CreatedAt); err != nil {
+				return TurnPlan{}, err
+			}
+		}
+		if err := a.recordTurn(ctx, interaction.Event{ID: response.Trace.ID, Kind: interaction.KindTurnPlanned, SignalID: input.Message.SignalID, UserID: input.Message.UserID, MatchID: input.Message.MatchID, TraceID: response.Trace.ID, DecisionID: decisionID(response.Trace.RelationshipDecision), Decision: response.Trace.RelationshipDecision, Presentation: presentationPointer(response.Presentation), InputText: input.Message.Text, OutputText: response.Reply, FactIDs: response.Trace.RetrievedEvent, FactRevision: factRevision, Source: string(input.Kind), CreatedAt: response.Trace.CreatedAt}, response.Trace); err != nil {
+			return TurnPlan{}, err
+		}
+		if err := a.recordChosenSilence(ctx, plan, input.Message.UserID, input.Message.MatchID, input.Message.SignalID); err != nil {
+			return TurnPlan{}, err
+		}
+		return plan, nil
+	case TurnKindMatchEvent:
+		if input.MatchEvent == nil {
+			return TurnPlan{}, errors.New("match event turn input is required")
+		}
+		response, err := a.handleMatchEvent(ctx, *input.MatchEvent)
+		if err != nil {
+			return TurnPlan{}, err
+		}
+		plan := TurnPlan{Kind: input.Kind, Intent: IntentMatchReaction, Reply: response.Reply, Trace: response.Trace, Decision: &response.Decision, Presentation: response.Presentation}
+		factRevision := matchstate.DeliveryKey(input.MatchEvent.Event)
+		stale := input.MatchEvent.Critical && response.Decision.ID != "" && response.Decision.FactRevision != factRevision
+		if !stale {
+			if err := a.markPriorFactTurnsStale(ctx, input.MatchEvent.UserID, input.MatchEvent.Event.MatchID, input.MatchEvent.Event.ID, response.Trace.ID, response.Trace.CreatedAt); err != nil {
+				return TurnPlan{}, err
+			}
+		}
+		if err := a.recordTurn(ctx, interaction.Event{ID: response.Trace.ID, Kind: interaction.KindTurnPlanned, SignalID: input.MatchEvent.Event.ID, UserID: input.MatchEvent.UserID, MatchID: input.MatchEvent.Event.MatchID, TraceID: response.Trace.ID, DecisionID: response.Decision.ID, Decision: &response.Decision, Presentation: presentationPointer(response.Presentation), OutputText: response.Reply, FactIDs: []string{input.MatchEvent.Event.ID}, FactRevision: fmt.Sprintf("%d:%s", input.MatchEvent.Event.FactRevision, input.MatchEvent.Event.FactStatus), Stale: stale, Source: string(input.Kind), CreatedAt: response.Trace.CreatedAt}, response.Trace); err != nil {
+			return TurnPlan{}, err
+		}
+		if err := a.recordChosenSilence(ctx, plan, input.MatchEvent.UserID, input.MatchEvent.Event.MatchID, input.MatchEvent.Event.ID); err != nil {
+			return TurnPlan{}, err
+		}
+		return plan, nil
+	case TurnKindFirstMeeting:
+		if input.FirstMeeting == nil {
+			return TurnPlan{}, errors.New("first meeting turn input is required")
+		}
+		response, err := a.handleFirstMeeting(ctx, *input.FirstMeeting)
+		if err != nil {
+			return TurnPlan{}, err
+		}
+		plan := TurnPlan{Kind: input.Kind, Reply: response.Reply, Trace: response.Trace, Decision: &response.Decision, Presentation: response.Presentation}
+		if err := a.recordTurn(ctx, interaction.Event{ID: response.Trace.ID, Kind: interaction.KindTurnPlanned, SignalID: input.FirstMeeting.SignalID, UserID: input.FirstMeeting.UserID, MatchID: input.FirstMeeting.MatchID, TraceID: response.Trace.ID, DecisionID: response.Decision.ID, Decision: &response.Decision, Presentation: presentationPointer(response.Presentation), OutputText: response.Reply, Source: string(input.Kind), CreatedAt: response.Trace.CreatedAt}, response.Trace); err != nil {
+			return TurnPlan{}, err
+		}
+		if err := a.recordChosenSilence(ctx, plan, input.FirstMeeting.UserID, input.FirstMeeting.MatchID, input.FirstMeeting.SignalID); err != nil {
+			return TurnPlan{}, err
+		}
+		return plan, nil
+	case TurnKindObservation:
+		if input.Observation == nil {
+			return TurnPlan{}, errors.New("observation resolution input is required")
+		}
+		observationInput := input.Observation
+		resolution := observationInput.Resolution
+		if strings.TrimSpace(resolution.ReliableText) == "" {
+			return TurnPlan{}, errors.New("observation resolution reliable text is required")
+		}
+		now := observationInput.Now
+		if now.IsZero() {
+			now = time.Now().UTC()
+		}
+		if !resolution.FollowUpDeadline.IsZero() {
+			now = resolution.FollowUpDeadline.Add(-time.Hour).UTC()
+		}
+		trace := Trace{
+			ID:                    stableTraceID(resolution.UserID, resolution.MatchID, "observation:"+resolution.DeliveryKey),
+			MatchID:               resolution.MatchID,
+			UserID:                resolution.UserID,
+			Intent:                IntentRecentEvent,
+			RetrievedEvent:        compactAnchors(observationInput.EventID),
+			Output:                resolution.ReliableText,
+			Reason:                "observation_" + string(resolution.Status),
+			ObservationResolution: &resolution,
+			CreatedAt:             now.UTC(),
+			ToolCalls: []ToolCall{
+				{Name: "observation.reconcile", Args: map[string]string{"observationId": resolution.ObservationID, "status": string(resolution.Status)}},
+				{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "observation_resolution"}},
+				{Name: "trace.write_decision", Args: map[string]string{"matchId": resolution.MatchID}},
+			},
+		}
+		if err := a.tools.WriteTrace(ctx, trace); err != nil {
+			return TurnPlan{}, err
+		}
+		plan := TurnPlan{
+			Kind:         input.Kind,
+			Intent:       IntentRecentEvent,
+			Reply:        resolution.ReliableText,
+			Trace:        trace,
+			Presentation: observationPresentation(resolution.Status),
+		}
+		if err := a.recordTurn(ctx, interaction.Event{
+			ID:            trace.ID,
+			Kind:          interaction.KindTurnPlanned,
+			SignalID:      resolution.DeliveryKey,
+			UserID:        resolution.UserID,
+			MatchID:       resolution.MatchID,
+			TraceID:       trace.ID,
+			FactIDs:       compactAnchors(observationInput.EventID),
+			DeliveryKey:   resolution.DeliveryKey,
+			DeliveryState: "planned",
+			OutputText:    resolution.ReliableText,
+			Presentation:  presentationPointer(plan.Presentation),
+			Source:        string(input.Kind),
+			CreatedAt:     trace.CreatedAt,
+		}, trace); err != nil {
+			return TurnPlan{}, err
+		}
+		return plan, nil
+	case TurnKindDelivery:
+		if input.Delivery == nil {
+			return TurnPlan{}, errors.New("delivery input is required")
+		}
+		delivery := input.Delivery
+		decision, err := a.ObserveDelivery(ctx, delivery.SignalID, delivery.UserID, delivery.MatchID, delivery.DecisionID, delivery.State, delivery.Purpose, delivery.UsedMemoryIDs, delivery.Now)
+		if err != nil {
+			return TurnPlan{}, err
+		}
+		if err := a.recordInteraction(ctx, interaction.Event{ID: delivery.SignalID, Kind: interaction.KindDelivery, SignalID: delivery.SignalID, UserID: delivery.UserID, MatchID: delivery.MatchID, TraceID: delivery.TraceID, DecisionID: delivery.DecisionID, DeliveryKey: delivery.TraceID, DeliveryState: delivery.State, Source: delivery.Purpose, CreatedAt: delivery.Now}); err != nil {
+			return TurnPlan{}, err
+		}
+		return TurnPlan{Kind: input.Kind, Decision: &decision, Presentation: decision.Presentation}, nil
+	default:
+		return TurnPlan{}, fmt.Errorf("unsupported turn kind %q", input.Kind)
+	}
+}
+
+func (a *Agent) recordChosenSilence(ctx context.Context, plan TurnPlan, userID, matchID, signalID string) error {
+	if strings.TrimSpace(plan.Reply) != "" || plan.Trace.ID == "" {
+		return nil
+	}
+	return a.recordInteraction(ctx, interaction.Event{
+		ID: interactionEventID("delivery", userID, matchID, plan.Trace.ID+":skipped"), Kind: interaction.KindDelivery,
+		SignalID: signalID, UserID: userID, MatchID: matchID, TraceID: plan.Trace.ID,
+		DecisionID: decisionID(plan.Decision), DeliveryKey: plan.Trace.ID, DeliveryState: "skipped",
+		Source: "chosen_silence", CreatedAt: plan.Trace.CreatedAt,
+	})
+}
+
+func (a *Agent) factRevisionFor(ctx context.Context, matchID string, factIDs []string) string {
+	if len(factIDs) == 0 || a == nil || a.tools == nil {
+		return ""
+	}
+	events, err := a.tools.RecentEvents(ctx, matchID, 100)
+	if err != nil {
+		return ""
+	}
+	for _, event := range events {
+		if containsString(factIDs, event.ID) || containsString(factIDs, event.FactID) {
+			return fmt.Sprintf("%d:%s", event.FactRevision, event.FactStatus)
+		}
+	}
+	return ""
+}
+
+func (a *Agent) markPriorFactTurnsStale(ctx context.Context, userID, matchID, signalID, currentTraceID string, at time.Time) error {
+	if a == nil || a.interactions == nil {
+		return nil
+	}
+	events, err := a.interactions.List(ctx, userID, matchID, 500)
+	if err != nil {
+		return err
+	}
+	for _, event := range events {
+		if event.Kind != interaction.KindTurnPlanned || event.SignalID != signalID || event.TraceID == "" || event.TraceID == currentTraceID || event.Stale {
+			continue
+		}
+		marker := interaction.Event{
+			ID:         interactionEventID("stale", userID, matchID, event.TraceID),
+			Kind:       interaction.KindTurnStale,
+			SignalID:   signalID,
+			UserID:     userID,
+			MatchID:    matchID,
+			TraceID:    event.TraceID,
+			DecisionID: event.DecisionID,
+			Stale:      true,
+			Source:     "fact_revision",
+			CreatedAt:  at,
+		}
+		if err := a.recordInteraction(ctx, marker); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func interactionEventForInput(input TurnInput) (interaction.Event, bool) {
+	switch input.Kind {
+	case TurnKindUser:
+		if input.Message == nil || input.Message.SignalID == "" || input.Message.FactRefresh != "" {
+			return interaction.Event{}, false
+		}
+		return interaction.Event{ID: interactionEventID("signal", input.Message.UserID, input.Message.MatchID, input.Message.SignalID), Kind: interaction.KindSignal, SignalID: input.Message.SignalID, UserID: input.Message.UserID, MatchID: input.Message.MatchID, InputText: input.Message.Text, Source: string(input.Kind), CreatedAt: input.Message.Now}, true
+	case TurnKindMatchEvent:
+		if input.MatchEvent == nil {
+			return interaction.Event{}, false
+		}
+		event := input.MatchEvent.Event
+		revision := fmt.Sprintf("%d:%s", event.FactRevision, event.FactStatus)
+		return interaction.Event{ID: interactionEventID("fact", input.MatchEvent.UserID, event.MatchID, event.ID+":"+revision), Kind: interaction.KindFactRevision, SignalID: event.ID, UserID: input.MatchEvent.UserID, MatchID: event.MatchID, FactIDs: []string{event.ID}, FactRevision: revision, DeliveryKey: matchstate.DeliveryKey(event), Source: string(input.Kind), CreatedAt: input.MatchEvent.Now}, true
+	case TurnKindFirstMeeting:
+		if input.FirstMeeting == nil || input.FirstMeeting.SignalID == "" {
+			return interaction.Event{}, false
+		}
+		return interaction.Event{ID: interactionEventID("signal", input.FirstMeeting.UserID, input.FirstMeeting.MatchID, input.FirstMeeting.SignalID), Kind: interaction.KindSignal, SignalID: input.FirstMeeting.SignalID, UserID: input.FirstMeeting.UserID, MatchID: input.FirstMeeting.MatchID, Source: string(input.Kind), CreatedAt: input.FirstMeeting.Now}, true
+	case TurnKindObservation:
+		if input.Observation == nil {
+			return interaction.Event{}, false
+		}
+		resolution := input.Observation.Resolution
+		if resolution.DeliveryKey == "" || resolution.UserID == "" || resolution.MatchID == "" {
+			return interaction.Event{}, false
+		}
+		createdAt := input.Observation.Now
+		if !resolution.FollowUpDeadline.IsZero() {
+			createdAt = resolution.FollowUpDeadline.Add(-time.Hour).UTC()
+		}
+		return interaction.Event{
+			ID:          interactionEventID("signal", resolution.UserID, resolution.MatchID, resolution.DeliveryKey),
+			Kind:        interaction.KindSignal,
+			SignalID:    resolution.DeliveryKey,
+			UserID:      resolution.UserID,
+			MatchID:     resolution.MatchID,
+			FactIDs:     compactAnchors(input.Observation.EventID),
+			DeliveryKey: resolution.DeliveryKey,
+			Source:      string(input.Kind),
+			CreatedAt:   createdAt,
+		}, true
+	case TurnKindDelivery:
+		return interaction.Event{}, false
+	default:
+		return interaction.Event{}, false
+	}
+}
+
+func interactionEventID(kind, userID, matchID, suffix string) string {
+	return strings.Join([]string{kind, userID, matchID, suffix}, ":")
+}
+
 func (a *Agent) HandleMessage(ctx context.Context, req MessageRequest) (Response, error) {
+	plan, err := a.Plan(ctx, TurnInput{Kind: TurnKindUser, Message: &req})
+	if err != nil {
+		return Response{}, err
+	}
+	return Response{Intent: plan.Intent, Reply: plan.Reply, Trace: plan.Trace, Presentation: plan.Presentation, ScheduleLookup: plan.ScheduleLookup}, nil
+}
+
+func (a *Agent) handleMessage(ctx context.Context, req MessageRequest) (Response, error) {
 	return a.HandleBoundaryRequest(ctx, AgentBoundaryRequest{
 		SignalID:            req.SignalID,
+		FactRefresh:         req.FactRefresh,
 		MatchID:             req.MatchID,
 		UserID:              req.UserID,
 		Text:                req.Text,
@@ -412,7 +787,11 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	intent := Classify(req.Text)
 	requestTraceID := traceID(req.Now)
 	if signalID := strings.TrimSpace(req.SignalID); signalID != "" && len(signalID) <= 256 {
-		requestTraceID = stableTraceID(req.UserID, req.MatchID, signalID)
+		traceSignalID := signalID
+		if refresh := strings.TrimSpace(req.FactRefresh); refresh != "" {
+			traceSignalID += "\x00fact-refresh:" + refresh
+		}
+		requestTraceID = stableTraceID(req.UserID, req.MatchID, traceSignalID)
 	}
 	trace := Trace{
 		ID:        requestTraceID,
@@ -732,6 +1111,7 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 		ParentTraceID: lookup.ParentTraceID,
 		MatchID:       lookup.MatchID,
 		UserID:        lookup.UserID,
+		Input:         lookup.Query,
 		Intent:        IntentSchedule,
 		Schedule:      &intent,
 		CreatedAt:     createdAt,
@@ -748,6 +1128,9 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 					ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
 				)
 				if err := a.tools.WriteTrace(ctx, trace); err != nil {
+					return Response{}, err
+				}
+				if err := a.recordScheduleLookupTurn(ctx, lookup, trace); err != nil {
 					return Response{}, err
 				}
 				return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
@@ -776,6 +1159,9 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 				trace.Reason = "schedule_lookup_context_updated"
 				trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
 				if err := a.tools.WriteTrace(ctx, trace); err != nil {
+					return Response{}, err
+				}
+				if err := a.recordScheduleLookupTurn(ctx, lookup, trace); err != nil {
 					return Response{}, err
 				}
 				return Response{Intent: IntentSchedule, Reply: currentReply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
@@ -808,6 +1194,9 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 	trace.Output = reply
 	trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
+		return Response{}, err
+	}
+	if err := a.recordScheduleLookupTurn(ctx, lookup, trace); err != nil {
 		return Response{}, err
 	}
 	return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
@@ -1113,6 +1502,18 @@ func isFactIntent(intent Intent) bool {
 }
 
 func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (ProactiveResponse, error) {
+	plan, err := a.Plan(ctx, TurnInput{Kind: TurnKindMatchEvent, MatchEvent: &req})
+	if err != nil {
+		return ProactiveResponse{}, err
+	}
+	decision := relationship.Decision{}
+	if plan.Decision != nil {
+		decision = *plan.Decision
+	}
+	return ProactiveResponse{Reply: plan.Reply, Trace: plan.Trace, Decision: decision, Presentation: plan.Presentation}, nil
+}
+
+func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (ProactiveResponse, error) {
 	if req.Now.IsZero() {
 		req.Now = time.Now().UTC()
 	}
@@ -1145,6 +1546,10 @@ func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		return ProactiveResponse{}, err
 	}
 	trace.Reason = "relationship_match_reaction"
+	if req.Critical && decision.ID != "" && decision.FactRevision != deliveryKey {
+		req.OutputAllowed = false
+		trace.Reason = "critical_fact_refresh_limit"
+	}
 	if decision.ID != "" {
 		trace.RelationshipDecision = &decision
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
@@ -1160,7 +1565,7 @@ func (a *Agent) HandleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		if strings.TrimSpace(reply) == "" {
 			reply = fallbackProactive(req.Event, req.Snapshot)
 		}
-	} else {
+	} else if trace.Reason != "critical_fact_refresh_limit" {
 		trace.Reason = "relationship_match_observed_silent"
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
 			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "mode": "silence",
@@ -1191,8 +1596,9 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 		now = time.Now().UTC()
 	}
 	deliveryKey := matchstate.DeliveryKey(ev)
+	signalID := "match:" + userID + ":" + ev.ID
 	return a.director.Apply(ctx, relationship.Signal{
-		ID:           "match:" + userID + ":" + deliveryKey,
+		ID:           signalID,
 		TraceID:      stableTraceID(userID, ev.MatchID, "match:"+deliveryKey),
 		Kind:         relationship.SignalMatchEvent,
 		UserID:       userID,
@@ -1224,6 +1630,18 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 }
 
 func (a *Agent) HandleFirstMeeting(ctx context.Context, req FirstMeetingRequest) (ProactiveResponse, error) {
+	plan, err := a.Plan(ctx, TurnInput{Kind: TurnKindFirstMeeting, FirstMeeting: &req})
+	if err != nil {
+		return ProactiveResponse{}, err
+	}
+	decision := relationship.Decision{}
+	if plan.Decision != nil {
+		decision = *plan.Decision
+	}
+	return ProactiveResponse{Reply: plan.Reply, Trace: plan.Trace, Decision: decision, Presentation: plan.Presentation}, nil
+}
+
+func (a *Agent) handleFirstMeeting(ctx context.Context, req FirstMeetingRequest) (ProactiveResponse, error) {
 	startedAt := time.Now()
 	if req.Now.IsZero() {
 		req.Now = startedAt
@@ -2128,11 +2546,21 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 	}
 	realizeCtx, cancel := context.WithTimeout(ctx, a.realizeTimeout)
 	defer cancel()
+	factMode := relationship.FactModeNone
+	if trace != nil && trace.Claim != nil {
+		if trace.Claim.Status == ClaimStatusUnverified {
+			factMode = relationship.FactModeUnverified
+		} else {
+			factMode = relationship.FactModeDeterministic
+		}
+	} else if len(anchors) > 0 {
+		factMode = relationship.FactModeAnchored
+	}
 	grounding := relationship.GroundedContent{
 		Intent:          string(intent),
 		ReliableText:    reliable,
 		RequiredAnchors: append([]string(nil), anchors...),
-		FactMode:        relationship.FactModeNone,
+		FactMode:        factMode,
 	}
 	realized, err := a.realizer.Realize(realizeCtx, RealizationRequest{
 		UserInput:    req.Text,

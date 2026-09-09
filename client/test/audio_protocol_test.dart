@@ -1,5 +1,6 @@
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qiuqiu/screens/match_screen.dart';
+import 'package:qiuqiu/services/match_session_controller.dart';
 
 void main() {
   test('连续音频元数据按到达顺序与二进制帧配对', () {
@@ -61,19 +62,17 @@ void main() {
   });
 
   test('打断播放会保留用户当前交流阶段并生成回执', () {
-    expect(
-      phaseAfterInterrupt(ConversationPhase.userSpeaking),
-      ConversationPhase.userSpeaking,
+    final controller = MatchSessionController();
+    controller.transcriptPartial('我还在说');
+    controller.handlePlayback(
+      'interrupted',
+      traceId: 'trace-interrupted',
+      continuousEnabled: true,
     );
-    expect(
-      phaseAfterInterrupt(ConversationPhase.understanding),
-      ConversationPhase.understanding,
-    );
-    expect(
-      phaseAfterInterrupt(ConversationPhase.speaking),
-      ConversationPhase.listening,
-    );
-    expect(interruptedPlaybackReceipt('trace-interrupted'), {
+    expect(controller.state.phase, MatchSessionPhase.userSpeaking);
+    final receipt =
+        controller.takeCommands().whereType<SendSocketCommand>().last.message;
+    expect(receipt, {
       'type': 'voice_playback',
       'traceId': 'trace-interrupted',
       'state': 'interrupted',

@@ -1,0 +1,34 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜MVP 容器图", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1120, 650] },
+  "components": [
+    { "id": "flutter", "type": "frontend", "label": "Flutter Client", "sublabel": "Live2D · VAD · 音频播放", "pos": [40, 320], "size": [180, 86] },
+    { "id": "api", "type": "backend", "label": "Go API + WebSocket", "sublabel": "统一接入｜会话、鉴权、实时音频与事件", "pos": [275, 320], "size": [200, 86] },
+ { "id": "pipeline", "type": "backend", "label": "Agent Runtime", "sublabel": "Scheduler → Companion Agent → Director → Delivery", "pos": [520, 320], "size": [230, 86] },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "短期会话 / 协调（非事实源）", "pos": [275, 120], "size": [180, 82] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL + Outbox", "sublabel": "事实 · 关系 · 会话 · Trace · 幂等", "pos": [520, 120], "size": [210, 82] },
+    { "id": "match", "type": "external", "label": "比赛数据源", "sublabel": "HTTP / 轮询", "pos": [520, 470], "size": [180, 82] },
+    { "id": "ai", "type": "external", "label": "ASR / LLM / TTS", "sublabel": "HTTPS / WebSocket", "pos": [825, 120], "size": [180, 82] },
+    { "id": "operator", "type": "external", "label": "运营控制台 + Operator Write", "sublabel": "事实 · 来源 · Clock · Conflict · Draft", "pos": [275, 470], "size": [220, 82] },
+    { "id": "auth", "type": "security", "label": "Auth / Session", "sublabel": "匿名身份 · Scope · Refresh", "pos": [40, 120], "size": [190, 82] },
+    { "id": "ledger", "type": "backend", "label": "Fact Ledger", "sublabel": "投影 · 修订 · 冲突 · 撤销", "pos": [825, 320], "size": [190, 86] }
+  ],
+  "boundaries": [ { "kind": "region", "label": "MVP Go 单体逻辑边界", "wraps": ["api", "pipeline", "redis", "postgres", "auth", "ledger"], "pad": 30 } ],
+  "connections": [
+    { "id": "flutter-api", "from": "flutter", "to": "api", "label": "双向 WebSocket", "variant": "emphasis", "labelAt": [248, 420] },
+    { "id": "api-pipeline", "from": "api", "to": "pipeline", "label": "转交语音、比赛事件与导播上下文", "variant": "emphasis", "labelAt": [498, 300] },
+    { "id": "pipeline-ai", "from": "pipeline", "to": "ai", "label": "ASR / LLM Realizer / TTS", "fromSide": "right", "toSide": "left", "labelAt": [778, 230] },
+    { "id": "api-redis", "from": "api", "to": "redis", "label": "会话缓存", "fromSide": "top", "toSide": "bottom", "labelAt": [365, 250] },
+    { "id": "pipeline-postgres", "from": "pipeline", "to": "postgres", "label": "事实账本 / 审计", "fromSide": "top", "toSide": "bottom", "labelAt": [560, 280] },
+    { "id": "match-api", "from": "match", "to": "api", "label": "比赛事件进入统一接入", "variant": "emphasis" },
+    { "id": "pipeline-ledger", "from": "pipeline", "to": "ledger", "label": "规范化事件 / 校正写入", "variant": "default", "labelAt": [788, 420] },
+    { "id": "operator-api", "from": "operator", "to": "api", "label": "校正、发布、幂等写入", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "labelAt": [365, 445] },
+    { "id": "auth-api", "from": "auth", "to": "api", "label": "claims / scopes", "variant": "security", "fromSide": "right", "toSide": "left" },
+    { "id": "api-postgres", "from": "api", "to": "postgres", "label": "sessions / traces / outbox", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "labelAt": [470, 210] }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "当前 MVP", "items": ["API 与管道可同进程部署", "外部 AI 服务不计入自建容器"] },
+    { "dot": "emerald", "title": "数据责任", "items": ["Redis 保存短期状态", "PostgreSQL 保存可追溯事实"] }
+  ]
+}

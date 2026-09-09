@@ -1,0 +1,45 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": { "title": "球球｜事件与数据流", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1080, 650] },
+  "stages": [ { "label": "Sources" }, { "label": "Ingest" }, { "label": "Fact + Bus" }, { "label": "Processing" }, { "label": "Destinations" } ],
+  "nodes": [
+    { "id": "match-source", "type": "external", "label": "比赛 API", "sublabel": "事件", "stage": 0, "row": 0, "tag": "source" },
+    { "id": "operator-source", "type": "external", "label": "导播台", "sublabel": "人工校正", "stage": 0, "row": 2, "yOffset": -70, "tag": "source" },
+    { "id": "voice-source", "type": "frontend", "label": "用户语音", "sublabel": "PCM chunks", "stage": 0, "row": 4, "yOffset": -88, "tag": "source" },
+    { "id": "ingest", "type": "backend", "label": "接入与规范化", "sublabel": "normalize · dedupe", "stage": 1, "row": 1, "yOffset": -22, "tag": "idempotent" },
+    { "id": "asr", "type": "backend", "label": "语音接入", "sublabel": "streaming ASR", "stage": 1, "row": 4, "yOffset": -88, "tag": "realtime" },
+    { "id": "ledger", "type": "database", "label": "事实账本", "sublabel": "revision history", "stage": 2, "row": 1, "yOffset": -22, "tag": "replayable" },
+    { "id": "bus", "type": "messagebus", "label": "Outbox Fan-out", "sublabel": "atomic publish · retry", "stage": 2, "row": 3, "yOffset": -66, "tag": "async" },
+    { "id": "context", "type": "backend", "label": "对话上下文", "sublabel": "user · match · relation", "stage": 2, "row": 4, "yOffset": -88, "tag": "session" },
+    { "id": "policy", "type": "backend", "label": "事件与陪伴策略", "sublabel": "priority · constitution", "stage": 3, "row": 1, "yOffset": -22, "tag": "ordered" },
+    { "id": "conversation", "type": "backend", "label": "Agent + Director", "sublabel": "facts · human plans", "stage": 3, "row": 4, "yOffset": -88, "tag": "context" },
+    { "id": "client-event", "type": "frontend", "label": "客户端事件通道", "sublabel": "字幕 / 动作", "stage": 4, "row": 1, "yOffset": -22, "tag": "delivery" },
+    { "id": "client-audio", "type": "frontend", "label": "客户端音频通道", "sublabel": "streaming audio", "stage": 4, "row": 4, "yOffset": -88, "tag": "delivery" },
+    { "id": "auth", "type": "security", "label": "Session / Auth", "sublabel": "identity · scope", "stage": 0, "row": 3, "yOffset": -42, "tag": "control" },
+    { "id": "observation", "type": "backend", "label": "Observation", "sublabel": "pending · reconcile", "stage": 3, "row": 2, "yOffset": -44, "tag": "recovery" },
+    { "id": "delivery", "type": "backend", "label": "Delivery + Trace", "sublabel": "TTS · playback status", "stage": 3, "row": 0, "tag": "audit" },
+    { "id": "privacy", "type": "security", "label": "Privacy / Retention", "sublabel": "export · cleanup", "stage": 4, "row": 0, "tag": "governance" }
+  ],
+  "flows": [
+    { "id": "source-ingest", "from": "match-source", "to": "ingest", "label": "match event", "classification": "外部事实", "variant": "emphasis", "route": "vertical-channel" },
+    { "id": "operator-ingest", "from": "operator-source", "to": "ingest", "label": "manual confirm", "classification": "人工确认", "variant": "dashed", "route": "vertical-channel", "labelAt": [270, 370] },
+    { "id": "voice-asr", "from": "voice-source", "to": "asr", "label": "audio", "classification": "实时", "variant": "emphasis", "route": "straight" },
+    { "id": "ingest-ledger", "from": "ingest", "to": "ledger", "label": "append revision", "classification": "可回放", "variant": "emphasis", "route": "straight", "labelAt": [420, 220] },
+    { "id": "ingest-bus", "from": "ingest", "to": "bus", "label": "publish event", "classification": "异步", "variant": "default", "route": "vertical-channel", "labelAt": [450, 360] },
+    { "id": "asr-context", "from": "asr", "to": "context", "label": "transcript", "classification": "会话", "variant": "emphasis", "route": "straight" },
+    { "id": "ledger-policy", "from": "ledger", "to": "policy", "label": "confirmed context", "classification": "事实", "variant": "emphasis", "route": "straight" },
+    { "id": "bus-conversation", "from": "bus", "to": "conversation", "label": "event context", "classification": "异步", "variant": "default", "route": "vertical-channel" },
+    { "id": "context-conversation", "from": "context", "to": "conversation", "label": "user context", "classification": "会话", "variant": "emphasis", "route": "straight", "labelDy": 30 },
+    { "id": "conversation-client-event", "from": "conversation", "to": "client-event", "label": "Response Plan → 字幕 / 动作", "classification": "WebSocket", "variant": "emphasis", "route": "vertical-channel", "labelAt": [850, 585] },
+    { "id": "conversation-client-audio", "from": "conversation", "to": "client-audio", "label": "Response Plan → TTS 音频", "classification": "实时", "variant": "emphasis", "route": "vertical-channel", "labelAt": [850, 620] },
+    { "id": "auth-context", "from": "auth", "to": "ingest", "label": "authorized session", "classification": "权限", "variant": "security", "route": "vertical-channel", "labelAt": [280, 470] },
+    { "id": "bus-observation", "from": "bus", "to": "observation", "label": "fact changed", "classification": "异步", "variant": "security", "route": "vertical-channel" },
+    { "id": "privacy-trace", "from": "privacy", "to": "delivery", "label": "delete / retention", "classification": "治理", "variant": "security", "route": "vertical-channel", "labelAt": [835, 200] }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "事实与人味", "items": ["比赛事实先写入账本", "关系、场景和人格规则在 Director 汇合成回应计划"] },
+    { "dot": "orange", "title": "实时层", "items": ["语音走低延迟 WebSocket", "事件通道与对话管道异步解耦"] },
+    { "dot": "rose", "title": "恢复边界", "items": ["去重、重试、审计分别标注", "死信与补偿在后续部署图补充"] }
+  ]
+}

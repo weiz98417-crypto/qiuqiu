@@ -81,3 +81,23 @@ _Avoid_: Push notification, automated message
 **Chosen Silence（主动沉默）**:
 A deliberate decision not to speak because silence best serves the shared moment or user boundary.
 _Avoid_: Missing response, timeout
+
+**Match Fact（比赛事实）**:
+A time-scoped, source-attributed statement about what happened in a match, including its certainty, visibility, and later correction history.
+_Avoid_: Raw event, score cache
+
+**Fact Claim（赛况主张）**:
+A user's or external source's statement about a Match Fact that Qiuqiu may confirm, contradict, or leave unverified.
+_Avoid_: User mistake, fact error
+
+**Watch Turn（陪看回合）**:
+A bounded moment in the shared viewing relationship that begins with a user signal or match change and ends with a Communication Act, Chosen Silence, or a known delivery outcome.
+_Avoid_: Request, pipeline run
+
+**Delivery Outcome（投递结果）**:
+What the user actually received from a Watch Turn, such as displayed, played, interrupted, skipped, or failed; it is distinct from what Qiuqiu intended to say.
+_Avoid_: Send status, transport result
+
+**Interaction Ledger（互动账本）**:
+The chronological account of Watch Turns, Match Facts, relationship decisions, and Delivery Outcomes that lets Qiuqiu preserve continuity and explain how a later response was shaped.
+_Avoid_: Chat history, log dump

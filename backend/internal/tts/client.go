@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/resilience"
 )
 
 var ErrNotConfigured = errors.New("tts provider is not configured")
@@ -22,6 +24,7 @@ type Client struct {
 	voice      string
 	httpClient *http.Client
 	mockAudio  []byte
+	breaker    *resilience.CircuitBreaker
 }
 
 func NewClient(apiKey string) *Client {
@@ -33,6 +36,7 @@ func NewClient(apiKey string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		breaker: resilience.NewCircuitBreaker(3, 10*time.Second),
 	}
 }
 
@@ -66,6 +70,13 @@ func (c *Client) WithVoice(voice string) *Client {
 	return c
 }
 
+func (c *Client) CircuitState() resilience.State {
+	if c == nil {
+		return resilience.StateOpen
+	}
+	return c.breaker.State()
+}
+
 type SynthesizeResult struct {
 	AudioData []byte
 	Duration  time.Duration
@@ -89,6 +100,9 @@ func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, i
 	}
 	if strings.TrimSpace(c.apiKey) == "" {
 		return nil, ErrNotConfigured
+	}
+	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("tts unavailable: %w", err)
 	}
 	voice := strings.TrimSpace(voiceID)
 	if voice == "" || strings.HasPrefix(voice, "cgSg") {
@@ -117,11 +131,13 @@ func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, i
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.breaker.Failure(time.Now().UTC())
 		errBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("tts error %d: %s", resp.StatusCode, string(errBody))
 	}
@@ -136,16 +152,20 @@ func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, i
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts decode: %w", err)
 	}
 	if len(raw.Choices) == 0 || strings.TrimSpace(raw.Choices[0].Message.Audio.Data) == "" {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts returned no audio")
 	}
 	audio, err := decodeBase64(raw.Choices[0].Message.Audio.Data)
 	if err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts decode audio: %w", err)
 	}
 
+	c.breaker.Success()
 	return &SynthesizeResult{
 		AudioData: audio,
 		Duration:  time.Since(start),

@@ -23,7 +23,7 @@ await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoo
 
 if (tier !== 'offline') {
   await runCommand('node', [join('scripts', 'evals', 'session-isolation-e2e.mjs')], { cwd: repoRoot, env: evalEnvironment });
-  const backend = await startEvalBackend();
+  const backend = await startEvalBackend({ environment: { QIUQIU_RUNTIME_TTS: '1' } });
   try {
     const env = {
       ...evalEnvironment,
@@ -33,11 +33,24 @@ if (tier !== 'offline') {
     };
     await runCommand('node', [join('scripts', 'evals', 'runtime-e2e.mjs')], { cwd: repoRoot, env });
     await runCommand('go', ['run', './cmd/eval-audit', '-base-url', backend.baseUrl, '-match-id', 'test', '-out', '../artifacts/evals/trace-audit.json'], { cwd: backendDir, env });
-    if (!skipBrowser) {
-      await runCommand(process.execPath, [join('node_modules', '@playwright', 'test', 'cli.js'), 'test', '--config=playwright.config.mjs'], { cwd: repoRoot, env });
-    }
+    await runCommand('node', [join('scripts', 'evals', 'interaction-audit.mjs'), '--base-url', backend.baseUrl, '--match-id', 'test', '--user-id', 'runtime-fan', '--out', 'artifacts/evals/interaction-audit.json'], { cwd: repoRoot, env });
   } finally {
     await backend.stop();
+  }
+
+  if (!skipBrowser) {
+    const browserBackend = await startEvalBackend();
+    try {
+      const browserEnv = {
+        ...evalEnvironment,
+        QIUQIU_BASE_URL: browserBackend.baseUrl,
+        QIUQIU_RUNTIME_TTS: '0',
+        APP_TOKEN: browserBackend.token,
+      };
+      await runCommand(process.execPath, [join('node_modules', '@playwright', 'test', 'cli.js'), 'test', '--config=playwright.config.mjs'], { cwd: repoRoot, env: browserEnv });
+    } finally {
+      await browserBackend.stop();
+    }
   }
 }
 

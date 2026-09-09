@@ -223,7 +223,7 @@ async function prepareClient(page) {
     localStorage.setItem('qiuqiu.app.token', value);
     localStorage.setItem('flutter.first_meeting_completed', 'true');
   }, token);
-  await page.goto('/');
+  await page.goto(`/?matchId=${encodeURIComponent(matchId)}`);
   await page.getByRole('button', { name: 'Enable accessibility' }).evaluate((element) => element.click());
 }
 

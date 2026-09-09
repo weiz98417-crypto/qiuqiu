@@ -141,6 +141,31 @@
   .top-tabs { display: flex; align-items: center; gap: 24px; margin-left: 28px; }
   .top-tabs a { color: var(--on-variant); text-decoration: none; font-weight: 600; padding: 6px 8px; border-radius: 6px; }
   .top-tabs a.active { color: var(--primary); border-bottom: 2px solid var(--primary); border-radius: 0; }
+  .auth-trigger { cursor: pointer; }
+  .auth-trigger:hover { color: var(--on-surface); border-color: rgba(255,182,147,.45); }
+  .operator-auth-panel {
+    position: fixed;
+    top: 72px;
+    right: 24px;
+    z-index: 30;
+    width: min(440px, calc(100vw - 32px));
+    padding: 14px;
+    display: grid;
+    gap: 10px;
+    border: 1px solid rgba(255,182,147,.34);
+    border-radius: 10px;
+    background: rgba(18,33,49,.98);
+    box-shadow: 0 18px 50px rgba(0,0,0,.42);
+  }
+  .operator-auth-panel[hidden] { display: none; }
+  .operator-auth-head { display: flex; align-items: flex-start; justify-content: space-between; gap: 12px; }
+  .operator-auth-copy { display: grid; gap: 3px; }
+  .operator-auth-copy strong { color: var(--primary); }
+  .operator-auth-controls { display: grid; grid-template-columns: minmax(0,1fr) auto auto; gap: 8px; align-items: end; }
+  .operator-auth-controls label { min-width: 0; }
+  .operator-auth-message { min-height: 18px; color: var(--on-variant); font-size: 12px; line-height: 18px; }
+  .operator-auth-message.bad { color: var(--error); }
+  .operator-auth-message.ok { color: var(--green); }
   .icon-btn {
     width: 36px; height: 36px; border: 0; border-radius: 999px;
     background: transparent; color: var(--on-surface);
@@ -200,6 +225,7 @@
   }
   .clock-row { display: flex; align-items: center; gap: 8px; flex-wrap: wrap; justify-content: center; }
   .clock-row select { border: 0; background: transparent; color: var(--on-variant); padding: 0 18px 0 0; font-size: 11px; font-weight: 800; letter-spacing: .05em; text-transform: uppercase; }
+  .score-correction-shortcut { color: var(--primary); border-color: rgba(255,182,147,.28); }
   .workspace {
     flex: 1;
     min-height: 0;
@@ -848,6 +874,8 @@
     .conflict-options { grid-template-columns: 1fr; }
     .half { grid-column: 1 / -1; }
     .setup-canvas, .settings-canvas, .trace-canvas, .control-canvas { padding: 16px; }
+    .operator-auth-panel { top: 68px; right: 8px; }
+    .operator-auth-controls { grid-template-columns: 1fr; }
   }
 </style>
 </head>
@@ -888,9 +916,25 @@
           </nav>
         </div>
         <div style="display:flex;align-items:center;gap:8px">
-          <span class="fact-pill" id="authState">正在确认权限</span>
+          <button class="fact-pill auth-trigger" id="authState" type="button" aria-expanded="false">正在确认权限</button>
         </div>
       </header>
+
+      <form class="operator-auth-panel" id="operatorAuthPanel" hidden>
+        <div class="operator-auth-head">
+          <div class="operator-auth-copy">
+            <strong>配置导播口令</strong>
+            <span class="muted">这是导演台操作口令，不是大模型或语音服务密钥。主口令或备用口令均可，验证成功后只保存在当前浏览器。</span>
+          </div>
+          <button class="icon-btn" id="closeOperatorAuth" type="button" title="关闭口令设置" aria-label="关闭口令设置"><span class="material-symbols-outlined">close</span></button>
+        </div>
+        <div class="operator-auth-controls">
+          <label>导播口令<input id="operatorTokenInput" type="password" autocomplete="current-password" placeholder="请输入任一导播口令"></label>
+          <button class="quick-btn" id="saveOperatorToken" type="submit" style="width:auto;margin:0" data-busy-label="验证中…">保存并验证</button>
+          <button class="ghost-btn" id="clearOperatorToken" type="button">清除</button>
+        </div>
+        <div class="operator-auth-message" id="operatorAuthMessage" role="status"></div>
+      </form>
 
       <section class="scorebar view active" data-view-panel="live">
         <div class="score-side home">
@@ -913,6 +957,7 @@
             </select>
             <button class="small-btn" id="clockMinus" type="button">-10秒</button>
             <button class="small-btn" id="clockPlus" type="button">+10秒</button>
+            <button class="small-btn score-correction-shortcut" id="openScoreCorrection" type="button" aria-label="人工校准比分"><span class="material-symbols-outlined" style="font-size:15px;vertical-align:-3px">edit_note</span>人工校准比分</button>
             <span class="fact-pill" id="clockVersion">版本 0</span>
           </div>
         </div>
@@ -990,9 +1035,7 @@
 6 梅里诺 CM 替补
 10 奥尔莫 AM 替补
 11 费兰·托雷斯 RW 替补
-15 巴埃纳 LW 替补
-18 苏比门迪 DM 替补
-21 奥亚萨瓦尔 ST 替补</textarea>
+15 巴埃纳 LW 替补</textarea>
               <textarea id="awayPlayers">1 诺伊尔 GK 首发
 6 基米希 RB 首发
 4 若纳坦·塔 CB 首发
@@ -1009,10 +1052,7 @@
 9 菲尔克鲁格 ST 替补
 11 菲里希 LW 替补
 13 托马斯·穆勒 AM 替补
-14 拜尔 ST 替补
-15 聚勒 CB 替补
-18 米特尔施泰特 LB 替补
-20 亨里希斯 RB 替补</textarea>
+14 拜尔 ST 替补</textarea>
               <input id="homeActive"><input id="awayActive">
               <span id="homeTitle"></span><span id="awayTitle"></span>
               <span id="homeSelected"></span><span id="awaySelected"></span>
@@ -1326,7 +1366,7 @@
             <h1 class="page-title">工作台设置</h1>
             <p class="page-desc">只保存当前浏览器的导演台偏好。模型、语音和密钥由服务端环境配置统一管理。</p>
           </div>
-          <span class="fact-pill" id="settingsAuthState">正在确认权限</span>
+          <button class="fact-pill auth-trigger" id="settingsAuthState" type="button" aria-expanded="false">正在确认权限</button>
         </div>
 
         <div class="settings-grid">
@@ -1437,7 +1477,7 @@
   </div>
   <div class="toast" id="toast"></div>
 
-<script src="/live2d-assets/operator-live-state.js"></script>
+<script src="/live2d-assets/operator-live-state.js?v=20260901-4"></script>
 <script>
 function loadOperatorToken() {
   const url = new URL(window.location.href);
@@ -1450,7 +1490,8 @@ function loadOperatorToken() {
   }
   return localStorage.getItem('qiuqiu.operator.token') || '';
 }
-const token = loadOperatorToken();
+let token = loadOperatorToken();
+let authVerified = false;
 function authHeaders(headers = {}) {
   return token ? { ...headers, Authorization: `Bearer ${token}` } : headers;
 }
@@ -1604,13 +1645,66 @@ function flash(el) {
   setTimeout(() => el.classList.remove('flash'), 650);
 }
 function updateAuthState() {
-  const text = token ? '导播权限已载入' : '缺少导播口令';
+  const text = token ? (authVerified ? '导播权限已验证' : '导播权限已载入') : '缺少导播口令';
   ['authState', 'settingsAuthState'].forEach((id) => {
     const element = $(id);
     if (!element) return;
     element.textContent = text;
     element.style.color = token ? 'var(--green)' : 'var(--error)';
+    element.setAttribute('aria-expanded', String(!$('operatorAuthPanel').hidden));
   });
+  $('clearOperatorToken').hidden = !token;
+  if (!token) showOperatorAuth(true);
+}
+function showOperatorAuth(show) {
+  $('operatorAuthPanel').hidden = !show;
+  ['authState', 'settingsAuthState'].forEach((id) => $(id)?.setAttribute('aria-expanded', String(show)));
+  if (show) {
+    $('operatorTokenInput').value = '';
+    window.setTimeout(() => $('operatorTokenInput').focus(), 0);
+  }
+}
+function setOperatorAuthMessage(text, tone = '') {
+  const message = $('operatorAuthMessage');
+  message.textContent = text;
+  message.className = `operator-auth-message${tone ? ` ${tone}` : ''}`;
+}
+async function saveOperatorToken(event) {
+  event.preventDefault();
+  const candidate = value('operatorTokenInput');
+  if (!candidate) {
+    setOperatorAuthMessage('请输入导播口令。', 'bad');
+    return;
+  }
+  setActionBusy($('saveOperatorToken'), true);
+  setOperatorAuthMessage('正在连接服务端验证…');
+  try {
+    const response = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/facts/__auth_check__/revisions`, {
+      headers: { Authorization: `Bearer ${candidate}` }
+    });
+    if (response.status === 401 || response.status === 403) throw new Error('导播口令不正确，请检查后重试。');
+    if (!response.ok) throw new Error(`服务端暂时无法验证口令（${response.status}）。`);
+    token = candidate;
+    authVerified = true;
+    localStorage.setItem('qiuqiu.operator.token', candidate);
+    setOperatorAuthMessage('口令验证成功。', 'ok');
+    updateAuthState();
+    showOperatorAuth(false);
+    toast('导播权限已恢复', 'ok');
+    await Promise.allSettled([loadConfig(), loadMatchClock(), loadTimeline()]);
+  } catch (error) {
+    setOperatorAuthMessage(error.message || '导播口令验证失败。', 'bad');
+    showOperatorAuth(true);
+  } finally {
+    setActionBusy($('saveOperatorToken'), false);
+  }
+}
+function clearOperatorToken() {
+  token = '';
+  authVerified = false;
+  localStorage.removeItem('qiuqiu.operator.token');
+  setOperatorAuthMessage('本机保存的导播口令已清除。');
+  updateAuthState();
 }
 async function requestJSON(path, options = {}) {
   const headers = authHeaders(options.headers || {});
@@ -1720,20 +1814,45 @@ function playersToText(players = []) {
 function activePlayer(sideName = side) {
   return sideName === 'away' ? value('awayActive') : value('homeActive');
 }
-function setSide(next) {
+function participantTeamForRole(role, fallback = side) {
+  if (!liveDraft.eventType) return fallback;
+  return OperatorLiveState.roleTeamId(liveDraft.eventType, role, liveDraft.teamId || fallback) || fallback;
+}
+function eventHasOpponentRoles(eventType = liveDraft.eventType) {
+  return Boolean(eventType && OperatorLiveState.eventDefinitions[eventType]?.opponentRoles?.length);
+}
+function setSide(next, options = {}) {
   if (!['home', 'away'].includes(next)) return;
   const changed = next !== side;
   side = next;
-  liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'select_team', teamId: next });
-  if (changed) focusedRole = roleSet()[0]?.[0] || '';
+  const assignEventTeam = options.assignEventTeam === true;
+  const preserveEventTeam = Boolean(liveDraft.eventType && !assignEventTeam && eventHasOpponentRoles());
+  if (!liveDraft.eventType || assignEventTeam || !preserveEventTeam) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'select_team', teamId: next });
+  }
+  if (changed && liveDraft.eventType) {
+    const rolesForSide = roleSet().filter(([role]) => participantTeamForRole(role, next) === next);
+    const nextRole = rolesForSide.find(([role]) => !liveDraft.participants.some((item) => item.role === role && item.name));
+    focusedRole = nextRole?.[0] || rolesForSide[0]?.[0] || focusedRole;
+  } else if (changed) {
+    focusedRole = roleSet()[0]?.[0] || '';
+  }
   $('sideSelect').value = next;
   $('homeSideButton')?.classList.toggle('active', next === 'home');
   $('awaySideButton')?.classList.toggle('active', next === 'away');
   if ($('homeChips')) $('homeChips').hidden = next !== 'home';
   if ($('awayChips')) $('awayChips').hidden = next !== 'away';
   syncSelected();
+  if (liveDraft.eventType) renderSlots();
   renderPlayers();
   renderCurrentDraft();
+}
+function sideSwitchMessage(selectedSide) {
+  if (liveDraft.eventType && eventHasOpponentRoles() && liveDraft.teamId && liveDraft.teamId !== selectedSide) {
+    const role = focusedRole ? roleLabel(focusedRole) : '对方球员';
+    return `已切换到${team(selectedSide)}${role}名单，事件归属仍是${team(liveDraft.teamId)}`;
+  }
+  return `当前操作方：${team(selectedSide)}`;
 }
 function syncSelected() {
   $('homeTitle').textContent = `${team('home')}事实员`;
@@ -1787,7 +1906,7 @@ function rosterCounts(players) {
   }, { starters: 0, bench: 0 });
 }
 function prematchValidationError() {
-  if (!token) return '缺少导播口令，请使用带口令的导演台链接重新打开';
+  if (!token) return '缺少导播口令，请点击右上角“缺少导播口令”填写';
   if (!value('preHomeTeam') || !value('preAwayTeam')) return '请填写主队和客队名称';
   const homeCounts = rosterCounts(parsePlayers(value('preHomePlayers')));
   const awayCounts = rosterCounts(parsePlayers(value('preAwayPlayers')));
@@ -1814,11 +1933,43 @@ function renderRosterPreview(id, list, sideName) {
   });
 }
 function setPlayer(nextSide, name, button) {
-  if (nextSide === 'away') $('awayActive').value = name; else $('homeActive').value = name;
   if (nextSide !== side) setSide(nextSide);
+  const selectedRole = liveDraft.eventType ? focusedRole : '';
+  const expectedSide = selectedRole ? participantTeamForRole(selectedRole, nextSide) : nextSide;
+  const current = selectedRole
+    ? liveDraft.participants.find((item) => item.role === selectedRole && item.name === name && (!item.teamId || item.teamId === expectedSide))
+    : liveDraft.primaryParticipant;
+  const deselect = Boolean(current);
+  if (nextSide === 'away') $('awayActive').value = deselect ? '' : name; else $('homeActive').value = deselect ? '' : name;
+  if (selectedRole && expectedSide !== nextSide) {
+    toast(`${roleLabel(selectedRole)}应选择${team(expectedSide)}球员`, 'bad');
+    return;
+  }
+  if (selectedRole && OperatorLiveState.roleAllowsMultiple(liveDraft.eventType, selectedRole)) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, {
+      type: 'toggle_participant', role: selectedRole, name, teamId: expectedSide, teamName: team(expectedSide), resolved: true
+    });
+    $('mainPlayer').value = liveDraft.primaryParticipant?.name || '';
+    renderSlots();
+    renderPlayers();
+    renderCurrentDraft();
+    toast(`${deselect ? '已取消选择' : '已选择'}：${team(nextSide)} ${name}`);
+    return;
+  }
+  if (deselect) {
+    liveDraft = OperatorLiveState.updateDraft(liveDraft, selectedRole
+      ? { type: 'set_participant', role: selectedRole, name: '', teamId: expectedSide, teamName: team(expectedSide), resolved: true }
+      : { type: 'select_player', name: '', teamId: nextSide, teamName: team(nextSide) });
+    $('mainPlayer').value = liveDraft.primaryParticipant?.name || '';
+    renderSlots();
+    renderPlayers();
+    renderCurrentDraft();
+    toast(`已取消选择：${team(nextSide)} ${name}`);
+    return;
+  }
   if (liveDraft.eventType && focusedRole) {
     liveDraft = OperatorLiveState.updateDraft(liveDraft, {
-      type: 'set_participant', role: focusedRole, name, teamId: nextSide, teamName: team(nextSide), resolved: true
+      type: 'set_participant', role: focusedRole, name, teamId: expectedSide, teamName: team(expectedSide), resolved: true
     });
   } else {
     liveDraft = OperatorLiveState.updateDraft(liveDraft, {
@@ -1929,6 +2080,9 @@ function renderEventTypes() {
 function roleSet() {
   return roles[liveDraft.eventType] || [];
 }
+function splitParticipantNames(text) {
+  return String(text || '').split(/[、,，;；\/\n]+/).map((name) => name.trim()).filter(Boolean);
+}
 function renderSlots() {
   const host = $('slots');
   host.innerHTML = '';
@@ -1938,19 +2092,28 @@ function renderSlots() {
     slot.className = `slot ${(focusedRole === role || (!focusedRole && index === 0)) ? 'active' : ''}`;
     if (liveDraft.inferredFields?.includes('participants')) slot.classList.add('voice-inferred');
     slot.dataset.role = role;
-    const participant = liveDraft.participants.find((item) => item.role === role);
-    slot.innerHTML = `<span class="slot-label">${label}</span><input id="slot_${role}" data-role="${role}" value="${escapeHTML(participant?.name || '')}" placeholder="点左侧球员或手写">`;
+    const participantItems = liveDraft.participants.filter((item) => item.role === role && item.name);
+    const multiple = OperatorLiveState.roleAllowsMultiple(liveDraft.eventType, role);
+    const participantName = multiple ? participantItems.map((item) => item.name).join('、') : participantItems[0]?.name || '';
+    const participantSide = participantTeamForRole(role, side);
+    const roleText = participantSide ? `${label} · ${team(participantSide)}` : label;
+    const placeholder = multiple ? '点左侧球员或输入多个姓名（顿号分隔）' : '点左侧球员或手写';
+    slot.innerHTML = `<span class="slot-label">${escapeHTML(roleText)}</span><input id="slot_${role}" data-role="${role}" value="${escapeHTML(participantName)}" placeholder="${escapeHTML(placeholder)}">`;
     slot.onclick = () => focusRole(role);
     host.appendChild(slot);
     const input = slot.querySelector('input');
     input.addEventListener('focus', () => focusRole(role));
     input.addEventListener('input', () => {
-      const name = input.value.trim();
+      const names = multiple ? splitParticipantNames(input.value) : [input.value.trim()].filter(Boolean);
+      const participantSide = participantTeamForRole(role, side);
       markDraftFieldReviewed('participants');
-      liveDraft = OperatorLiveState.updateDraft(liveDraft, {
-        type: 'set_participant', role, name, teamId: side, teamName: team(side), resolved: !name || playerBelongsToTeam(name, side)
-      });
-      if (roleSet()[0]?.[0] === role) $('mainPlayer').value = name;
+      liveDraft = OperatorLiveState.updateDraft(liveDraft, multiple
+        ? {
+          type: 'set_participants', role,
+          items: names.map((name) => ({ name, teamId: participantSide, teamName: team(participantSide), resolved: playerBelongsToTeam(name, participantSide) }))
+        }
+        : { type: 'set_participant', role, name: names[0] || '', teamId: participantSide, teamName: team(participantSide), resolved: !names[0] || playerBelongsToTeam(names[0], participantSide) });
+      if (roleSet()[0]?.[0] === role) $('mainPlayer').value = names[0] || '';
       renderCurrentDraft({ preserveSlots: true });
     });
   });
@@ -1962,8 +2125,9 @@ function focusRole(role) {
   renderPlayers();
 }
 function setSlot(role, name, slotSide = side) {
+  const participantSide = participantTeamForRole(role, slotSide);
   liveDraft = OperatorLiveState.updateDraft(liveDraft, {
-    type: 'set_participant', role, name, teamId: slotSide, teamName: team(slotSide), resolved: playerBelongsToTeam(name, slotSide)
+    type: 'set_participant', role, name, teamId: participantSide, teamName: team(participantSide), resolved: playerBelongsToTeam(name, participantSide)
   });
   renderSlots();
   renderPlayers();
@@ -1992,8 +2156,9 @@ function periodLabel(period = value('period')) {
   })[period] || period || '未知阶段';
 }
 function sideLabel(sideName = value('sideSelect') || side) {
-  if (sideName === 'home') return `主队 / ${team('home')}`;
-  if (sideName === 'away') return `客队 / ${team('away')}`;
+  const eventSide = ['home', 'away'].includes(liveDraft.teamId) ? liveDraft.teamId : sideName;
+  if (eventSide === 'home') return `主队 / ${team('home')}`;
+  if (eventSide === 'away') return `客队 / ${team('away')}`;
   return '双方/无';
 }
 function participantLine(list = participants()) {
@@ -2124,7 +2289,18 @@ function renderCurrentDraft(options = {}) {
   const directVoicePublish = hasPublishableVoiceTranscript();
   const teamName = liveDraft.eventType === 'score_correction' ? '全场' : liveDraft.teamId ? team(liveDraft.teamId) : '未选球队';
   const participantText = liveDraft.participants.length
-    ? liveDraft.participants.map((item) => `${roleLabel(item.role)}：${item.name}${item.resolved === false ? '（待确认）' : ''}`).join(' · ')
+    ? roleSet()
+      .map(([role, label]) => {
+        const items = liveDraft.participants.filter((item) => item.role === role && item.name);
+        if (!items.length) return '';
+        const names = items.map((item) => `${item.name}${item.resolved === false ? '（待确认）' : ''}`).join('、');
+        return `${label}：${names}`;
+      })
+      .concat(liveDraft.participants
+        .filter((item) => !roleSet().some(([role]) => role === item.role) && item.name)
+        .map((item) => `${roleLabel(item.role)}：${item.name}${item.resolved === false ? '（待确认）' : ''}`))
+      .filter(Boolean)
+      .join(' · ')
     : '未选参与者';
   const expectedScore = { ...confirmedScore };
   if (definition?.scoreDelta && liveDraft.teamId) expectedScore[liveDraft.teamId] += definition.scoreDelta;
@@ -2638,7 +2814,7 @@ async function publishPreset(preset, eventSide = side, triggerElement) {
   if (!preset) return;
   markDraftFieldReviewed('eventType');
   markDraftFieldReviewed('description');
-  if (['home', 'away'].includes(eventSide) && eventSide !== side) setSide(eventSide);
+  if (['home', 'away'].includes(eventSide)) setSide(eventSide, { assignEventTeam: true });
   liveDraft = OperatorLiveState.updateDraft(liveDraft, {
     type: 'select_event',
     eventType: preset.type,
@@ -2659,7 +2835,7 @@ async function publishPreset(preset, eventSide = side, triggerElement) {
   renderPlayers();
   renderCurrentDraft();
   flash(triggerElement);
-  toast(`已加入草稿：${team(side)} ${preset.label}`, 'ok');
+  toast(`已加入草稿：${preset.type === 'score_correction' ? '全场' : team(eventSide || side)} ${preset.label}`, 'ok');
 }
 async function loadConfig() {
   const res = await fetch(`/api/matches/${encodeURIComponent(currentMatchId())}/config`, { headers: authHeaders() });
@@ -3233,8 +3409,9 @@ function captureDraftFromForm(factStatus) {
   const primaryRole = roleSet()[0]?.[0];
   const main = value('mainPlayer');
   if (primaryRole && main && !liveDraft.participants.some((item) => item.role === primaryRole && item.name === main)) {
+    const participantSide = participantTeamForRole(primaryRole, side);
     liveDraft = OperatorLiveState.updateDraft(liveDraft, {
-      type: 'set_participant', role: primaryRole, name: main, teamId: side, teamName: team(side), resolved: playerBelongsToTeam(main, side)
+      type: 'set_participant', role: primaryRole, name: main, teamId: participantSide, teamName: team(participantSide), resolved: playerBelongsToTeam(main, participantSide)
     });
   }
   return liveDraft;
@@ -3700,7 +3877,12 @@ $('clearDraft').addEventListener('click', () => clearDraft(false));
 $('clockStart').addEventListener('click', toggleClock);
 $('clockMinus').addEventListener('click', () => patchMatchClock('adjust', { deltaSeconds: -10 }, $('clockMinus')).catch((error) => toast(error.message || '校时失败', 'bad')));
 $('clockPlus').addEventListener('click', () => patchMatchClock('adjust', { deltaSeconds: 10 }, $('clockPlus')).catch((error) => toast(error.message || '校时失败', 'bad')));
-$('period').addEventListener('change', () => patchMatchClock('set', { period: value('period') }).catch((error) => toast(error.message || '比赛阶段更新失败', 'bad')));
+$('openScoreCorrection').addEventListener('click', async () => {
+  await publishPreset(presets.find((preset) => preset.type === 'score_correction'), '', $('openScoreCorrection'));
+  document.querySelector('.current-event-panel')?.scrollIntoView({ behavior: 'smooth', block: 'center' });
+  $('scoreCorrectionHome').focus();
+});
+$('period').addEventListener('change', () => patchMatchClock('set', { period: value('period'), elapsedSeconds: 0 }).catch((error) => toast(error.message || '比赛阶段更新失败', 'bad')));
 $('hint').addEventListener('click', () => {
   const text = '这一下很关键，我们先看裁判和双方球员怎么反应。';
   $('proactive').value = text;
@@ -3749,6 +3931,10 @@ $('preSubmit').addEventListener('click', async () => {
   }, $('preSubmit'));
 });
 $('saveSettings').addEventListener('click', saveSettings);
+$('operatorAuthPanel').addEventListener('submit', saveOperatorToken);
+$('clearOperatorToken').addEventListener('click', clearOperatorToken);
+$('closeOperatorAuth').addEventListener('click', () => showOperatorAuth(false));
+['authState', 'settingsAuthState'].forEach((id) => $(id).addEventListener('click', () => showOperatorAuth($('operatorAuthPanel').hidden)));
 if ($('refreshTraces')) $('refreshTraces').addEventListener('click', () => {
   loadMemoryPanel();
   loadTraces();
@@ -3779,8 +3965,9 @@ $('mainPlayer').addEventListener('input', () => {
   const role = roleSet()[0]?.[0];
   if (role) {
     const name = value('mainPlayer');
+    const participantSide = participantTeamForRole(role, side);
     liveDraft = OperatorLiveState.updateDraft(liveDraft, {
-      type: 'set_participant', role, name, teamId: side, teamName: team(side), resolved: !name || playerBelongsToTeam(name, side)
+      type: 'set_participant', role, name, teamId: participantSide, teamName: team(participantSide), resolved: !name || playerBelongsToTeam(name, participantSide)
     });
   }
   renderCurrentDraft({ preserveForm: true });
@@ -3794,8 +3981,8 @@ $('scoreCorrectionHome').addEventListener('input', updateScoreCorrectionDraft);
 $('scoreCorrectionAway').addEventListener('input', updateScoreCorrectionDraft);
 $('proactive').addEventListener('input', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'proactiveText', value: value('proactive') }); renderCurrentDraft({ preserveForm: true }); });
 $('mode').addEventListener('change', () => { liveDraft = OperatorLiveState.updateDraft(liveDraft, { type: 'set_field', field: 'deliveryMode', value: value('mode') }); renderCurrentDraft({ preserveForm: true }); });
-document.querySelectorAll('[data-side]').forEach((btn) => btn.addEventListener('click', () => { markDraftFieldReviewed('teamId'); setSide(btn.dataset.side); flash(btn); toast(`当前操作方：${team(btn.dataset.side)}`, 'ok'); }));
-document.querySelectorAll('[data-use-side]').forEach((btn) => btn.addEventListener('click', () => { markDraftFieldReviewed('teamId'); setSide(btn.dataset.useSide); flash(btn); toast(`当前操作方：${team(btn.dataset.useSide)}`, 'ok'); }));
+document.querySelectorAll('[data-side]').forEach((btn) => btn.addEventListener('click', () => { markDraftFieldReviewed('teamId'); setSide(btn.dataset.side); flash(btn); toast(sideSwitchMessage(btn.dataset.side), 'ok'); }));
+document.querySelectorAll('[data-use-side]').forEach((btn) => btn.addEventListener('click', () => { markDraftFieldReviewed('teamId'); setSide(btn.dataset.useSide); flash(btn); toast(sideSwitchMessage(btn.dataset.useSide), 'ok'); }));
 document.querySelectorAll('[data-trace-filter]').forEach((btn) => btn.addEventListener('click', () => {
   traceFilter = btn.dataset.traceFilter || 'all';
   activeTraceId = '';

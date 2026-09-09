@@ -456,7 +456,7 @@ func TestPostgresOutboxRetriesFailedMatchEventPublication(t *testing.T) {
 	`, created.ID+":1:confirmed"); err != nil {
 		t.Fatal(err)
 	}
-	processed, err := store.publishOutboxOnce(ctx)
+	processed, err := store.publishOutboxAggregate(ctx, created)
 	if err != nil || !processed {
 		t.Fatalf("outbox retry processed=%v err=%v", processed, err)
 	}

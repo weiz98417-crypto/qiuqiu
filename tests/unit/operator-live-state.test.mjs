@@ -30,6 +30,70 @@ test('switching behavior removes goal-only state', () => {
   assert.deepEqual(draft.participants.map((item) => item.role), ['offender']);
 });
 
+test('opponent roles follow the event team in either direction', () => {
+  assert.equal(state.roleTeamId('goal', 'scorer', 'home'), 'home');
+  assert.equal(state.roleTeamId('goal', 'defender', 'home'), 'away');
+  assert.equal(state.roleTeamId('goal', 'defender', 'away'), 'home');
+  assert.equal(state.roleTeamId('big_chance', 'attacker', 'home'), 'home');
+  assert.equal(state.roleTeamId('big_chance', 'defender', 'home'), 'away');
+  assert.equal(state.roleTeamId('big_chance', 'attacker', 'away'), 'away');
+  assert.equal(state.roleTeamId('big_chance', 'keeper', 'away'), 'home');
+
+  const draft = state.createDraft({
+    teamId: 'away',
+    eventType: 'big_chance',
+    description: '德国制造绝佳机会。',
+    participants: [
+      { role: 'attacker', name: '穆西亚拉', teamId: 'away', resolved: true },
+      { role: 'defender', name: '佩德里', teamId: 'home', resolved: true },
+    ],
+  });
+  assert.equal(state.validateDraft(draft).ready, true);
+  draft.participants[1].teamId = 'away';
+  assert.match(state.validateDraft(draft).errors[0], /防守者必须属于防守方/);
+});
+
+test('助攻和防守角色支持多名球员并保留各自球队', () => {
+  assert.equal(state.roleAllowsMultiple('goal', 'assist'), true);
+  assert.equal(state.roleAllowsMultiple('goal', 'defender'), true);
+  let draft = state.createDraft({ teamId: 'home', eventType: 'goal', description: '西班牙进球。' });
+  draft = state.updateDraft(draft, {
+    type: 'set_participants', role: 'assist', items: [
+      { name: '亚马尔', teamId: 'home', teamName: '西班牙', resolved: true },
+      { name: '佩德里', teamId: 'home', teamName: '西班牙', resolved: true },
+    ],
+  });
+  draft = state.updateDraft(draft, {
+    type: 'toggle_participant', role: 'defender', name: '吕迪格', teamId: 'away', teamName: '德国', resolved: true,
+  });
+  draft = state.updateDraft(draft, {
+    type: 'toggle_participant', role: 'defender', name: '基米希', teamId: 'away', teamName: '德国', resolved: true,
+  });
+  assert.deepEqual(draft.participants.filter((item) => item.role === 'assist').map((item) => item.name), ['亚马尔', '佩德里']);
+  assert.deepEqual(draft.participants.filter((item) => item.role === 'defender').map((item) => item.name), ['吕迪格', '基米希']);
+  draft = state.updateDraft(draft, {
+    type: 'toggle_participant', role: 'defender', name: '吕迪格', teamId: 'away', teamName: '德国', resolved: true,
+  });
+  assert.deepEqual(draft.participants.filter((item) => item.role === 'defender').map((item) => item.name), ['基米希']);
+  assert.equal(state.validateDraft(draft).ready, false);
+  draft = state.updateDraft(draft, { type: 'set_participant', role: 'scorer', name: '莫拉塔', teamId: 'home', teamName: '西班牙', resolved: true });
+  assert.equal(state.validateDraft(draft).ready, true);
+});
+
+test('语音草稿不会覆盖同一多球员角色', () => {
+  const current = state.createDraft({ teamId: 'home', eventType: 'goal', description: '西班牙进球。' });
+  const result = state.applyVoiceDraft(current, {
+    participants: [
+      { role: 'assist', name: '亚马尔', teamId: 'home', resolved: true },
+      { role: 'assist', name: '佩德里', teamId: 'home', resolved: true },
+      { role: 'defender', name: '吕迪格', teamId: 'away', resolved: true },
+      { role: 'defender', name: '基米希', teamId: 'away', resolved: true },
+    ],
+  });
+  assert.deepEqual(result.conflicts, []);
+  assert.deepEqual(result.draft.participants.map((item) => item.name), ['亚马尔', '佩德里', '吕迪格', '基米希']);
+});
+
 test('clock synchronization updates only an empty draft', () => {
   let empty = state.createDraft({ teamId: 'home' });
   assert.equal(state.hasDraftContent(empty), false);

@@ -9,9 +9,10 @@ if (!baseUrl) throw new Error('QIUQIU_BASE_URL is required');
 export async function runRuntimeEvals() {
   await resetMatch();
   await configureMatch();
-  const socket = await openSocket();
+  let socket = await openSocket();
   try {
     const beforeGoal = socket.checkpoint();
+    const beforeGoalAudio = socket.binaryCheckpoint();
     const goal = await publish({
       eventType: 'goal',
       period: 'first_half',
@@ -34,14 +35,69 @@ export async function runRuntimeEvals() {
       && message.event === 'qiuqiu_reply'
       && message.data?.text?.includes('运行时评测主动线'), 8_000, beforeGoal);
     assert(proactive.data?.traceId, 'proactive reply must include traceId');
+    const initialAudio = await socket.waitFor((message) => message.type === 'voice_audio'
+      && message.traceId === proactive.data.traceId, 8_000, beforeGoal);
+    assert(initialAudio.deliveryKey === proactive.data?.deliveryKey,
+      `initial audio delivery key changed: ${initialAudio.deliveryKey}`);
+    await socket.waitForBinary(3_000, beforeGoalAudio);
+
+    await socket.close();
+    socket = await openSocket();
+    const beforeRecovery = socket.checkpoint();
+    const beforeRecoveryAudio = socket.binaryCheckpoint();
+    socket.send({ type: 'session_opened', userId: 'runtime-fan' });
+    const recovered = await socket.waitFor((message) => message.type === 'event'
+      && message.event === 'qiuqiu_reply'
+      && message.data?.source === 'recovered_delivery'
+      && message.data?.traceId === proactive.data.traceId, 8_000, beforeRecovery);
+    assert(recovered.data?.deliveryKey === proactive.data?.deliveryKey,
+      `recovered delivery key changed: ${recovered.data?.deliveryKey}`);
+
+    const beforeRecoveryBarrier = socket.checkpoint();
+    socket.send({ type: 'ping' });
+    await socket.waitFor((message) => message.type === 'pong', 3_000, beforeRecoveryBarrier);
+    socket.assertNone((message) => message.type === 'voice_audio', beforeRecovery,
+      'reconnect replayed audio metadata for a pending critical reply');
+    assert(socket.binaryCheckpoint() === beforeRecoveryAudio,
+      'reconnect replayed binary audio for a pending critical reply');
+
+    const beforeAck = socket.checkpoint();
+    socket.send({ type: 'reply_displayed', traceId: recovered.data.traceId });
+    socket.send({ type: 'ping' });
+    await socket.waitFor((message) => message.type === 'pong', 3_000, beforeAck);
+
+    await socket.close();
+    socket = await openSocket();
+    const beforeFinalReconnect = socket.checkpoint();
+    const beforeFinalAudio = socket.binaryCheckpoint();
+    socket.send({ type: 'session_opened', userId: 'runtime-fan' });
+    socket.send({ type: 'ping' });
+    await socket.waitFor((message) => message.type === 'pong', 3_000, beforeFinalReconnect);
+    socket.assertNone((message) => message.type === 'event'
+      && message.event === 'qiuqiu_reply'
+      && message.data?.source === 'recovered_delivery'
+      && message.data?.traceId === proactive.data.traceId, beforeFinalReconnect,
+    'acknowledged terminal reply recovered again');
+    socket.assertNone((message) => message.type === 'voice_audio', beforeFinalReconnect,
+      'completed audio recovered again');
+    assert(socket.binaryCheckpoint() === beforeFinalAudio, 'completed binary audio recovered again');
 
     const beforeFollowUp = socket.checkpoint();
+    const beforeFollowUpAudio = socket.binaryCheckpoint();
     socket.send({ type: 'user_speech', userId: 'runtime-fan', text: '刚才谁助攻？', talkativeness: 'normal' });
     const followUp = await socket.waitFor((message) => message.type === 'event'
       && message.event === 'qiuqiu_reply'
       && message.data?.text?.includes('法比安')
       && message.data?.text?.includes('亚马尔'), 8_000, beforeFollowUp);
     assert(followUp.data.text.includes('亚马尔'), `follow-up must mention pre-assist: ${followUp.data.text}`);
+    await socket.waitFor((message) => message.type === 'voice_audio'
+      && message.traceId === followUp.data.traceId, 8_000, beforeFollowUp);
+    await socket.waitForBinary(3_000, beforeFollowUpAudio);
+    socket.send({ type: 'reply_displayed', traceId: followUp.data.traceId });
+    socket.send({ type: 'voice_playback', traceId: followUp.data.traceId, state: 'completed' });
+    const beforeFollowUpBarrier = socket.checkpoint();
+    socket.send({ type: 'ping' });
+    await socket.waitFor((message) => message.type === 'pong', 3_000, beforeFollowUpBarrier);
 
     const traces = await get(`/api/matches/${matchId}/traces?limit=20`);
     const userTrace = traces.traces.find((trace) => trace.input === '刚才谁助攻？');
@@ -49,6 +105,49 @@ export async function runRuntimeEvals() {
     assert(userTrace.intent === 'recent_event_question', `unexpected intent ${userTrace.intent}`);
     assert(userTrace.retrievedEventIds?.includes(goal.event.id), 'follow-up trace must reference the goal');
     assert(JSON.stringify(userTrace.toolCalls).includes('match.search_events'), 'follow-up trace must record memory lookup');
+
+    const beforeTerminalEvent = socket.checkpoint();
+    const beforeTerminalAudio = socket.binaryCheckpoint();
+    const terminalEvent = await publish({
+      eventType: 'red_card',
+      period: 'first_half',
+      clock: '23:55',
+      teamId: 'away',
+      teamName: '德国',
+      playerName: '吕迪格',
+      score: { home: 1, away: 0 },
+      intensity: 5,
+      description: '吕迪格被红牌罚下。',
+      proactiveText: '运行时评测终态线：吕迪格被红牌罚下。',
+      visibility: 'public',
+    });
+    const terminalReply = await socket.waitFor((message) => message.type === 'event'
+      && message.event === 'qiuqiu_reply'
+      && message.data?.eventId === terminalEvent.event.id, 8_000, beforeTerminalEvent);
+    await socket.waitFor((message) => message.type === 'voice_audio'
+      && message.traceId === terminalReply.data.traceId, 8_000, beforeTerminalEvent);
+    await socket.waitForBinary(3_000, beforeTerminalAudio);
+
+    const beforeTerminalBarrier = socket.checkpoint();
+    socket.send({ type: 'voice_playback', traceId: terminalReply.data.traceId, state: 'completed' });
+    socket.send({ type: 'ping' });
+    await socket.waitFor((message) => message.type === 'pong', 3_000, beforeTerminalBarrier);
+    await socket.close();
+
+    socket = await openSocket();
+    const beforeTerminalReconnect = socket.checkpoint();
+    const beforeTerminalReconnectAudio = socket.binaryCheckpoint();
+    socket.send({ type: 'session_opened', userId: 'runtime-fan' });
+    socket.send({ type: 'ping' });
+    await socket.waitFor((message) => message.type === 'pong', 3_000, beforeTerminalReconnect);
+    socket.assertNone((message) => message.type === 'event'
+      && message.event === 'qiuqiu_reply'
+      && message.data?.traceId === terminalReply.data.traceId, beforeTerminalReconnect,
+    'terminal reply recovered again');
+    socket.assertNone((message) => message.type === 'voice_audio', beforeTerminalReconnect,
+      'terminal audio metadata recovered again');
+    assert(socket.binaryCheckpoint() === beforeTerminalReconnectAudio,
+      'terminal binary audio recovered again');
 
     const quietMarker = '运行时评测静默事件';
     await publish({
@@ -100,6 +199,7 @@ export async function runRuntimeEvals() {
       && message.event === 'qiuqiu_reply'
       && message.data?.text?.includes('0-0'), 8_000, beforeCorrectedQuestion);
     assert(!corrected.data.text.includes('1-0'), `corrected answer leaked old score: ${corrected.data.text}`);
+    socket.send({ type: 'reply_displayed', traceId: corrected.data.traceId });
 
     return {
       suite: 'runtime-e2e',
@@ -168,8 +268,19 @@ async function openSocket() {
   await once(socket, 'open', 8_000);
   const messages = [];
   const waiters = [];
+  let binaryFrames = 0;
+  const binaryWaiters = [];
   socket.addEventListener('message', (event) => {
-    if (typeof event.data !== 'string') return;
+    if (typeof event.data !== 'string') {
+      binaryFrames += 1;
+      for (const waiter of [...binaryWaiters]) {
+        if (binaryFrames > waiter.from) {
+          waiter.resolve(binaryFrames);
+          binaryWaiters.splice(binaryWaiters.indexOf(waiter), 1);
+        }
+      }
+      return;
+    }
     let message;
     try { message = JSON.parse(event.data); } catch { return; }
     messages.push(message);
@@ -186,6 +297,10 @@ async function openSocket() {
   return {
     send(message) { socket.send(JSON.stringify(message)); },
     checkpoint() { return messages.length; },
+    binaryCheckpoint() { return binaryFrames; },
+    assertNone(predicate, from = 0, failureMessage = 'unexpected WebSocket message') {
+      assert(!messages.slice(from).some(predicate), failureMessage);
+    },
     waitFor(predicate, timeoutMs = 8_000, from = 0) {
       const existing = messages.slice(from).find(predicate);
       if (existing) return Promise.resolve(existing);
@@ -197,6 +312,18 @@ async function openSocket() {
           rejectWait(new Error(`WebSocket message timed out: ${JSON.stringify(messages.slice(-8))}`));
         }, timeoutMs);
         waiters.push(waiter);
+      });
+    },
+    waitForBinary(timeoutMs = 3_000, from = binaryFrames) {
+      if (binaryFrames > from) return Promise.resolve(binaryFrames);
+      return new Promise((resolveWait, rejectWait) => {
+        const waiter = { from, resolve: (value) => { clearTimeout(timer); resolveWait(value); } };
+        const timer = setTimeout(() => {
+          const index = binaryWaiters.indexOf(waiter);
+          if (index >= 0) binaryWaiters.splice(index, 1);
+          rejectWait(new Error(`WebSocket binary frame timed out after frame ${from}`));
+        }, timeoutMs);
+        binaryWaiters.push(waiter);
       });
     },
     async expectSilence(predicate, durationMs) {

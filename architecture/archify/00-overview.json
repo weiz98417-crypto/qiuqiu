@@ -1,0 +1,67 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "球球｜AI 足球陪看全链路总图",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "repository": { "url": "https://github.com/weiz98417-crypto/qiuqiu.git", "revision": "47bf18d45865aec9b0918e24ce01aa20d93f1381" },
+    "viewBox": [1380, 820],
+    "views": [
+      { "id": "companion-path", "label": "陪看主链路", "focus": ["viewer", "input", "realtime", "director", "response-plan", "delivery", "flutter"], "note": "从用户输入和赛事事实，到 Director 决策、表现计划与客户端体验。" },
+      { "id": "fact-line", "label": "事实验证线", "focus": ["match-provider", "operator", "input", "fact-ledger", "grounding", "director", "trace"], "note": "比赛数据和人工校正先经过统一接入层，再进入事实账本和 Grounding。" },
+      { "id": "humanity-line", "label": "动态人味线", "focus": ["viewer", "relationship-memory", "context", "constitution", "director", "response-plan"], "note": "关系、场景和人格宪法共同决定此刻怎样陪伴。" }
+    ]
+  },
+  "components": [
+    { "id": "viewer", "type": "external", "label": "球迷 / 观众", "sublabel": "提问 · 情绪 · 观看状态", "pos": [30, 370], "size": [180, 78] },
+    { "id": "input", "type": "backend", "label": "INGRESS｜统一接入层", "sublabel": "Voice · Match API · Operator", "pos": [240, 330], "size": [180, 90] },
+    { "id": "realtime", "type": "backend", "label": "REALTIME｜实时接入", "sublabel": "Gateway · Scheduler · WS", "pos": [450, 330], "size": [190, 90] },
+    { "id": "fact-ledger", "type": "backend", "label": "Fact Ledger｜事实账本", "sublabel": "版本 · 冲突 · 可回放", "pos": [540, 100], "size": [200, 82] },
+    { "id": "grounding", "type": "security", "label": "Grounding｜事实验证", "sublabel": "只引用已确认事实", "pos": [780, 100], "size": [200, 82] },
+    { "id": "relationship-memory", "type": "database", "label": "Relationship Memory｜关系记忆", "sublabel": "偏好 · 边界 · 未完话题", "pos": [540, 520], "size": [200, 82] },
+    { "id": "context", "type": "backend", "label": "Current Context｜当前场景", "sublabel": "比赛 · 情绪 · 观看模式", "pos": [960, 520], "size": [200, 82] },
+    { "id": "constitution", "type": "security", "label": "Personality Constitution｜人格宪法", "sublabel": "身份 · 边界 · 主动性 · 版本", "pos": [540, 210], "size": [220, 82] },
+    { "id": "director", "type": "backend", "label": "Director｜陪伴导演", "sublabel": "说不说 · 说什么 · 语气 · 动作", "pos": [780, 350], "size": [220, 98], "sources": [{ "path": "backend/internal/relationship/director.go", "line": 23, "label": "director apply" }] },
+    { "id": "response-plan", "type": "backend", "label": "Response Plan｜回应计划", "sublabel": "内容 · 语气 · 亲密度 · 强度", "pos": [1030, 350], "size": [190, 98] },
+    { "id": "delivery", "type": "backend", "label": "DELIVERY｜统一表现", "sublabel": "Reply · TTS · Motion", "pos": [1250, 354], "size": [120, 90] },
+    { "id": "flutter", "type": "frontend", "label": "EXPERIENCE｜Flutter", "sublabel": "Live2D · 字幕 · 语音", "pos": [1210, 540], "size": [140, 90] },
+    { "id": "match-provider", "type": "external", "label": "比赛数据源", "sublabel": "API · Replay · Manual", "pos": [320, 100], "size": [190, 82] },
+    { "id": "operator", "type": "external", "label": "运营 / 导播台", "sublabel": "确认 · 撤销 · 发布", "pos": [90, 100], "size": [190, 82] },
+    { "id": "auth", "type": "security", "label": "Auth / Session", "sublabel": "匿名身份 · Scope · Revoke", "pos": [30, 220], "size": [180, 82] },
+    { "id": "redis", "type": "database", "label": "Redis", "sublabel": "会话 · 短期状态 · 协调", "pos": [320, 520], "size": [170, 82] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL + Outbox", "sublabel": "事实 · 关系 · 审计 · 消息", "pos": [780, 680], "size": [200, 82] },
+    { "id": "trace", "type": "database", "label": "Agent Trace", "sublabel": "Trace · Decision · Fact IDs", "pos": [1000, 620], "size": [170, 82] },
+    { "id": "privacy", "type": "security", "label": "Privacy / Retention", "sublabel": "导出 · 删除 · 清理", "pos": [1240, 680], "size": [120, 82] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "球球系统边界｜事实受控、关系有状态、表达可降级", "wraps": ["input", "realtime", "fact-ledger", "grounding", "relationship-memory", "context", "constitution", "director", "response-plan", "delivery", "flutter", "auth", "redis", "postgres", "trace", "privacy"], "pad": 10 }
+  ],
+  "connections": [
+    { "id": "viewer-input", "from": "viewer", "to": "input", "variant": "emphasis" },
+    { "id": "input-realtime", "from": "input", "to": "realtime", "variant": "emphasis" },
+    { "id": "realtime-director", "from": "realtime", "to": "director", "variant": "emphasis" },
+    { "id": "match-input", "from": "match-provider", "to": "input", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "input-ledger", "from": "input", "to": "fact-ledger", "variant": "security", "fromSide": "top", "toSide": "bottom", "via": [[330, 310], [500, 310], [500, 190], [640, 190]] },
+    { "id": "ledger-grounding", "from": "fact-ledger", "to": "grounding", "variant": "security" },
+    { "id": "grounding-director", "from": "grounding", "to": "director", "variant": "security", "fromSide": "bottom", "toSide": "top" },
+    { "id": "viewer-memory", "from": "viewer", "to": "relationship-memory", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "via": [[120, 500], [640, 500]] },
+    { "id": "memory-context", "from": "relationship-memory", "to": "context", "variant": "dashed" },
+    { "id": "context-director", "from": "context", "to": "director", "variant": "emphasis", "fromSide": "top", "toSide": "bottom", "via": [[1060, 480], [890, 480]] },
+    { "id": "constitution-director", "from": "constitution", "to": "director", "variant": "security", "fromSide": "right", "toSide": "top", "via": [[800, 251], [800, 330], [890, 330]] },
+    { "id": "director-response", "from": "director", "to": "response-plan", "variant": "emphasis" },
+    { "id": "response-delivery", "from": "response-plan", "to": "delivery", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "delivery-flutter", "from": "delivery", "to": "flutter", "variant": "emphasis", "fromSide": "bottom", "toSide": "top" },
+    { "id": "auth-input", "from": "auth", "to": "input", "variant": "security", "fromSide": "bottom", "toSide": "top" },
+    { "id": "operator-input", "from": "operator", "to": "input", "variant": "security", "fromSide": "right", "toSide": "top" },
+    { "id": "redis-memory", "from": "redis", "to": "relationship-memory", "variant": "dashed", "fromSide": "right", "toSide": "left" },
+    { "id": "memory-postgres", "from": "relationship-memory", "to": "postgres", "variant": "dashed", "fromSide": "bottom", "toSide": "top" },
+    { "id": "director-trace", "from": "director", "to": "trace", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "via": [[890, 500], [1180, 500], [1180, 610], [1085, 610]] },
+    { "id": "privacy-postgres", "from": "privacy", "to": "postgres", "variant": "security", "fromSide": "left", "toSide": "right" }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "三条线在 Director 汇合", "items": ["事实验证线回答：发生了什么？", "动态人味线回答：此刻怎样陪？", "人格宪法横向约束：哪些事不能越界？"] },
+    { "dot": "emerald", "title": "Director 输出回应计划", "items": ["决定是否回应、回应重点、语气和亲密度", "Reply / TTS / Motion 只执行计划，不重新发明人格"] },
+    { "dot": "slate", "title": "每轮都可追溯", "items": ["PostgreSQL 保存事实与关系状态", "Agent Trace 记录事实证据、决策和播放结果"] }
+  ]
+}

@@ -1,32 +1,21 @@
 import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
-import 'package:qiuqiu/screens/match_screen.dart';
+import 'package:qiuqiu/services/match_session_controller.dart';
 import 'package:qiuqiu/services/streaming_transcription.dart';
 
 void main() {
   test('capture readiness does not hide pending transcription work', () {
-    expect(
-      phaseWhenCaptureReady(
-        ConversationPhase.understanding,
-        hasPendingTranscript: true,
-      ),
-      ConversationPhase.understanding,
-    );
-    expect(
-      phaseWhenCaptureReady(
-        ConversationPhase.idle,
-        hasPendingTranscript: true,
-      ),
-      ConversationPhase.idle,
-    );
-    expect(
-      phaseWhenCaptureReady(
-        ConversationPhase.idle,
-        hasPendingTranscript: false,
-      ),
-      ConversationPhase.listening,
-    );
+    final controller = MatchSessionController();
+    controller.transcriptFinal('处理中');
+    controller.vadListening(hasPendingTranscript: true);
+    expect(controller.state.phase, MatchSessionPhase.understanding);
+
+    final idleController = MatchSessionController();
+    idleController.vadListening(hasPendingTranscript: true);
+    expect(idleController.state.phase, MatchSessionPhase.idle);
+    idleController.vadListening(hasPendingTranscript: false);
+    expect(idleController.state.phase, MatchSessionPhase.listening);
   });
 
   test('pending final state follows the transcription lifecycle', () {

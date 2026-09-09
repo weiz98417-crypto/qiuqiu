@@ -10,6 +10,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/resilience"
 )
 
 type Client struct {
@@ -17,6 +19,7 @@ type Client struct {
 	apiKey     string
 	model      string
 	httpClient *http.Client
+	breaker    *resilience.CircuitBreaker
 }
 
 func NewClient(baseURL, apiKey, model string) *Client {
@@ -30,6 +33,7 @@ func NewClient(baseURL, apiKey, model string) *Client {
 		httpClient: &http.Client{
 			Timeout: 10 * time.Second,
 		},
+		breaker: resilience.NewCircuitBreaker(3, 10*time.Second),
 	}
 }
 
@@ -101,6 +105,9 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 	ch := make(chan StreamChunk, 16)
 	go func() {
 		defer close(ch)
+		if c == nil || c.breaker.Allow(time.Now().UTC()) != nil {
+			return
+		}
 		req := ChatRequest{
 			Model: c.model, Messages: messages,
 			MaxTokens: 80, Temperature: temperature, Stream: true,
@@ -114,9 +121,14 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 
 		resp, err := c.httpClient.Do(httpReq)
 		if err != nil {
+			c.breaker.Failure(time.Now().UTC())
 			return
 		}
 		defer resp.Body.Close()
+		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+			c.breaker.Failure(time.Now().UTC())
+			return
+		}
 
 		scanner := bufio.NewScanner(resp.Body)
 		for scanner.Scan() {
@@ -126,6 +138,7 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 			}
 			data := strings.TrimPrefix(line, "data: ")
 			if data == "[DONE]" {
+				c.breaker.Success()
 				ch <- StreamChunk{Done: true}
 				return
 			}
@@ -140,8 +153,16 @@ func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, tem
 				ch <- StreamChunk{Text: sse.Choices[0].Delta.Content}
 			}
 		}
+		c.breaker.Failure(time.Now().UTC())
 	}()
 	return ch
+}
+
+func (c *Client) CircuitState() resilience.State {
+	if c == nil {
+		return resilience.StateOpen
+	}
+	return c.breaker.State()
 }
 
 // GenerateWithMessages sends a full message list with configurable temperature.
@@ -183,6 +204,9 @@ func (c *Client) Generate(ctx context.Context, prompt string) (*GenerateResult, 
 }
 
 func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, error) {
+	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("llm unavailable: %w", err)
+	}
 	body, _ := json.Marshal(req)
 	httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
 	c.setAuthHeaders(httpReq)
@@ -191,24 +215,29 @@ func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, 
 	start := time.Now()
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("llm request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+		c.breaker.Failure(time.Now().UTC())
 		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
 		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
 	}
 
 	var chatResp ChatResponse
 	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("llm decode: %w", err)
 	}
 
 	if len(chatResp.Choices) == 0 {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("llm returned no choices")
 	}
 
+	c.breaker.Success()
 	return &GenerateResult{
 		Text:     chatResp.Choices[0].Message.Content,
 		Duration: time.Since(start),

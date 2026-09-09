@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
 )
@@ -175,10 +176,13 @@ func TestAgentHandlesAllowedMatchEventAsOnePlannedTurn(t *testing.T) {
 	}
 }
 
-func TestAgentTreatsFactRevisionsAsDistinctMatchSignals(t *testing.T) {
+func TestAgentRefreshesCriticalFactSignalOnceWithOneFinalDecision(t *testing.T) {
 	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithDirector(
 		relationship.NewDirector(relationship.NewMemoryRepository()),
 	)
+	ledger := interaction.NewMemoryLedger()
+	agent.WithInteractionLedger(ledger)
+	base := time.Now().UTC()
 	event := matchstate.MatchEvent{
 		ID:           "goal-revision-1",
 		MatchID:      "match-1",
@@ -189,25 +193,58 @@ func TestAgentTreatsFactRevisionsAsDistinctMatchSignals(t *testing.T) {
 	}
 	first, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
 		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
-		Now: time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC),
+		Now: base,
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
 	event.FactRevision = 2
 	event.FactStatus = matchstate.FactStatusReconciled
+	event.EventType = "goal_cancelled"
 	second, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
 		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
-		Now: time.Date(2026, 7, 15, 20, 0, 1, 0, time.UTC),
+		Now: base.Add(time.Second),
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if first.Trace.ID == second.Trace.ID || first.Decision.ID == second.Decision.ID {
-		t.Fatalf("fact revisions reused trace or decision: first=%+v second=%+v", first.Trace, second.Trace)
+	if first.Trace.ID == second.Trace.ID {
+		t.Fatalf("fact revision reused trace: first=%+v second=%+v", first.Trace, second.Trace)
 	}
-	if second.Decision.SignalID != "match:user-1:goal-revision-1:2:reconciled" {
+	if first.Decision.ID != second.Decision.ID {
+		t.Fatalf("fact revision created a second decision: first=%+v second=%+v", first.Decision, second.Decision)
+	}
+	if second.Decision.SignalID != "match:user-1:goal-revision-1" {
 		t.Fatalf("second signal id = %q", second.Decision.SignalID)
+	}
+	if second.Decision.FactRevision != "goal-revision-1:2:reconciled" || second.Decision.RefreshCount != 1 {
+		t.Fatalf("refreshed decision = %+v", second.Decision)
+	}
+	if first.Presentation.Expression == second.Presentation.Expression || second.Presentation.Expression != "deflated" {
+		t.Fatalf("fact refresh reused stale presentation: first=%+v second=%+v", first.Presentation, second.Presentation)
+	}
+	event.FactRevision = 3
+	event.FactStatus = matchstate.FactStatusRevoked
+	third, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
+		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
+		Now: base.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Decision.FactRevision != second.Decision.FactRevision || third.Decision.RefreshCount != 1 {
+		t.Fatalf("critical signal refreshed more than once: second=%+v third=%+v", second.Decision, third.Decision)
+	}
+	if third.Reply != "" || third.Trace.Reason != "critical_fact_refresh_limit" {
+		t.Fatalf("third revision remained deliverable: %+v", third)
+	}
+	events, err := ledger.List(context.Background(), "user-1", "match-1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := interaction.ProjectTurns(events)
+	if len(turns) != 3 || !turns[0].Stale || turns[1].Stale || !turns[2].Stale {
+		t.Fatalf("revision staleness = %+v", turns)
 	}
 }
 

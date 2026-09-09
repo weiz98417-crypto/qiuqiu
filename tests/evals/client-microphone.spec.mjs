@@ -200,7 +200,7 @@ test('部署客户端能从浏览器麦克风接收说话事件', async ({ page 
     window.webkitAudioContext = IntegrationAudioContext;
   });
 
-  await page.goto('/');
+  await page.goto('/?matchId=test');
   await page.waitForFunction(() => typeof window.__qRecStart === 'function');
   await page.waitForTimeout(1500);
   await page.evaluate(() => {
@@ -581,6 +581,14 @@ test('欢迎流程不会阻塞部署客户端的流式语音转写', async ({ pa
       .length;
   const received = (pattern) =>
     receivedFrames.some((frame) => pattern.test(String(frame)));
+  const countFirstMeetingReplies = () => receivedFrames.filter((frame) => {
+    try {
+      const message = JSON.parse(String(frame));
+      return message.event === 'qiuqiu_reply' && message.data?.source === 'first_meeting';
+    } catch {
+      return false;
+    }
+  }).length;
   const receivedSummary = () =>
     receivedFrames
       .map((frame) => {
@@ -600,7 +608,7 @@ test('欢迎流程不会阻塞部署客户端的流式语音转写', async ({ pa
       })
       .slice(-30);
 
-  await page.goto('/');
+  await page.goto('/?matchId=test');
   await page.waitForFunction(() => typeof window.__qRecStart === 'function');
 
   await expect
@@ -643,6 +651,7 @@ test('欢迎流程不会阻塞部署客户端的流式语音转写', async ({ pa
     .toBe(true);
 
   const startsBeforeReload = countSent('asr_start');
+  const firstMeetingRepliesBeforeReload = countFirstMeetingReplies();
   await page.reload();
   await page.waitForFunction(() => typeof window.__qRecStart === 'function');
 
@@ -652,20 +661,7 @@ test('欢迎流程不会阻塞部署客户端的流式语音转写', async ({ pa
   await expect
     .poll(() => countSent('asr_start'), { timeout: 8000 })
     .toBeGreaterThan(startsBeforeReload);
-  await expect
-    .poll(
-      () =>
-        receivedFrames.some((frame) => {
-          const payload = String(frame);
-          return (
-            payload.includes('"type":"first_meeting_status"') &&
-            payload.includes('"state":"skipped"')
-          );
-        }),
-      {
-        timeout: 8000,
-        message: `received=${JSON.stringify(receivedSummary())}`,
-      },
-    )
-    .toBe(true);
+  await page.waitForTimeout(500);
+  expect(countFirstMeetingReplies(), `received=${JSON.stringify(receivedSummary())}`)
+    .toBe(firstMeetingRepliesBeforeReload);
 });

@@ -151,7 +151,7 @@ func (h *Hub) allowLegacyConnection(r *http.Request, token string) bool {
 		return false
 	}
 	if token != "" {
-		return h.cfg.AppToken != "" && tokenEqual(token, h.cfg.AppToken)
+		return h.cfg.OperatorTokenMatches(token)
 	}
 	if strings.EqualFold(h.cfg.Environment, "production") {
 		return false

@@ -8,7 +8,7 @@ This runbook is the repeatable local demo path for the football digital human pr
 ## Prerequisites
 
 - Backend runs on `http://localhost:8080`.
-- Operator token is read from `APP_TOKEN`; local default is `qiuqiu-dev-token`.
+- Operator tokens are read from `APP_TOKEN` and optional `APP_TOKEN_SECONDARY`; local default is `qiuqiu-dev-token`.
 - No external sports-data key is required. The director console is the realtime match fact source.
 - Text-only demo works without model or voice keys.
 - Voice-enabled demo requires `MIMO_API_KEY` in the process environment. Do not write real keys into files.
@@ -137,3 +137,5 @@ The same architecture can extend beyond football into live events, guided learni
 - Microphone denied: refresh the page or reset browser site permission, then use text fallback.
 - ASR/TTS unavailable: verify `MIMO_API_KEY` is set only in the current shell environment.
 - PostgreSQL mode: set `DATABASE_URL` to use durable match facts and traces; without it, memory mode is valid for local demo.
+- Windows PostgreSQL 17: run `powershell -ExecutionPolicy Bypass -File scripts/install-pgvector-windows.ps1` once, then set `DATABASE_URL`. The script installs pgvector `0.8.1` extension files and requests UAC only for the PostgreSQL extension directories.
+- Interaction audit: request `/api/matches/{matchId}/interaction?userId={userId}&limit=100`; when `hasMore` is true, pass the returned opaque `nextCursor` as the next request's `cursor` value until it is empty. `events` remains cursor-paged, while `journey` and `audit` are recomputed from the complete ledger and return `projectionScope: "all"`. The release script still traverses all pages independently as a contract check.

@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"encoding/json"
 	"errors"
 	"strings"
 	"testing"
@@ -218,6 +219,25 @@ func TestProgressiveScheduleLookupAcknowledgesBeforeSearching(t *testing.T) {
 	}
 	if result.Trace.ParentTraceID != acknowledgement.Trace.ID || result.Trace.LookupID != lookup.ID {
 		t.Fatalf("result parent trace = %q, want %q", result.Trace.ParentTraceID, acknowledgement.Trace.ID)
+	}
+	ledgerEvents, err := agent.interactions.List(context.Background(), lookup.UserID, lookup.MatchID, 20)
+	if err != nil {
+		t.Fatalf("list interaction ledger: %v", err)
+	}
+	var projectedResult Trace
+	for _, event := range ledgerEvents {
+		if event.TraceID == result.Trace.ID {
+			if err := json.Unmarshal(event.TracePayload, &projectedResult); err != nil {
+				t.Fatalf("decode projected schedule result: %v", err)
+			}
+			break
+		}
+	}
+	if projectedResult.ID != result.Trace.ID || projectedResult.LookupID != lookup.ID || projectedResult.ParentTraceID != acknowledgement.Trace.ID {
+		t.Fatalf("schedule result was not fully recorded in interaction ledger: %+v", projectedResult)
+	}
+	if toolCallNamed(projectedResult, "schedule.search") == nil {
+		t.Fatal("projected schedule result omitted schedule.search tool call")
 	}
 	if !strings.Contains(result.Reply, "Spain") || !strings.Contains(result.Reply, "Germany") {
 		t.Fatalf("schedule result = %q, want fixture teams", result.Reply)

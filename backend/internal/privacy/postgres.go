@@ -163,6 +163,20 @@ func (s *PostgresStore) Export(ctx context.Context, userID string) (Export, erro
 	`, userID); err != nil {
 		return Export{}, err
 	}
+	if export.InteractionLedger, err = queryMaps(ctx, s.pool, `
+		SELECT id, kind, signal_id, user_id, match_id, trace_id, decision_id, fact_ids,
+			fact_revision, delivery_key, delivery_state, delivery_reason, media_type, playback_state,
+			input_text, output_text, decision, presentation, trace_payload, stale, source, created_at, expires_at
+		FROM interaction_ledger WHERE user_id = $1 AND expires_at > now() ORDER BY created_at ASC
+	`, userID); err != nil {
+		return Export{}, err
+	}
+	if export.DeliveryLedger, err = queryMaps(ctx, s.pool, `
+		SELECT delivery_key, trace_id, match_id, user_id, state, critical, text_acknowledged, expires_at, updated_at
+		FROM delivery_ledger WHERE user_id = $1 AND (expires_at IS NULL OR expires_at > now()) ORDER BY updated_at ASC
+	`, userID); err != nil {
+		return Export{}, err
+	}
 	return export, nil
 }
 
@@ -240,6 +254,8 @@ func (s *PostgresStore) ProcessDeletion(ctx context.Context, userID string) (err
 		return nil
 	}
 	for _, query := range []string{
+		`DELETE FROM delivery_ledger WHERE user_id = $1`,
+		`DELETE FROM interaction_ledger WHERE user_id = $1`,
 		`DELETE FROM anonymous_device_identities WHERE user_id = $1`,
 		`DELETE FROM pending_match_observations WHERE user_id = $1`,
 		`DELETE FROM conversation_turns WHERE user_id = $1`,
@@ -282,6 +298,8 @@ func (s *PostgresStore) markDeletionFailed(ctx context.Context, userID string, d
 
 func (s *PostgresStore) CleanupExpired(ctx context.Context) error {
 	for _, query := range []string{
+		`DELETE FROM delivery_ledger WHERE expires_at IS NOT NULL AND expires_at <= now()`,
+		`DELETE FROM interaction_ledger WHERE expires_at <= now()`,
 		`DELETE FROM anonymous_device_identities WHERE expires_at <= now()`,
 		`DELETE FROM pending_match_observations WHERE status IN ('confirmed', 'contradicted', 'expired', 'superseded') AND reconcile_until <= now() - interval '10 minutes'`,
 		`DELETE FROM conversation_turns WHERE deleted_at IS NOT NULL OR (expires_at IS NOT NULL AND expires_at <= now())`,

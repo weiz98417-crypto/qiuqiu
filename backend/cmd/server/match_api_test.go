@@ -7,6 +7,7 @@ import (
 	"fmt"
 	"net/http"
 	"net/http/httptest"
+	"net/url"
 	"strconv"
 	"strings"
 	"sync/atomic"
@@ -17,10 +18,108 @@ import (
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/directordraft"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/pipeline"
 )
+
+func TestInteractionAPIIsScopedToRequestedMatch(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	ledger := interaction.NewMemoryLedger()
+	for _, event := range []interaction.Event{
+		{ID: "event-m1", Kind: interaction.KindSignal, UserID: "user-1", MatchID: "match-1", CreatedAt: time.Now().UTC()},
+		{ID: "event-m2", Kind: interaction.KindSignal, UserID: "user-1", MatchID: "match-2", CreatedAt: time.Now().UTC()},
+	} {
+		if _, err := ledger.Append(context.Background(), event); err != nil {
+			t.Fatalf("append interaction event: %v", err)
+		}
+	}
+	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager(), nil, nil, ledger)
+
+	response := doJSON(t, handler, http.MethodGet, "/api/matches/match-1/interaction?token=eval-token&userId=user-1", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Events []interaction.Event `json:"events"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode response: %v", err)
+	}
+	if len(payload.Events) != 1 || payload.Events[0].MatchID != "match-1" {
+		t.Fatalf("events=%+v, want only requested match", payload.Events)
+	}
+}
+
+func TestInteractionAPIPaginatesWithoutDroppingOrRepeatingEvents(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	ledger := interaction.NewMemoryLedger()
+	now := time.Date(2026, 9, 8, 20, 0, 0, 0, time.UTC)
+	for index := range 3 {
+		_, err := ledger.Append(context.Background(), interaction.Event{
+			ID: fmt.Sprintf("page-%d", index), Kind: interaction.KindSignal,
+			UserID: "user-page", MatchID: "match-page", CreatedAt: now.Add(time.Duration(index) * time.Second),
+		})
+		if err != nil {
+			t.Fatalf("append page event: %v", err)
+		}
+	}
+	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager(), nil, nil, ledger)
+
+	firstResponse := doJSON(t, handler, http.MethodGet, "/api/matches/match-page/interaction?token=eval-token&userId=user-page&limit=2", nil)
+	var first struct {
+		Events          []interaction.Event `json:"events"`
+		NextCursor      string              `json:"nextCursor"`
+		HasMore         bool                `json:"hasMore"`
+		ProjectionScope string              `json:"projectionScope"`
+		Journey         interaction.Journey `json:"journey"`
+	}
+	if err := json.Unmarshal(firstResponse.Body.Bytes(), &first); err != nil {
+		t.Fatalf("decode first page: %v", err)
+	}
+	if len(first.Events) != 2 || !first.HasMore || first.NextCursor == "" || first.ProjectionScope != "all" {
+		t.Fatalf("unexpected first page: %+v", first)
+	}
+	secondResponse := doJSON(t, handler, http.MethodGet, "/api/matches/match-page/interaction?token=eval-token&userId=user-page&limit=2&cursor="+url.QueryEscape(first.NextCursor), nil)
+	var second struct {
+		Events     []interaction.Event `json:"events"`
+		NextCursor string              `json:"nextCursor"`
+		HasMore    bool                `json:"hasMore"`
+	}
+	if err := json.Unmarshal(secondResponse.Body.Bytes(), &second); err != nil {
+		t.Fatalf("decode second page: %v", err)
+	}
+	if len(second.Events) != 1 || second.Events[0].ID != "page-2" || second.HasMore || second.NextCursor != "" {
+		t.Fatalf("unexpected second page: %+v", second)
+	}
+}
+
+func TestMatchCatalogListsConfiguredMatches(t *testing.T) {
+	store := matchstate.NewStore()
+	if _, _, err := store.SetConfig("catalog-live", matchstate.MatchConfig{HomeTeam: "阿森纳", AwayTeam: "曼城", Competition: "英超"}); err != nil {
+		t.Fatalf("SetConfig live: %v", err)
+	}
+	if _, _, err := store.SetConfig("catalog-next", matchstate.MatchConfig{HomeTeam: "利物浦", AwayTeam: "切尔西", Competition: "英超"}); err != nil {
+		t.Fatalf("SetConfig next: %v", err)
+	}
+	handler := handleMatchCatalog(store, &config.Config{})
+	response := doJSON(t, handler, http.MethodGet, "/api/matches/catalog", nil)
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	var payload struct {
+		Matches []matchstate.MatchSummary `json:"matches"`
+	}
+	if err := json.Unmarshal(response.Body.Bytes(), &payload); err != nil {
+		t.Fatalf("decode catalog: %v", err)
+	}
+	if len(payload.Matches) != 2 || payload.Matches[0].MatchID == "" || payload.Matches[1].MatchID == "" {
+		t.Fatalf("matches=%+v", payload.Matches)
+	}
+}
 
 var testIdempotencyCounter atomic.Uint64
 
@@ -111,6 +210,63 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	}
 	if !hasEventTag(autoEvent, "proactive=auto") {
 		t.Fatalf("auto event missing mode tag: %+v", autoEvent.Tags)
+	}
+}
+
+func TestMatchAPIConfigDoesNotShrinkConfiguredRoster(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	fullConfig := matchstate.MatchConfig{
+		HomeTeam:    "Spain",
+		AwayTeam:    "Germany",
+		HomePlayers: startingEleven("Home"),
+		AwayPlayers: startingEleven("Away"),
+	}
+	if _, _, err := store.SetConfig("roster-guard", fullConfig); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	preserved := doJSON(t, handler, http.MethodPost, "/api/matches/roster-guard/config?token=eval-token", matchstate.MatchConfig{
+		HomeTeam: "New Spain",
+		AwayTeam: "New Germany",
+	})
+	if preserved.Code != http.StatusOK {
+		t.Fatalf("empty-roster update status=%d body=%s", preserved.Code, preserved.Body.String())
+	}
+	if got := store.Config("roster-guard"); len(got.HomePlayers) != 11 || len(got.AwayPlayers) != 11 {
+		t.Fatalf("empty-roster update cleared configured players: home=%d away=%d", len(got.HomePlayers), len(got.AwayPlayers))
+	}
+
+	shrunk := doJSON(t, handler, http.MethodPost, "/api/matches/roster-guard/config?token=eval-token", matchstate.MatchConfig{
+		HomeTeam:    "New Spain",
+		AwayTeam:    "New Germany",
+		HomePlayers: []matchstate.Player{{Name: "Only Home"}},
+		AwayPlayers: []matchstate.Player{{Name: "Only Away"}},
+	})
+	if shrunk.Code != http.StatusBadRequest {
+		t.Fatalf("sparse-roster update status=%d body=%s, want 400", shrunk.Code, shrunk.Body.String())
+	}
+	if got := store.Config("roster-guard"); len(got.HomePlayers) != 11 || len(got.AwayPlayers) != 11 {
+		t.Fatalf("rejected sparse update changed configured players: home=%d away=%d", len(got.HomePlayers), len(got.AwayPlayers))
+	}
+}
+
+func TestMatchAPIAcceptsPrimaryAndSecondaryOperatorTokens(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	cfg := &config.Config{AppToken: "primary-token", SecondaryAppToken: "secondary-token"}
+	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+
+	for _, token := range []string{"primary-token", "secondary-token"} {
+		response := doJSON(t, handler, http.MethodGet, "/api/matches/operator-auth/facts/example/revisions?token="+token, nil)
+		if response.Code != http.StatusOK {
+			t.Fatalf("operator token %q status=%d body=%s", token, response.Code, response.Body.String())
+		}
+	}
+	unauthorized := doJSON(t, handler, http.MethodGet, "/api/matches/operator-auth/facts/example/revisions?token=wrong-token", nil)
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("wrong operator token status=%d body=%s", unauthorized.Code, unauthorized.Body.String())
 	}
 }
 
@@ -299,12 +455,15 @@ func TestDirectorVoiceDraftAPITranscribesThenPublishesConfirmedFact(t *testing.T
 	if response.Code != http.StatusOK {
 		t.Fatalf("voice draft status=%d body=%s", response.Code, response.Body.String())
 	}
-	var result directordraft.Transcription
+	var result directordraft.Result
 	if err := json.Unmarshal(response.Body.Bytes(), &result); err != nil {
 		t.Fatalf("decode voice transcription: %v", err)
 	}
 	if result.Transcript != "德国换人，菲尔克鲁格换下哈弗茨" {
 		t.Fatalf("voice transcription = %+v", result)
+	}
+	if !result.Ready || result.Draft.TeamID != "away" || result.Draft.EventType != "substitution" || len(result.Draft.Participants) != 2 {
+		t.Fatalf("voice draft = %+v", result)
 	}
 	if events := store.Events("voice-draft-api"); len(events) != 0 {
 		t.Fatalf("voice transcription created public facts: %+v", events)
@@ -900,6 +1059,79 @@ func TestEvalTraceAPIListDetailAndAuth(t *testing.T) {
 	}
 	if detailEnvelope.Trace.ID != reply.Trace.ID || len(detailEnvelope.Trace.RetrievedEvent) == 0 {
 		t.Fatalf("trace detail mismatch: %+v", detailEnvelope.Trace)
+	}
+}
+
+func TestEvalTraceAPIProjectsInteractionLedgerInsteadOfLegacyTraceStore(t *testing.T) {
+	store := matchstate.NewStore()
+	traces := companion.NewStoreMemoryTools(store)
+	ledger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(traces).WithInteractionLedger(ledger)
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPIWithRuntime(store, traces, traces, cfg, nil, pipeline.NewPromptManager(), nil, nil, ledger)
+
+	matchID := "trace-ledger-eval"
+	reply, err := agent.HandleMessage(contextless(), companion.MessageRequest{
+		SignalID: "trace-ledger-signal", MatchID: matchID, UserID: "user-1",
+		Text: "现在几比几？", Now: time.Date(2026, 9, 8, 20, 0, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error: %v", err)
+	}
+	legacyOnly := companion.Trace{
+		ID: "legacy-only", MatchID: matchID, UserID: "user-1", Input: "旧记录",
+		Output: "不应再出现在运营视图", CreatedAt: reply.Trace.CreatedAt.Add(time.Second),
+	}
+	if err := traces.WriteTrace(contextless(), legacyOnly); err != nil {
+		t.Fatalf("write legacy-only trace: %v", err)
+	}
+
+	listResp := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/traces?token=eval-token", nil)
+	var listEnvelope struct {
+		Traces []companion.Trace `json:"traces"`
+	}
+	if err := json.Unmarshal(listResp.Body.Bytes(), &listEnvelope); err != nil {
+		t.Fatalf("decode trace list: %v body=%s", err, listResp.Body.String())
+	}
+	if len(listEnvelope.Traces) != 1 || listEnvelope.Traces[0].ID != reply.Trace.ID {
+		t.Fatalf("traces=%+v, want only ledger-derived trace %q", listEnvelope.Traces, reply.Trace.ID)
+	}
+	if len(listEnvelope.Traces[0].ToolCalls) == 0 || listEnvelope.Traces[0].Intent == "" {
+		t.Fatalf("ledger projection lost trace detail: %+v", listEnvelope.Traces[0])
+	}
+	if _, err := ledger.Append(contextless(), interaction.Event{
+		ID: "tts:" + reply.Trace.ID, Kind: interaction.KindMediaDelivery,
+		UserID: "user-1", MatchID: matchID, TraceID: reply.Trace.ID,
+		DeliveryKey: reply.Trace.ID, DeliveryState: "audio_ready", MediaType: "audio/mpeg",
+		CreatedAt: reply.Trace.CreatedAt.Add(time.Second),
+	}); err != nil {
+		t.Fatalf("append media delivery: %v", err)
+	}
+	if _, err := ledger.Append(contextless(), interaction.Event{
+		ID: "playback:" + reply.Trace.ID, Kind: interaction.KindPlaybackResult,
+		UserID: "user-1", MatchID: matchID, TraceID: reply.Trace.ID,
+		DeliveryKey: reply.Trace.ID, PlaybackState: "completed",
+		CreatedAt: reply.Trace.CreatedAt.Add(2 * time.Second),
+	}); err != nil {
+		t.Fatalf("append playback result: %v", err)
+	}
+
+	detailResp := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/traces/"+reply.Trace.ID+"?token=eval-token", nil)
+	if detailResp.Code != http.StatusOK {
+		t.Fatalf("ledger trace detail status=%d body=%s", detailResp.Code, detailResp.Body.String())
+	}
+	var detailEnvelope struct {
+		Trace companion.Trace `json:"trace"`
+	}
+	if err := json.Unmarshal(detailResp.Body.Bytes(), &detailEnvelope); err != nil {
+		t.Fatalf("decode ledger trace detail: %v", err)
+	}
+	if detailEnvelope.Trace.Voice == nil || detailEnvelope.Trace.Voice.TTSStatus != "ok" || detailEnvelope.Trace.Voice.TTSMime != "audio/mpeg" || detailEnvelope.Trace.Voice.PlaybackStatus != "completed" {
+		t.Fatalf("ledger trace media projection = %+v", detailEnvelope.Trace.Voice)
+	}
+	legacyResp := doJSON(t, handler, http.MethodGet, "/api/matches/"+matchID+"/traces/legacy-only?token=eval-token", nil)
+	if legacyResp.Code != http.StatusNotFound {
+		t.Fatalf("legacy-only trace status=%d, want 404", legacyResp.Code)
 	}
 }
 

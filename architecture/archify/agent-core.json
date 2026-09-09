@@ -1,0 +1,48 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜Agent Core 决策与表现闭环", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1380, 720], "repository": { "url": "https://github.com/weiz98417-crypto/qiuqiu.git", "revision": "47bf18d45865aec9b0918e24ce01aa20d93f1381" }, "views": [
+    { "id": "decision-loop", "label": "一轮回应如何决定", "focus": ["input", "agent", "grounding", "constitution", "director", "realizer", "presentation", "delivery"], "note": "Agent 先取事实，再结合人格宪法、关系与场景，Director 决定沟通与表现，Realizer 只实现台词。" },
+    { "id": "memory", "label": "关系状态如何延续", "focus": ["director", "relationship-memory", "postgres", "trace"], "note": "关系状态与结构化记忆由 Director Repository 一起加载、CAS 更新并留下证据。" },
+    { "id": "recovery", "label": "主动与恢复", "focus": ["observation", "scheduler", "delivery", "trace"], "note": "主动反应、用户领先观察、播放结果和重连恢复都回到同一条可追踪闭环。" }
+  ] },
+  "components": [
+    { "id": "input", "type": "external", "label": "输入信号", "sublabel": "用户 Turn · 比赛事件 · 当前模式", "pos": [35, 300], "size": [190, 80], "sources": [{ "path": "backend/internal/relationship/types.go", "line": 8, "label": "signal kinds" }] },
+    { "id": "agent", "type": "backend", "label": "Companion Agent", "sublabel": "边界编排 · Intent · Tool Calls", "pos": [270, 225], "size": [220, 100], "sources": [{ "path": "backend/internal/companion/agent.go", "line": 259, "label": "agent" }] },
+    { "id": "fact-tools", "type": "backend", "label": "Fact / Context Tools", "sublabel": "Snapshot · Events · Turns", "pos": [270, 458], "size": [220, 86], "sources": [{ "path": "backend/internal/companion/agent.go", "line": 250, "label": "memory tools" }] },
+    { "id": "grounding", "type": "security", "label": "Grounding + Policy Gate", "sublabel": "逻辑职责｜可靠底稿 · 禁止新增 · 权限", "pos": [535, 225], "size": [235, 100], "sources": [{ "path": "backend/internal/companion/agent.go", "line": 1061, "label": "grounded content" }] },
+    { "id": "director", "type": "backend", "label": "Companion Director", "sublabel": "说不说 · 说什么 · 语气 · 主动性 · 表现", "pos": [815, 225], "size": [235, 100], "sources": [{ "path": "backend/internal/relationship/director.go", "line": 23, "label": "director apply" }] },
+    { "id": "current-context", "type": "backend", "label": "Current Context", "sublabel": "比赛状态 · 用户情绪 · 观看模式", "pos": [35, 600], "size": [235, 86] },
+    { "id": "constitution", "type": "security", "label": "Personality Constitution", "sublabel": "身份 · 特质 · 禁止越界 · 版本", "pos": [535, 113], "size": [235, 86] },
+    { "id": "relationship-memory", "type": "database", "label": "Relationship State + Memory", "sublabel": "关系状态 · 边界 · 偏好 · 未完话题", "pos": [815, 458], "size": [235, 86], "sources": [{ "path": "backend/internal/relationship/postgres.go", "line": 53, "label": "state repository" }] },
+    { "id": "realizer", "type": "backend", "label": "Reply Realizer", "sublabel": "只执行 SpeechPlan → 自然台词", "pos": [1120, 225], "size": [235, 92], "sources": [{ "path": "backend/internal/companion/realize.go", "line": 24, "label": "realize" }] },
+    { "id": "presentation", "type": "backend", "label": "Presentation Plan", "sublabel": "Speech · Motion · Hold", "pos": [1090, 353], "size": [235, 86], "sources": [{ "path": "backend/internal/relationship/types.go", "line": 349, "label": "presentation contract" }] },
+    { "id": "delivery", "type": "frontend", "label": "Server Delivery", "sublabel": "字幕 · TTS · Live2D · Playback ACK", "pos": [1090, 488], "size": [235, 86], "sources": [{ "path": "backend/cmd/server/main.go", "line": 1969, "label": "delivery" }] },
+    { "id": "observation", "type": "backend", "label": "Observation Coordinator", "sublabel": "pending · reconcile · follow-up", "pos": [535, 458], "size": [235, 86], "sources": [{ "path": "backend/internal/observation/coordinator.go", "line": 77, "label": "coordinator" }] },
+    { "id": "scheduler", "type": "backend", "label": "Scheduler + Proactive Gate", "sublabel": "优先级 · 打断 · TTL · 去重 · 播放超时", "pos": [35, 113], "size": [235, 86], "sources": [{ "path": "backend/internal/conversation/scheduler.go", "line": 69, "label": "scheduler" }] },
+    { "id": "trace", "type": "database", "label": "Agent Trace", "sublabel": "Trace · Fact IDs", "pos": [1090, 113], "size": [235, 86], "sources": [{ "path": "backend/internal/companion/trace.go", "line": 22, "label": "trace writer" }] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL + Outbox", "sublabel": "事务持久化 · 幂等 · 重试发布", "pos": [815, 578], "size": [235, 80], "sources": [{ "path": "backend/internal/matchstate/postgres.go", "line": 110, "label": "outbox runner" }] }
+  ],
+  "boundaries": [{ "kind": "region", "label": "Agent Core｜逻辑职责不是独立进程", "wraps": ["agent", "fact-tools", "grounding", "director", "relationship-memory", "realizer", "presentation", "observation", "scheduler", "trace", "postgres", "delivery"], "pad": 24 }],
+  "connections": [
+    { "id": "input-agent", "from": "input", "to": "agent", "label": "Boundary Request / Event", "variant": "emphasis", "labelAt": [248, 394] },
+    { "id": "agent-tools", "from": "agent", "to": "fact-tools", "label": "读取事实、上下文与赛程", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [250, 394] },
+    { "id": "tools-agent", "from": "fact-tools", "to": "agent", "variant": "dashed", "fromSide": "top", "toSide": "bottom" },
+    { "id": "agent-grounding", "from": "agent", "to": "grounding", "variant": "emphasis" },
+    { "id": "grounding-director", "from": "grounding", "to": "director", "variant": "security" },
+    { "id": "context-director", "from": "current-context", "to": "director", "variant": "emphasis" },
+    { "id": "memory-director", "from": "relationship-memory", "to": "director", "variant": "dashed" },
+    { "id": "director-realizer", "from": "director", "to": "realizer", "label": "SpeechPlan / constitution", "variant": "emphasis", "labelAt": [1085, 70] },
+    { "id": "director-presentation", "from": "director", "to": "presentation", "label": "Response Plan：内容 + 表现", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [1080, 339] },
+    { "id": "realizer-delivery", "from": "realizer", "to": "delivery", "label": "Final text", "variant": "emphasis", "fromSide": "right", "toSide": "right", "via": [[1370,271],[1370,531]], "labelAt": [1140, 450] },
+    { "id": "presentation-delivery", "from": "presentation", "to": "delivery", "label": "Motion / Voice Style / Hold", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [1260, 450] },
+    { "id": "delivery-trace", "from": "delivery", "to": "trace", "label": "playback result", "variant": "dashed", "fromSide": "right", "toSide": "right", "via": [[1360,531],[1360,156]], "labelAt": [1300, 95] },
+    { "id": "agent-trace", "from": "agent", "to": "trace", "label": "Decision Trace write/update", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "labelAt": [794, 213] },
+    { "id": "memory-postgres", "from": "relationship-memory", "to": "postgres", "label": "CAS state + memories", "fromSide": "bottom", "toSide": "top", "labelAt": [933, 558] },
+    { "id": "trace-postgres", "from": "trace", "to": "postgres", "label": "Trace persistence", "fromSide": "right", "toSide": "right", "via": [[1378,156],[1378,618]], "labelAt": [1300, 470] },
+    { "id": "observation-agent", "from": "observation", "to": "agent", "variant": "dashed" },
+    { "id": "scheduler-agent", "from": "scheduler", "to": "agent", "label": "Run / proactive turn", "variant": "emphasis", "fromSide": "right", "toSide": "left", "via": [[285,156],[285,275],[255,275]], "labelAt": [250, 213] }
+    ,{ "id": "constitution-scheduler", "from": "constitution", "to": "scheduler", "label": "proactive limits", "variant": "security", "fromSide": "left", "toSide": "right", "labelAt": [400, 105] }
+  ],
+  "cards": []
+}

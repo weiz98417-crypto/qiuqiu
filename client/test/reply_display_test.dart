@@ -2,6 +2,37 @@ import 'package:flutter_test/flutter_test.dart';
 import 'package:qiuqiu/screens/reply_display.dart';
 
 void main() {
+  test('rejects unknown presentation commands', () {
+    expect(
+      CompanionPresentation.fromReplyData({
+        'presentation': {
+          'expression': 'javascript:alert',
+          'motion': 'cheer',
+        },
+      }),
+      isNull,
+    );
+  });
+
+  test('legacy expressions use the same safety whitelist', () {
+    expect(CompanionPresentation.normalizeExpression('excited'), 'excited');
+    expect(CompanionPresentation.normalizeExpression('deflated'), 'sad');
+    expect(
+        CompanionPresentation.normalizeExpression('javascript:alert'), isNull);
+  });
+
+  test('maps supported backend presentation aliases safely', () {
+    final presentation = CompanionPresentation.fromReplyData({
+      'presentation': {
+        'expression': 'deflated',
+        'motion': 'settle',
+        'voiceStyle': 'low_disappointed',
+        'returnMode': 'decay_to_focus',
+      },
+    });
+    expect(presentation?.expression, 'sad');
+    expect(presentation?.motion, 'idle');
+  });
   test('single sentence reply does not invent companion filler', () {
     expect(splitReplyForDisplay('这脚真离谱。'), ('这脚真离谱。', ''));
   });
@@ -27,8 +58,8 @@ void main() {
     });
 
     expect(presentation, isNotNull);
-    expect(presentation!.expression, 'deflated');
-    expect(presentation.motion, 'settle');
+    expect(presentation!.expression, 'sad');
+    expect(presentation.motion, 'idle');
     expect(presentation.voiceStyle, 'low_disappointed');
     expect(presentation.voiceSpeed, 0.92);
     expect(presentation.hold, const Duration(milliseconds: 2800));

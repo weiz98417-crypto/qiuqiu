@@ -41,7 +41,7 @@ test.beforeEach(async ({ page, request }) => {
 });
 
 test('用户侧展示导演主动线、基于记忆回答追问，并在日志中可追溯', async ({ page, request }) => {
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await expect(page.getByText('比赛已连接')).toBeVisible({ timeout: 10_000 });
 
@@ -78,7 +78,7 @@ test('用户侧展示导演主动线、基于记忆回答追问，并在日志�
 });
 
 test('用户错误赛况不会覆盖比赛事实，并留下核验记录', async ({ page, request }) => {
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await page.getByLabel('直接和球球说…').fill('德国已经3比0领先了');
@@ -99,7 +99,7 @@ test('用户错误赛况不会覆盖比赛事实，并留下核验记录', async
 });
 
 test('错误进球者会被纠正，玩笑不会进入事实核验', async ({ page, request }) => {
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await sendText(page, '刚才哈兰德进球了');
@@ -129,7 +129,7 @@ test('没有比赛证据时，用户报告的进球保持待确认', async ({ pa
     visibility: 'public',
     confirmed: true,
   });
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await sendText(page, '佩德里刚刚进球了吧');
@@ -142,7 +142,7 @@ test('没有比赛证据时，用户报告的进球保持待确认', async ({ pa
 test('没有比赛事件时，指代式赞美不会被球球顺着认同', async ({ page, request }) => {
   await apiPost(request, `/api/matches/${matchId}/reset`, {});
   await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await sendText(page, '刚刚那个球真漂亮吧');
@@ -173,7 +173,7 @@ test('运行中的比赛时钟不会阻塞客户端状态轮播', async ({ page,
     visibility: 'public',
   });
 
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await expect.poll(() => page.locator('body').innerText()).toContain('比赛动态：25:00 · 佩德里完成一次射门。');
   await expect.poll(() => page.locator('body').innerText(), { timeout: 7_000 })
@@ -185,7 +185,7 @@ test('比赛情况和时间提问读取正在运行的后台时钟', async ({ pa
   await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
   await setAndStartMatchClock(request, 1500);
 
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await sendText(page, '比赛什么情况了');
@@ -206,7 +206,7 @@ test('零比零时用户说好球会得到赛场回应且不会被当成进球',
   await apiPost(request, `/api/matches/${matchId}/config`, { homeTeam: '西班牙', awayTeam: '德国' });
   await setAndStartMatchClock(request, 1500);
 
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await sendText(page, '好球！');
@@ -247,7 +247,7 @@ test('人工与外部源冲突时，球球暂停确认赛况', async ({ page, re
   const state = await apiGet(request, `/api/matches/${matchId}/state`);
   expect(state.snapshot.integrity.status).toBe('conflict');
 
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await openTextMode(page);
   await sendText(page, '西班牙1比0德国');
@@ -328,16 +328,18 @@ test('麦克风未授权时，用户侧保留可用的文字输入降级路径',
       });
     }
   });
-  await page.goto('/');
+  await page.goto(matchURL());
   await enableAccessibility(page);
   await expect(page.getByText('没有麦克风权限，先打字也能继续陪看。')).toBeVisible({ timeout: 15_000 });
   await expect(page.getByLabel('直接和球球说…')).toBeEnabled();
 });
 
 async function enableAccessibility(page) {
-  await page
-    .getByRole('button', { name: 'Enable accessibility' })
-    .evaluate((element) => element.click());
+  const button = page.getByRole('button', { name: 'Enable accessibility' });
+  try {
+    await button.waitFor({ state: 'visible', timeout: 3000 });
+    await button.evaluate((element) => element.click());
+  } catch {}
 }
 
 async function sendText(page, text) {
@@ -369,6 +371,10 @@ async function apiGet(request, path) {
 
 function testIdempotencyKey() {
   return `test-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function matchURL() {
+  return `/?matchId=${encodeURIComponent(matchId)}`;
 }
 
 async function startMatchClock(request, elapsedSeconds) {

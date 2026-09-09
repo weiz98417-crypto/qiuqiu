@@ -1,0 +1,50 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜控制面与可靠性闭环", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1380, 680], "repository": { "url": "https://github.com/weiz98417-crypto/qiuqiu.git", "revision": "47bf18d45865aec9b0918e24ce01aa20d93f1381" }, "views": [
+    { "id": "identity", "label": "身份与权限", "focus": ["client", "auth", "gateway", "operator"], "note": "匿名会话、作用域和连接校验先于业务读写。" },
+    { "id": "facts", "label": "事实控制", "focus": ["source", "operator", "ledger", "outbox", "agent"], "note": "来源与导播写入事实账本，投影和事务消息保持可回放。" },
+    { "id": "recovery", "label": "失败与恢复", "focus": ["observation", "scheduler", "delivery", "privacy", "postgres"], "note": "观察协调、TTL、投递状态和删除竞态共同构成安全回退。" }
+  ] },
+  "components": [
+    { "id": "client", "type": "frontend", "label": "Flutter Client", "sublabel": "Session · WS · Playback", "pos": [35, 70], "size": [250, 82] },
+    { "id": "operator", "type": "frontend", "label": "Operator Console", "sublabel": "Source · Fact · Conflict", "pos": [365, 70], "size": [250, 82] },
+    { "id": "auth", "type": "security", "label": "Auth / Session", "sublabel": "Access · Refresh · Scope", "pos": [695, 70], "size": [250, 82] },
+    { "id": "source", "type": "backend", "label": "Source Manager", "sublabel": "Poll · Replay · Freshness", "pos": [1025, 70], "size": [300, 82] },
+    { "id": "gateway", "type": "backend", "label": "Gateway Boundary", "sublabel": "Origin · Token · WS", "pos": [35, 255], "size": [250, 82] },
+    { "id": "ledger", "type": "backend", "label": "Fact Ledger", "sublabel": "Projection · Revision · Conflict", "pos": [365, 255], "size": [250, 82] },
+    { "id": "outbox", "type": "messagebus", "label": "Transactional Outbox", "sublabel": "Atomic publish · Retry", "pos": [695, 255], "size": [250, 82] },
+    { "id": "agent", "type": "backend", "label": "Agent / Director", "sublabel": "Grounded facts · Constitution · Relationship · Context", "pos": [1025, 255], "size": [300, 82] },
+    { "id": "observation", "type": "backend", "label": "Observation", "sublabel": "Pending · Reconcile · Follow-up", "pos": [1025, 440], "size": [300, 82] },
+    { "id": "scheduler", "type": "backend", "label": "Scheduler", "sublabel": "Priority · Interrupt · TTL", "pos": [695, 440], "size": [250, 82] },
+    { "id": "delivery", "type": "backend", "label": "Delivery Tracker", "sublabel": "Text · TTS · Playback", "pos": [365, 440], "size": [250, 82] },
+    { "id": "privacy", "type": "security", "label": "Privacy / Retention", "sublabel": "Export · Delete · Cleanup", "pos": [35, 440], "size": [250, 82] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL", "sublabel": "Facts · Sessions · Trace · Audit", "pos": [35, 550], "size": [250, 82], "sources": [{ "path": "backend/internal/matchstate/postgres.go", "line": 110, "label": "outbox persistence" }] }
+  ],
+  "boundaries": [
+    { "kind": "security-group", "label": "身份与控制面", "wraps": ["client", "operator", "auth", "gateway"], "pad": 18 },
+    { "kind": "region", "label": "事实与陪伴决策面", "wraps": ["source", "ledger", "outbox", "agent"], "pad": 18 },
+    { "kind": "region", "label": "恢复与数据生命周期", "wraps": ["observation", "scheduler", "delivery", "privacy", "postgres"], "pad": 18 }
+  ],
+  "connections": [
+    { "id": "client-auth", "from": "client", "to": "auth", "label": "issue / refresh", "variant": "security", "fromSide": "top", "toSide": "top", "via": [[160,40],[820,40]], "labelAt": [490, 30] },
+    { "id": "operator-auth", "from": "operator", "to": "auth", "label": "operator scope", "variant": "security", "labelAt": [655, 55] },
+    { "id": "auth-gateway", "from": "auth", "to": "gateway", "label": "claims / origin", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelAt": [655, 230] },
+    { "id": "source-ledger", "from": "source", "to": "ledger", "label": "normalized events", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "via": [[1175,205],[490,205]], "labelAt": [900, 220] },
+    { "id": "gateway-ledger", "from": "gateway", "to": "ledger", "label": "user context", "variant": "default", "labelAt": [325, 355] },
+    { "id": "ledger-outbox", "from": "ledger", "to": "outbox", "label": "atomic publication", "variant": "emphasis", "labelAt": [655, 355] },
+    { "id": "outbox-agent", "from": "outbox", "to": "agent", "label": "event fan-out", "variant": "default", "labelAt": [985, 355] },
+    { "id": "agent-observation", "from": "agent", "to": "observation", "label": "fact change", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelAt": [1175, 425] },
+    { "id": "observation-scheduler", "from": "observation", "to": "scheduler", "label": "follow-up / suppress", "variant": "dashed", "labelAt": [985, 540] },
+    { "id": "scheduler-delivery", "from": "scheduler", "to": "delivery", "label": "delivery job", "variant": "emphasis", "labelAt": [655, 540] },
+    { "id": "delivery-privacy", "from": "delivery", "to": "privacy", "label": "status / erase", "variant": "security", "labelAt": [325, 540] },
+    { "id": "privacy-postgres", "from": "privacy", "to": "postgres", "label": "retention", "variant": "security", "fromSide": "bottom", "toSide": "top", "labelAt": [160, 530] },
+    { "id": "ledger-postgres", "from": "ledger", "to": "postgres", "label": "facts / revisions", "variant": "dashed", "fromSide": "bottom", "toSide": "left", "via": [[490,390],[10,390],[10,591]], "labelAt": [260, 380] },
+    { "id": "delivery-agent", "from": "delivery", "to": "agent", "label": "ObserveDelivery", "variant": "dashed", "fromSide": "top", "toSide": "bottom", "via": [[490,400],[1175,400]], "labelAt": [800, 390] }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "事实与人格边界", "items": ["事实账本是公开赛况唯一权威", "人格宪法限制主动性、亲密度和表达方式，并有版本可审计", "用户安静、结束和删除优先于任何主动人味"] },
+    { "dot": "emerald", "title": "恢复路径", "items": ["事件原子写入 Outbox，再由发布器重试", "观察协调和 Scheduler 共同决定是否跟进"] },
+    { "dot": "slate", "title": "当前边界", "items": ["WebSocket 持久化重放游标和客户端 ACK 仍待补", "横向扩容前需要共享调度、广播和重放设计"] }
+  ]
+}

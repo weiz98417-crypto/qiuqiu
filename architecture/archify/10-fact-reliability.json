@@ -1,0 +1,57 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "球球｜事实与可靠性状态",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 650],
+    "views": [
+      { "id": "fact-mainline", "label": "事实主线", "focus": ["match", "operator", "source-health", "normalized", "provisional", "confirmed", "published"], "note": "外部事件经过来源检查、规范化和确认，才有资格进入用户呈现。冲突与调和保留在事实账本的修订轨迹中。" },
+      { "id": "outbox-recovery", "label": "消息恢复", "focus": ["confirmed", "outbox", "retry", "dlq", "replay"], "note": "事务 Outbox 把事实提交和事件发布接起来，失败进入受控恢复路径。" },
+      { "id": "observation-reconcile", "label": "观察调和", "focus": ["published", "observation", "revoked"], "note": "观察会等待事实确认、跟进或抑制，撤销会阻断旧反应。" }
+    ]
+  },
+  "stages": [
+    { "label": "Sources" },
+    { "label": "Ingest" },
+    { "label": "Fact states" },
+    { "label": "Publish" },
+    { "label": "Recovery" }
+  ],
+  "nodes": [
+      { "id": "match", "type": "external", "label": "比赛数据源", "sublabel": "轮询 · 游标 · 新鲜度", "stage": 0, "row": 0, "tag": "source" },
+    { "id": "operator", "type": "frontend", "label": "运营 / 导播台", "sublabel": "确认 · 更正 · 撤销", "stage": 0, "row": 3, "tag": "human" },
+      { "id": "source-health", "type": "backend", "label": "来源健康检查", "sublabel": "游标 · 延迟 · 可用性", "stage": 1, "row": 0, "tag": "ingest" },
+      { "id": "normalized", "type": "backend", "label": "已规范化", "sublabel": "去重 · 校时 · 归一", "stage": 1, "row": 2, "tag": "ingest" },
+    { "id": "provisional", "type": "backend", "label": "待确认", "sublabel": "证据不足 · 冲突", "stage": 2, "row": 0, "tag": "provisional" },
+      { "id": "confirmed", "type": "database", "label": "已确认事实", "sublabel": "当前可引用版本", "stage": 2, "row": 2, "tag": "grounded" },
+      { "id": "revoked", "type": "security", "label": "已撤销", "sublabel": "retraction · 停止旧反应", "stage": 2, "row": 4, "yOffset": -75, "tag": "retraction" },
+    { "id": "outbox", "type": "messagebus", "label": "Outbox 待发布", "sublabel": "事实与消息同事务", "stage": 3, "row": 2, "tag": "durable" },
+      { "id": "retry", "type": "backend", "label": "重试", "sublabel": "退避 · 次数受限", "stage": 3, "row": 4, "yOffset": -75, "tag": "retryable" },
+      { "id": "published", "type": "messagebus", "label": "进程内已发布", "sublabel": "订阅队列 · 非客户端送达", "stage": 3, "row": 0, "tag": "async" },
+    { "id": "observation", "type": "backend", "label": "观察待调和", "sublabel": "跟进或抑制", "stage": 4, "row": 0, "tag": "pending" },
+      { "id": "dlq", "type": "messagebus", "label": "失败记录 / 死信", "sublabel": "超限 · 人工查看", "stage": 4, "row": 4, "yOffset": -75, "tag": "manual" },
+    { "id": "replay", "type": "security", "label": "受控重放", "sublabel": "批准批次 · 原版本", "stage": 4, "row": 2, "tag": "planned" }
+  ],
+  "flows": [
+      { "from": "match", "to": "source-health", "label": "事件 + 游标", "classification": "外部事实", "variant": "emphasis", "route": "vertical-channel", "labelAt": [230, 200] },
+      { "from": "source-health", "to": "normalized", "label": "健康通过", "classification": "来源资格", "variant": "emphasis", "route": "vertical-channel" },
+    { "from": "operator", "to": "normalized", "label": "人工确认", "classification": "人工写入", "variant": "security", "route": "vertical-channel" },
+    { "from": "normalized", "to": "confirmed", "label": "资格充分", "classification": "事实状态", "variant": "emphasis", "route": "vertical-channel", "labelAt": [445, 245] },
+      { "from": "normalized", "to": "provisional", "label": "待确认", "classification": "事实状态", "variant": "security", "route": "vertical-channel", "labelAt": [380, 330] },
+      { "from": "provisional", "to": "confirmed", "label": "复核通过", "classification": "事实状态", "variant": "emphasis", "route": "vertical-channel", "labelAt": [520, 210] },
+    { "from": "confirmed", "to": "outbox", "label": "原子提交", "classification": "可靠发布", "variant": "emphasis", "route": "vertical-channel", "labelAt": [650, 420] },
+    { "from": "outbox", "to": "published", "label": "发布", "classification": "事实可见", "variant": "emphasis", "route": "vertical-channel", "labelAt": [760, 260] },
+    { "from": "outbox", "to": "retry", "label": "失败", "classification": "恢复", "variant": "security", "route": "vertical-channel", "labelAt": [810, 460] },
+      { "from": "retry", "to": "dlq", "label": "超限", "classification": "人工接管", "variant": "security", "route": "vertical-channel", "labelAt": [1000, 480] },
+    { "from": "dlq", "to": "replay", "label": "批准重放", "classification": "审计", "variant": "dashed", "route": "vertical-channel", "labelAt": [990, 680] },
+    { "from": "published", "to": "observation", "label": "变化", "classification": "跟进信号", "variant": "default", "route": "vertical-channel" },
+      { "from": "confirmed", "to": "revoked", "label": "撤销", "classification": "撤回", "variant": "security", "route": "vertical-channel", "labelAt": [560, 480] }
+  ],
+  "cards": [
+    { "dot": "emerald", "title": "事实资格", "items": ["候选、待确认、冲突、调和、确认、发布和撤销都保留修订轨迹", "只有确认版本才能进入 Agent 和用户呈现；撤销会阻断旧反应"] },
+    { "dot": "orange", "title": "可靠发布", "items": ["Outbox 把事实写入和事件发布绑定在同一事务边界", "失败退避重试，超限进入死信；重放必须人工批准并审计"] },
+    { "dot": "slate", "title": "当前与规划", "items": ["当前已有账本修订、Observation 调和和进程内 Outbox", "DLQ、持久化 replay cursor 和多副本广播属于生产前补齐项"] }
+  ]
+}

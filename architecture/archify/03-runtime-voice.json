@@ -1,0 +1,38 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": { "title": "球球｜用户打断式语音对话", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1080, 650], "column_fit": "spread" },
+  "participants": [
+    { "id": "client", "type": "frontend", "label": "Flutter", "sublabel": "VAD · ASR · playback" },
+    { "id": "auth", "type": "security", "label": "Auth", "sublabel": "anon · refresh" },
+    { "id": "gateway", "type": "backend", "label": "Go WS", "sublabel": "identity · subs" },
+    { "id": "scheduler", "type": "backend", "label": "Scheduler", "sublabel": "interrupt · TTL" },
+    { "id": "asr", "type": "external", "label": "ASR", "sublabel": "partial / final text" },
+    { "id": "agent", "type": "backend", "label": "Agent Core", "sublabel": "facts + persona" },
+    { "id": "tts", "type": "external", "label": "TTS", "sublabel": "audio synthesis" },
+    { "id": "delivery", "type": "backend", "label": "Delivery", "sublabel": "motion · trace" }
+  ],
+  "segments": [ { "from": 135, "to": 285, "label": "采集与识别" }, { "from": 305, "to": 445, "label": "生成与打断" }, { "from": 465, "to": 600, "label": "播放与表演" } ],
+  "messages": [
+    { "id": "m0", "from": "client", "to": "auth", "y": 160, "label": "ensure anonymous session / refresh", "variant": "security" },
+    { "id": "m1", "from": "client", "to": "gateway", "y": 190, "label": "open authenticated WebSocket", "variant": "emphasis" },
+    { "id": "m2", "from": "gateway", "to": "scheduler", "y": 220, "label": "session_opened + audio turn", "variant": "default" },
+    { "id": "m3", "from": "scheduler", "to": "asr", "y": 250, "label": "PCM chunks / asr_start", "variant": "default" },
+    { "id": "m4", "from": "asr", "to": "gateway", "y": 280, "label": "partial / final transcript", "variant": "dashed" },
+    { "id": "m5", "from": "gateway", "to": "scheduler", "y": 310, "label": "submit user turn", "variant": "emphasis" },
+    { "id": "m6", "from": "scheduler", "to": "agent", "y": 340, "label": "cancel old + load relation/context + HandleMessage", "variant": "security" },
+    { "id": "m7", "from": "agent", "to": "delivery", "y": 390, "label": "Response Plan：reply + tone + PresentationPlan + Trace", "variant": "emphasis" },
+    { "id": "m8", "from": "delivery", "to": "tts", "y": 420, "label": "synthesize reply", "variant": "default" },
+    { "id": "m9", "from": "tts", "to": "delivery", "y": 450, "label": "audio / fallback error", "variant": "dashed" },
+    { "id": "m10", "from": "delivery", "to": "gateway", "y": 480, "label": "subtitle + presentation + voice_audio", "variant": "emphasis" },
+    { "id": "m11", "from": "gateway", "to": "client", "y": 505, "label": "render / play Live2D", "variant": "emphasis" },
+    { "id": "m12", "from": "client", "to": "gateway", "y": 535, "label": "displayed / playback", "variant": "dashed" },
+    { "id": "m13", "from": "client", "to": "gateway", "y": 565, "label": "interrupt / reconnect", "variant": "dashed" }
+  ],
+  "activations": [ { "participant": "gateway", "from": 180, "to": 585, "type": "backend" }, { "participant": "scheduler", "from": 215, "to": 365, "type": "backend" }, { "participant": "asr", "from": 245, "to": 290, "type": "external" }, { "participant": "agent", "from": 335, "to": 395, "type": "backend" }, { "participant": "delivery", "from": 385, "to": 500, "type": "backend" }, { "participant": "tts", "from": 415, "to": 460, "type": "external" } ],
+  "cards": [
+    { "dot": "orange", "title": "低延迟主链路", "items": ["音频以 WebSocket 分块上传", "ASR 先回增量结果，最终结果再进入生成"] },
+    { "dot": "rose", "title": "打断优先级", "items": ["新语音取消旧回合", "取消不写入错误状态，客户端继续可用"] },
+    { "dot": "emerald", "title": "体验回退", "items": ["字幕与动作先于完整音频到达", "重连后恢复未完成的会话上下文"] }
+  ]
+}

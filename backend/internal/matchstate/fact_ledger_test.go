@@ -7,6 +7,50 @@ import (
 	"time"
 )
 
+func TestFactLedgerReplayAtSequenceIsDeterministic(t *testing.T) {
+	now := time.Date(2026, 9, 4, 12, 0, 0, 0, time.UTC)
+	matchID := "replay-at-sequence"
+	events := []MatchEvent{
+		{ID: "evt-1", MatchID: matchID, Source: "operator", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球", Visibility: "public", Status: "active", FactID: "fact-1", FactRevision: 1, FactStatus: FactStatusConfirmed, RecordedSequence: 1, UpdatedAt: now.Format(time.RFC3339Nano)},
+		{ID: "evt-2", MatchID: matchID, Source: "operator", EventType: "shot", TeamID: "away", Description: "客队射门", Visibility: "public", Status: "active", FactID: "fact-2", FactRevision: 1, FactStatus: FactStatusConfirmed, RecordedSequence: 2, UpdatedAt: now.Add(time.Second).Format(time.RFC3339Nano)},
+	}
+	engine := FactLedgerEngine{}
+	first, err := engine.Replay(FactLedgerProjectInput{MatchID: matchID, Events: events, Now: now}, 1)
+	if err != nil {
+		t.Fatalf("replay at sequence: %v", err)
+	}
+	second, err := engine.Replay(FactLedgerProjectInput{MatchID: matchID, Events: events}, 1)
+	if err != nil {
+		t.Fatalf("repeat replay at sequence: %v", err)
+	}
+	if first.ProjectorVersion != FactLedgerProjectorVersion || first.LastSequence != 1 {
+		t.Fatalf("replay metadata = %+v", first)
+	}
+	if first.Snapshot.ProjectedSequence != 1 || first.Snapshot.ProjectionVersion != FactLedgerProjectorVersion {
+		t.Fatalf("snapshot metadata = %+v", first.Snapshot)
+	}
+	if first.Snapshot.Score != (Score{Home: 1}) || len(first.PublicEvents) != 1 {
+		t.Fatalf("replay result = %+v", first)
+	}
+	if !reflect.DeepEqual(first, second) {
+		t.Fatalf("replay is not deterministic:\nfirst=%+v\nsecond=%+v", first, second)
+	}
+}
+
+func TestFactLedgerReplayRejectsIncompleteSequenceHistory(t *testing.T) {
+	engine := FactLedgerEngine{}
+	_, err := engine.Replay(FactLedgerProjectInput{
+		MatchID: "incomplete-sequence",
+		Events: []MatchEvent{
+			{ID: "evt-1", MatchID: "incomplete-sequence", EventType: "shot", RecordedSequence: 1},
+			{ID: "evt-2", MatchID: "incomplete-sequence", EventType: "shot"},
+		},
+	}, 1)
+	if err == nil {
+		t.Fatal("expected incomplete sequence error")
+	}
+}
+
 func TestFactLedgerProjectsScoreAfterEarlierGoalIsRevoked(t *testing.T) {
 	now := time.Date(2026, time.July, 20, 12, 0, 0, 0, time.UTC)
 	events := []MatchEvent{

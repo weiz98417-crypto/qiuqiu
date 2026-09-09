@@ -1,36 +1,39 @@
 import 'dart:async';
-import 'dart:collection';
 import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 
+export '../services/match_view_data.dart';
+
 import '../services/audio_player.dart';
 import '../services/preferences_service.dart';
 import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
+import '../services/match_session_controller.dart';
+import '../services/match_view_data.dart';
 import '../services/streaming_transcription.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
+import '../widgets/match_actions_menu.dart';
 import '../widgets/reply_subtitle_card.dart';
 import 'reply_display.dart';
 import 'settings_screen.dart';
 
-enum ConversationPhase {
-  idle,
-  welcoming,
-  listening,
-  userSpeaking,
-  understanding,
-  speaking,
-  permissionDenied,
-  offline,
-  failed,
-}
-
 class MatchScreen extends StatefulWidget {
-  const MatchScreen({super.key});
+  final String? matchId;
+  final VoidCallback? onExit;
+  final bool autoEnter;
+  final MatchViewData? initialMatch;
+
+  const MatchScreen({
+    super.key,
+    this.matchId,
+    this.onExit,
+    this.autoEnter = false,
+    this.initialMatch,
+  });
 
   @override
   State<MatchScreen> createState() => _MatchScreenState();
@@ -38,12 +41,12 @@ class MatchScreen extends StatefulWidget {
 
 class _MatchScreenState extends State<MatchScreen> {
   static const _configuredSocketUrl = String.fromEnvironment('QIUQIU_WS_URL');
-  static const _maxReconnectVoiceFallbacks = 4;
 
   final WebSocketService _socket = WebSocketService();
   final AudioPlayerService _audio = AudioPlayerService();
   final PreferencesService _preferences = PreferencesService();
   final SessionService _sessions = SessionService();
+  late final MatchSessionController _sessionController;
   final VADService _vad = VADService();
   final StreamingTranscription _streamingTranscription =
       StreamingTranscription();
@@ -57,45 +60,45 @@ class _MatchScreenState extends State<MatchScreen> {
     favoriteTeam: '利物浦',
     talkativeness: 'normal',
   );
-  MatchViewData _match = const MatchViewData();
-  SocketStatus _socketStatus = SocketStatus.connecting;
-  ConversationPhase _phase = ConversationPhase.idle;
-  final PendingAudioQueue _pendingAudio = PendingAudioQueue();
-  final DeliveryDeduplicator _seenMatchEvents = DeliveryDeduplicator();
-  final DeliveryDeduplicator _seenReactions = DeliveryDeduplicator();
-  final DeliveryDeduplicator _seenPresentations = DeliveryDeduplicator();
-  final DeliveryDeduplicator _seenAudio = DeliveryDeduplicator();
-  final LinkedHashSet<String> _retractedMatchEventIds = LinkedHashSet<String>();
-  final Queue<TranscriptionFallback> _reconnectVoiceFallbacks =
-      Queue<TranscriptionFallback>();
-  bool _insideMatch = true;
+  bool _sessionRefreshScheduled = false;
+  bool _sessionRefreshDirty = false;
   bool _textMode = false;
   bool _isHoldingToTalk = false;
-  bool _firstMeetingCompleted = false;
-  bool _awaitingFirstMeetingGreeting = false;
-  bool _forceSubtitleFallback = false;
-  List<AudioInputDevice> _audioInputDevices = const [
-    AudioInputDevice(id: '', label: '系统默认麦克风'),
-  ];
-  String _selectedAudioInputId = '';
-  String _activeAudioInputId = '';
   String _userId = '';
   int _signalSequence = 0;
-  String _expression = 'idle';
-  String? _motion;
-  CompanionPresentation? _activePresentation;
   Timer? _presentationReturnTimer;
   Timer? _clockTicker;
-  MatchClockViewData? _matchClock;
-  String _qiuqiuLine = '今晚我在。开场以后，想说什么直接说。';
-  String _qiuqiuDetail = '我会跟着比赛节奏回应，不打断你看球。';
-  String _userLine = '';
-  String? _notice;
   String _deviceId = '';
-  String? _activeMatchReactionEventId;
 
   bool get _continuousEnabled => _profile.continuousConversation;
-  bool get _isSpeaking => _phase == ConversationPhase.speaking;
+  bool get _insideMatch =>
+      _sessionController.state.presence == MatchSessionPresence.active;
+  bool get _allowPop =>
+      _sessionController.state.presence == MatchSessionPresence.left;
+
+  MatchSessionPhase get _phase => _sessionController.state.phase;
+
+  bool get _firstMeetingCompleted =>
+      _sessionController.state.firstMeetingCompleted;
+
+  String get _expression => _sessionController.state.expression;
+
+  String? get _motion => _sessionController.state.motion;
+
+  String? get _notice => _sessionController.state.notice;
+
+  String get _qiuqiuLine => _sessionController.state.replyText;
+  String get _qiuqiuDetail => _sessionController.state.replyDetail;
+  String get _userLine => _sessionController.state.userText;
+  bool get _forceSubtitleFallback => _sessionController.state.subtitleFallback;
+  MatchViewData get _match => _sessionController.state.match;
+  CompanionPresentation? get _activePresentation =>
+      _sessionController.state.activePresentation;
+
+  SocketStatus get _socketStatus => SocketStatus.values.firstWhere(
+        (status) => status.name == _sessionController.state.transportStatus,
+        orElse: () => SocketStatus.connecting,
+      );
 
   String _nextSignalId() {
     _signalSequence += 1;
@@ -105,14 +108,14 @@ class _MatchScreenState extends State<MatchScreen> {
   @override
   void initState() {
     super.initState();
+    _sessionController = MatchSessionController(
+      initialMatch: widget.initialMatch ?? const MatchViewData(),
+    );
+    _sessionController.addListener(_onSessionStateChanged);
     _bindServices();
     _clockTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
-      final clock = _matchClock;
-      if (!mounted || clock == null || !clock.running) return;
-      final display = clock.displayAt(DateTime.now().toUtc());
-      if (display == _match.clock) return;
-      setState(
-          () => _match = _match.copyWith(period: clock.period, clock: display));
+      if (!mounted) return;
+      _sessionController.tickClock(DateTime.now().toUtc());
     });
     _profileLoad = _initialize();
     unawaited(_profileLoad);
@@ -133,37 +136,50 @@ class _MatchScreenState extends State<MatchScreen> {
 
   void _handleAudioInputDevices(List<AudioInputDevice> devices) {
     if (!mounted) return;
-    setState(() {
-      _audioInputDevices = devices;
-      _selectedAudioInputId = _vad.selectedInputDeviceId;
-      _activeAudioInputId = _vad.activeInputDeviceId;
-    });
+    _sessionController.setAudioInputs(
+      devices
+          .map((device) =>
+              AudioInputViewData(id: device.id, label: device.label))
+          .toList(growable: false),
+      selectedId: _vad.selectedInputDeviceId,
+      activeId: _vad.activeInputDeviceId,
+    );
   }
 
-  String get _audioInputLabel {
-    final displayedId = _activeAudioInputId.isNotEmpty
-        ? _activeAudioInputId
-        : _selectedAudioInputId;
-    for (final device in _audioInputDevices) {
-      if (device.id == displayedId) return device.label;
-    }
-    return '系统默认麦克风';
-  }
+  String get _audioInputLabel => _sessionController.audioInputLabel;
+  String get _selectedAudioInputId =>
+      _sessionController.state.selectedAudioInputId;
 
   String _socketUrl() {
-    if (_configuredSocketUrl.isNotEmpty) return _configuredSocketUrl;
-    if (kIsWeb) {
-      final page = Uri.base;
-      return page
-          .replace(
-            scheme: page.scheme == 'https' ? 'wss' : 'ws',
-            path: '/ws/match/test',
-            query: null,
-            fragment: null,
-          )
+    final requestedMatchId = widget.matchId?.trim();
+    if (_configuredSocketUrl.isNotEmpty) {
+      final configured = Uri.parse(_configuredSocketUrl);
+      if (requestedMatchId == null || requestedMatchId.isEmpty) {
+        return _configuredSocketUrl;
+      }
+      return configured
+          .replace(path: '/ws/match/${Uri.encodeComponent(requestedMatchId)}')
           .toString();
     }
-    return 'ws://10.0.2.2:8080/ws/match/test';
+    if (kIsWeb) {
+      final page = Uri.base;
+      final matchId = requestedMatchId == null || requestedMatchId.isEmpty
+          ? (page.queryParameters['matchId']?.trim().isNotEmpty == true
+              ? page.queryParameters['matchId']!.trim()
+              : 'test')
+          : requestedMatchId;
+      return Uri(
+        scheme: page.scheme == 'https' ? 'wss' : 'ws',
+        userInfo: page.userInfo,
+        host: page.host,
+        port: page.hasPort ? page.port : null,
+        path: '/ws/match/${Uri.encodeComponent(matchId)}',
+      ).toString();
+    }
+    final matchId = requestedMatchId == null || requestedMatchId.isEmpty
+        ? 'test'
+        : requestedMatchId;
+    return 'ws://10.0.2.2:8080/ws/match/${Uri.encodeComponent(matchId)}';
   }
 
   Future<void> _initialize() async {
@@ -175,23 +191,21 @@ class _MatchScreenState extends State<MatchScreen> {
     if (!mounted) return;
     setState(() {
       _profile = profile;
-      _firstMeetingCompleted = firstMeetingCompleted;
     });
+    _sessionController.setFirstMeetingCompleted(firstMeetingCompleted);
     try {
       final session = await _sessions.ensureSession(
         baseUrl: normalizeAPIBaseURL(_socketUrl()),
         deviceId: deviceId,
       );
       if (!mounted) return;
-      setState(() => _userId = session.userId);
+      setState(() {
+        _userId = session.userId;
+      });
       _socket.connect(_socketUrl(), token: session.accessToken);
     } catch (_) {
       if (!mounted) return;
-      setState(() {
-        _socketStatus = SocketStatus.failed;
-        _phase = ConversationPhase.offline;
-        _notice = '暂时无法建立安全会话，请稍后再试。';
-      });
+      _sessionController.initializationFailed();
     }
   }
 
@@ -203,7 +217,9 @@ class _MatchScreenState extends State<MatchScreen> {
         deviceId: _deviceId,
       );
       if (mounted) {
-        setState(() => _userId = session.userId);
+        setState(() {
+          _userId = session.userId;
+        });
       }
       return session.accessToken;
     } catch (_) {
@@ -215,33 +231,24 @@ class _MatchScreenState extends State<MatchScreen> {
     if (!mounted) return;
     if (status != SocketStatus.connected) {
       for (final fallback in _streamingTranscription.cancelAll(_socket.send)) {
-        _queueReconnectVoiceFallback(fallback);
+        _sessionController.queueReconnectVoiceFallback(
+          ReconnectVoiceFallback(
+            audio: fallback.audio,
+            signalId: fallback.signalId,
+          ),
+        );
       }
     }
-    setState(() {
-      _socketStatus = status;
-      if (status == SocketStatus.connected) {
-        if (_phase == ConversationPhase.offline) {
-          _phase = _continuousEnabled
-              ? ConversationPhase.listening
-              : ConversationPhase.idle;
-        }
-        _notice = null;
-      } else if (status == SocketStatus.failed) {
-        _phase = ConversationPhase.offline;
-        _notice = '暂时没连上比赛，但你仍可以留在这里。';
-      }
-    });
+    _sessionController.dispatch(SocketSessionEvent(
+      connected: status == SocketStatus.connected,
+      failed: status == SocketStatus.failed,
+    ));
+    _runSessionCommands();
     if (status == SocketStatus.connected) {
-      _flushReconnectVoiceFallbacks();
-      unawaited(_enterMatchAfterProfile());
+      if (widget.autoEnter && !_insideMatch) {
+        unawaited(_enterMatch());
+      }
     }
-  }
-
-  Future<void> _enterMatchAfterProfile() async {
-    await _profileLoad;
-    if (!mounted || _socketStatus != SocketStatus.connected) return;
-    await _enterMatch();
   }
 
   void _handleSocketMessage(Map<String, dynamic> message) {
@@ -256,31 +263,18 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'match_snapshot':
         final snapshot = _map(message['data']);
         if (snapshot != null) {
-          final clock =
-              MatchClockViewData.tryParse(_map(snapshot['matchClock']));
-          setState(() {
-            if (clock != null) _matchClock = clock;
-            _match = _match.withSnapshot(snapshot);
-            if (clock != null) {
-              _match = _match.copyWith(
-                period: clock.period,
-                clock: clock.displayAt(DateTime.now().toUtc()),
-              );
-            }
-          });
+          _sessionController.dispatch(
+            MatchSnapshotSessionEvent(snapshot, DateTime.now().toUtc()),
+          );
         }
         break;
       case 'match_clock':
         final clock = MatchClockViewData.tryParse(_map(message['data']));
         if (clock != null) {
-          setState(() {
-            _matchClock = clock;
-            _match = _match.copyWith(
-              period: clock.period,
-              clock: clock.displayAt(DateTime.now().toUtc()),
-              hasMatchInfo: true,
-            );
-          });
+          _sessionController.dispatch(MatchClockSessionEvent(
+            _map(message['data'])!,
+            DateTime.now().toUtc(),
+          ));
         }
         break;
       case 'match_event':
@@ -288,63 +282,60 @@ class _MatchScreenState extends State<MatchScreen> {
         final snapshot = _map(message['snapshot']);
         final deliveryKey =
             message['deliveryKey']?.toString() ?? matchEventDeliveryKey(event);
-        final isNewEvent = _seenMatchEvents.remember(deliveryKey);
-        setState(() {
-          if (snapshot != null) _match = _match.withSnapshot(snapshot);
-          if (event != null && isNewEvent) {
-            _match = _match.withEvent(event);
-          }
-        });
+        _sessionController.dispatch(MatchEventProjectionSessionEvent(
+          event: event,
+          snapshot: snapshot,
+          deliveryKey: deliveryKey,
+          now: DateTime.now().toUtc(),
+        ));
+        if (event != null) {
+          _sessionController.dispatch(MatchFactSessionEvent(
+            event['factId']?.toString() ?? event['id']?.toString() ?? '',
+            _integer(event['factRevision']) ?? 0,
+          ));
+        }
         break;
       case 'match_fact_retracted':
         _handleMatchFactRetracted(message);
         break;
       case 'presentation':
-        if (message['source'] == 'match_reaction' &&
-            !_seenPresentations.remember(message['deliveryKey']?.toString())) {
-          break;
-        }
         final presentation = CompanionPresentation.fromReplyData({
           'presentation': _map(message['data']),
         });
         if (presentation != null) {
-          if (message['source'] == 'match_reaction') {
-            final eventId = message['eventId']?.toString();
-            if (isRetractedMatchReaction(eventId, _retractedMatchEventIds)) {
-              break;
-            }
-            _activeMatchReactionEventId = eventId?.trim();
-          }
-          _applyPresentation(presentation);
+          _sessionController.receivePresentation(
+            presentation: presentation,
+            source: message['source']?.toString(),
+            eventId: message['eventId']?.toString(),
+            deliveryKey: message['deliveryKey']?.toString(),
+          );
+          _runSessionCommands();
         }
         break;
       case 'event':
         _handleLegacyEvent(message);
         break;
       case 'expression':
-        final expression = message['state'] as String? ?? 'idle';
-        setState(() {
-          _clearPresentationFields();
-          _expression = expression;
-          _motion = _motionForExpression(expression);
-        });
+        final expression = CompanionPresentation.normalizeExpression(
+          message['state'] as String?,
+        );
+        if (expression == null) break;
+        _sessionController.receiveLegacyExpression(
+          expression,
+          _motionForExpression(expression),
+        );
+        _runSessionCommands();
         break;
       case 'voice_audio':
-        final duplicateAudio = message['source'] == 'match_reaction' &&
-            !_seenAudio.remember(message['deliveryKey']?.toString());
-        final eventId = message['eventId']?.toString();
-        _pendingAudio.add(PendingAudio(
-          mime: message['mime'] as String? ?? 'audio/wav',
-          traceId: message['traceId'] as String?,
-          eventId: eventId,
-          byteLength: _integer(message['byteLength']),
-          skip: duplicateAudio ||
-              (message['source'] == 'match_reaction' &&
-                  isRetractedMatchReaction(
-                    eventId,
-                    _retractedMatchEventIds,
-                  )),
-        ));
+        _sessionController.queueAudioMetadata(
+            PendingAudio(
+              mime: message['mime'] as String? ?? 'audio/wav',
+              traceId: message['traceId'] as String?,
+              eventId: message['eventId']?.toString(),
+              deliveryKey: message['deliveryKey']?.toString(),
+              byteLength: _integer(message['byteLength']),
+            ),
+            source: message['source']?.toString());
         break;
       case 'voice_status':
         _handleVoiceStatus(message);
@@ -353,20 +344,11 @@ class _MatchScreenState extends State<MatchScreen> {
         _handleFirstMeetingStatus(message);
         break;
       case 'interrupt':
-        _pendingAudio.clear();
-        unawaited(_audio.pause());
-        setState(() {
-          _clearPresentationFields();
-          final nextPhase = phaseAfterInterrupt(_phase);
-          if (nextPhase != _phase) {
-            _expression = 'listening';
-            _motion = 'listen';
-          }
-          _phase = nextPhase;
-        });
+        _sessionController.serverInterrupted();
+        _runSessionCommands();
         break;
       case 'reconnecting':
-        setState(() => _notice = '正在回到比赛现场…');
+        _sessionController.setNotice('正在回到比赛现场…');
         break;
     }
   }
@@ -379,60 +361,30 @@ class _MatchScreenState extends State<MatchScreen> {
       if (reply == null || reply.trim().isEmpty) return;
       final source = data?['source']?.toString();
       final eventId = data?['eventId']?.toString();
-      if (source == 'match_reaction' &&
-          !_seenReactions
-              .remember(data?['deliveryKey']?.toString() ?? eventId)) {
-        return;
-      }
-      if (source == 'match_reaction' &&
-          isRetractedMatchReaction(eventId, _retractedMatchEventIds)) {
-        return;
-      }
       final traceId = data?['traceId'] as String?;
-      final isFirstMeeting = source == 'first_meeting';
       final presentation = CompanionPresentation.fromReplyData(data);
       final parts = splitReplyForDisplay(reply.trim());
-      setState(() {
-        _forceSubtitleFallback = false;
-        _qiuqiuLine = parts.$1;
-        _qiuqiuDetail = parts.$2;
-        _activeMatchReactionEventId =
-            source == 'match_reaction' ? eventId?.trim() : null;
-        _phase = isFirstMeeting
-            ? ConversationPhase.welcoming
-            : ConversationPhase.understanding;
-        if (presentation != null) {
-          _activatePresentationFields(
-            presentation,
-          );
-        } else {
-          _expression = isFirstMeeting ? 'happy' : 'chat';
-          _motion = isFirstMeeting ? 'hello' : 'speak';
-        }
-        if (isFirstMeeting) {
-          _firstMeetingCompleted = true;
-        }
-      });
-      if (isFirstMeeting) {
-        unawaited(_preferences.markFirstMeetingCompleted());
-      }
-      if (traceId != null && traceId.trim().isNotEmpty) {
-        WidgetsBinding.instance.addPostFrameCallback((_) {
-          if (!mounted) return;
-          _socket.send({'type': 'reply_displayed', 'traceId': traceId});
-        });
-      }
+      _sessionController.receiveReply(
+        text: parts.$1,
+        detail: parts.$2,
+        source: source,
+        eventId: eventId,
+        deliveryKey: data?['deliveryKey']?.toString(),
+        traceId: traceId,
+        presentation: presentation,
+      );
+      _runSessionCommands();
       return;
     }
 
-    setState(() {
-      _motion = _motionForEvent(eventType);
-      _expression = _expressionForEvent(eventType);
-      final score = data?['score'];
-      if (score is String) _match = _match.withLegacyScore(score);
-      final minute = data?['minute'];
-      if (minute != null) _match = _match.copyWith(clock: "$minute'");
-    });
+    _sessionController.dispatch(LegacyMatchSessionEvent(
+      score: data?['score'] is String ? data!['score'] as String : null,
+      minute: data?['minute'],
+    ));
+    _sessionController.receiveLegacyEventAnimation(
+      _expressionForEvent(eventType),
+      _motionForEvent(eventType),
+    );
   }
 
   void _handleMatchFactRetracted(Map<String, dynamic> message) {
@@ -446,92 +398,45 @@ class _MatchScreenState extends State<MatchScreen> {
         .where((value) => value.isNotEmpty)
         .toSet();
     if (eventIds.isEmpty) return;
-    for (final eventId in eventIds) {
-      _retractedMatchEventIds.add(eventId);
-      _pendingAudio.removeForEvent(eventId);
+    final factId = data?['factId']?.toString().trim() ?? '';
+    if (factId.isNotEmpty) {
+      _sessionController.dispatch(MatchFactSessionEvent(
+        factId,
+        _integer(data?['factRevision']) ??
+            (_sessionController.state.factRevisions[factId] ?? 0),
+        retracted: true,
+        relatedIds: eventIds,
+        continuousEnabled: _continuousEnabled,
+      ));
+      _runSessionCommands();
     }
-    while (_retractedMatchEventIds.length > 256) {
-      _retractedMatchEventIds.remove(_retractedMatchEventIds.first);
-    }
-    if (!eventIds.contains(_activeMatchReactionEventId)) return;
-    unawaited(_audio.pause());
-    setState(() {
-      _clearPresentationFields();
-      _activeMatchReactionEventId = null;
-      _qiuqiuLine = _match.eventLabel;
-      _qiuqiuDetail = '';
-      _notice = null;
-      _phase = _continuousEnabled
-          ? ConversationPhase.listening
-          : ConversationPhase.idle;
-    });
   }
 
   void _handleVoiceStatus(Map<String, dynamic> message) {
     final state = message['state'] as String? ?? '';
-    setState(() {
-      if (state == 'text_fallback') {
-        _notice = '这句没听清，已经用文字继续。';
-      } else if (state == 'tts_fallback') {
-        _notice = '声音暂时没出来，回答已显示在字幕里。';
-        _forceSubtitleFallback = true;
-        _phase = _continuousEnabled
-            ? ConversationPhase.listening
-            : ConversationPhase.idle;
-        _finishFirstMeetingGreeting();
-        _schedulePresentationReturn();
-      } else if (state == 'failed') {
-        _notice = '这句没听清，再说一次就好。';
-        _phase = ConversationPhase.failed;
-        _finishFirstMeetingGreeting();
-        _schedulePresentationReturn();
-      }
-    });
+    _sessionController.handleVoiceStatus(
+      state,
+      continuousEnabled: _continuousEnabled,
+    );
+    _runSessionCommands();
   }
 
   void _handleFirstMeetingStatus(Map<String, dynamic> message) {
     final state = message['state'] as String? ?? '';
-    if (state != 'delivered' && state != 'skipped') return;
-    if (!_firstMeetingCompleted) {
-      setState(() => _firstMeetingCompleted = true);
-      unawaited(_preferences.markFirstMeetingCompleted());
-    }
-    if (state == 'skipped') {
-      _finishFirstMeetingGreeting();
-    }
+    _sessionController.firstMeetingStatus(
+      state,
+      continuousEnabled: _continuousEnabled,
+    );
+    _runSessionCommands();
   }
 
   void _handleAudioBytes(Uint8List audioBytes) {
-    final metadata =
-        _pendingAudio.take() ?? const PendingAudio(mime: 'audio/wav');
-    if (metadata.skip) {
-      final receipt = mutedPlaybackReceipt(metadata);
-      if (receipt != null) {
-        _socket.send(receipt);
-      }
-      return;
-    }
-    if (!_profile.soundEnabled) {
-      final receipt = mutedPlaybackReceipt(metadata);
-      if (receipt != null) {
-        _socket.send(receipt);
-      }
-      setState(() {
-        _phase = _continuousEnabled
-            ? ConversationPhase.listening
-            : ConversationPhase.idle;
-      });
-      _schedulePresentationReturn();
-      _finishFirstMeetingGreeting();
-      return;
-    }
-    unawaited(
-      _audio.playEncoded(
-        audioBytes,
-        mime: metadata.mime,
-        traceId: metadata.traceId,
-      ),
+    _sessionController.consumeAudio(
+      audioBytes,
+      soundEnabled: _profile.soundEnabled,
+      continuousEnabled: _continuousEnabled,
     );
+    _runSessionCommands();
   }
 
   void _startStreamingCapture() {
@@ -554,44 +459,37 @@ class _MatchScreenState extends State<MatchScreen> {
     if (update == null || !mounted) return;
     final activeUtteranceId = _streamingTranscription.activeUtteranceId;
     final anotherUtteranceIsBeingSpoken =
-        _phase == ConversationPhase.userSpeaking &&
+        _phase == MatchSessionPhase.userSpeaking &&
             activeUtteranceId != null &&
             activeUtteranceId != update.utteranceId;
     switch (update.kind) {
       case TranscriptUpdateKind.partialTranscript:
-        if (anotherUtteranceIsBeingSpoken) return;
-        final text = update.text.trim();
-        if (text.isEmpty) return;
-        setState(() {
-          _userLine = text;
-          _notice = null;
-        });
+        _sessionController.transcriptPartial(
+          update.text,
+          anotherUtteranceActive: anotherUtteranceIsBeingSpoken,
+        );
         break;
       case TranscriptUpdateKind.finalTranscript:
-        if (_phase == ConversationPhase.userSpeaking) return;
-        final text = update.text.trim();
-        setState(() {
-          _userLine = text.isEmpty ? '刚刚说的话' : text;
-          _phase = ConversationPhase.understanding;
-          _expression = 'thinking';
-          _motion = 'think';
-          _notice = null;
-        });
+        _sessionController.transcriptFinal(
+          update.text,
+          userStillSpeaking: _phase == MatchSessionPhase.userSpeaking,
+        );
         break;
       case TranscriptUpdateKind.recoverableError:
-        if (anotherUtteranceIsBeingSpoken) return;
-        setState(() => _notice = '实时转写暂时有点慢，正在继续识别…');
+        _sessionController.transcriptRecoverableError(
+          anotherUtteranceActive: anotherUtteranceIsBeingSpoken,
+        );
         break;
       case TranscriptUpdateKind.fallback:
         final fallbackAudio = update.fallbackAudio;
         if (fallbackAudio != null && fallbackAudio.isNotEmpty) {
           _submitLegacyVoice(
             fallbackAudio,
-            preserveCurrentCapture: _phase == ConversationPhase.userSpeaking,
+            preserveCurrentCapture: _phase == MatchSessionPhase.userSpeaking,
             signalId: update.fallbackSignalId,
           );
         } else {
-          setState(() => _notice = '实时转写中断，句尾会自动重试。');
+          _sessionController.transcriptFallbackUnavailable();
         }
         break;
     }
@@ -614,93 +512,38 @@ class _MatchScreenState extends State<MatchScreen> {
       'audio': base64Encode(audio),
       'talkativeness': _profile.talkativeness,
     });
-    setState(() {
-      if (!preserveCurrentCapture) {
-        _phase =
-            sent ? ConversationPhase.understanding : ConversationPhase.offline;
-        if (_userLine.trim().isEmpty || _userLine == '正在识别…') {
-          _userLine = '刚刚说的话';
-        }
-        if (sent) {
-          _expression = 'thinking';
-          _motion = 'think';
-        }
-      }
-      _notice = sent ? null : '现在还没连上，稍后再试一次。';
-    });
+    _sessionController.voiceSubmitted(
+      sent: sent,
+      preserveCurrentCapture: preserveCurrentCapture,
+    );
     if (!sent && queueIfOffline) {
-      _queueReconnectVoiceFallback(
-        TranscriptionFallback(audio: audio, signalId: turnSignalId),
+      _sessionController.queueReconnectVoiceFallback(
+        ReconnectVoiceFallback(audio: audio, signalId: turnSignalId),
       );
     }
     return sent;
-  }
-
-  void _flushReconnectVoiceFallbacks() {
-    while (_reconnectVoiceFallbacks.isNotEmpty) {
-      final fallback = _reconnectVoiceFallbacks.first;
-      if (!_submitLegacyVoice(
-        fallback.audio,
-        queueIfOffline: false,
-        signalId: fallback.signalId,
-      )) {
-        return;
-      }
-      _reconnectVoiceFallbacks.removeFirst();
-    }
-  }
-
-  void _queueReconnectVoiceFallback(TranscriptionFallback fallback) {
-    while (_reconnectVoiceFallbacks.length >= _maxReconnectVoiceFallbacks) {
-      _reconnectVoiceFallbacks.removeFirst();
-    }
-    _reconnectVoiceFallbacks.addLast(fallback);
   }
 
   void _handleVadEvent(VADEvent event) {
     if (!mounted) return;
     switch (event.state) {
       case VADState.listening:
-        _socket.send({'type': 'user_activity', 'state': 'idle'});
-        _startStreamingCapture();
-        final nextPhase = phaseWhenCaptureReady(
-          _phase,
+        _sessionController.vadListening(
           hasPendingTranscript: _streamingTranscription.hasPendingFinal,
         );
-        setState(() {
-          _phase = nextPhase;
-          if (nextPhase == ConversationPhase.listening &&
-              _activePresentation == null) {
-            _expression = 'listening';
-            _motion = 'listen';
-          }
-          if (nextPhase == ConversationPhase.listening) _notice = null;
-        });
+        _runSessionCommands();
         break;
       case VADState.speaking:
-        _socket.send({'type': 'user_activity', 'state': 'speaking'});
-        if (_isSpeaking || _awaitingFirstMeetingGreeting) {
-          _socket.send({'type': 'interrupt'});
-          unawaited(_audio.pause());
-          _finishFirstMeetingGreeting();
-        }
-        setState(() {
-          _clearPresentationFields();
-          _phase = ConversationPhase.userSpeaking;
-          _expression = 'focus';
-          _motion = 'focus';
-        });
+        _sessionController.vadSpeaking(
+          continuousEnabled: _continuousEnabled,
+        );
+        _runSessionCommands();
         break;
       case VADState.sentenceEnd:
         final audio = _vad.drainAudio();
         final finish = _streamingTranscription.finish(audio, _socket.send);
         if (finish.streamed) {
-          setState(() {
-            _phase = ConversationPhase.understanding;
-            if (_userLine.trim().isEmpty) _userLine = '正在识别…';
-            _expression = 'thinking';
-            _motion = 'think';
-          });
+          _sessionController.vadSentenceStreamed();
         } else if (finish.fallbackAudio case final fallbackAudio?) {
           _submitLegacyVoice(
             fallbackAudio,
@@ -709,136 +552,50 @@ class _MatchScreenState extends State<MatchScreen> {
         }
         break;
       case VADState.idle:
-        _streamingTranscription.cancelActive(_socket.send);
-        _socket.send({'type': 'user_activity', 'state': 'idle'});
-        setState(() {
-          if (_phase != ConversationPhase.offline) {
-            _phase = ConversationPhase.idle;
-          }
-        });
+        _sessionController.vadIdle();
+        _runSessionCommands();
         break;
       case VADState.permissionDenied:
-        _streamingTranscription.cancelActive(_socket.send);
-        setState(() {
-          _phase = ConversationPhase.permissionDenied;
-          _textMode = true;
-          _notice = '没有麦克风权限，先打字也能继续陪看。';
-        });
+        _sessionController.vadPermissionDenied();
+        _runSessionCommands();
         break;
       case VADState.failure:
-        _streamingTranscription.cancelActive(_socket.send);
-        setState(() {
-          _phase = ConversationPhase.failed;
-          _notice = '麦克风暂时没准备好，可以重试或打字。';
-        });
+        _sessionController.vadFailed();
+        _runSessionCommands();
         break;
     }
   }
 
   void _handleAudioState(AudioState state) {
     if (!mounted) return;
-    final traceId = state.traceId;
-    switch (state.status) {
-      case AudioPlaybackStatus.started:
-        if (traceId != null) {
-          _socket.send({
-            'type': 'voice_playback',
-            'traceId': traceId,
-            'state': 'started',
-          });
-        }
-        setState(() {
-          _phase = ConversationPhase.speaking;
-          if (_activePresentation == null) {
-            _expression = 'chat';
-            _motion = 'speak';
-          }
-          _notice = null;
-        });
-        _presentationReturnTimer?.cancel();
-        break;
-      case AudioPlaybackStatus.ended:
-        if (traceId != null) {
-          _socket.send({
-            'type': 'voice_playback',
-            'traceId': traceId,
-            'state': 'ended',
-          });
-        }
-        setState(() {
-          _phase = _continuousEnabled
-              ? ConversationPhase.listening
-              : ConversationPhase.idle;
-          if (_activePresentation == null) {
-            _expression = _continuousEnabled ? 'listening' : 'idle';
-            _motion = _continuousEnabled ? 'listen' : 'idle';
-          }
-          _notice = null;
-        });
-        _schedulePresentationReturn();
-        _finishFirstMeetingGreeting();
-        break;
-      case AudioPlaybackStatus.interrupted:
-        final receipt = interruptedPlaybackReceipt(traceId);
-        if (receipt != null) {
-          _socket.send(receipt);
-        }
-        setState(() {
-          _clearPresentationFields();
-          final nextPhase = phaseAfterInterrupt(_phase);
-          if (nextPhase != _phase) {
-            _expression = 'listening';
-            _motion = 'listen';
-          }
-          _phase = nextPhase;
-        });
-        break;
-      case AudioPlaybackStatus.blocked:
-        if (traceId != null) {
-          _socket.send({
-            'type': 'voice_playback',
-            'traceId': traceId,
-            'state': 'blocked',
-          });
-        }
-        setState(() {
-          _notice = '轻触一下屏幕，我就能开口。';
-          _forceSubtitleFallback = true;
-          _phase = _continuousEnabled
-              ? ConversationPhase.listening
-              : ConversationPhase.idle;
-        });
-        _schedulePresentationReturn();
-        _finishFirstMeetingGreeting();
-        break;
-      case AudioPlaybackStatus.failed:
-        debugPrint('Audio playback failed: ${state.error}');
-        if (traceId != null) {
-          _socket.send({
-            'type': 'voice_playback',
-            'traceId': traceId,
-            'state': 'error',
-          });
-        }
-        setState(() {
-          _notice = '声音暂时没播放出来，字幕还在。';
-          _forceSubtitleFallback = true;
-          _phase = _continuousEnabled
-              ? ConversationPhase.listening
-              : ConversationPhase.idle;
-        });
-        _schedulePresentationReturn();
-        _finishFirstMeetingGreeting();
-        break;
+    if (state.status == AudioPlaybackStatus.failed) {
+      debugPrint('Audio playback failed: ${state.error}');
     }
+    _sessionController.dispatch(PlaybackSessionEvent(
+      switch (state.status) {
+        AudioPlaybackStatus.started => 'started',
+        AudioPlaybackStatus.ended => 'ended',
+        AudioPlaybackStatus.interrupted => 'interrupted',
+        AudioPlaybackStatus.blocked => 'blocked',
+        AudioPlaybackStatus.failed => 'failed',
+      },
+      traceId: state.traceId,
+      continuousEnabled: _continuousEnabled,
+      error: state.error,
+    ));
+    _runSessionCommands();
   }
 
   Future<void> _enterMatch() async {
+    if (!_sessionController.beginEntry()) return;
     await _profileLoad;
-    if (!mounted) return;
-    setState(() => _insideMatch = true);
-    _socket.send({'type': 'identify', 'userId': _userId});
-    _socket.send({'type': 'session_opened', 'userId': _userId});
+    if (!mounted || _socketStatus != SocketStatus.connected) {
+      _sessionController.cancelEntry();
+      return;
+    }
+    _sessionController.entered();
+    _sessionController.openSession(_userId);
+    _runSessionCommands();
     if (!_firstMeetingCompleted) {
       final sent = _socket.send({
         'type': 'first_meeting',
@@ -846,33 +603,111 @@ class _MatchScreenState extends State<MatchScreen> {
         'nickname': _profile.nickname,
         'favoriteTeam': _profile.favoriteTeam,
       });
-      if (sent) {
-        setState(() {
-          _awaitingFirstMeetingGreeting = true;
-          _phase = ConversationPhase.welcoming;
-          _expression = 'happy';
-          _motion = 'hello';
-          _qiuqiuLine = '嗨，我是球球。';
-          _qiuqiuDetail = '第一次见面，先让我认真和你打个招呼。';
-          _notice = null;
-        });
-        if (_continuousEnabled) {
-          await _vad.startListening(VADMode.freeTalk);
-        }
-        return;
-      }
-    }
-    if (_continuousEnabled) {
+      _sessionController.firstMeetingRequested(
+        sent: sent,
+        continuousEnabled: _continuousEnabled,
+      );
+      _runSessionCommands();
+      if (sent) return;
+    } else if (_continuousEnabled) {
       await _vad.startListening(VADMode.freeTalk);
     }
   }
 
-  void _finishFirstMeetingGreeting() {
-    if (!_awaitingFirstMeetingGreeting) return;
-    _awaitingFirstMeetingGreeting = false;
-    if (_insideMatch && _continuousEnabled) {
-      unawaited(_vad.startListening(VADMode.freeTalk));
+  Future<void> _leaveMatch({bool confirm = true}) async {
+    final requiresConfirmation =
+        _sessionController.leaveRequiresConfirmation(confirm);
+    if (!mounted || !_sessionController.beginLeaving()) return;
+    final leave =
+        requiresConfirmation ? await showMatchExitDialog(context) : true;
+    if (leave != true || !mounted) {
+      _sessionController.cancelLeaving();
+      return;
     }
+    _vad.stopListening();
+    if (_sessionController.leavingActiveSession) {
+      _socket.send({
+        'type': 'session_closed',
+        'userId': _userId,
+        'reason': 'user_left',
+      });
+    }
+    await _audio.pause();
+    _sessionController.dispatch(const AudioQueueClearedSessionEvent());
+    _runSessionCommands();
+    _streamingTranscription.cancelAll(_socket.send);
+    await _socket.dispose();
+    _sessionController.left();
+    await _returnToCatalog();
+  }
+
+  Future<void> _returnToCatalog() async {
+    if (!mounted) return;
+    await WidgetsBinding.instance.endOfFrame;
+    if (!mounted) return;
+    if (widget.onExit != null) {
+      widget.onExit!.call();
+      if (!mounted) return;
+      final navigator = Navigator.of(context);
+      if (ModalRoute.of(context)?.isCurrent ?? false) {
+        if (navigator.canPop()) {
+          navigator.pop();
+        } else {
+          _sessionController.cancelLeaving();
+        }
+      }
+      return;
+    }
+    Navigator.of(context).pop();
+  }
+
+  void _reconnect() {
+    if (!_sessionController.beginManualReconnect()) return;
+    _runSessionCommands();
+  }
+
+  void _onSessionStateChanged() {
+    if (!mounted) return;
+    _sessionRefreshDirty = true;
+    if (_sessionRefreshScheduled) return;
+    _sessionRefreshScheduled = true;
+    void flushSessionRefresh(Duration _) {
+      _sessionRefreshScheduled = false;
+      if (!mounted) {
+        _sessionRefreshDirty = false;
+        return;
+      }
+      if (!_sessionRefreshDirty) return;
+      _sessionRefreshDirty = false;
+      setState(() {});
+      if (_sessionRefreshDirty && mounted) {
+        _sessionRefreshScheduled = true;
+        WidgetsBinding.instance.addPostFrameCallback(flushSessionRefresh);
+        WidgetsBinding.instance.scheduleFrame();
+      }
+    }
+
+    WidgetsBinding.instance.addPostFrameCallback(flushSessionRefresh);
+    WidgetsBinding.instance.scheduleFrame();
+  }
+
+  Future<void> _reconnectWithFreshSession() async {
+    final token = await _refreshSessionToken();
+    if (!mounted) return;
+    if (token == null || token.isEmpty) {
+      _sessionController.manualReconnectFailed();
+      return;
+    }
+    _socket.connect(_socketUrl(), token: token);
+  }
+
+  Future<void> _switchMatch() async {
+    if (!mounted ||
+        _sessionController.state.presence == MatchSessionPresence.leaving) {
+      return;
+    }
+    final confirmed = await showMatchSwitchDialog(context);
+    if (confirmed == true) await _leaveMatch(confirm: false);
   }
 
   Future<void> _toggleContinuous() async {
@@ -880,8 +715,10 @@ class _MatchScreenState extends State<MatchScreen> {
     final updated = _profile.copyWith(continuousConversation: enabled);
     setState(() {
       _profile = updated;
-      _notice = enabled ? null : '连续对话已关闭，按住麦克风仍能说话。';
     });
+    _sessionController.setNotice(
+      enabled ? null : '连续对话已关闭，按住麦克风仍能说话。',
+    );
     await _preferences.save(updated);
     if (enabled) {
       await _vad.startListening(VADMode.freeTalk);
@@ -910,7 +747,7 @@ class _MatchScreenState extends State<MatchScreen> {
       devices = await _vad.refreshInputDevices();
     } catch (_) {
       if (!mounted) return;
-      setState(() => _notice = '无法读取麦克风列表，请检查浏览器权限。');
+      _sessionController.setNotice('无法读取麦克风列表，请检查浏览器权限。');
       return;
     }
     if (!mounted) return;
@@ -980,10 +817,8 @@ class _MatchScreenState extends State<MatchScreen> {
       await _vad.startListening(VADMode.freeTalk);
     }
     if (!mounted) return;
-    setState(() {
-      _selectedAudioInputId = selected;
-      _notice = '已切换到 ${selectedDevice.label}';
-    });
+    _sessionController.selectAudioInput(selected);
+    _sessionController.setNotice('已切换到 ${selectedDevice.label}');
   }
 
   void _stopPushToTalk() {
@@ -1004,19 +839,9 @@ class _MatchScreenState extends State<MatchScreen> {
       'audio': '',
       'talkativeness': _profile.talkativeness,
     });
-    setState(() {
-      _userLine = text;
-      _phase =
-          sent ? ConversationPhase.understanding : ConversationPhase.offline;
-      if (sent) {
-        _clearPresentationFields();
-        _expression = 'thinking';
-        _motion = 'think';
-        if (shouldClearTextInput(sent)) _textController.clear();
-      } else {
-        _notice = '现在还没连上，文字没有发出去。';
-      }
-    });
+    _sessionController.textSubmitted(text, sent: sent);
+    _runSessionCommands();
+    if (shouldClearTextInput(sent)) _textController.clear();
   }
 
   Future<void> _openSettings() async {
@@ -1058,48 +883,64 @@ class _MatchScreenState extends State<MatchScreen> {
     return motions[expression] ?? 'idle';
   }
 
-  void _applyPresentation(
-    CompanionPresentation presentation, {
-    bool awaitingPlayback = false,
-  }) {
-    if (!mounted) return;
-    setState(() {
-      _activatePresentationFields(
-        presentation,
-      );
-    });
-    if (!awaitingPlayback) {
-      _schedulePresentationReturn();
-    }
-  }
-
-  void _activatePresentationFields(
-    CompanionPresentation presentation,
-  ) {
-    _presentationReturnTimer?.cancel();
-    _activePresentation = presentation;
-    _expression = presentation.expression;
-    _motion = presentation.motion;
-  }
-
   void _schedulePresentationReturn() {
     final presentation = _activePresentation;
     if (presentation == null) return;
     _presentationReturnTimer?.cancel();
     _presentationReturnTimer = Timer(presentation.hold, () {
       if (!mounted || !identical(_activePresentation, presentation)) return;
-      final resting = presentationReturnState(presentation);
-      setState(() {
-        _activePresentation = null;
-        _expression = resting.$1;
-        _motion = resting.$2;
-      });
+      _sessionController.returnPresentation(presentation);
     });
   }
 
-  void _clearPresentationFields() {
-    _presentationReturnTimer?.cancel();
-    _activePresentation = null;
+  void _runSessionCommands() {
+    while (true) {
+      final commands = _sessionController.takeCommands();
+      if (commands.isEmpty) return;
+      for (final command in commands) {
+        switch (command) {
+          case SendSocketCommand(:final message):
+            if (message['type'] == 'reply_displayed') {
+              WidgetsBinding.instance.addPostFrameCallback((_) {
+                if (mounted) _socket.send(message);
+              });
+            } else {
+              _socket.send(message);
+            }
+          case PauseAudioCommand():
+            unawaited(_audio.pause());
+          case PlayAudioCommand(:final audio, :final metadata):
+            unawaited(_audio.playEncoded(
+              audio,
+              mime: metadata.mime,
+              traceId: metadata.traceId,
+            ));
+          case StartVadCommand():
+            unawaited(_vad.startListening(VADMode.freeTalk));
+          case StartStreamingCaptureCommand():
+            _startStreamingCapture();
+          case CancelActiveTranscriptionCommand():
+            _streamingTranscription.cancelActive(_socket.send);
+          case SchedulePresentationReturnCommand():
+            _schedulePresentationReturn();
+          case CancelPresentationReturnCommand():
+            _presentationReturnTimer?.cancel();
+          case PersistFirstMeetingCommand():
+            unawaited(_preferences.markFirstMeetingCompleted());
+          case OpenTextModeCommand():
+            if (mounted) setState(() => _textMode = true);
+          case RequestSessionReconnectCommand():
+            unawaited(_reconnectWithFreshSession());
+          case SendReconnectVoiceCommand(:final fallback):
+            final sent = _submitLegacyVoice(
+              fallback.audio,
+              queueIfOffline: false,
+              signalId: fallback.signalId,
+            );
+            _sessionController.completeReconnectVoiceFallback(sent);
+        }
+      }
+    }
   }
 
   String _motionForEvent(String event) {
@@ -1129,6 +970,8 @@ class _MatchScreenState extends State<MatchScreen> {
     }
     _streamingTranscription.cancelAll(_socket.send);
     _textController.dispose();
+    _sessionController.removeListener(_onSessionStateChanged);
+    _sessionController.dispose();
     _vad.dispose();
     unawaited(_audio.dispose());
     unawaited(_socket.dispose());
@@ -1138,55 +981,67 @@ class _MatchScreenState extends State<MatchScreen> {
 
   @override
   Widget build(BuildContext context) {
-    return Scaffold(
-      body: DecoratedBox(
-        decoration: const BoxDecoration(color: AppColors.night),
-        child: SafeArea(
-          child: Align(
-            alignment: Alignment.topCenter,
-            child: ConstrainedBox(
-              constraints: const BoxConstraints(maxWidth: 520),
-              child: _insideMatch
-                  ? _LiveMatchExperience(
-                      key: const ValueKey('live'),
-                      live2dKey: _live2dKey,
-                      match: _match,
-                      expression: _expression,
-                      motion: _motion,
-                      isSpeaking: _isSpeaking,
-                      phase: _phase,
-                      socketStatus: _socketStatus,
-                      continuousEnabled: _continuousEnabled,
-                      subtitlesEnabled: shouldShowReplyText(
-                        subtitlesEnabled: _profile.subtitlesEnabled,
-                        playbackFallback: _forceSubtitleFallback,
+    return PopScope<void>(
+      canPop: _allowPop,
+      onPopInvokedWithResult: (didPop, _) {
+        if (!didPop) unawaited(_leaveMatch(confirm: _insideMatch));
+      },
+      child: Scaffold(
+        body: DecoratedBox(
+          decoration: const BoxDecoration(color: AppColors.night),
+          child: SafeArea(
+            child: Align(
+              alignment: Alignment.topCenter,
+              child: ConstrainedBox(
+                constraints: const BoxConstraints(maxWidth: 520),
+                child: _insideMatch
+                    ? _LiveMatchExperience(
+                        key: const ValueKey('live'),
+                        live2dKey: _live2dKey,
+                        match: _match,
+                        expression: _expression,
+                        motion: _motion,
+                        isSpeaking: _phase == MatchSessionPhase.speaking,
+                        phase: _phase,
+                        socketStatus: _socketStatus,
+                        continuousEnabled: _continuousEnabled,
+                        subtitlesEnabled: shouldShowReplyText(
+                          subtitlesEnabled: _profile.subtitlesEnabled,
+                          playbackFallback: _forceSubtitleFallback,
+                        ),
+                        qiuqiuLine: _qiuqiuLine,
+                        qiuqiuDetail: _qiuqiuDetail,
+                        userLine: _userLine,
+                        notice: _notice,
+                        textMode: _textMode,
+                        textController: _textController,
+                        onToggleContinuous: _toggleContinuous,
+                        audioInputLabel: _audioInputLabel,
+                        onChooseAudioInput: _chooseAudioInput,
+                        onOpenSettings: _openSettings,
+                        onLeave: _leaveMatch,
+                        onSwitchMatch: _switchMatch,
+                        onReturnToCatalog: () => _leaveMatch(confirm: false),
+                        onReconnect: _reconnect,
+                        onOpenText: () => setState(() => _textMode = true),
+                        onCloseText: () => setState(() => _textMode = false),
+                        onSendText: _sendText,
+                        onMicDown: _startPushToTalk,
+                        onMicUp: _stopPushToTalk,
+                      )
+                    : _MatchLobby(
+                        key: const ValueKey('lobby'),
+                        live2dKey: _live2dKey,
+                        match: _match,
+                        expression: _expression,
+                        motion: _motion,
+                        socketStatus: _socketStatus,
+                        onEnter: _enterMatch,
+                        onReconnect: _reconnect,
+                        onOpenSettings: _openSettings,
+                        onLeave: () => _leaveMatch(confirm: false),
                       ),
-                      qiuqiuLine: _qiuqiuLine,
-                      qiuqiuDetail: _qiuqiuDetail,
-                      userLine: _userLine,
-                      notice: _notice,
-                      textMode: _textMode,
-                      textController: _textController,
-                      onToggleContinuous: _toggleContinuous,
-                      audioInputLabel: _audioInputLabel,
-                      onChooseAudioInput: _chooseAudioInput,
-                      onOpenSettings: _openSettings,
-                      onOpenText: () => setState(() => _textMode = true),
-                      onCloseText: () => setState(() => _textMode = false),
-                      onSendText: _sendText,
-                      onMicDown: _startPushToTalk,
-                      onMicUp: _stopPushToTalk,
-                    )
-                  : _MatchLobby(
-                      key: const ValueKey('lobby'),
-                      live2dKey: _live2dKey,
-                      match: _match,
-                      expression: _expression,
-                      motion: _motion,
-                      socketStatus: _socketStatus,
-                      onEnter: _enterMatch,
-                      onOpenSettings: _openSettings,
-                    ),
+              ),
             ),
           ),
         ),
@@ -1202,7 +1057,9 @@ class _MatchLobby extends StatelessWidget {
   final String? motion;
   final SocketStatus socketStatus;
   final VoidCallback onEnter;
+  final VoidCallback onReconnect;
   final VoidCallback onOpenSettings;
+  final VoidCallback onLeave;
 
   const _MatchLobby({
     super.key,
@@ -1212,7 +1069,9 @@ class _MatchLobby extends StatelessWidget {
     required this.motion,
     required this.socketStatus,
     required this.onEnter,
+    required this.onReconnect,
     required this.onOpenSettings,
+    required this.onLeave,
   });
 
   @override
@@ -1231,6 +1090,12 @@ class _MatchLobby extends StatelessWidget {
           children: [
             Row(
               children: [
+                IconButton(
+                  tooltip: '返回比赛列表',
+                  onPressed: onLeave,
+                  color: AppColors.paperInk,
+                  icon: const Icon(Icons.arrow_back_rounded),
+                ),
                 Expanded(
                   child: Text(
                     '${match.competition} · ${match.liveLabel}',
@@ -1324,17 +1189,29 @@ class _MatchLobby extends StatelessWidget {
               ),
             ),
             const SizedBox(height: AppSpacing.md),
-            FilledButton(
-              onPressed: onEnter,
-              style: FilledButton.styleFrom(
-                backgroundColor: AppColors.orangeDeep,
-                foregroundColor: Colors.white,
-                side: const BorderSide(color: AppColors.paperInk, width: 2),
-                shadowColor: AppColors.paperInk,
-                elevation: 4,
+            if (socketStatus == SocketStatus.failed)
+              OutlinedButton.icon(
+                onPressed: onReconnect,
+                icon: const Icon(Icons.refresh_rounded),
+                label: const Text('重新连接后进入'),
+              )
+            else
+              FilledButton(
+                onPressed:
+                    socketStatus == SocketStatus.connected ? onEnter : null,
+                style: FilledButton.styleFrom(
+                  backgroundColor: AppColors.orangeDeep,
+                  foregroundColor: Colors.white,
+                  side: const BorderSide(color: AppColors.paperInk, width: 2),
+                  shadowColor: AppColors.paperInk,
+                  elevation: 4,
+                ),
+                child: Text(
+                  socketStatus == SocketStatus.connected
+                      ? '进入球球的看台'
+                      : '正在连接比赛…',
+                ),
               ),
-              child: const Text('进入球球的看台'),
-            ),
           ],
         ),
       ),
@@ -1348,7 +1225,7 @@ class _LiveMatchExperience extends StatelessWidget {
   final String expression;
   final String? motion;
   final bool isSpeaking;
-  final ConversationPhase phase;
+  final MatchSessionPhase phase;
   final SocketStatus socketStatus;
   final bool continuousEnabled;
   final bool subtitlesEnabled;
@@ -1362,6 +1239,10 @@ class _LiveMatchExperience extends StatelessWidget {
   final String audioInputLabel;
   final VoidCallback onChooseAudioInput;
   final VoidCallback onOpenSettings;
+  final VoidCallback onLeave;
+  final VoidCallback onSwitchMatch;
+  final VoidCallback onReturnToCatalog;
+  final VoidCallback onReconnect;
   final VoidCallback onOpenText;
   final VoidCallback onCloseText;
   final VoidCallback onSendText;
@@ -1389,6 +1270,10 @@ class _LiveMatchExperience extends StatelessWidget {
     required this.audioInputLabel,
     required this.onChooseAudioInput,
     required this.onOpenSettings,
+    required this.onLeave,
+    required this.onSwitchMatch,
+    required this.onReturnToCatalog,
+    required this.onReconnect,
     required this.onOpenText,
     required this.onCloseText,
     required this.onSendText,
@@ -1427,6 +1312,11 @@ class _LiveMatchExperience extends StatelessWidget {
                           subtitlesEnabled: subtitlesEnabled,
                           qiuqiuLine: qiuqiuLine,
                           qiuqiuDetail: qiuqiuDetail,
+                          onLeave: onLeave,
+                          onSwitchMatch: onSwitchMatch,
+                          onReturnToCatalog: onReturnToCatalog,
+                          onOpenSettings: onOpenSettings,
+                          onReconnect: onReconnect,
                         ),
                       ),
                       _ConversationDock(
@@ -1556,6 +1446,11 @@ class _CharacterStage extends StatelessWidget {
   final bool subtitlesEnabled;
   final String qiuqiuLine;
   final String qiuqiuDetail;
+  final VoidCallback onLeave;
+  final VoidCallback onSwitchMatch;
+  final VoidCallback onReturnToCatalog;
+  final VoidCallback onOpenSettings;
+  final VoidCallback onReconnect;
 
   const _CharacterStage({
     required this.match,
@@ -1567,6 +1462,11 @@ class _CharacterStage extends StatelessWidget {
     required this.subtitlesEnabled,
     required this.qiuqiuLine,
     required this.qiuqiuDetail,
+    required this.onLeave,
+    required this.onSwitchMatch,
+    required this.onReturnToCatalog,
+    required this.onOpenSettings,
+    required this.onReconnect,
   });
 
   @override
@@ -1600,9 +1500,37 @@ class _CharacterStage extends StatelessWidget {
                   ),
                   const SizedBox(width: AppSpacing.xs),
                   _ConnectionMark(status: socketStatus),
+                  const SizedBox(width: AppSpacing.xs),
+                  MatchActionsMenu(
+                    onSelected: (action) => switch (action) {
+                      MatchAction.switchMatch => onSwitchMatch(),
+                      MatchAction.settings => onOpenSettings(),
+                      MatchAction.leave => onLeave(),
+                    },
+                  ),
                 ],
               ),
             ),
+            if (match.liveLabel == '已结束')
+              Positioned(
+                top: 64,
+                left: AppSpacing.md,
+                child: FilledButton.icon(
+                  onPressed: onReturnToCatalog,
+                  icon: const Icon(Icons.list_alt_rounded),
+                  label: const Text('比赛结束 · 返回比赛列表'),
+                ),
+              ),
+            if (socketStatus == SocketStatus.failed)
+              Positioned(
+                top: 64,
+                right: AppSpacing.md,
+                child: FilledButton.icon(
+                  onPressed: onReconnect,
+                  icon: const Icon(Icons.refresh_rounded),
+                  label: const Text('重新连接'),
+                ),
+              ),
             if (subtitlesEnabled)
               Positioned(
                 left: AppSpacing.md,
@@ -1792,7 +1720,7 @@ class _MatchStatusCarouselState extends State<_MatchStatusCarousel>
 }
 
 class _ConversationDock extends StatelessWidget {
-  final ConversationPhase phase;
+  final MatchSessionPhase phase;
   final bool continuousEnabled;
   final String userLine;
   final String? notice;
@@ -1976,50 +1904,56 @@ class _ConversationDock extends StatelessWidget {
 
   Color get _phaseColor {
     switch (phase) {
-      case ConversationPhase.welcoming:
+      case MatchSessionPhase.welcoming:
         return AppColors.orangeDeep;
-      case ConversationPhase.listening:
-      case ConversationPhase.userSpeaking:
+      case MatchSessionPhase.listening:
+      case MatchSessionPhase.userSpeaking:
         return AppColors.green;
-      case ConversationPhase.understanding:
+      case MatchSessionPhase.understanding:
         return AppColors.yellow;
-      case ConversationPhase.speaking:
+      case MatchSessionPhase.speaking:
         return AppColors.orangeDeep;
-      case ConversationPhase.permissionDenied:
-      case ConversationPhase.offline:
-      case ConversationPhase.failed:
+      case MatchSessionPhase.permissionDenied:
+      case MatchSessionPhase.offline:
+      case MatchSessionPhase.failed:
         return AppColors.red;
-      case ConversationPhase.idle:
+      case MatchSessionPhase.reconnecting:
+      case MatchSessionPhase.recovered:
+      case MatchSessionPhase.idle:
         return AppColors.muted;
     }
   }
 
   String get _phaseLabel {
     switch (phase) {
-      case ConversationPhase.welcoming:
+      case MatchSessionPhase.welcoming:
         return '第一次见面 · 球球正在和你打招呼';
-      case ConversationPhase.listening:
+      case MatchSessionPhase.listening:
         return continuousEnabled ? '连续对话已开启 · 你直接说' : '正在听你说';
-      case ConversationPhase.userSpeaking:
+      case MatchSessionPhase.userSpeaking:
         return '听到你在说话 · 继续说';
-      case ConversationPhase.understanding:
+      case MatchSessionPhase.understanding:
         return '听见了 · 正在结合比赛想一想';
-      case ConversationPhase.speaking:
+      case MatchSessionPhase.speaking:
         return '球球正在回答 · 你可以随时插话';
-      case ConversationPhase.permissionDenied:
+      case MatchSessionPhase.permissionDenied:
         return '麦克风还没有权限';
-      case ConversationPhase.offline:
+      case MatchSessionPhase.offline:
         return '暂时离线 · 字幕和比赛画面仍保留';
-      case ConversationPhase.failed:
+      case MatchSessionPhase.failed:
         return '这一句没有听清';
-      case ConversationPhase.idle:
+      case MatchSessionPhase.reconnecting:
+        return '重连中';
+      case MatchSessionPhase.recovered:
+        return '已恢复';
+      case MatchSessionPhase.idle:
         return continuousEnabled ? '准备好后直接说' : '按住麦克风说话';
     }
   }
 }
 
 class _VoiceOrb extends StatelessWidget {
-  final ConversationPhase phase;
+  final MatchSessionPhase phase;
   final bool continuousEnabled;
 
   const _VoiceOrb({required this.phase, required this.continuousEnabled});
@@ -2027,30 +1961,34 @@ class _VoiceOrb extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final background = switch (phase) {
-      ConversationPhase.welcoming => AppColors.orangeDeep,
-      ConversationPhase.listening => AppColors.yellow,
-      ConversationPhase.userSpeaking => AppColors.green,
-      ConversationPhase.understanding => AppColors.paperInk,
-      ConversationPhase.speaking => AppColors.orangeDeep,
-      ConversationPhase.permissionDenied ||
-      ConversationPhase.offline ||
-      ConversationPhase.failed =>
+      MatchSessionPhase.welcoming => AppColors.orangeDeep,
+      MatchSessionPhase.listening => AppColors.yellow,
+      MatchSessionPhase.userSpeaking => AppColors.green,
+      MatchSessionPhase.understanding => AppColors.paperInk,
+      MatchSessionPhase.speaking => AppColors.orangeDeep,
+      MatchSessionPhase.permissionDenied ||
+      MatchSessionPhase.offline ||
+      MatchSessionPhase.failed =>
         AppColors.red,
-      ConversationPhase.idle => AppColors.orangeDeep,
+      MatchSessionPhase.reconnecting => AppColors.yellow,
+      MatchSessionPhase.recovered => AppColors.green,
+      MatchSessionPhase.idle => AppColors.orangeDeep,
     };
-    final foreground = phase == ConversationPhase.listening
+    final foreground = phase == MatchSessionPhase.listening
         ? AppColors.paperInk
         : Colors.white;
     final label = switch (phase) {
-      ConversationPhase.welcoming => '你好呀',
-      ConversationPhase.listening => '聆听中',
-      ConversationPhase.userSpeaking => '你在说',
-      ConversationPhase.understanding => '想一想',
-      ConversationPhase.speaking => '球球在说',
-      ConversationPhase.permissionDenied => '没权限',
-      ConversationPhase.offline => '离线',
-      ConversationPhase.failed => '再试一次',
-      ConversationPhase.idle => continuousEnabled ? '直接说' : '按住说',
+      MatchSessionPhase.welcoming => '你好呀',
+      MatchSessionPhase.listening => '聆听中',
+      MatchSessionPhase.userSpeaking => '你在说',
+      MatchSessionPhase.understanding => '想一想',
+      MatchSessionPhase.speaking => '球球在说',
+      MatchSessionPhase.permissionDenied => '没权限',
+      MatchSessionPhase.offline => '离线',
+      MatchSessionPhase.failed => '再试一次',
+      MatchSessionPhase.reconnecting => '重连中',
+      MatchSessionPhase.recovered => '已恢复',
+      MatchSessionPhase.idle => continuousEnabled ? '直接说' : '按住说',
     };
     return Semantics(
       button: true,
@@ -2163,8 +2101,18 @@ class _ConnectionMark extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final connected = status == SocketStatus.connected;
+    final failed = status == SocketStatus.failed;
+    final label = connected
+        ? '现场'
+        : failed
+            ? '连接失败'
+            : '连接中';
     return Semantics(
-      label: connected ? '比赛已连接' : '比赛正在连接',
+      label: connected
+          ? '比赛已连接'
+          : failed
+              ? '比赛连接失败'
+              : '比赛正在连接',
       child: Row(
         mainAxisSize: MainAxisSize.min,
         children: [
@@ -2172,13 +2120,17 @@ class _ConnectionMark extends StatelessWidget {
             width: 8,
             height: 8,
             decoration: BoxDecoration(
-              color: connected ? AppColors.green : AppColors.yellow,
+              color: connected
+                  ? AppColors.green
+                  : failed
+                      ? AppColors.red
+                      : AppColors.yellow,
               shape: BoxShape.circle,
             ),
           ),
           const SizedBox(width: AppSpacing.xxs),
           Text(
-            connected ? '现场' : '连接中',
+            label,
             style: Theme.of(context).textTheme.labelMedium?.copyWith(
                   color: dark ? AppColors.paperInk : AppColors.ink,
                 ),
@@ -2189,88 +2141,6 @@ class _ConnectionMark extends StatelessWidget {
   }
 }
 
-class PendingAudio {
-  final String mime;
-  final String? traceId;
-  final String? eventId;
-  final int? byteLength;
-  final bool skip;
-
-  const PendingAudio({
-    required this.mime,
-    this.traceId,
-    this.eventId,
-    this.byteLength,
-    this.skip = false,
-  });
-}
-
-class DeliveryDeduplicator {
-  final int capacity;
-  final LinkedHashSet<String> _seen = LinkedHashSet<String>();
-
-  DeliveryDeduplicator({this.capacity = 256});
-
-  bool remember(String? deliveryKey) {
-    final normalized = deliveryKey?.trim() ?? '';
-    if (normalized.isEmpty) return true;
-    if (!_seen.add(normalized)) return false;
-    if (_seen.length > capacity) {
-      _seen.remove(_seen.first);
-    }
-    return true;
-  }
-}
-
-String? matchEventDeliveryKey(Map<String, dynamic>? event) {
-  final eventId = event?['id']?.toString().trim() ?? '';
-  if (eventId.isEmpty) return null;
-  final revision = event?['factRevision']?.toString() ?? '0';
-  final status = event?['factStatus']?.toString() ?? '';
-  return '$eventId:$revision:$status';
-}
-
-Map<String, dynamic>? mutedPlaybackReceipt(PendingAudio metadata) {
-  final traceId = metadata.traceId?.trim();
-  if (traceId == null || traceId.isEmpty) return null;
-  return {
-    'type': 'voice_playback',
-    'traceId': traceId,
-    'state': 'skipped',
-  };
-}
-
-Map<String, dynamic>? interruptedPlaybackReceipt(String? traceId) {
-  if (traceId == null || traceId.trim().isEmpty) return null;
-  return {
-    'type': 'voice_playback',
-    'traceId': traceId,
-    'state': 'interrupted',
-  };
-}
-
-ConversationPhase phaseAfterInterrupt(ConversationPhase current) {
-  if (current == ConversationPhase.userSpeaking ||
-      current == ConversationPhase.understanding) {
-    return current;
-  }
-  return ConversationPhase.listening;
-}
-
-ConversationPhase phaseWhenCaptureReady(
-  ConversationPhase current, {
-  required bool hasPendingTranscript,
-}) {
-  if (hasPendingTranscript ||
-      current == ConversationPhase.userSpeaking ||
-      current == ConversationPhase.understanding ||
-      current == ConversationPhase.speaking ||
-      current == ConversationPhase.welcoming) {
-    return current;
-  }
-  return ConversationPhase.listening;
-}
-
 bool shouldClearTextInput(bool sent) => sent;
 
 bool shouldShowReplyText({
@@ -2278,221 +2148,6 @@ bool shouldShowReplyText({
   required bool playbackFallback,
 }) {
   return subtitlesEnabled || playbackFallback;
-}
-
-bool isRetractedMatchReaction(String? eventId, Set<String> retractedEventIds) {
-  final normalized = eventId?.trim() ?? '';
-  return normalized.isNotEmpty && retractedEventIds.contains(normalized);
-}
-
-class PendingAudioQueue {
-  final Queue<PendingAudio> _items = Queue<PendingAudio>();
-
-  void add(PendingAudio metadata) => _items.addLast(metadata);
-
-  PendingAudio? take() => _items.isEmpty ? null : _items.removeFirst();
-
-  void removeForEvent(String eventId) {
-    final normalized = eventId.trim();
-    if (normalized.isEmpty) return;
-    _items.removeWhere((item) => item.eventId?.trim() == normalized);
-  }
-
-  void clear() => _items.clear();
-}
-
-@immutable
-class MatchViewData {
-  final String homeTeam;
-  final String awayTeam;
-  final int homeScore;
-  final int awayScore;
-  final String competition;
-  final String period;
-  final String clock;
-  final List<String> recentEventLabels;
-  final bool hasMatchInfo;
-
-  const MatchViewData({
-    this.homeTeam = '主队',
-    this.awayTeam = '客队',
-    this.homeScore = 0,
-    this.awayScore = 0,
-    this.competition = '',
-    this.period = '',
-    this.clock = '',
-    this.recentEventLabels = const [],
-    this.hasMatchInfo = false,
-  });
-
-  String get liveLabel => switch (period.trim().toLowerCase()) {
-        '' || 'pre_match' => '等待开赛',
-        'finished' || 'full_time' || 'fulltime' => '已结束',
-        _ => '直播中',
-      };
-
-  String get eventLabel => statusCarouselItems.first;
-
-  List<String> get statusCarouselItems {
-    if (!hasMatchInfo) return const ['等待比赛信息'];
-    final items = <String>[];
-    for (final event in recentEventLabels) {
-      final normalized = event.trim();
-      if (normalized.isNotEmpty && !items.contains(normalized)) {
-        items.add(normalized);
-      }
-    }
-    final phaseLabel = _displayPeriod(period);
-    final scoreLabel = '$homeTeam $homeScore—$awayScore $awayTeam';
-    final currentState = '$phaseLabel · $scoreLabel';
-    if (!items.contains(currentState)) items.add(currentState);
-    final clockLabel = clock.trim();
-    if (clockLabel.isNotEmpty) {
-      final timing = [
-        clockLabel,
-        if (competition.trim().isNotEmpty) competition.trim(),
-        liveLabel,
-      ].join(' · ');
-      if (!items.contains(timing)) items.add(timing);
-    }
-    return List.unmodifiable(items);
-  }
-
-  String get statusCarouselContentRevision {
-    final items = statusCarouselItems.toList(growable: false);
-    if (clock.trim().isEmpty || items.isEmpty) {
-      return items.join('\u001f');
-    }
-    final stableItems = items.toList();
-    stableItems[stableItems.length - 1] = [
-      'live-clock',
-      competition.trim(),
-      liveLabel,
-    ].join('\u001e');
-    return stableItems.join('\u001f');
-  }
-
-  MatchViewData withSnapshot(Map<String, dynamic> snapshot) {
-    final score = _map(snapshot['score']);
-    final matchClock =
-        MatchClockViewData.tryParse(_map(snapshot['matchClock']));
-    final events = snapshot['recentEvents'];
-    final eventLabels = events is List
-        ? events
-            .map(_map)
-            .whereType<Map<String, dynamic>>()
-            .map(_eventDescription)
-            .take(4)
-            .toList(growable: false)
-        : const <String>[];
-    return copyWith(
-      homeTeam: snapshot['homeTeam'] as String?,
-      awayTeam: snapshot['awayTeam'] as String?,
-      homeScore: _integer(score?['home']),
-      awayScore: _integer(score?['away']),
-      period: matchClock?.period ?? snapshot['period'] as String?,
-      clock: matchClock?.displayAt(DateTime.now().toUtc()) ??
-          snapshot['clock'] as String?,
-      recentEventLabels: eventLabels,
-      hasMatchInfo: true,
-    );
-  }
-
-  MatchViewData withEvent(Map<String, dynamic> event) {
-    final score = _map(event['score']);
-    final eventLabel = _eventDescription(event);
-    final eventLabels = [
-      eventLabel,
-      ...recentEventLabels.where((item) => item != eventLabel),
-    ].take(4).toList(growable: false);
-    return copyWith(
-      homeScore: _integer(score?['home']),
-      awayScore: _integer(score?['away']),
-      recentEventLabels: eventLabels,
-      hasMatchInfo: true,
-    );
-  }
-
-  MatchViewData withLegacyScore(String score) {
-    final parts = score.split(RegExp(r'[-—:]'));
-    if (parts.length != 2) return this;
-    return copyWith(
-      homeScore: int.tryParse(parts.first.trim()),
-      awayScore: int.tryParse(parts.last.trim()),
-    );
-  }
-
-  MatchViewData copyWith({
-    String? homeTeam,
-    String? awayTeam,
-    int? homeScore,
-    int? awayScore,
-    String? competition,
-    String? period,
-    String? clock,
-    List<String>? recentEventLabels,
-    bool? hasMatchInfo,
-  }) {
-    return MatchViewData(
-      homeTeam: homeTeam?.trim().isNotEmpty == true ? homeTeam! : this.homeTeam,
-      awayTeam: awayTeam?.trim().isNotEmpty == true ? awayTeam! : this.awayTeam,
-      homeScore: homeScore ?? this.homeScore,
-      awayScore: awayScore ?? this.awayScore,
-      competition: competition ?? this.competition,
-      period: period?.trim().isNotEmpty == true ? period! : this.period,
-      clock: clock?.trim().isNotEmpty == true ? clock! : this.clock,
-      recentEventLabels: recentEventLabels ?? this.recentEventLabels,
-      hasMatchInfo: hasMatchInfo ?? this.hasMatchInfo,
-    );
-  }
-}
-
-@immutable
-class MatchClockViewData {
-  final String period;
-  final int elapsedSeconds;
-  final bool running;
-  final DateTime? anchorAt;
-  final int version;
-
-  const MatchClockViewData({
-    required this.period,
-    required this.elapsedSeconds,
-    required this.running,
-    required this.anchorAt,
-    required this.version,
-  });
-
-  static MatchClockViewData? tryParse(Map<String, dynamic>? value) {
-    if (value == null) return null;
-    final anchorRaw = value['anchorAt']?.toString();
-    return MatchClockViewData(
-      period: value['period']?.toString().trim().isNotEmpty == true
-          ? value['period'].toString()
-          : 'pre_match',
-      elapsedSeconds: _integer(value['elapsedSeconds']) ?? 0,
-      running: value['running'] == true,
-      anchorAt:
-          anchorRaw == null ? null : DateTime.tryParse(anchorRaw)?.toUtc(),
-      version: _integer(value['version']) ?? 0,
-    );
-  }
-
-  int elapsedAt(DateTime now) {
-    var elapsed = elapsedSeconds;
-    if (running && anchorAt != null) {
-      final delta = now.toUtc().difference(anchorAt!).inSeconds;
-      if (delta > 0) elapsed += delta;
-    }
-    return elapsed < 0 ? 0 : elapsed;
-  }
-
-  String displayAt(DateTime now) {
-    final elapsed = elapsedAt(now);
-    final minutes = (elapsed ~/ 60).toString().padLeft(2, '0');
-    final seconds = (elapsed % 60).toString().padLeft(2, '0');
-    return '$minutes:$seconds';
-  }
 }
 
 Map<String, dynamic>? _map(dynamic value) {
@@ -2505,40 +2160,4 @@ int? _integer(dynamic value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return int.tryParse(value?.toString() ?? '');
-}
-
-String _displayPeriod(String value) {
-  return switch (value.trim().toLowerCase()) {
-    '' || 'pre_match' => '赛前',
-    'first_half' => '上半场',
-    'half_time' || 'halftime' => '中场休息',
-    'second_half' => '下半场',
-    'extra_time' => '加时赛',
-    'penalties' => '点球大战',
-    'finished' || 'full_time' || 'fulltime' => '全场结束',
-    _ => value.trim(),
-  };
-}
-
-String _eventDescription(Map<String, dynamic> event) {
-  final eventClock = event['clock']?.toString().trim();
-  final timing = eventClock?.isNotEmpty == true ? eventClock! : '刚刚';
-  final description = event['description'] as String?;
-  if (description != null && description.trim().isNotEmpty) {
-    return '$timing · ${description.trim()}';
-  }
-  final player = event['playerName'] as String?;
-  final eventType = event['eventType'] as String? ?? '';
-  final label = switch (eventType) {
-    'goal' => '进球',
-    'yellow_card' => '黄牌',
-    'red_card' => '红牌',
-    'penalty' => '点球',
-    'match_start' => '比赛开始',
-    'match_end' => '比赛结束',
-    _ => '比赛有新进展',
-  };
-  return player?.trim().isNotEmpty == true
-      ? '$timing · ${player!.trim()}$label'
-      : '$timing · $label';
 }

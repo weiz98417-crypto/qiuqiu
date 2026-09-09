@@ -15,11 +15,40 @@ test.beforeEach(async ({ request, context }) => {
     homePlayers: [
       { number: '10', name: '佩德里', position: 'CM', lineup: 'starter' },
       { number: '19', name: '亚马尔', position: 'RW', lineup: 'starter' },
+      { number: '23', name: '乌奈·西蒙', position: 'GK', lineup: 'starter' },
+      { number: '2', name: '丹尼·卡瓦哈尔', position: 'RB', lineup: 'starter' },
+      { number: '3', name: '勒诺尔芒', position: 'CB', lineup: 'starter' },
+      { number: '14', name: '拉波尔特', position: 'CB', lineup: 'starter' },
+      { number: '24', name: '库库雷利亚', position: 'LB', lineup: 'starter' },
+      { number: '16', name: '罗德里', position: 'DM', lineup: 'starter' },
+      { number: '8', name: '法比安·鲁伊斯', position: 'CM', lineup: 'starter' },
+      { number: '7', name: '莫拉塔', position: 'ST', lineup: 'starter' },
+      { number: '17', name: '尼科·威廉斯', position: 'LW', lineup: 'starter' },
+      { number: '1', name: '大卫·拉亚', position: 'GK', lineup: 'bench' },
+      { number: '4', name: '纳乔', position: 'CB', lineup: 'bench' },
+      { number: '6', name: '梅里诺', position: 'CM', lineup: 'bench' },
+      { number: '10', name: '奥尔莫', position: 'AM', lineup: 'bench' },
       { number: '11', name: '费兰·托雷斯', position: 'RW', lineup: 'bench' },
+      { number: '15', name: '巴埃纳', position: 'LW', lineup: 'bench' },
     ],
     awayPlayers: [
-      { number: '10', name: '穆西亚拉', position: 'AM' },
-      { number: '9', name: '菲尔克鲁格', position: 'ST' },
+      { number: '1', name: '诺伊尔', position: 'GK', lineup: 'starter' },
+      { number: '6', name: '基米希', position: 'RB', lineup: 'starter' },
+      { number: '4', name: '若纳坦·塔', position: 'CB', lineup: 'starter' },
+      { number: '2', name: '吕迪格', position: 'CB', lineup: 'starter' },
+      { number: '3', name: '劳姆', position: 'LB', lineup: 'starter' },
+      { number: '8', name: '克罗斯', position: 'CM', lineup: 'starter' },
+      { number: '23', name: '安德里希', position: 'DM', lineup: 'starter' },
+      { number: '10', name: '穆西亚拉', position: 'AM', lineup: 'starter' },
+      { number: '7', name: '哈弗茨', position: 'ST', lineup: 'starter' },
+      { number: '17', name: '维尔茨', position: 'AM', lineup: 'starter' },
+      { number: '19', name: '萨内', position: 'RW', lineup: 'starter' },
+      { number: '12', name: '鲍曼', position: 'GK', lineup: 'bench' },
+      { number: '5', name: '施洛特贝克', position: 'CB', lineup: 'bench' },
+      { number: '9', name: '菲尔克鲁格', position: 'ST', lineup: 'bench' },
+      { number: '11', name: '菲里希', position: 'LW', lineup: 'bench' },
+      { number: '13', name: '托马斯·穆勒', position: 'AM', lineup: 'bench' },
+      { number: '14', name: '拜尔', position: 'ST', lineup: 'bench' },
     ],
   });
   await apiPatch(request, `/api/matches/${matchId}/clock`, {
@@ -40,22 +69,104 @@ test('行为按钮只更新当前草稿，不直接创建比赛事实', async ({
   expect(timeline.events || []).toHaveLength(0);
 });
 
-test('切换球队清空旧球员，切换行为清空进球专属字段', async ({ page }) => {
+test('球员可再次点击取消，重新选择后仍可点击行为', async ({ page }) => {
+  await page.goto(operatorURL('live'));
+  const player = page.locator('#homeChips .player-chip').filter({ hasText: '莫拉塔' });
+
+  await player.click();
+  await expect(page.locator('#participantSelection')).toContainText('莫拉塔');
+  await page.locator('#homeChips .player-chip').filter({ hasText: '莫拉塔' }).click();
+  await expect(page.locator('#participantSelection')).toContainText('尚未选择球员');
+
+  await page.locator('#homeChips .player-chip').filter({ hasText: '莫拉塔' }).click();
+  await page.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
+  await expect(page.locator('#draftSummary')).toContainText('西班牙 · 进球');
+  await expect(page.locator('#slot_scorer')).toHaveValue('莫拉塔');
+});
+
+test('绝佳机会保留进攻方并允许从对方选择防守者和门将', async ({ page }) => {
+  await page.goto(operatorURL('live'));
+  await page.locator('#homeSideButton').click();
+  await page.locator('#behaviorGroups .behavior-button[data-event-type="big_chance"]').click();
+  await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
+  await page.locator('#slots .slot[data-role="passer"]').click();
+  await page.locator('#homeChips .player-chip').filter({ hasText: '亚马尔' }).click();
+
+  await page.locator('#awaySideButton').click();
+  await expect(page.locator('#draftSummary')).toContainText('西班牙 · 绝佳机会');
+  await expect(page.locator('#slot_attacker')).toHaveValue('佩德里');
+  await expect(page.locator('#slot_passer')).toHaveValue('亚马尔');
+
+  await page.locator('#slots .slot[data-role="defender"]').click();
+  await page.locator('#awayChips .player-chip').filter({ hasText: '穆西亚拉' }).click();
+  await page.locator('#slots .slot[data-role="keeper"]').click();
+  await page.locator('#awayChips .player-chip').filter({ hasText: '诺伊尔' }).click();
+  await expect(page.locator('#slot_defender')).toHaveValue('穆西亚拉');
+  await expect(page.locator('#slot_keeper')).toHaveValue('诺伊尔');
+  await expect(page.locator('#draftSummary')).toContainText('西班牙 · 绝佳机会');
+});
+
+test('绝佳机会也可由客队发起并从主队选择防守者和门将', async ({ page }) => {
+  await page.goto(operatorURL('live'));
+  await page.locator('#awaySideButton').click();
+  await page.locator('#behaviorGroups .behavior-button[data-event-type="big_chance"]').click();
+  await page.locator('#awayChips .player-chip').filter({ hasText: '穆西亚拉' }).click();
+  await page.locator('#slots .slot[data-role="passer"]').click();
+  await page.locator('#awayChips .player-chip').filter({ hasText: '哈弗茨' }).click();
+
+  await page.locator('#homeSideButton').click();
+  await expect(page.locator('#draftSummary')).toContainText('德国 · 绝佳机会');
+  await expect(page.locator('#slot_attacker')).toHaveValue('穆西亚拉');
+  await expect(page.locator('#slot_passer')).toHaveValue('哈弗茨');
+
+  await page.locator('#slots .slot[data-role="defender"]').click();
+  await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
+  await page.locator('#slots .slot[data-role="keeper"]').click();
+  await page.locator('#homeChips .player-chip').filter({ hasText: '乌奈·西蒙' }).click();
+  await expect(page.locator('#slot_defender')).toHaveValue('佩德里');
+  await expect(page.locator('#slot_keeper')).toHaveValue('乌奈·西蒙');
+  await expect(page.locator('#draftSummary')).toContainText('德国 · 绝佳机会');
+});
+
+test('切换参与方保留进球归属并切换到防守角色，切换行为清空进球专属字段', async ({ page }) => {
   await page.goto(operatorURL('live'));
   await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
   await page.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
+  await expect(page.locator('#slots .slot[data-role="defender"] .slot-label')).toContainText('防守相关 · 德国');
   await page.locator('#slot_assist').fill('亚马尔');
   await page.locator('#awaySideButton').click();
-  await expect(page.locator('#draftSummary')).not.toContainText('佩德里');
-  await expect(page.locator('#draftSummary')).not.toContainText('亚马尔');
-  await expect(page.locator('#participantSelection')).toContainText('尚未选择球员');
+  await expect(page.locator('#draftSummary')).toContainText('西班牙 · 进球');
+  await expect(page.locator('#slot_scorer')).toHaveValue('佩德里');
+  await expect(page.locator('#slot_assist')).toHaveValue('亚马尔');
+  await expect(page.locator('#slot_defender')).toHaveAttribute('placeholder', '点左侧球员或输入多个姓名（顿号分隔）');
+  await expect(page.locator('#slot_defender')).toBeVisible();
 
   await page.locator('#awayChips .player-chip').filter({ hasText: '穆西亚拉' }).click();
+  await expect(page.locator('#slot_defender')).toHaveValue('穆西亚拉');
   await page.locator('#behaviorGroups .behavior-button').filter({ hasText: '黄牌' }).click();
   await expect(page.locator('#action')).toHaveValue('complain');
   await expect(page.locator('#slots [data-role="scorer"]')).toHaveCount(0);
   await expect(page.locator('#slots [data-role="assist"]')).toHaveCount(0);
+  await page.locator('#awayChips .player-chip').filter({ hasText: '穆西亚拉' }).click();
   await expect(page.locator('#slot_offender')).toHaveValue('穆西亚拉');
+});
+
+test('助攻和防守可分别选择多名球员', async ({ page }) => {
+  await page.goto(operatorURL('live'));
+  await page.locator('#homeChips .player-chip').filter({ hasText: '莫拉塔' }).click();
+  await page.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
+  await page.locator('#slots .slot[data-role="assist"]').click();
+  await page.locator('#homeChips .player-chip').filter({ hasText: '亚马尔' }).click();
+  await page.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
+  await expect(page.locator('#slot_assist')).toHaveValue('亚马尔、佩德里');
+
+  await page.locator('#awaySideButton').click();
+  await page.locator('#slots .slot[data-role="defender"]').click();
+  await page.locator('#awayChips .player-chip').filter({ hasText: '吕迪格' }).click();
+  await page.locator('#awayChips .player-chip').filter({ hasText: '基米希' }).click();
+  await expect(page.locator('#slot_defender')).toHaveValue('吕迪格、基米希');
+  await page.locator('#awayChips .player-chip').filter({ hasText: '吕迪格' }).click();
+  await expect(page.locator('#slot_defender')).toHaveValue('基米希');
 });
 
 test('主客队切换只显示当前球队名单', async ({ page }) => {
@@ -296,7 +407,7 @@ test('比分更正作为独立审计事实发布且不触发主动话术', async
     score: { home: 1, away: 0 }, description: '佩德里进球。', proactiveText: '__quiet__',
   });
   await page.goto(operatorURL('live'));
-  await page.locator('#behaviorGroups .behavior-button').filter({ hasText: '比分更正' }).click();
+  await page.getByRole('button', { name: '人工校准比分' }).click();
   await expect(page.locator('#scoreCorrectionFields')).toBeVisible();
   await expect(page.locator('#draftSubmit')).toBeDisabled();
   await page.locator('#scoreCorrectionHome').fill('0');
@@ -443,6 +554,21 @@ test('比赛主时钟由后端推进，事件发生时间不会把主时钟跳�
   const backendClock = await apiGet(request, `/api/matches/${matchId}/clock`);
   expect(backendClock.clock.elapsedSeconds).toBeGreaterThan(720);
   await expect(page.locator('#clock')).not.toHaveValue(occurredAt);
+});
+
+test('切换比赛阶段会将主时钟重置为零', async ({ page, request }) => {
+  await page.goto(operatorURL('live'));
+  await expect(page.locator('#clock')).toHaveValue('12:00');
+
+  await page.locator('#period').selectOption('second_half');
+  await expect(page.locator('#clock')).toHaveValue('00:00');
+  await expect(page.locator('#period')).toHaveValue('second_half');
+  const clock = await apiGet(request, `/api/matches/${matchId}/clock`);
+  expect(clock.clock).toMatchObject({ period: 'second_half', elapsedSeconds: 0 });
+
+  await page.locator('#period').selectOption('extra_time');
+  await expect(page.locator('#clock')).toHaveValue('00:00');
+  await expect(page.locator('#period')).toHaveValue('extra_time');
 });
 
 test('导演语音只补全草稿，不创建比赛事实', async ({ page, request }) => {
@@ -595,7 +721,7 @@ test('导演必须逐项处理语音冲突后才能发布', async ({ page, reque
 });
 
 test('候选事实不打扰用户，导演确认后同步比分、事件和主时钟', async ({ page, context, request }) => {
-  const userMatchId = 'test';
+  const userMatchId = 'demo-user-facing-flow';
   await apiPost(request, `/api/matches/${userMatchId}/reset`, {});
   await apiPost(request, `/api/matches/${userMatchId}/config`, {
     homeTeam: '西班牙',
@@ -610,7 +736,7 @@ test('候选事实不打扰用户，导演确认后同步比分、事件和主�
     localStorage.setItem('flutter.first_meeting_completed', 'true');
   });
   await page.emulateMedia({ reducedMotion: 'reduce' });
-  await page.goto('/');
+  await page.goto(`/?matchId=${encodeURIComponent(userMatchId)}`);
   await enableFlutterAccessibility(page);
   await expect(page.getByText(/^0\s*—\s*0$/).first()).toBeVisible();
 
@@ -638,6 +764,73 @@ test('候选事实不打扰用户，导演确认后同步比分、事件和主�
   expect(occurredAt).toBe('12:00');
   await expect(page.getByText(/西班牙 · 德国 · 12:\d{2}/).first()).toBeVisible();
   await operator.close();
+});
+
+test('比赛事实从 API 到用户端可见更新的 p95 低于 500ms', async ({ page, request }) => {
+  const userMatchId = 'demo-fact-latency-e2e';
+  await apiPost(request, `/api/matches/${userMatchId}/reset`, {});
+  await apiPost(request, `/api/matches/${userMatchId}/config`, {
+    homeTeam: '西班牙',
+    awayTeam: '德国',
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('flutter.first_meeting_completed', 'true');
+  });
+  await page.emulateMedia({ reducedMotion: 'reduce' });
+  await page.goto(`/?matchId=${encodeURIComponent(userMatchId)}`);
+  await enableFlutterAccessibility(page);
+  await expect(page.getByText(/^0\s*—\s*0$/).first()).toBeVisible();
+
+  const samples = [];
+  for (let index = 0; index < 20; index += 1) {
+    const description = `事实延迟样本 ${index + 1}`;
+    const startedAt = performance.now();
+    await apiPost(request, `/api/matches/${userMatchId}/events`, {
+      eventType: 'shot',
+      period: 'first_half',
+      clock: `24:${String(index).padStart(2, '0')}`,
+      teamId: 'home',
+      teamName: '西班牙',
+      playerName: '佩德里',
+      score: { home: 0, away: 0 },
+      description,
+      proactiveText: '__quiet__',
+    });
+    await page.getByText(new RegExp(description)).first()
+      .waitFor({ state: 'visible', timeout: 2_000 });
+    samples.push(performance.now() - startedAt);
+  }
+
+  samples.sort((left, right) => left - right);
+  const p95 = samples[Math.ceil(samples.length * 0.95) - 1];
+  expect(p95, `fact update samples=${samples.map((sample) => sample.toFixed(1)).join(',')}`)
+    .toBeLessThan(500);
+});
+
+test('深链进入比赛后退出会清除 matchId，刷新仍停留比赛列表', async ({ page, request }) => {
+  const userMatchId = 'demo-user-exit-e2e';
+  await apiPost(request, `/api/matches/${userMatchId}/reset`, {});
+  await apiPost(request, `/api/matches/${userMatchId}/config`, {
+    homeTeam: '西班牙',
+    awayTeam: '德国',
+  });
+  await page.addInitScript(() => {
+    localStorage.setItem('flutter.first_meeting_completed', 'true');
+  });
+  await page.goto(`/?matchId=${encodeURIComponent(userMatchId)}`);
+  await enableFlutterAccessibility(page);
+
+  await page.getByRole('button', { name: '比赛选项' }).click();
+  await page.getByRole('menuitem', { name: '退出本场' }).click();
+  await expect(page.getByText('退出这场比赛？', { exact: true })).toBeVisible();
+  await page.getByRole('button', { name: '退出本场' }).click();
+
+  await expect.poll(() => new URL(page.url()).searchParams.has('matchId')).toBe(false);
+  await expect(page.getByText('选择一场比赛', { exact: true })).toBeVisible();
+  await page.reload();
+  await enableFlutterAccessibility(page);
+  await expect(page.getByText('选择一场比赛', { exact: true })).toBeVisible();
+  expect(new URL(page.url()).searchParams.has('matchId')).toBe(false);
 });
 
 test('自动化策略页面保存事件范围和冷却时间', async ({ page, request }) => {

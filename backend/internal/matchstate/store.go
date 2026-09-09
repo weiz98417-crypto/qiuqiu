@@ -196,6 +196,8 @@ type Snapshot struct {
 	LastRecommendedAction string         `json:"lastRecommendedAction,omitempty"`
 	LastPublicDescription string         `json:"lastPublicDescription,omitempty"`
 	Integrity             MatchIntegrity `json:"integrity"`
+	ProjectionVersion     string         `json:"projectionVersion,omitempty"`
+	ProjectedSequence     int64          `json:"projectedSequence,omitempty"`
 }
 
 type Repository interface {
@@ -606,23 +608,7 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 		return MatchEvent{}, Snapshot{}, err
 	}
 	config := normalizeConfig(matchID, s.configs[matchID])
-	if err := validateSubstitutionLineup(ev, config, s.events[matchID]); err != nil {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, err
-	}
-	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
-		MatchID: matchID, Events: s.events[matchID], Config: config, Clock: s.clocks[matchID], Now: s.now(),
-	})
-	if err != nil {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, err
-	}
-	current := projection.Snapshot
-	if err := validateEventRelations(s.events[matchID], ev); err != nil {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, err
-	}
-	if err := validateAgainstSnapshot(ev, current, config); err != nil {
+	if err := (FactLedgerEngine{}).ValidateAppend(matchID, s.events[matchID], config, s.clocks[matchID], ev); err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
@@ -651,82 +637,23 @@ func (s *Store) Create(matchID string, ev MatchEvent) (MatchEvent, Snapshot, err
 }
 
 func (s *Store) Correct(matchID, eventID string, replacement MatchEvent) (MatchEvent, Snapshot, error) {
-	matchID = strings.TrimSpace(matchID)
-	eventID = strings.TrimSpace(eventID)
-	if matchID == "" || eventID == "" {
-		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId and event id are required", ErrInvalid)
-	}
-
 	s.mu.Lock()
-	events := s.events[matchID]
-	found := -1
-	for i := range events {
-		if events[i].ID == eventID && events[i].Status == "active" {
-			found = i
-			break
-		}
-	}
-	if found == -1 {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, ErrNotFound
-	}
-
-	replacement.MatchID = matchID
-	replacement.RevisionOf = eventID
-	requestedFactStatus := replacement.FactStatus
-	normalize(&replacement)
-	if requestedFactStatus == "" {
-		replacement.FactStatus = events[found].FactStatus
-		replacement.Confirmed = replacement.FactStatus == FactStatusConfirmed || replacement.FactStatus == FactStatusReconciled
-	}
-	if err := validate(replacement); err != nil {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, err
-	}
-	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
-		MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
-	})
+	nextSequence := s.nextID + 1
+	result, err := (FactLedgerEngine{}).Correct(FactLedgerProjectInput{
+		MatchID: matchID, Events: s.events[matchID], Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+	}, eventID, replacement, fmt.Sprintf("evt_%d", nextSequence), nextSequence)
 	if err != nil {
 		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
-	current := projection.Snapshot
-	if err := validateCorrectionTimeline(events, events[found], replacement); err != nil {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, err
-	}
-	if err := validateCorrection(events[found], replacement, current, normalizeConfig(matchID, s.configs[matchID])); err != nil {
-		s.mu.Unlock()
-		return MatchEvent{}, Snapshot{}, err
-	}
-
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	events[found].Status = "corrected"
-	events[found].UpdatedAt = now
-	s.nextID++
-	replacement.ID = fmt.Sprintf("evt_%d", s.nextID)
-	replacement.RecordedSequence = s.nextID
-	if replacement.FactID == "" {
-		replacement.FactID = events[found].FactID
-	}
-	replacement.FactRevision = events[found].FactRevision + 1
-	replacement.CreatedAt = now
-	replacement.UpdatedAt = now
-	events = append(events, replacement)
-	s.recordFactRevisionLocked(matchID, replacement)
-	s.events[matchID] = events
-	snapshot := resolvePublicProjection(
-		FactLedgerProjectInput{
-			MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
-		},
-		s.projectedReads,
-		nil,
-	).Snapshot
+	s.nextID = nextSequence
+	s.events[matchID] = result.Events
+	s.recordFactRevisionLocked(matchID, result.Changed)
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
 
-	s.publish(subs, replacement)
-	return replacement, snapshot, nil
+	s.publish(subs, result.Changed)
+	return result.Changed, result.Projection.Snapshot, nil
 }
 
 func (s *Store) Events(matchID string) []MatchEvent {
@@ -749,6 +676,18 @@ func (s *Store) Snapshot(matchID string) Snapshot {
 		s.projectedReads,
 		nil,
 	).Snapshot
+}
+
+func (s *Store) Replay(matchID string, uptoSequence int64) (FactLedgerProjection, error) {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return (FactLedgerEngine{}).Replay(FactLedgerProjectInput{
+		MatchID: matchID,
+		Events:  append([]MatchEvent(nil), s.events[matchID]...),
+		Config:  s.configs[matchID],
+		Clock:   s.clocks[matchID],
+		Now:     s.now(),
+	}, uptoSequence)
 }
 
 func (s *Store) PublicEvents(matchID string) []MatchEvent {
@@ -780,63 +719,20 @@ func (s *Store) PublicSnapshot(matchID string) Snapshot {
 }
 
 func (s *Store) ConfirmFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
-	matchID = strings.TrimSpace(matchID)
-	factID = strings.TrimSpace(factID)
-	operatorID = strings.TrimSpace(operatorID)
-	if matchID == "" || factID == "" || operatorID == "" {
-		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: matchId, factId and operatorId are required", ErrInvalid)
-	}
-
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	events := s.events[matchID]
-	found := -1
-	for index := range events {
-		if events[index].FactID == factID && events[index].Status == "active" {
-			found = index
-			break
-		}
-	}
-	if found == -1 {
-		return MatchEvent{}, Snapshot{}, ErrNotFound
-	}
-	if events[found].FactStatus != FactStatusProvisional {
-		return MatchEvent{}, Snapshot{}, fmt.Errorf("%w: fact is not provisional", ErrInvalid)
-	}
-	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
-		MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
-	})
+	result, err := (FactLedgerEngine{}).Confirm(FactLedgerProjectInput{
+		MatchID: matchID, Events: s.events[matchID], Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+	}, factID, operatorID)
 	if err != nil {
+		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
-	if err := validateAgainstSnapshot(events[found], projection.Snapshot, normalizeConfig(matchID, s.configs[matchID])); err != nil {
-		return MatchEvent{}, Snapshot{}, err
-	}
-	if err := validateSubstitutionLineup(events[found], normalizeConfig(matchID, s.configs[matchID]), events); err != nil {
-		return MatchEvent{}, Snapshot{}, err
-	}
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	events[found].FactStatus = FactStatusConfirmed
-	events[found].Confirmed = true
-	events[found].ConfirmedBy = operatorID
-	events[found].PublicAt = now
-	events[found].FactRevision++
-	events[found].UpdatedAt = now
-	s.events[matchID] = events
-	s.recordFactRevisionLocked(matchID, events[found])
-	confirmed := events[found]
-	snapshot := resolvePublicProjection(
-		FactLedgerProjectInput{
-			MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
-		},
-		s.projectedReads,
-		nil,
-	).Snapshot
+	s.events[matchID] = result.Events
+	s.recordFactRevisionLocked(matchID, result.Changed)
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
-	s.publish(subs, confirmed)
-	s.mu.Lock()
-	return confirmed, snapshot, nil
+	s.publish(subs, result.Changed)
+	return result.Changed, result.Projection.Snapshot, nil
 }
 
 func (s *Store) RevokeFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error) {
@@ -919,79 +815,24 @@ func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selecte
 		s.mu.Unlock()
 		return FactConflict{}, nil, Snapshot{}, ErrNotFound
 	}
-	events := s.events[matchID]
-	transition, err := resolveConflictSelection(events, conflicts[conflictIndex], selectedFactIDs)
+	command, err := (FactLedgerEngine{}).ResolveConflict(FactLedgerProjectInput{
+		MatchID: matchID,
+		Events:  s.events[matchID],
+		Config:  s.configs[matchID],
+		Clock:   s.clocks[matchID],
+		Now:     s.now(),
+	}, conflicts[conflictIndex], selectedFactIDs, operatorID, reason)
 	if err != nil {
 		s.mu.Unlock()
 		return FactConflict{}, nil, Snapshot{}, err
 	}
-	now := s.now().UTC().Format(time.RFC3339Nano)
-	reconcile := make(map[string]struct{}, len(transition.ReconcileFactIDs))
-	for _, factID := range transition.ReconcileFactIDs {
-		reconcile[factID] = struct{}{}
+	for _, event := range command.Changed {
+		s.recordFactRevisionLocked(matchID, event)
 	}
-	revoke := make(map[string]struct{}, len(transition.RevokeFactIDs))
-	for _, factID := range transition.RevokeFactIDs {
-		revoke[factID] = struct{}{}
-	}
-	release := make(map[string]struct{}, len(transition.ReleaseFactIDs))
-	for _, factID := range transition.ReleaseFactIDs {
-		release[factID] = struct{}{}
-	}
-	retracted := make([]MatchEvent, 0, len(transition.RevokeFactIDs))
-	for index := range events {
-		if events[index].Status != "active" {
-			continue
-		}
-		if _, selected := reconcile[events[index].FactID]; selected {
-			events[index].FactStatus = FactStatusReconciled
-			events[index].Confirmed = true
-			events[index].ConfirmedBy = operatorID
-			events[index].PublicAt = now
-			events[index].FactRevision++
-			events[index].UpdatedAt = now
-			s.recordFactRevisionLocked(matchID, events[index])
-			continue
-		}
-		if _, rejected := revoke[events[index].FactID]; rejected && events[index].FactStatus != FactStatusRevoked {
-			events[index].FactStatus = FactStatusRevoked
-			events[index].Confirmed = false
-			events[index].ConfirmedBy = operatorID
-			events[index].PublicAt = ""
-			events[index].FactRevision++
-			events[index].UpdatedAt = now
-			s.recordFactRevisionLocked(matchID, events[index])
-			retracted = append(retracted, events[index])
-			continue
-		}
-		if _, released := release[events[index].FactID]; released && events[index].FactStatus == FactStatusConflict {
-			events[index].FactStatus = FactStatusProvisional
-			events[index].Confirmed = false
-			events[index].ConfirmedBy = operatorID
-			events[index].PublicAt = ""
-			events[index].FactRevision++
-			events[index].UpdatedAt = now
-			s.recordFactRevisionLocked(matchID, events[index])
-		}
-	}
-	conflict := &conflicts[conflictIndex]
-	conflict.SelectedFactIDs = uniqueFactIDs(append(conflict.SelectedFactIDs, transition.SelectedFactIDs...))
-	conflict.Reason = reason
-	conflict.ResolvedBy = operatorID
-	if transition.Resolved {
-		conflict.Status = ConflictStatusResolved
-		conflict.ResolvedAt = now
-		if len(conflict.SelectedFactIDs) == 1 {
-			conflict.ChosenFactID = conflict.SelectedFactIDs[0]
-		} else {
-			conflict.ChosenFactID = ""
-		}
-	} else {
-		conflict.Members = transition.RemainingMembers
-		conflict.Edges = transition.RemainingEdges
-	}
+	conflicts[conflictIndex] = command.Conflict
 	s.factConflicts[matchID] = conflicts
-	s.events[matchID] = events
+	s.events[matchID] = command.Events
+	now := command.AppliedAt
 	config := normalizeConfig(matchID, s.configs[matchID])
 	if !hasOpenFactConflict(conflicts) {
 		config.Integrity = MatchIntegrity{Status: "ok"}
@@ -999,12 +840,12 @@ func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selecte
 		s.configs[matchID] = config
 	}
 	projection := resolvePublicProjection(
-		FactLedgerProjectInput{MatchID: matchID, Events: events, Config: config, Clock: s.clocks[matchID], Now: s.now()},
+		FactLedgerProjectInput{MatchID: matchID, Events: command.Events, Config: config, Clock: s.clocks[matchID], Now: s.now()},
 		s.projectedReads,
 		nil,
 	)
-	published := make([]MatchEvent, 0, len(transition.ReconcileFactIDs))
-	for _, factID := range transition.ReconcileFactIDs {
+	published := make([]MatchEvent, 0, len(command.ReconciledFactIDs))
+	for _, factID := range command.ReconciledFactIDs {
 		for _, projected := range projection.Events {
 			if projected.FactID == factID {
 				published = append(published, projected)
@@ -1012,10 +853,10 @@ func (s *Store) ResolveFactConflictSelection(matchID, conflictID string, selecte
 			}
 		}
 	}
-	result := cloneFactConflict(*conflict)
+	result := cloneFactConflict(command.Conflict)
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
-	for _, event := range retracted {
+	for _, event := range command.Retracted {
 		s.publish(subs, event)
 	}
 	for _, event := range published {
@@ -1168,73 +1009,31 @@ func (s *Store) transitionFact(matchID, factID, operatorID string, status FactSt
 		return MatchEvent{}, Snapshot{}, ErrNotFound
 	}
 	s.mu.Lock()
-	defer s.mu.Unlock()
-	events := s.events[matchID]
-	found := -1
-	for index := range events {
-		if events[index].FactID == factID && events[index].Status == "active" {
-			found = index
-			break
-		}
-	}
-	if found == -1 {
-		return MatchEvent{}, Snapshot{}, ErrNotFound
-	}
-	if err := validateFactTransition(events[found].FactStatus, status); err != nil {
+	result, err := (FactLedgerEngine{}).Transition(FactLedgerProjectInput{
+		MatchID: matchID, Events: s.events[matchID], Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
+	}, factID, operatorID, status)
+	if err != nil {
+		s.mu.Unlock()
 		return MatchEvent{}, Snapshot{}, err
 	}
-	previousStatus := events[found].FactStatus
-	now := time.Now().UTC().Format(time.RFC3339Nano)
-	retracted := make([]MatchEvent, 0)
-	events[found].FactStatus = status
-	events[found].Confirmed = status == FactStatusReconciled
-	events[found].ConfirmedBy = operatorID
-	events[found].PublicAt = ""
-	if events[found].Confirmed {
-		events[found].PublicAt = now
-	}
-	events[found].FactRevision++
-	events[found].UpdatedAt = now
-	if status == FactStatusReconciled {
-		conflictingIndices := reconciliationConflictIndices(events, found)
-		for index := range events {
-			if _, conflicting := conflictingIndices[index]; !conflicting {
-				continue
-			}
-			events[index].FactStatus = FactStatusRevoked
-			events[index].Confirmed = false
-			events[index].ConfirmedBy = operatorID
-			events[index].PublicAt = ""
-			events[index].FactRevision++
-			events[index].UpdatedAt = now
-			s.recordFactRevisionLocked(matchID, events[index])
-			retracted = append(retracted, events[index])
-		}
-	}
-	if (status == FactStatusReconciled || previousStatus == FactStatusConflict) && !hasActiveFactConflict(events) {
+	s.events[matchID] = result.Events
+	if result.Integrity != nil {
 		config := normalizeConfig(matchID, s.configs[matchID])
-		config.Integrity = MatchIntegrity{Status: "ok"}
-		config.UpdatedAt = now
+		config.Integrity = *result.Integrity
+		config.UpdatedAt = result.Changed.UpdatedAt
 		s.configs[matchID] = config
 	}
-	s.events[matchID] = events
-	s.recordFactRevisionLocked(matchID, events[found])
-	changed := events[found]
-	snapshot := resolvePublicProjection(
-		FactLedgerProjectInput{
-			MatchID: matchID, Events: events, Config: s.configs[matchID], Clock: s.clocks[matchID], Now: s.now(),
-		},
-		s.projectedReads,
-		nil,
-	).Snapshot
+	for _, event := range result.Retracted {
+		s.recordFactRevisionLocked(matchID, event)
+	}
+	s.recordFactRevisionLocked(matchID, result.Changed)
 	subs := s.subscriberListLocked(matchID)
 	s.mu.Unlock()
-	for _, event := range retracted {
+	for _, event := range result.Retracted {
 		s.publish(subs, event)
 	}
-	s.publish(subs, changed)
-	s.mu.Lock()
-	return changed, snapshot, nil
+	s.publish(subs, result.Changed)
+	return result.Changed, result.Projection.Snapshot, nil
 }
 
 func (s *Store) legacyConflictResolution(matchID, factID string, status FactStatus) (string, string, string, bool) {

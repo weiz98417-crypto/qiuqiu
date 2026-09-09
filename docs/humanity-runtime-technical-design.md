@@ -4,7 +4,7 @@
 
 产品默认值已确认；本文件是正在实施的技术规格。它定义关系状态 Schema、沟通动作导演、并发顺序、表达输出和纵向评测，并同步记录各阶段实际接入状态。
 
-## 实施状态（2026-07-15）
+## 实施状态
 
 阶段 A 已完成：`CompanionDirector.Apply` 已覆盖用户回合、会话进入、比赛事件和播放结果；关系状态已接入内存与 PostgreSQL 适配器，使用稳定匿名设备 ID、信号幂等键和版本比较避免重复推进。数据库迁移具备全局互斥与迁移历史记录，已验证首次并发启动、重启恢复、幂等写入和陈旧版本拒绝。
 
@@ -53,7 +53,7 @@
 
 ### 需要收敛的遗留链
 
-`pipeline.Engine → session.WatchSession → AIPipeline` 仍在 WebSocket 建连时创建和运行，但当前没有调用 `WatchSession.PushEvent`，实际比赛事件没有进入这条链。它不能成为新人味系统的第二个落点。
+旧 `pipeline.Engine → session.WatchSession → AIPipeline` 生成链已删除。比赛主动回合、用户回合、首次见面和恢复投递统一经过 `companion.Agent` 与 `conversation.ResponseDeliveryService`，不再保留第二个生成落点。
 
 实现时采用“替换并收敛”：新导演模块接入当前有效链路；确认能力覆盖后删除未接入的遗留链及其被替代测试，而不是维持两套主动生成和表情规则。
 

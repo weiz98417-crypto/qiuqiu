@@ -62,6 +62,13 @@ func TestProductionRequiresCredentials(t *testing.T) {
 	}
 }
 
+func TestLoadReadsSecondaryOperatorToken(t *testing.T) {
+	t.Setenv("APP_TOKEN_SECONDARY", "secondary-secret")
+	if got := Load().SecondaryAppToken; got != "secondary-secret" {
+		t.Fatalf("SecondaryAppToken = %q, want configured secondary token", got)
+	}
+}
+
 func TestAuthModeDefaultsAndProductionRequirement(t *testing.T) {
 	t.Setenv("APP_ENV", "development")
 	t.Setenv("AUTH_MODE", "")

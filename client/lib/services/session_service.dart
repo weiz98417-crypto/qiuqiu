@@ -211,10 +211,12 @@ String normalizeAPIBaseURL(String value) {
     'wss' => 'https',
     _ => uri.scheme,
   };
-  return uri
-      .replace(scheme: scheme, path: '', query: null, fragment: null)
-      .toString()
-      .replaceAll(RegExp(r'/+$'), '');
+  return Uri(
+    scheme: scheme,
+    userInfo: uri.userInfo,
+    host: uri.host,
+    port: uri.hasPort ? uri.port : null,
+  ).toString();
 }
 
 class SessionException implements Exception {

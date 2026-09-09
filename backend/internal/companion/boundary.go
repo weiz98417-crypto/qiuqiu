@@ -6,6 +6,7 @@ import "time"
 // process boundary if the companion agent moves out of the Go backend.
 type AgentBoundaryRequest struct {
 	SignalID            string              `json:"signalId"`
+	FactRefresh         string              `json:"factRefresh,omitempty"`
 	MatchID             string              `json:"matchId"`
 	UserID              string              `json:"userId"`
 	Text                string              `json:"text"`

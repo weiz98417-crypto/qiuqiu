@@ -41,6 +41,7 @@ client/assets/live2d/operator-*-verified.png
 
 # Backup / temp
 *~
+.tmp_*.txt
 Textoon-main/
 .claude/
 .codex/

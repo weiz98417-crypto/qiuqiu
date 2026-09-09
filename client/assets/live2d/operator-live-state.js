@@ -1,18 +1,18 @@
 (function attachOperatorLiveState(global) {
   const eventDefinitions = {
-    goal: definition('进球', '高频', 'celebrate', 5, [['scorer', '进球者'], ['assist', '助攻者'], ['pre_assist', '策动者']], ['scorer'], 1),
-    shot: definition('射门', '高频', 'focus', 3, [['shooter', '射门者'], ['assist', '传球者'], ['blocker', '封堵者'], ['keeper', '门将']], ['shooter']),
-    big_chance: definition('绝佳机会', '高频', 'tense', 5, [['attacker', '进攻者'], ['passer', '传球者'], ['defender', '防守者'], ['keeper', '门将']], ['attacker']),
-    save: definition('扑救', '高频', 'surprise', 4, [['keeper', '扑救门将'], ['shooter', '射门者']], ['keeper']),
-    miss: definition('错失', '高频', 'miss', 4, [['shooter', '错失者'], ['assist', '传球者'], ['keeper', '门将']], ['shooter']),
-    foul: definition('犯规', '高频', 'complain', 3, [['offender', '犯规者'], ['fouled', '被犯规者']], ['offender']),
-    yellow_card: definition('黄牌', '纪律', 'complain', 3, [['offender', '吃牌者'], ['fouled', '对抗对象']], ['offender']),
-    red_card: definition('红牌', '纪律', 'angry', 5, [['offender', '红牌球员'], ['fouled', '对抗对象']], ['offender']),
-    penalty: definition('点球', '纪律', 'tense', 5, [['taker', '主罚者'], ['won_by', '造点者'], ['offender', '犯规者'], ['keeper', '门将']], []),
+    goal: definition('进球', '高频', 'celebrate', 5, [['scorer', '进球者'], ['assist', '助攻者'], ['pre_assist', '策动者'], ['defender', '防守相关']], ['scorer'], 1, false, ['defender'], ['assist', 'defender']),
+    shot: definition('射门', '高频', 'focus', 3, [['shooter', '射门者'], ['assist', '传球者'], ['blocker', '封堵者'], ['keeper', '门将']], ['shooter'], 0, false, ['blocker', 'keeper'], ['assist', 'blocker']),
+    big_chance: definition('绝佳机会', '高频', 'tense', 5, [['attacker', '进攻者'], ['passer', '传球者'], ['defender', '防守者'], ['keeper', '门将']], ['attacker'], 0, false, ['defender', 'keeper'], ['passer', 'defender']),
+    save: definition('扑救', '高频', 'surprise', 4, [['keeper', '扑救门将'], ['shooter', '射门者']], ['keeper'], 0, false, ['shooter']),
+    miss: definition('错失', '高频', 'miss', 4, [['shooter', '错失者'], ['assist', '传球者'], ['keeper', '门将']], ['shooter'], 0, false, ['keeper'], ['assist']),
+    foul: definition('犯规', '高频', 'complain', 3, [['offender', '犯规者'], ['fouled', '被犯规者']], ['offender'], 0, false, ['fouled']),
+    yellow_card: definition('黄牌', '纪律', 'complain', 3, [['offender', '吃牌者'], ['fouled', '对抗对象']], ['offender'], 0, false, ['fouled']),
+    red_card: definition('红牌', '纪律', 'angry', 5, [['offender', '红牌球员'], ['fouled', '对抗对象']], ['offender'], 0, false, ['fouled']),
+    penalty: definition('点球', '纪律', 'tense', 5, [['taker', '主罚者'], ['won_by', '造点者'], ['offender', '犯规者'], ['keeper', '门将']], [], 0, false, ['offender', 'keeper']),
     substitution: definition('换人', '人员 / 战术', 'analysis', 2, [['sub_on', '上场'], ['sub_off', '下场']], ['sub_on', 'sub_off']),
     tactical_shift: definition('战术变化', '人员 / 战术', 'analysis', 3, [['leader', '关键球员']], [], 0, true),
-    pressure: definition('持续压迫', '人员 / 战术', 'focus', 4, [['attacker', '压迫发起']], [], 0, true),
-    injury: definition('伤停', '人员 / 战术', 'comfort', 3, [['injured', '受伤球员'], ['challenger', '对抗球员']], ['injured']),
+    pressure: definition('持续压迫', '人员 / 战术', 'focus', 4, [['attacker', '压迫发起'], ['target', '被压迫方']], [], 0, true, ['target']),
+    injury: definition('伤停', '人员 / 战术', 'comfort', 3, [['injured', '受伤球员'], ['challenger', '对抗球员']], ['injured'], 0, false, ['challenger']),
     var_check: definition('VAR检查', '特殊', 'tense', 4, [['subject', '被检查球员'], ['affected', '受影响球员']], []),
     var_result: definition('VAR 结果', '特殊', 'analysis', 4, [['subject', '被检查球员'], ['affected', '受影响球员']], []),
     goal_cancelled: definition('进球取消', '特殊', 'analysis', 5, [['scorer', '原进球者'], ['affected', '受影响球员']], [], -1),
@@ -20,8 +20,8 @@
     operator_note: definition('备注', '特殊', 'analysis', 2, [['player', '相关球员']], [], 0, true),
   };
 
-  function definition(label, group, action, intensity, roles, requiredRoles, scoreDelta = 0, playerOptional = false) {
-    return { label, group, action, intensity, roles, requiredRoles, scoreDelta, playerOptional };
+  function definition(label, group, action, intensity, roles, requiredRoles, scoreDelta = 0, playerOptional = false, opponentRoles = [], multipleRoles = []) {
+    return { label, group, action, intensity, roles, requiredRoles, scoreDelta, playerOptional, opponentRoles, multipleRoles };
   }
 
   function createDraft(overrides = {}) {
@@ -104,11 +104,35 @@
         return next;
       }
       case 'set_participant':
-        setParticipant(next, action.role, action.name, action.teamId || next.teamId, action.teamName, action.resolved !== false);
+        if (Array.isArray(action.names)) {
+          setParticipants(next, action.role, action.names, action.teamId || next.teamId, action.teamName, action.resolved !== false);
+        } else {
+          setParticipant(next, action.role, action.name, action.teamId || next.teamId, action.teamName, action.resolved !== false);
+        }
         if (eventDefinitions[next.eventType]?.roles?.[0]?.[0] === action.role) {
-          next.primaryParticipant = action.name ? participant(action.role, action.name, action.teamId || next.teamId, action.teamName, action.resolved !== false) : null;
+          const primary = Array.isArray(action.names) ? action.names[0] : action.name;
+          next.primaryParticipant = primary ? participant(action.role, primary, action.teamId || next.teamId, action.teamName, action.resolved !== false) : null;
         }
         return next;
+      case 'set_participants': {
+        setParticipantItems(next, action.role, action.items || []);
+        if (eventDefinitions[next.eventType]?.roles?.[0]?.[0] === action.role) {
+          const primary = next.participants.find((item) => item.role === action.role && item.name);
+          next.primaryParticipant = primary ? { ...primary } : null;
+        }
+        return next;
+      }
+      case 'toggle_participant': {
+        const teamId = action.teamId || next.teamId;
+        const same = next.participants.find((item) => item.role === action.role && item.name === action.name && (!teamId || item.teamId === teamId));
+        if (same) removeParticipant(next, action.role, action.name, teamId);
+        else appendParticipant(next, action.role, action.name, teamId, action.teamName, action.resolved !== false);
+        if (eventDefinitions[next.eventType]?.roles?.[0]?.[0] === action.role) {
+          const primary = next.participants.find((item) => item.role === action.role && item.name);
+          next.primaryParticipant = primary ? { ...primary } : null;
+        }
+        return next;
+      }
       case 'set_field':
         if (Object.prototype.hasOwnProperty.call(next, action.field)) next[action.field] = action.value;
         return next;
@@ -145,11 +169,16 @@
       next.intensity = definition?.intensity || next.intensity;
     }
     (incoming.participants || []).forEach((item) => {
-      const current = next.participants.find((existing) => existing.role === item.role);
-      if (!current) {
+      const current = next.participants.filter((existing) => existing.role === item.role);
+      const multi = roleAllowsMultiple(next.eventType, item.role);
+      if (!current.length) {
         setParticipant(next, item.role, item.name, item.teamId || next.teamId, item.teamName, item.resolved !== false);
-      } else if (current.name !== item.name) {
-        conflicts.push({ field: `participants.${item.role}`, current: current.name, incoming: item.name, participant: { ...item } });
+      } else if (multi) {
+        if (!current.some((existing) => existing.name === item.name)) {
+          appendParticipant(next, item.role, item.name, item.teamId || next.teamId, item.teamName, item.resolved !== false);
+        }
+      } else if (current[0].name !== item.name) {
+        conflicts.push({ field: `participants.${item.role}`, current: current[0].name, incoming: item.name, participant: { ...item } });
       }
     });
     next.inferredFields = unique([...(next.inferredFields || []), ...(incoming.inferredFields || [])]);
@@ -195,6 +224,16 @@
         const item = draft.participants.find((participant) => participant.role === role && participant.name);
         if (!item) errors.push(`请填写${roleLabel(draft.eventType, role)}`);
         else if (item.resolved === false) errors.push(`请确认球员：${item.name}`);
+      });
+      definition.roles.forEach(([role]) => {
+        const expectedTeam = roleTeamId(draft.eventType, role, draft.teamId);
+        draft.participants
+          .filter((participant) => participant.role === role && participant.name)
+          .forEach((item) => {
+            if (item.teamId && expectedTeam && item.teamId !== expectedTeam) {
+              errors.push(`${roleLabel(draft.eventType, role)}必须属于${expectedTeam === draft.teamId ? '进攻方' : '防守方'}`);
+            }
+          });
       });
     }
     if (draft.eventType === 'substitution') {
@@ -273,8 +312,50 @@
     if (name) draft.participants.push(participant(role, name, teamId, teamName, resolved));
   }
 
+  function setParticipants(draft, role, names, teamId, teamName, resolved) {
+    if (!role) return;
+    draft.participants = draft.participants.filter((item) => item.role !== role);
+    unique((names || []).map((name) => String(name || '').trim()).filter(Boolean)).forEach((name) => {
+      draft.participants.push(participant(role, name, teamId, teamName, resolved));
+    });
+  }
+
+  function setParticipantItems(draft, role, items) {
+    if (!role) return;
+    draft.participants = draft.participants.filter((item) => item.role !== role);
+    const seen = new Set();
+    (items || []).forEach((item) => {
+      const name = String(item?.name || '').trim();
+      if (!name || seen.has(name)) return;
+      seen.add(name);
+      draft.participants.push(participant(role, name, item.teamId, item.teamName, item.resolved !== false));
+    });
+  }
+
+  function appendParticipant(draft, role, name, teamId, teamName, resolved) {
+    if (!role || !String(name || '').trim()) return;
+    const normalizedName = String(name).trim();
+    if (draft.participants.some((item) => item.role === role && item.name === normalizedName && item.teamId === (teamId || ''))) return;
+    draft.participants.push(participant(role, normalizedName, teamId, teamName, resolved));
+  }
+
+  function removeParticipant(draft, role, name, teamId) {
+    draft.participants = draft.participants.filter((item) => !(item.role === role && item.name === name && (!teamId || item.teamId === teamId)));
+  }
+
   function participant(role, name, teamId, teamName, resolved) {
     return { role, name, teamId: teamId || '', teamName: teamName || '', resolved: resolved !== false };
+  }
+
+  function roleTeamId(eventType, role, eventTeamId) {
+    if (!eventTeamId || !['home', 'away'].includes(eventTeamId)) return eventTeamId || '';
+    const definition = eventDefinitions[eventType];
+    if (definition?.opponentRoles?.includes(role)) return eventTeamId === 'home' ? 'away' : 'home';
+    return eventTeamId;
+  }
+
+  function roleAllowsMultiple(eventType, role) {
+    return Boolean(eventDefinitions[eventType]?.multipleRoles?.includes(role));
   }
 
   function mergeField(target, source, field, conflicts) {
@@ -334,6 +415,8 @@
     applyVoiceDraft,
     applyVoiceConflict,
     validateDraft,
+    roleTeamId,
+    roleAllowsMultiple,
     toEventPayload,
     roleLabel,
     formatClock,

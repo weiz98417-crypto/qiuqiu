@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/companion"
+	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
 )
@@ -41,5 +42,32 @@ func TestInterruptedReplyClearsPendingOpenThreadDecision(t *testing.T) {
 	}
 	if len(state.Memories) != 1 || state.Memories[0].Status != "active" || len(state.Memories[0].PendingDecisionIDs) != 0 {
 		t.Fatalf("memories = %+v, want active open thread without pending decisions", state.Memories)
+	}
+}
+
+func TestDisplayedReplyDoesNotCompletePendingAudio(t *testing.T) {
+	now := time.Date(2026, 9, 8, 20, 0, 0, 0, time.UTC)
+	tracker := newReplyDeliveryTracker()
+	trace := companion.Trace{ID: "trace-1", UserID: "user-1", MatchID: "match-1"}
+	tracker.TrackWithPolicy(trace, trace.UserID, trace.MatchID, "goal:1", true, time.Minute)
+
+	tracker.Transition(trace.ID, conversation.DeliveryTextDelivered, now)
+	tracker.Transition(trace.ID, conversation.DeliveryTextDelivered, now.Add(time.Millisecond))
+	tracker.Transition(trace.ID, conversation.DeliveryAudioStarted, now.Add(2*time.Millisecond))
+
+	record, ok := tracker.Ledger().Get(trace.ID)
+	if !ok || record.State != conversation.DeliveryAudioStarted {
+		t.Fatalf("record = %+v, ok=%v", record, ok)
+	}
+}
+
+func TestTerminalPlaybackStates(t *testing.T) {
+	for _, state := range []string{"ended", "completed", "interrupted", "skipped", "blocked"} {
+		if !terminalPlaybackState(state) {
+			t.Fatalf("%q should be terminal", state)
+		}
+	}
+	if terminalPlaybackState("started") {
+		t.Fatal("started should not be terminal")
 	}
 }

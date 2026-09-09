@@ -3,7 +3,6 @@ package main
 import (
 	"context"
 	"crypto/sha256"
-	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
 	"errors"
@@ -12,6 +11,7 @@ import (
 	"net/http"
 	"os"
 	"path/filepath"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -25,6 +25,8 @@ import (
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/directordraft"
+	"qiuqiu/internal/evals"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
@@ -183,17 +185,10 @@ func main() {
 	// Prompt manager
 	promptMgr := pipeline.NewPromptManager()
 	promptMgr.LoadSystem(readFile("prompts/v1.0/system.txt"))
-	promptMgr.LoadTemplate("goal", readFile("prompts/v1.0/goal.txt"))
-	promptMgr.LoadTemplate("shot", readFile("prompts/v1.0/shot.txt"))
-	promptMgr.LoadTemplate("card", readFile("prompts/v1.0/card.txt"))
-	promptMgr.LoadTemplate("match_status", readFile("prompts/v1.0/match_status.txt"))
 
 	// AI clients
 	llmClient := newTextLLMClient(cfg)
-	var ttsClient *tts.Client
-	if cfg.MiMoAPIKey != "" {
-		ttsClient = tts.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
-	}
+	ttsClient := configuredSpeechSynthesizer(cfg)
 	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
 	directorDrafts := directordraft.NewService(asrClient, directordraft.NewLLMExtractor(llmClient))
 
@@ -322,6 +317,20 @@ func main() {
 		go runObservationExpiry(cleanupCtx, observationCoordinator)
 	}
 	companionAgent := companion.NewAgent(companionTools)
+	interactionLedger := interaction.Ledger(interaction.NewMemoryLedger())
+	var interactionLedgerCloser func()
+	if cfg.DatabaseURL != "" {
+		postgresInteractionLedger, err := interaction.OpenPostgresLedger(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres interaction ledger: %v", err)
+		}
+		interactionLedger = postgresInteractionLedger
+		interactionLedgerCloser = postgresInteractionLedger.Close
+	}
+	if interactionLedgerCloser != nil {
+		defer interactionLedgerCloser()
+	}
+	companionAgent.WithInteractionLedger(interactionLedger)
 	if reader, ok := sportsClient.(scheduleFixturesClient); ok {
 		companionAgent.WithScheduleReader(apiSportsScheduleReader{client: reader})
 	} else if reader, ok := sportsClient.(todayFixturesClient); ok {
@@ -362,14 +371,30 @@ func main() {
 	}
 
 	mux := http.NewServeMux()
+	watchSessions := conversation.NewWatchSessionRegistry(context.Background(), conversation.Config{})
+	defer watchSessions.Close()
+	var deliveryStore *conversation.PostgresDeliveryStore
+	if cfg.DatabaseURL != "" {
+		var err error
+		deliveryStore, err = conversation.OpenPostgresDeliveryStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres delivery ledger: %v", err)
+		}
+		defer deliveryStore.Close()
+		watchSessions.WithStore(deliveryStore)
+	}
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
-	mux.HandleFunc("/api/matches/", handleMatchAPIWithDirectorDraft(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, operatorWrites))
+	mux.HandleFunc("/api/matches/catalog", handleMatchCatalog(matchStore, cfg))
+	mux.HandleFunc("/api/matches/", handleMatchAPIWithRuntime(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, interactionLedger, operatorWrites))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
 		w.Header().Set("Access-Control-Allow-Methods", "GET, OPTIONS")
+		if r.URL.Path == "/live2d-assets/operator-live-state.js" {
+			noCache(w)
+		}
 		if r.Method == "OPTIONS" {
 			w.WriteHeader(200)
 			return
@@ -419,11 +444,19 @@ func main() {
 
 		connectionCtx, connectionCancel := context.WithCancel(r.Context())
 		defer connectionCancel()
-		conversationScheduler := conversation.NewScheduler(connectionCtx, conversation.Config{})
+		sessionUserID := identity.Get()
+		if sessionUserID == "" {
+			sessionUserID = "connection:" + strconv.FormatInt(time.Now().UnixNano(), 10)
+		}
+		watchSession := watchSessions.Acquire(sessionUserID, matchIDStr)
+		defer func() { watchSessions.Release(watchSession.UserID, watchSession.MatchID) }()
+		deliveryTracker := newReplyDeliveryTrackerWithLedger(watchSession.Ledger())
+		responseDelivery := newResponseDeliveryService(writer, companionAgent, ttsClient, deliveryTracker)
+		firstMeetingCoordinator := conversation.NewFirstMeetingCoordinator(companionAgent, responseDelivery)
+		conversationScheduler := watchSession.Scheduler()
 		var scheduleLookups scheduleLookupLifecycle
 		defer scheduleLookups.Cancel()
 		proactiveGate := conversation.NewProactiveGate()
-		deliveryTracker := newReplyDeliveryTracker()
 		var userSpeaking atomic.Bool
 		var userTurnActive atomic.Bool
 		defer func() {
@@ -435,7 +468,6 @@ func main() {
 				cleanupCancel()
 			}
 		}()
-		defer conversationScheduler.Close()
 		scheduleRecoveredObservations := func(userID string) int {
 			now := time.Now().UTC()
 			responses, err := companionAgent.RecoverObservationFollowUps(connectionCtx, userID, matchIDStr, now)
@@ -450,7 +482,14 @@ func main() {
 				followUp := followUp
 				ttl := time.Until(followUp.Resolution.FollowUpDeadline)
 				conversationScheduler.SubmitProactive(followUp.Resolution.DeliveryKey, conversation.UrgencyCritical, ttl, func(replyCtx context.Context, playback conversation.Playback) {
-					emitObservationResponse(replyCtx, writer, companionAgent, ttsClient, playback, followUp, followUp.Resolution.FactID)
+					_, err := responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
+						Reply: followUp.Reply, Trace: followUp.Trace, Presentation: followUp.Presentation,
+						Source: "observation_resolution", EventID: followUp.Resolution.FactID,
+						DeliveryKey: followUp.Resolution.DeliveryKey, Critical: true, TTL: ttl,
+					}, playback)
+					if err != nil && !errors.Is(err, context.Canceled) {
+						log.Printf("observation response delivery error: %v", err)
+					}
 				})
 			}
 			return len(followUps)
@@ -563,7 +602,14 @@ func main() {
 						}
 						urgency, ttl := proactiveSchedule(response.Decision, ev.EventType)
 						conversationScheduler.SubmitProactive(eventKey, urgency, ttl, func(replyCtx context.Context, playback conversation.Playback) {
-							emitProactiveResponse(replyCtx, writer, companionAgent, ttsClient, playback, response, ev.ID, eventKey)
+							_, err := responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
+								Reply: response.Reply, Trace: response.Trace, Presentation: response.Presentation,
+								Source: "match_reaction", EventID: ev.ID, DeliveryKey: eventKey,
+								Critical: urgency == conversation.UrgencyCritical, TTL: ttl,
+							}, playback)
+							if err != nil && !errors.Is(err, context.Canceled) {
+								log.Printf("match response delivery error: %v", err)
+							}
 						})
 					}
 				}
@@ -587,7 +633,7 @@ func main() {
 				defer userTurnActive.Store(false)
 				result, err := handleVoiceTurnWithFactRefresh(
 					func() matchstate.Snapshot { return matchStore.PublicSnapshot(matchIDStr) },
-					func(turnText, turnAudio string) (voiceSessionResult, error) {
+					func(turnText, turnAudio, factRefresh string) (voiceSessionResult, error) {
 						if strings.TrimSpace(asrProvider) != "" {
 							return handleTranscribedVoiceSessionWithSignalIDOptions(
 								replyCtx,
@@ -599,10 +645,10 @@ func main() {
 								asrProvider,
 								time.Now(),
 								signalID,
-								voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone},
+								voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh},
 							)
 						}
-						return handleVoiceSessionWithSignalIDOptions(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone})
+						return handleVoiceSessionWithSignalIDOptions(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh})
 					},
 					func(observationID string) bool {
 						if err := companionAgent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
@@ -632,9 +678,6 @@ func main() {
 					}
 					return
 				}
-				if result.Trace.Observation != nil {
-					_ = companionAgent.UpdateTrace(replyCtx, result.Trace)
-				}
 				if replyCtx.Err() != nil {
 					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
 					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "interrupted", time.Now().UTC())
@@ -650,22 +693,18 @@ func main() {
 					cleanupCancel()
 					return
 				}
-				deliveryTracker.Track(result.Trace, userID, matchIDStr)
-				if err := writer.SendJSON(map[string]interface{}{
-					"type":  "event",
-					"event": "qiuqiu_reply",
-					"data":  qiuqiuReplyData(result.Reply, result.Trace.ID, "conversation", "", "", result.Presentation),
-				}); err != nil {
-					deliveryTracker.Remove(result.Trace.ID)
-					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "failed", time.Now().UTC())
-					cleanupCancel()
-					return
-				}
-				if result.ScheduleLookup != nil && replyCtx.Err() == nil {
-					lookup := *result.ScheduleLookup
-					lookupCtx, started := scheduleLookups.Start(connectionCtx, turnGeneration, lookup.ID, lookup.ExpiresAt)
-					if started {
+				_, deliveryErr := responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
+					Reply: result.Reply, Trace: result.Trace, Presentation: result.Presentation,
+					Source: "conversation", DeliveryKey: result.Trace.ID, TTL: 30 * time.Second,
+					AfterText: func(context.Context) error {
+						if result.ScheduleLookup == nil || replyCtx.Err() != nil {
+							return nil
+						}
+						lookup := *result.ScheduleLookup
+						lookupCtx, started := scheduleLookups.Start(connectionCtx, turnGeneration, lookup.ID, lookup.ExpiresAt)
+						if !started {
+							return nil
+						}
 						go func() {
 							response, resolveErr := companionAgent.ResolveScheduleLookup(lookupCtx, lookup)
 							if resolveErr != nil {
@@ -686,27 +725,28 @@ func main() {
 								if !scheduleLookups.Complete(lookup.ID) {
 									return
 								}
-								emitScheduledResponse(resultCtx, writer, companionAgent, ttsClient, resultPlayback, response.Reply, response.Trace, response.Presentation, "schedule_lookup", "", lookup.ID)
+								_, err := responseDelivery.Deliver(resultCtx, conversation.ResponseDeliveryRequest{
+									Reply: response.Reply, Trace: response.Trace, Presentation: response.Presentation,
+									Source: "schedule_lookup", DeliveryKey: lookup.ID, TTL: ttl,
+								}, resultPlayback)
+								if err != nil && !errors.Is(err, context.Canceled) {
+									log.Printf("schedule lookup delivery error: %v", err)
+								}
 							})
 						}()
+						return nil
+					},
+				}, playback)
+				if deliveryErr != nil {
+					state := "failed"
+					if errors.Is(deliveryErr, context.Canceled) {
+						state = "interrupted"
 					}
-				}
-				if ttsClient != nil {
-					ttsResult, err := synthesizeReply(replyCtx, ttsClient, result.Reply, "", result.Presentation)
-					if err != nil {
-						if errors.Is(err, context.Canceled) {
-							return
-						}
-						log.Printf("voice reply tts error: %v", err)
-						result.TTSError = err.Error()
-						recordVoiceTTS(replyCtx, companionAgent, result, "", 0, err.Error())
-						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
-						return
-					}
-					if len(ttsResult.AudioData) > 0 {
-						recordVoiceTTS(replyCtx, companionAgent, result, fallbackString(ttsResult.MimeType, "audio/mpeg"), len(ttsResult.AudioData), "")
-						playback(result.Trace.ID)
-						writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": fallbackString(ttsResult.MimeType, "audio/mpeg"), "traceId": result.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
+					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+					cleanupCancel()
+					if state == "failed" {
+						log.Printf("conversation response delivery error: %v", deliveryErr)
 					}
 				}
 			})
@@ -745,7 +785,10 @@ func main() {
 						return
 					}
 					if cfg.LegacyAuthAllowed() {
-						identity.Set(str(req, "userId"))
+						identifiedUserID := identity.Set(str(req, "userId"))
+						watchSession = watchSessions.Bind(watchSession, identifiedUserID, matchIDStr)
+						deliveryTracker.BindLedger(watchSession.Ledger())
+						conversationScheduler = watchSession.Scheduler()
 						scheduleRecoveredObservations(identity.Get())
 					}
 				case "user_activity":
@@ -764,10 +807,25 @@ func main() {
 					if userID == "" {
 						continue
 					}
+					watchSession = watchSessions.Bind(watchSession, userID, matchIDStr)
+					deliveryTracker.BindLedger(watchSession.Ledger())
+					conversationScheduler = watchSession.Scheduler()
 					if _, err := companionAgent.ObserveSession(connectionCtx, "session:"+userID+":"+matchIDStr, userID, matchIDStr, time.Now().UTC()); err != nil {
 						log.Printf("relationship session observation error: %v", err)
 					}
 					scheduleRecoveredObservations(userID)
+					recoverPendingDeliveries(connectionCtx, writer, watchSession, traceReader, userID, matchIDStr)
+
+				case "session_closed":
+					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
+					if !identityMatches {
+						writer.SendJSON(map[string]string{"type": "auth_error", "reason": "user identity does not match session"})
+						return
+					}
+					if userID != "" {
+						watchSessions.Release(userID, matchIDStr)
+					}
+					writer.SendJSON(map[string]string{"type": "session_closed", "reason": str(req, "reason")})
 
 				case "first_meeting":
 					userID, identityMatches := connectionUserID(identity, cfg, str(req, "userId"))
@@ -782,18 +840,13 @@ func main() {
 					favoriteTeam := str(req, "favoriteTeam")
 					firstMeetingSignalID := fmt.Sprintf("first-meeting:%s:%s:%d", userID, matchIDStr, time.Now().UnixNano())
 					conversationScheduler.SubmitProactive("first-meeting:"+userID, conversation.UrgencyNormal, 30*time.Second, func(replyCtx context.Context, playback conversation.Playback) {
-						emitFirstMeeting(
-							replyCtx,
-							writer,
-							companionAgent,
-							ttsClient,
-							playback,
-							matchIDStr,
-							userID,
-							nickname,
-							favoriteTeam,
-							firstMeetingSignalID,
-						)
+						_, err := firstMeetingCoordinator.Handle(replyCtx, companion.FirstMeetingRequest{
+							SignalID: firstMeetingSignalID, MatchID: matchIDStr, UserID: userID,
+							Nickname: nickname, FavoriteTeam: favoriteTeam, Now: time.Now(),
+						}, playback)
+						if err != nil && !errors.Is(err, context.Canceled) {
+							log.Printf("first meeting delivery error: %v", err)
+						}
 					})
 
 				case "interrupt":
@@ -862,13 +915,16 @@ func main() {
 					if traceID == "" || state == "" {
 						continue
 					}
-					status := playbackTraceStatus(state)
 					updateCtx, updateCancel := context.WithTimeout(connectionCtx, 3*time.Second)
 					userID := identity.Get()
-					err := recordPlaybackStatus(updateCtx, traceReader, companionAgent, matchIDStr, traceID, userID, status)
+					err := recordPlaybackStatus(updateCtx, traceReader, companionAgent, matchIDStr, traceID, userID, state)
 					if err == nil {
 						conversationScheduler.PlaybackChanged(traceID, state)
-						if _, relationshipErr := companionAgent.ObserveDelivery(updateCtx, "delivery:"+traceID+":"+state, userID, matchIDStr, "", state, "", nil, time.Now().UTC()); relationshipErr != nil && !errors.Is(relationshipErr, context.Canceled) {
+						deliveryTracker.Transition(traceID, deliveryStateForPlayback(state), time.Now().UTC())
+						if terminalPlaybackState(state) {
+							deliveryTracker.Remove(traceID)
+						}
+						if _, relationshipErr := companionAgent.Plan(updateCtx, companion.TurnInput{Kind: companion.TurnKindDelivery, Delivery: &companion.DeliveryInput{SignalID: "delivery:" + traceID + ":" + state, TraceID: traceID, UserID: userID, MatchID: matchIDStr, State: state, Purpose: "playback", Now: time.Now().UTC()}}); relationshipErr != nil && !errors.Is(relationshipErr, context.Canceled) {
 							log.Printf("relationship delivery observation error: %v", relationshipErr)
 						}
 					}
@@ -885,7 +941,10 @@ func main() {
 					updateCtx, updateCancel := context.WithTimeout(connectionCtx, 3*time.Second)
 					err := recordDisplayedReply(updateCtx, traceReader, companionAgent, matchIDStr, traceID, userID, time.Now().UTC())
 					if err == nil {
-						deliveryTracker.Remove(traceID)
+						if _, ackErr := deliveryTracker.Ledger().AcknowledgeText(traceID, time.Now().UTC()); ackErr != nil && !errors.Is(ackErr, conversation.ErrDeliveryNotFound) {
+							log.Printf("text acknowledgement error: %v", ackErr)
+						}
+						deliveryTracker.Transition(traceID, conversation.DeliveryTextDelivered, time.Now().UTC())
 					}
 					updateCancel()
 					if err != nil && !errors.Is(err, context.Canceled) {
@@ -923,6 +982,19 @@ func main() {
 	if err := newHTTPServer(addr, mux).ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+func configuredSpeechSynthesizer(cfg *config.Config) speechSynthesizer {
+	if cfg == nil {
+		return nil
+	}
+	if cfg.MiMoAPIKey != "" {
+		return tts.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-tts").WithVoice(cfg.MiMoVoice)
+	}
+	if strings.EqualFold(cfg.Environment, "development") && strings.TrimSpace(os.Getenv("QIUQIU_RUNTIME_TTS")) == "1" {
+		return tts.NewMockClient([]byte("qiuqiu-runtime-eval-audio"))
+	}
+	return nil
 }
 
 func observationFollowUpsForUser(responses []companion.ObservationResponse, userID string, now time.Time) []companion.ObservationResponse {
@@ -1044,6 +1116,34 @@ func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceRead
 	return handleMatchAPIWithSources(store, traceReader, demoResetter, cfg, llmClient, promptMgr, nil)
 }
 
+func handleMatchCatalog(store matchstate.Repository, cfg *config.Config) http.HandlerFunc {
+	return func(w http.ResponseWriter, r *http.Request) {
+		if !applyCORS(w, r, cfg) {
+			return
+		}
+		if r.Method == http.MethodOptions {
+			w.WriteHeader(http.StatusOK)
+			return
+		}
+		if r.Method != http.MethodGet {
+			w.Header().Set("Allow", http.MethodGet)
+			w.WriteHeader(http.StatusMethodNotAllowed)
+			return
+		}
+		catalog, ok := store.(matchstate.CatalogRepository)
+		if !ok {
+			writeJSON(w, http.StatusOK, map[string]any{"matches": []matchstate.MatchSummary{}})
+			return
+		}
+		matches, err := catalog.PublicMatchCatalog()
+		if err != nil {
+			http.Error(w, "比赛列表暂时不可用", http.StatusServiceUnavailable)
+			return
+		}
+		writeJSON(w, http.StatusOK, map[string]any{"matches": matches})
+	}
+}
+
 func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	return handleMatchAPIWithDirectorDraft(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, nil, writeServices...)
 }
@@ -1071,7 +1171,136 @@ func countStartingPlayers(players []matchstate.Player) int {
 	return count
 }
 
+func mergeMatchConfigRoster(existing, incoming matchstate.MatchConfig) (matchstate.MatchConfig, error) {
+	for _, side := range []struct {
+		name     string
+		existing []matchstate.Player
+		incoming *[]matchstate.Player
+	}{
+		{name: "主队", existing: existing.HomePlayers, incoming: &incoming.HomePlayers},
+		{name: "客队", existing: existing.AwayPlayers, incoming: &incoming.AwayPlayers},
+	} {
+		if len(*side.incoming) == 0 {
+			*side.incoming = side.existing
+			continue
+		}
+		if countStartingPlayers(side.existing) >= 11 && countStartingPlayers(*side.incoming) < 11 {
+			return matchstate.MatchConfig{}, fmt.Errorf("%s已有完整首发名单，不能保存为不完整阵容；请保留至少 11 名首发", side.name)
+		}
+	}
+	return incoming, nil
+}
+
 func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+	return handleMatchAPIWithRuntime(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, directorDrafts, nil, writeServices...)
+}
+
+func projectInteractionTraces(ctx context.Context, ledger interaction.Ledger, matchID string) ([]companion.Trace, error) {
+	snapshotLedger, ok := ledger.(interaction.MatchSnapshotLedger)
+	if !ok {
+		return nil, errors.New("interaction ledger does not support match snapshots")
+	}
+	events, err := snapshotLedger.ListMatchSnapshot(ctx, matchID)
+	if err != nil {
+		return nil, err
+	}
+	byID := make(map[string]*companion.Trace)
+	for _, event := range events {
+		if event.Kind != interaction.KindTurnPlanned || len(event.TracePayload) == 0 {
+			continue
+		}
+		var trace companion.Trace
+		if err := json.Unmarshal(event.TracePayload, &trace); err != nil {
+			return nil, fmt.Errorf("decode interaction trace %q: %w", event.TraceID, err)
+		}
+		if trace.ID == "" {
+			trace.ID = event.TraceID
+		}
+		if trace.MatchID == "" {
+			trace.MatchID = event.MatchID
+		}
+		if trace.UserID == "" {
+			trace.UserID = event.UserID
+		}
+		if trace.CreatedAt.IsZero() {
+			trace.CreatedAt = event.CreatedAt
+		}
+		if trace.ID != event.TraceID || trace.MatchID != event.MatchID || trace.UserID != event.UserID {
+			return nil, fmt.Errorf("interaction trace %q correlation mismatch", event.TraceID)
+		}
+		byID[trace.ID] = &trace
+	}
+	for _, event := range events {
+		trace := byID[event.TraceID]
+		if trace == nil {
+			continue
+		}
+		switch event.Kind {
+		case interaction.KindMediaDelivery:
+			trace.Voice = ensureVoiceMeta(trace.Voice)
+			if event.MediaType != "" {
+				trace.Voice.TTSMime = event.MediaType
+			}
+			switch event.DeliveryState {
+			case "audio_ready", "completed":
+				trace.Voice.TTSStatus = "ok"
+			case "failed":
+				trace.Voice.TTSStatus = "failed"
+				trace.Voice.TTSError = event.DeliveryReason
+			case "skipped":
+				trace.Voice.TTSStatus = "skipped"
+			}
+		case interaction.KindPlaybackResult:
+			trace.Voice = ensureVoiceMeta(trace.Voice)
+			trace.Voice.PlaybackStatus = event.PlaybackState
+		case interaction.KindDelivery:
+			if event.Source == "playback" && event.DeliveryState != "" {
+				trace.Voice = ensureVoiceMeta(trace.Voice)
+				trace.Voice.PlaybackStatus = event.DeliveryState
+			}
+		}
+	}
+	traces := make([]companion.Trace, 0, len(byID))
+	for _, trace := range byID {
+		traces = append(traces, *trace)
+	}
+	sort.SliceStable(traces, func(left, right int) bool {
+		if traces[left].CreatedAt.Equal(traces[right].CreatedAt) {
+			return traces[left].ID > traces[right].ID
+		}
+		return traces[left].CreatedAt.After(traces[right].CreatedAt)
+	})
+	return traces, nil
+}
+
+func listInteractionTraces(ctx context.Context, ledger interaction.Ledger, matchID string, limit int) ([]companion.Trace, error) {
+	traces, err := projectInteractionTraces(ctx, ledger, matchID)
+	if err != nil {
+		return nil, err
+	}
+	if limit <= 0 || limit > 200 {
+		limit = 50
+	}
+	if len(traces) > limit {
+		traces = traces[:limit]
+	}
+	return traces, nil
+}
+
+func getInteractionTrace(ctx context.Context, ledger interaction.Ledger, matchID, traceID string) (companion.Trace, error) {
+	traces, err := projectInteractionTraces(ctx, ledger, matchID)
+	if err != nil {
+		return companion.Trace{}, err
+	}
+	for _, trace := range traces {
+		if trace.ID == traceID {
+			return trace, nil
+		}
+	}
+	return companion.Trace{}, companion.ErrTraceNotFound
+}
+
+func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	operatorWrites := selectedOperatorWriteService(writeServices)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !applyCORS(w, r, cfg) {
@@ -1092,6 +1321,58 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 		matchID := parts[0]
 		resource := parts[1]
 		switch {
+		case r.Method == http.MethodGet && resource == "interaction" && len(parts) == 2:
+			if !validAPIToken(r, cfg) {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			if interactionLedger == nil {
+				writeJSON(w, http.StatusOK, map[string]any{"events": []interaction.Event{}, "nextCursor": "", "hasMore": false, "projectionScope": "all", "journey": interaction.Journey{}, "audit": evals.InteractionAuditReport{}})
+				return
+			}
+			limit := 100
+			if value := r.URL.Query().Get("limit"); value != "" {
+				if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+					limit = parsed
+				}
+			}
+			userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+			if userID == "" {
+				http.Error(w, "userId is required", http.StatusBadRequest)
+				return
+			}
+			page := interaction.Page{}
+			var err error
+			if pageable, ok := interactionLedger.(interaction.PageableLedger); ok {
+				page, err = pageable.ListPage(r.Context(), interaction.PageQuery{
+					UserID: userID, MatchID: matchID, Limit: limit, Cursor: strings.TrimSpace(r.URL.Query().Get("cursor")),
+				})
+			} else {
+				page.Events, err = interactionLedger.List(r.Context(), userID, matchID, limit)
+			}
+			if err != nil {
+				if errors.Is(err, interaction.ErrInvalidCursor) {
+					http.Error(w, err.Error(), http.StatusBadRequest)
+					return
+				}
+				http.Error(w, err.Error(), http.StatusInternalServerError)
+				return
+			}
+			projectionEvents := page.Events
+			projectionScope := "page"
+			if snapshot, ok := interactionLedger.(interaction.SnapshotLedger); ok {
+				projectionEvents, err = snapshot.ListSnapshot(r.Context(), userID, matchID)
+				if err != nil {
+					http.Error(w, err.Error(), http.StatusInternalServerError)
+					return
+				}
+				projectionScope = "all"
+			}
+			writeJSON(w, http.StatusOK, map[string]any{
+				"events": page.Events, "nextCursor": page.NextCursor, "hasMore": page.HasMore(),
+				"projectionScope": projectionScope,
+				"journey":         interaction.ProjectJourney(projectionEvents), "audit": evals.AuditInteractions(projectionEvents),
+			})
 		case r.Method == http.MethodPost && resource == "start" && len(parts) == 2:
 			if !validAPIToken(r, cfg) {
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
@@ -1381,7 +1662,15 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				return
 			}
 			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
-				result, err := directorDrafts.Transcribe(operationCtx, request, store.Config(matchID))
+				clockStore, ok := store.(matchstate.ClockRepository)
+				if !ok {
+					return operatorwrite.Response{}, operatorError(http.StatusNotImplemented, errors.New("match clock unavailable"))
+				}
+				result, err := directorDrafts.Build(operationCtx, request, directordraft.MatchContext{
+					MatchID: matchID,
+					Config:  store.Config(matchID),
+					Clock:   clockStore.Clock(matchID),
+				})
 				if err != nil {
 					status := http.StatusBadGateway
 					if errors.Is(err, directordraft.ErrNoInput) || errors.Is(err, directordraft.ErrInvalidTranscript) {
@@ -1561,6 +1850,11 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				http.Error(w, "invalid json", http.StatusBadRequest)
 				return
 			}
+			config, err = mergeMatchConfigRoster(store.Config(matchID), config)
+			if err != nil {
+				http.Error(w, err.Error(), http.StatusBadRequest)
+				return
+			}
 			executeOperatorWrite(w, r, operatorWrites, matchID, "config.set", body, func(_ context.Context) (operatorwrite.Response, error) {
 				saved, _, err := store.SetConfig(matchID, config)
 				if err != nil {
@@ -1610,7 +1904,13 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 					limit = parsed
 				}
 			}
-			traces, err := traceReader.ListTraces(r.Context(), matchID, limit)
+			var traces []companion.Trace
+			var err error
+			if interactionLedger != nil {
+				traces, err = listInteractionTraces(r.Context(), interactionLedger, matchID, limit)
+			} else {
+				traces, err = traceReader.ListTraces(r.Context(), matchID, limit)
+			}
 			if err != nil {
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
@@ -1623,7 +1923,13 @@ func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader co
 				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
-			trace, err := traceReader.GetTrace(r.Context(), matchID, parts[2])
+			var trace companion.Trace
+			var err error
+			if interactionLedger != nil {
+				trace, err = getInteractionTrace(r.Context(), interactionLedger, matchID, parts[2])
+			} else {
+				trace, err = traceReader.GetTrace(r.Context(), matchID, parts[2])
+			}
 			if err != nil {
 				status := http.StatusInternalServerError
 				if errors.Is(err, companion.ErrTraceNotFound) {
@@ -1813,6 +2119,7 @@ func handleTranscribedVoiceSessionWithSignalIDOptions(ctx context.Context, agent
 type voiceSessionOptions struct {
 	ProgressiveSchedule bool
 	Timezone            string
+	FactRefresh         string
 }
 
 func completeVoiceSession(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID string, now time.Time, signalID string, result voiceSessionResult, voiceMeta *companion.VoiceTraceMetadata) (voiceSessionResult, error) {
@@ -1828,6 +2135,7 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 	}
 	response, err := agent.HandleMessage(ctx, companion.MessageRequest{
 		SignalID:            signalID,
+		FactRefresh:         options.FactRefresh,
 		MatchID:             matchID,
 		UserID:              userID,
 		Text:                result.Text,
@@ -1850,7 +2158,7 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
 			result.Trace.Voice.TTSStatus = "failed"
 			result.Trace.Voice.TTSError = result.TTSError
-			_ = agent.UpdateTrace(ctx, result.Trace)
+			_ = agent.RecordMediaDelivery(ctx, interaction.Event{ID: "tts:" + userID + ":" + matchID + ":" + result.Trace.ID + ":failed", Kind: interaction.KindMediaDelivery, UserID: userID, MatchID: matchID, TraceID: result.Trace.ID, DeliveryKey: result.Trace.ID, DeliveryState: "failed", Source: "tts", CreatedAt: time.Now().UTC()})
 		} else {
 			result.AudioData = ttsResult.AudioData
 			result.AudioMIME = ttsResult.MimeType
@@ -1858,23 +2166,23 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 			result.Trace.Voice.TTSStatus = "ok"
 			result.Trace.Voice.TTSMime = result.AudioMIME
 			result.Trace.Voice.TTSByteCount = len(result.AudioData)
-			_ = agent.UpdateTrace(ctx, result.Trace)
+			_ = agent.RecordMediaDelivery(ctx, interaction.Event{ID: "tts:" + userID + ":" + matchID + ":" + result.Trace.ID + ":audio_ready", Kind: interaction.KindMediaDelivery, UserID: userID, MatchID: matchID, TraceID: result.Trace.ID, DeliveryKey: result.Trace.ID, MediaType: result.AudioMIME, DeliveryState: "audio_ready", Source: "tts", CreatedAt: time.Now().UTC()})
 		}
 	}
 	return result, nil
 }
 
-func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generate func(text, audio string) (voiceSessionResult, error), suppressFollowUp func(string) bool, text, audio string) (voiceSessionResult, error) {
-	before := latestCriticalFactID(snapshot())
-	result, err := generate(text, audio)
+func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generate func(text, audio, factRefresh string) (voiceSessionResult, error), suppressFollowUp func(string) bool, text, audio string) (voiceSessionResult, error) {
+	before := latestCriticalFactRevisionKey(snapshot())
+	result, err := generate(text, audio, "")
 	if err != nil {
 		return result, err
 	}
-	after := latestCriticalFactID(snapshot())
+	after := latestCriticalFactRevisionKey(snapshot())
 	if before == after || result.Text == "" {
 		return result, nil
 	}
-	refreshed, refreshErr := generate(result.Text, "")
+	refreshed, refreshErr := generate(result.Text, "", after)
 	if refreshErr != nil {
 		return result, nil
 	}
@@ -1891,173 +2199,17 @@ func handleVoiceTurnWithFactRefresh(snapshot func() matchstate.Snapshot, generat
 	return refreshed, nil
 }
 
-func latestCriticalFactID(snapshot matchstate.Snapshot) string {
+func latestCriticalFactRevisionKey(snapshot matchstate.Snapshot) string {
 	for _, event := range snapshot.KeyEvents {
 		if proactiveUrgency(event.EventType) != conversation.UrgencyCritical {
 			continue
 		}
 		if event.ID != "" {
-			return event.ID
+			return matchstate.DeliveryKey(event)
 		}
-		return event.EventType + ":" + event.Clock + ":" + event.UpdatedAt
+		return fmt.Sprintf("%s:%s:%s:%d:%s", event.EventType, event.Clock, event.UpdatedAt, event.FactRevision, event.FactStatus)
 	}
 	return ""
-}
-
-func recordVoiceTTS(ctx context.Context, agent *companion.Agent, result voiceSessionResult, mime string, byteCount int, errText string) {
-	if result.Trace.ID == "" {
-		return
-	}
-	trace := result.Trace
-	trace.Voice = ensureVoiceMeta(trace.Voice)
-	if errText != "" {
-		trace.Voice.TTSStatus = "failed"
-		trace.Voice.TTSError = errText
-	} else {
-		trace.Voice.TTSStatus = "ok"
-		trace.Voice.TTSMime = mime
-		trace.Voice.TTSByteCount = byteCount
-	}
-	if err := agent.UpdateTrace(ctx, trace); err != nil {
-		log.Printf("voice trace update error: %v", err)
-	}
-}
-
-func emitProactiveResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ProactiveResponse, eventID, deliveryKey string) {
-	emitScheduledResponse(ctx, writer, agent, ttsClient, playback, response.Reply, response.Trace, response.Presentation, "match_reaction", eventID, deliveryKey)
-}
-
-func emitObservationResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, response companion.ObservationResponse, eventID string) {
-	emitScheduledResponse(ctx, writer, agent, ttsClient, playback, response.Reply, response.Trace, response.Presentation, "observation_resolution", eventID, response.Resolution.DeliveryKey)
-}
-
-func emitScheduledResponse(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, reply string, trace companion.Trace, presentation relationship.PresentationPlan, source, eventID, deliveryKey string) {
-	if !replyContextActive(ctx) {
-		return
-	}
-	if err := writer.SendJSON(map[string]interface{}{
-		"type":  "event",
-		"event": "qiuqiu_reply",
-		"data":  qiuqiuReplyData(reply, trace.ID, source, eventID, deliveryKey, presentation),
-	}); err != nil {
-		return
-	}
-	if ttsClient == nil {
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
-		return
-	}
-	ttsResult, err := synthesizeReply(ctx, ttsClient, reply, "", presentation)
-	if err != nil {
-		if !replyContextActive(ctx) {
-			return
-		}
-		trace.Voice = ensureVoiceMeta(trace.Voice)
-		trace.Voice.TTSStatus = "failed"
-		trace.Voice.TTSError = err.Error()
-		_ = agent.UpdateTrace(ctx, trace)
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
-		return
-	}
-	if len(ttsResult.AudioData) == 0 {
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "empty audio"})
-		return
-	}
-	if !replyContextActive(ctx) {
-		return
-	}
-	trace.Voice = ensureVoiceMeta(trace.Voice)
-	trace.Voice.TTSStatus = "ok"
-	trace.Voice.TTSMime = fallbackString(ttsResult.MimeType, "audio/mpeg")
-	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
-	_ = agent.UpdateTrace(ctx, trace)
-	playback(trace.ID)
-	writer.SendAudio(map[string]interface{}{
-		"type":        "voice_audio",
-		"mime":        trace.Voice.TTSMime,
-		"traceId":     trace.ID,
-		"byteLength":  len(ttsResult.AudioData),
-		"eventId":     eventID,
-		"deliveryKey": deliveryKey,
-		"source":      source,
-	}, ttsResult.AudioData)
-}
-
-func emitFirstMeeting(ctx context.Context, writer *wsWriter, agent *companion.Agent, ttsClient *tts.Client, playback conversation.Playback, matchID, userID, nickname, favoriteTeam, signalID string) {
-	response, err := agent.HandleFirstMeeting(ctx, companion.FirstMeetingRequest{
-		SignalID:     signalID,
-		MatchID:      matchID,
-		UserID:       userID,
-		Nickname:     nickname,
-		FavoriteTeam: favoriteTeam,
-		Now:          time.Now(),
-	})
-	if err != nil {
-		if !replyContextActive(ctx) {
-			return
-		}
-		log.Printf("first meeting greeting error: %v", err)
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": "greeting unavailable"})
-		return
-	}
-	if strings.TrimSpace(response.Reply) == "" {
-		if replyContextActive(ctx) {
-			writer.SendJSON(map[string]interface{}{
-				"type":   "first_meeting_status",
-				"state":  "skipped",
-				"reason": response.Trace.Reason,
-			})
-		}
-		return
-	}
-	if !replyContextActive(ctx) {
-		return
-	}
-	if err := writer.SendJSON(map[string]interface{}{
-		"type":  "event",
-		"event": "qiuqiu_reply",
-		"data":  qiuqiuReplyData(response.Reply, response.Trace.ID, "first_meeting", "", "", response.Presentation),
-	}); err != nil {
-		return
-	}
-	if err := writer.SendJSON(map[string]interface{}{
-		"type":    "first_meeting_status",
-		"state":   "delivered",
-		"traceId": response.Trace.ID,
-	}); err != nil {
-		return
-	}
-	if ttsClient == nil {
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "tts unavailable"})
-		return
-	}
-	ttsResult, err := synthesizeReply(ctx, ttsClient, response.Reply, "", response.Presentation)
-	if err != nil {
-		if !replyContextActive(ctx) {
-			return
-		}
-		trace := response.Trace
-		trace.Voice = ensureVoiceMeta(trace.Voice)
-		trace.Voice.TTSStatus = "failed"
-		trace.Voice.TTSError = err.Error()
-		_ = agent.UpdateTrace(ctx, trace)
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": err.Error()})
-		return
-	}
-	if len(ttsResult.AudioData) == 0 {
-		writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "tts_fallback", "reason": "empty audio"})
-		return
-	}
-	if !replyContextActive(ctx) {
-		return
-	}
-	trace := response.Trace
-	trace.Voice = ensureVoiceMeta(trace.Voice)
-	trace.Voice.TTSStatus = "ok"
-	trace.Voice.TTSMime = fallbackString(ttsResult.MimeType, "audio/mpeg")
-	trace.Voice.TTSByteCount = len(ttsResult.AudioData)
-	_ = agent.UpdateTrace(ctx, trace)
-	playback(response.Trace.ID)
-	writer.SendAudio(map[string]interface{}{"type": "voice_audio", "mime": trace.Voice.TTSMime, "traceId": response.Trace.ID, "byteLength": len(ttsResult.AudioData)}, ttsResult.AudioData)
 }
 
 func replyContextActive(ctx context.Context) bool {
@@ -2105,9 +2257,12 @@ func recordPlaybackStatus(ctx context.Context, reader companion.TraceReader, age
 	if userID == "" || trace.UserID != userID {
 		return fmt.Errorf("playback trace owner mismatch")
 	}
-	trace.Voice = ensureVoiceMeta(trace.Voice)
-	trace.Voice.PlaybackStatus = status
-	return agent.UpdateTrace(ctx, trace)
+	return agent.RecordMediaDelivery(ctx, interaction.Event{
+		ID:   "playback:" + userID + ":" + matchID + ":" + traceID + ":" + status,
+		Kind: interaction.KindPlaybackResult, UserID: userID, MatchID: matchID,
+		SignalID: "delivery:" + traceID + ":" + status, TraceID: traceID, DeliveryKey: traceID, PlaybackState: status,
+		Source: "client_playback", CreatedAt: time.Now().UTC(),
+	})
 }
 
 func recordDisplayedReply(ctx context.Context, reader companion.TraceReader, agent *companion.Agent, matchID, traceID, userID string, now time.Time) error {
@@ -2132,7 +2287,11 @@ func recordDisplayedReply(ctx context.Context, reader companion.TraceReader, age
 		decisionID = trace.RelationshipDecision.ID
 		usedMemoryIDs = trace.RelationshipDecision.UsedMemoryIDs
 	}
-	_, err = agent.ObserveDelivery(ctx, "delivery:"+traceID+":text", userID, matchID, decisionID, "text_delivered", purpose, usedMemoryIDs, now)
+	_, err = agent.Plan(ctx, companion.TurnInput{Kind: companion.TurnKindDelivery, Delivery: &companion.DeliveryInput{
+		SignalID: "delivery:" + traceID + ":text", TraceID: traceID, UserID: userID, MatchID: matchID,
+		DecisionID: decisionID, State: "text_delivered", Purpose: purpose,
+		UsedMemoryIDs: usedMemoryIDs, Now: now,
+	}})
 	if err != nil {
 		return err
 	}
@@ -2180,7 +2339,7 @@ func operatorClaims(r *http.Request, cfg *config.Config) (auth.Claims, bool) {
 		}, true
 	}
 	token := auth.BearerToken(r.Header.Get("Authorization"))
-	if token == "" || len(token) != len(cfg.AppToken) || subtle.ConstantTimeCompare([]byte(token), []byte(cfg.AppToken)) != 1 {
+	if !cfg.OperatorTokenMatches(token) {
 		return auth.Claims{}, false
 	}
 	return auth.Claims{
@@ -2256,6 +2415,30 @@ func playbackTraceStatus(state string) string {
 		return "interrupted"
 	default:
 		return "failed:" + state
+	}
+}
+
+func deliveryStateForPlayback(state string) conversation.DeliveryState {
+	switch state {
+	case "started":
+		return conversation.DeliveryAudioStarted
+	case "ended", "completed":
+		return conversation.DeliveryCompleted
+	case "interrupted":
+		return conversation.DeliveryInterrupted
+	case "skipped", "blocked":
+		return conversation.DeliverySkipped
+	default:
+		return conversation.DeliveryFailed
+	}
+}
+
+func terminalPlaybackState(state string) bool {
+	switch state {
+	case "ended", "completed", "interrupted", "skipped", "blocked":
+		return true
+	default:
+		return false
 	}
 }
 
@@ -2545,23 +2728,25 @@ func (w *wsWriter) SendBinary(data []byte) {
 	}
 }
 
-func (w *wsWriter) SendAudio(meta interface{}, data []byte) {
+func (w *wsWriter) SendAudio(meta interface{}, data []byte) error {
 	encoded, err := json.Marshal(meta)
 	if err != nil {
 		log.Printf("ws audio metadata marshal error: %v", err)
-		return
+		return err
 	}
 	w.mu.Lock()
 	defer w.mu.Unlock()
 	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := w.conn.WriteMessage(websocket.TextMessage, encoded); err != nil {
 		log.Printf("ws audio metadata write error: %v", err)
-		return
+		return err
 	}
 	w.conn.SetWriteDeadline(time.Now().Add(10 * time.Second))
 	if err := w.conn.WriteMessage(websocket.BinaryMessage, data); err != nil {
 		log.Printf("ws audio write error: %v", err)
+		return err
 	}
+	return nil
 }
 
 func (w *wsWriter) Ping() error {

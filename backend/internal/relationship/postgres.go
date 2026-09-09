@@ -246,6 +246,46 @@ func (r *PostgresRepository) DecisionBySignal(ctx context.Context, userID, match
 	return decision, true, nil
 }
 
+func (r *PostgresRepository) RefreshDecision(ctx context.Context, userID, matchID, signalID string, update Decision) (Decision, bool, error) {
+	tx, err := r.pool.Begin(ctx)
+	if err != nil {
+		return Decision{}, false, err
+	}
+	defer tx.Rollback(ctx)
+	var payload []byte
+	err = tx.QueryRow(ctx, `
+		SELECT decision
+		FROM interaction_decisions
+		WHERE user_id = $1 AND match_id = $2 AND signal_id = $3
+		FOR UPDATE
+	`, userID, matchID, signalID).Scan(&payload)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Decision{}, false, nil
+	}
+	if err != nil {
+		return Decision{}, false, err
+	}
+	var decision Decision
+	if err := json.Unmarshal(payload, &decision); err != nil {
+		return Decision{}, false, err
+	}
+	if decision.RefreshCount < 1 {
+		update.ID, update.SignalID = decision.ID, decision.SignalID
+		updated, marshalErr := json.Marshal(update)
+		if marshalErr != nil {
+			return Decision{}, false, marshalErr
+		}
+		if _, err := tx.Exec(ctx, `UPDATE interaction_decisions SET decision = $1 WHERE user_id = $2 AND match_id = $3 AND signal_id = $4`, updated, userID, matchID, signalID); err != nil {
+			return Decision{}, false, err
+		}
+		decision = update
+	}
+	if err := tx.Commit(ctx); err != nil {
+		return Decision{}, false, err
+	}
+	return decision, true, nil
+}
+
 func currentVersion(ctx context.Context, tx pgx.Tx, query string, args ...any) (int64, error) {
 	var version int64
 	err := tx.QueryRow(ctx, query, args...).Scan(&version)

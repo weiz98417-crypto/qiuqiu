@@ -1,0 +1,61 @@
+{
+  "schema_version": 1,
+  "diagram_type": "sequence",
+  "meta": {
+    "title": "球球｜实时接口与投递契约",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 650],
+    "column_fit": "spread",
+    "views": [
+      { "id": "session-and-turn", "label": "会话与用户回合", "focus": ["client", "auth", "gateway", "scheduler", "agent"], "note": "HTTP 建立身份，WebSocket 承载当前比赛中的用户回合。" },
+      { "id": "delivery-and-receipt", "label": "投递与播放回执", "focus": ["agent", "delivery", "gateway", "client"], "note": "回应计划带版本和追踪标识，客户端回传播放结果。" },
+      { "id": "reconnect-and-recovery", "label": "重连与恢复", "focus": ["client", "gateway", "store"], "note": "重连先取会话快照，再按版本丢弃过期内容；持久化 replay cursor 属于生产契约。" }
+    ]
+  },
+  "participants": [
+    { "id": "client", "type": "frontend", "label": "Flutter Client", "sublabel": "语音 · 字幕 · 播放" },
+    { "id": "auth", "type": "security", "label": "Auth / Session", "sublabel": "匿名会话 · Scope" },
+    { "id": "gateway", "type": "backend", "label": "Go WS Gateway", "sublabel": "身份 · 帧 · 连接" },
+    { "id": "scheduler", "type": "backend", "label": "Scheduler", "sublabel": "用户优先 · 取消 · TTL" },
+    { "id": "agent", "type": "backend", "label": "Agent / Director", "sublabel": "事实 · 人格 · 回应计划" },
+    { "id": "delivery", "type": "backend", "label": "Delivery", "sublabel": "字幕 · TTS · Presentation" },
+    { "id": "store", "type": "database", "label": "Trace Store", "sublabel": "快照 · 版本 · 追踪" }
+  ],
+  "segments": [
+    { "from": 145, "to": 231, "label": "建立身份与连接" },
+    { "from": 242, "to": 370, "label": "提交一轮用户输入" },
+    { "from": 378, "to": 486, "label": "投递、播放与打断" },
+    { "from": 498, "to": 584, "label": "重连恢复" }
+  ],
+  "messages": [
+    { "from": "client", "to": "auth", "y": 168, "label": "POST /api/session · 匿名建会话", "variant": "security" },
+    { "from": "auth", "to": "client", "y": 198, "label": "session_id + access_token", "variant": "return" },
+    { "from": "client", "to": "gateway", "y": 228, "label": "WS /ws/match/:matchId + token", "variant": "emphasis" },
+    { "from": "gateway", "to": "scheduler", "y": 265, "label": "session_opened · connection_id", "variant": "default" },
+    { "from": "client", "to": "gateway", "y": 273, "label": "asr_chunk {utteranceId, sequence}", "variant": "emphasis" },
+    { "from": "gateway", "to": "scheduler", "y": 299, "label": "asr_finish · user turn", "variant": "emphasis" },
+    { "from": "scheduler", "to": "agent", "y": 325, "label": "cancel active + load context", "variant": "security" },
+    { "from": "agent", "to": "delivery", "y": 355, "label": "ResponsePlan {traceId, version}", "variant": "emphasis" },
+    { "from": "delivery", "to": "gateway", "y": 385, "label": "subtitle + presentation + voice_audio", "variant": "default" },
+    { "from": "gateway", "to": "client", "y": 415, "label": "versioned event envelope", "variant": "emphasis" },
+    { "from": "client", "to": "gateway", "y": 445, "label": "voice_playback {traceId, state}", "variant": "dashed" },
+    { "from": "client", "to": "gateway", "y": 480, "label": "interrupt · cancel current turn", "variant": "security" },
+    { "from": "client", "to": "gateway", "y": 515, "label": "reconnect {lastSeenVersion}", "variant": "dashed" },
+    { "from": "gateway", "to": "store", "y": 535, "label": "load snapshot + cursor", "variant": "default" },
+    { "from": "store", "to": "gateway", "y": 565, "label": "snapshot · replay eligible", "variant": "return" }
+  ],
+  "activations": [
+    { "participant": "auth", "from": 164, "to": 205, "type": "security" },
+    { "participant": "gateway", "from": 213, "to": 576, "type": "backend" },
+    { "participant": "scheduler", "from": 243, "to": 344, "type": "backend" },
+    { "participant": "agent", "from": 318, "to": 366, "type": "backend" },
+    { "participant": "delivery", "from": 348, "to": 396, "type": "backend" },
+    { "participant": "store", "from": 531, "to": 576, "type": "database" }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "消息合同", "items": ["每个实时事件都带会话范围、追踪标识和版本", "音频分块可去重；用户输入、打断和结束优先"] },
+    { "dot": "emerald", "title": "投递回执", "items": ["字幕、声音和动作使用同一份计划并回写播放状态", "文字是声音或舞台不可用时仍可完成任务的等价路径"] },
+    { "dot": "slate", "title": "当前与规划", "items": ["当前已有会话鉴权、音频序号和播放状态回传", "持久化 replay cursor、客户端 ACK 与多副本广播属于生产前契约"] }
+  ]
+}

@@ -1,0 +1,56 @@
+{
+  "schema_version": 1,
+  "diagram_type": "dataflow",
+  "meta": {
+    "title": "球球｜表现、评测与运维闭环",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1080, 650],
+    "views": [
+      { "id": "presentation-path", "label": "表现执行", "focus": ["response", "gate", "text", "speech", "motion", "envelope", "client"], "note": "Director 产出计划后，文字、声音和动作只负责执行，不重新决定事实或人格。" },
+      { "id": "receipt-and-trace", "label": "回执与追踪", "focus": ["client", "playback", "trace", "observability"], "note": "客户端的展示和播放结果回到 Trace，形成一轮可解释证据。" },
+      { "id": "quality-recovery", "label": "评测与收缩", "focus": ["trace", "observability", "evals", "rollback"], "note": "指标、抽样和评测门失败时，先收缩声音、舞台或主动性，再考虑恢复。" }
+    ]
+  },
+  "stages": [
+    { "label": "Decision" },
+    { "label": "Adapters" },
+    { "label": "Delivery" },
+    { "label": "Evidence" },
+    { "label": "Assurance" }
+  ],
+  "nodes": [
+    { "id": "response", "type": "backend", "label": "Response Plan", "sublabel": "内容 · 语气 · 强度", "stage": 0, "row": 0, "tag": "decision" },
+      { "id": "gate", "type": "security", "label": "资格与降级门", "sublabel": "事实 · 终态 · 控制", "stage": 0, "row": 2, "tag": "guard" },
+    { "id": "text", "type": "backend", "label": "Reply Realizer", "sublabel": "SpeechPlan → Text", "stage": 1, "row": 0, "tag": "current" },
+    { "id": "speech", "type": "external", "label": "TTS Adapter", "sublabel": "文字 → 音频", "stage": 1, "row": 2, "tag": "current" },
+      { "id": "motion", "type": "backend", "label": "Presentation", "sublabel": "动作 · 保持 · 静态回退", "stage": 1, "row": 4, "yOffset": -75, "tag": "current" },
+    { "id": "envelope", "type": "messagebus", "label": "Delivery Envelope", "sublabel": "版本 · traceId · 可丢弃", "stage": 2, "row": 0, "tag": "contract" },
+    { "id": "client", "type": "frontend", "label": "Flutter Client", "sublabel": "文字 · 声音 · Live2D", "stage": 2, "row": 2, "tag": "consumer" },
+    { "id": "playback", "type": "frontend", "label": "Playback Receipt", "sublabel": "started · ended · failed", "stage": 3, "row": 0, "tag": "current" },
+    { "id": "trace", "type": "database", "label": "Trace + Audit", "sublabel": "事实 ID · 决策 · 回执", "stage": 3, "row": 2, "tag": "current" },
+    { "id": "observability", "type": "cloud", "label": "Metrics / Alerts", "sublabel": "延迟 · 失败 · 重试", "stage": 4, "row": 0, "tag": "planned" },
+    { "id": "evals", "type": "backend", "label": "Release Evals", "sublabel": "黄金集 · 抽样 · 回归", "stage": 4, "row": 2, "tag": "planned" },
+      { "id": "rollback", "type": "security", "label": "收缩 / 回滚", "sublabel": "文字优先 · 关闭能力", "stage": 4, "row": 4, "yOffset": -75, "tag": "planned" }
+  ],
+  "flows": [
+    { "from": "response", "to": "gate", "label": "进入资格检查", "classification": "决策合同", "variant": "security", "route": "straight", "labelDy": 28 },
+    { "from": "gate", "to": "text", "label": "文字", "classification": "必备能力", "variant": "emphasis", "route": "vertical-channel", "labelAt": [200, 450] },
+    { "from": "text", "to": "speech", "label": "语音", "classification": "增强能力", "variant": "default", "route": "straight", "labelAt": [500, 260] },
+    { "from": "gate", "to": "motion", "label": "动作", "classification": "增强能力", "variant": "default", "route": "bottom-channel", "labelAt": [210, 620] },
+    { "from": "text", "to": "envelope", "label": "文字", "classification": "可见更新", "variant": "emphasis", "route": "vertical-channel", "labelDy": -34 },
+    { "from": "speech", "to": "envelope", "label": "音频", "classification": "实时媒介", "variant": "default", "route": "vertical-channel", "labelAt": [800, 260] },
+    { "from": "motion", "to": "envelope", "label": "动作", "classification": "表现媒介", "variant": "default", "route": "vertical-channel", "labelAt": [520, 650] },
+    { "from": "envelope", "to": "client", "label": "按版本投递", "classification": "WebSocket", "variant": "emphasis", "route": "straight", "labelDy": 30 },
+      { "from": "client", "to": "playback", "label": "渲染、播放、打断", "classification": "客户端执行", "variant": "emphasis", "route": "vertical-channel" },
+    { "from": "playback", "to": "trace", "label": "状态回执", "classification": "可追踪", "variant": "dashed", "route": "vertical-channel" },
+    { "from": "trace", "to": "observability", "label": "trace + metrics", "classification": "生产规划", "variant": "dashed", "route": "vertical-channel", "labelDy": -32 },
+    { "from": "observability", "to": "evals", "label": "告警与样本", "classification": "质量闭环", "variant": "default", "route": "vertical-channel", "labelDy": 32 },
+      { "from": "evals", "to": "rollback", "label": "门禁失败即收缩", "classification": "控制动作", "variant": "security", "route": "vertical-channel" }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "一份计划，三种媒介", "items": ["Reply Realizer、TTS 和 Live2D 执行同一份 Response Plan", "文字是基线，声音和舞台是可关闭的增强层"] },
+    { "dot": "emerald", "title": "每轮留下证据", "items": ["Trace 串起事实版本、决策、供应商状态和播放回执", "回执区分 started、ended、interrupted、blocked、failed"] },
+    { "dot": "rose", "title": "失败先收缩", "items": ["评测或运行门失败时，先退回文字、事实卡或安静", "取消、结束、静音和删除阻断未播放内容；自动收缩和回滚属于生产目标"] }
+  ]
+}

@@ -8,7 +8,19 @@ import (
 	"time"
 )
 
+const FactLedgerProjectorVersion = "fact-ledger-projector/v1"
+
 type FactLedgerEngine struct{}
+
+type FactLedger interface {
+	Project(FactLedgerProjectInput) (FactLedgerProjection, error)
+	Replay(FactLedgerProjectInput, int64) (FactLedgerProjection, error)
+	ValidateAppend(string, []MatchEvent, MatchConfig, MatchClock, MatchEvent) error
+}
+
+type FactLedgerRepository interface {
+	Replay(string, int64) (FactLedgerProjection, error)
+}
 
 type FactLedgerProjectInput struct {
 	MatchID string
@@ -19,8 +31,10 @@ type FactLedgerProjectInput struct {
 }
 
 type FactLedgerProjection struct {
-	Snapshot     Snapshot
-	PublicEvents []MatchEvent
+	Snapshot         Snapshot
+	PublicEvents     []MatchEvent
+	ProjectorVersion string
+	LastSequence     int64
 }
 
 type FactProjectionDifference struct {
@@ -60,6 +74,10 @@ type projectedGoal struct {
 }
 
 func (FactLedgerEngine) Project(input FactLedgerProjectInput) (FactLedgerProjection, error) {
+	return (FactLedgerEngine{}).Replay(input, 0)
+}
+
+func (FactLedgerEngine) Replay(input FactLedgerProjectInput, uptoSequence int64) (FactLedgerProjection, error) {
 	matchID := strings.TrimSpace(input.MatchID)
 	if matchID == "" {
 		return FactLedgerProjection{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
@@ -67,6 +85,15 @@ func (FactLedgerEngine) Project(input FactLedgerProjectInput) (FactLedgerProject
 	events, err := orderFactEvents(input.Events)
 	if err != nil {
 		return FactLedgerProjection{}, err
+	}
+	if uptoSequence > 0 {
+		filtered := events[:0]
+		for _, event := range events {
+			if event.RecordedSequence <= 0 || event.RecordedSequence <= uptoSequence {
+				filtered = append(filtered, event)
+			}
+		}
+		events = filtered
 	}
 	now := input.Now
 	config := normalizeConfig(matchID, input.Config)
@@ -118,7 +145,7 @@ func (FactLedgerEngine) Project(input FactLedgerProjectInput) (FactLedgerProject
 		}
 	}
 
-	projection := FactLedgerProjection{}
+	projection := FactLedgerProjection{ProjectorVersion: FactLedgerProjectorVersion}
 	cancelledGoals := make(map[string]struct{})
 	for _, event := range events {
 		if !IsPublicFact(event) {
@@ -206,6 +233,9 @@ func (FactLedgerEngine) Project(input FactLedgerProjectInput) (FactLedgerProject
 		}
 		snapshot.Momentum = momentumFor(projected)
 	}
+	if len(events) > 0 {
+		projection.LastSequence = events[len(events)-1].RecordedSequence
+	}
 	if !clock.UpdatedAt.IsZero() && clock.UpdatedAt.Format(time.RFC3339Nano) > snapshot.LastUpdatedAt {
 		snapshot.LastUpdatedAt = clock.UpdatedAt.Format(time.RFC3339Nano)
 	}
@@ -216,7 +246,34 @@ func (FactLedgerEngine) Project(input FactLedgerProjectInput) (FactLedgerProject
 		snapshot.KeyEvents = snapshot.KeyEvents[:8]
 	}
 	projection.Snapshot = snapshot
+	projection.Snapshot.ProjectionVersion = FactLedgerProjectorVersion
+	projection.Snapshot.ProjectedSequence = projection.LastSequence
 	return projection, nil
+}
+
+func (FactLedgerEngine) ValidateAppend(matchID string, events []MatchEvent, config MatchConfig, clock MatchClock, event MatchEvent) error {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	event.MatchID = matchID
+	normalize(&event)
+	if err := validate(event); err != nil {
+		return err
+	}
+	if err := validateSubstitutionLineup(event, config, events); err != nil {
+		return err
+	}
+	projection, err := (FactLedgerEngine{}).Project(FactLedgerProjectInput{
+		MatchID: matchID, Events: events, Config: config, Clock: clock, Now: time.Now().UTC(),
+	})
+	if err != nil {
+		return err
+	}
+	if err := validateEventRelations(events, event); err != nil {
+		return err
+	}
+	return validateAgainstSnapshot(event, projection.Snapshot, config)
 }
 
 func orderFactEvents(events []MatchEvent) ([]MatchEvent, error) {

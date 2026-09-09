@@ -90,6 +90,126 @@ func TestTextInputProducesRosterCalibratedDraftWithoutPublishing(t *testing.T) {
 	}
 }
 
+func TestGoalVoiceDraftRecoversTeamAndRosterNamesFromNaturalChinese(t *testing.T) {
+	service := NewService(nil, stubExtractor{extraction: Extraction{
+		EventType:   "goal",
+		Description: "法比安鲁伊斯接亚马尔传球射门得分，西班牙一比零领先。",
+		Participants: []ExtractedParticipant{
+			{Role: "scorer", Name: "法比安鲁伊斯"},
+			{Role: "assist", Name: "亚马尔"},
+		},
+	}})
+	result, err := service.Build(context.Background(), Request{
+		Text: "法比安鲁伊斯拿到亚马尔的传球起脚射门球进了，西班牙队1-0领先",
+	}, MatchContext{
+		MatchID: "natural-goal-voice",
+		Config: matchstate.MatchConfig{
+			HomeTeam: "西班牙",
+			AwayTeam: "德国",
+			HomePlayers: []matchstate.Player{
+				{Name: "法比安·鲁伊斯"},
+				{Name: "拉明·亚马尔"},
+			},
+		},
+		Clock: matchstate.MatchClock{MatchID: "natural-goal-voice", Period: "first_half", ElapsedSeconds: 18 * 60, Version: 2},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !result.Ready || result.Draft.EventType != "goal" || result.Draft.TeamID != "home" {
+		t.Fatalf("voice goal draft = %+v", result)
+	}
+	if len(result.Draft.Participants) != 2 {
+		t.Fatalf("participants = %+v", result.Draft.Participants)
+	}
+	if result.Draft.Participants[0].Name != "法比安·鲁伊斯" || result.Draft.Participants[1].Name != "拉明·亚马尔" {
+		t.Fatalf("canonical participants = %+v", result.Draft.Participants)
+	}
+}
+
+func TestGoalVoiceDraftFillsEmptyExtractorFieldsFromRosterMentions(t *testing.T) {
+	service := NewService(nil, stubExtractor{})
+	result, err := service.Build(context.Background(), Request{
+		Text: "法比安鲁伊斯拿到亚马尔的传球起脚射门球进了，西班牙队1-0领先",
+	}, MatchContext{
+		MatchID: "fallback-goal-voice",
+		Config: matchstate.MatchConfig{
+			HomeTeam: "西班牙",
+			AwayTeam: "德国",
+			HomePlayers: []matchstate.Player{
+				{Name: "法比安·鲁伊斯"},
+				{Name: "拉明·亚马尔"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !result.Ready || result.Draft.EventType != "goal" || result.Draft.TeamID != "home" || len(result.Draft.Participants) != 2 {
+		t.Fatalf("fallback voice goal draft = %+v", result)
+	}
+}
+
+func TestGoalVoiceDraftNormalizesChineseEventTypeBeforeInferringParticipants(t *testing.T) {
+	service := NewService(nil, stubExtractor{extraction: Extraction{
+		Team:        "西班牙队",
+		EventType:   "进球",
+		Description: "法比安鲁伊斯拿到亚马尔的传球起脚射门球进了，西班牙队1-0领先。",
+	}})
+	result, err := service.Build(context.Background(), Request{
+		Text: "法比安鲁伊斯拿到亚马尔的传球起脚射门球进了，西班牙队1-0领先",
+	}, MatchContext{
+		MatchID: "chinese-event-type-goal-voice",
+		Config: matchstate.MatchConfig{
+			HomeTeam: "西班牙",
+			AwayTeam: "德国",
+			HomePlayers: []matchstate.Player{
+				{Name: "法比安·鲁伊斯"},
+				{Name: "拉明·亚马尔"},
+			},
+		},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !result.Ready || result.Draft.EventType != "goal" || result.Draft.TeamID != "home" || len(result.Draft.Participants) != 2 {
+		t.Fatalf("normalized Chinese event draft = %+v", result)
+	}
+}
+
+func TestGoalVoiceDraftAllowsMultipleAssistsAndOppositionDefenders(t *testing.T) {
+	service := NewService(nil, stubExtractor{extraction: Extraction{
+		Team:        "西班牙",
+		EventType:   "goal",
+		Description: "西班牙进球。",
+		Participants: []ExtractedParticipant{
+			{Role: "scorer", Name: "莫拉塔"},
+			{Role: "assist", Name: "亚马尔"},
+			{Role: "assist", Name: "佩德里"},
+			{Role: "defender", Name: "吕迪格"},
+			{Role: "defender", Name: "基米希"},
+		},
+	}})
+	result, err := service.Build(context.Background(), Request{Text: "莫拉塔进球，亚马尔和佩德里助攻，吕迪格和基米希防守。"}, MatchContext{
+		MatchID: "multiple-goal-participants",
+		Config: matchstate.MatchConfig{
+			HomeTeam: "西班牙", AwayTeam: "德国",
+			HomePlayers: []matchstate.Player{{Name: "莫拉塔"}, {Name: "亚马尔"}, {Name: "佩德里"}},
+			AwayPlayers: []matchstate.Player{{Name: "吕迪格"}, {Name: "基米希"}},
+		},
+		Clock: matchstate.MatchClock{MatchID: "multiple-goal-participants", Period: "first_half"},
+	})
+	if err != nil {
+		t.Fatalf("Build: %v", err)
+	}
+	if !result.Ready || len(result.Warnings) != 0 {
+		t.Fatalf("multiple participant goal = %+v", result)
+	}
+	if len(result.Draft.Participants) != 5 {
+		t.Fatalf("participants = %+v", result.Draft.Participants)
+	}
+}
+
 func TestVoiceDraftRejectsCitationInstructionAsEventDescription(t *testing.T) {
 	service := NewService(nil, stubExtractor{extraction: Extraction{
 		Team:        "Spain",

@@ -11,11 +11,33 @@ import (
 
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/companion"
+	"qiuqiu/internal/config"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 )
+
+func TestConfiguredSpeechSynthesizerRestrictsRuntimeMockToDevelopment(t *testing.T) {
+	t.Setenv("QIUQIU_RUNTIME_TTS", "1")
+
+	development := configuredSpeechSynthesizer(&config.Config{Environment: "development"})
+	if development == nil {
+		t.Fatal("development runtime TTS mock was not configured")
+	}
+	result, err := development.Synthesize(context.Background(), "测试", "")
+	if err != nil || len(result.AudioData) == 0 {
+		t.Fatalf("development runtime TTS mock failed: result=%+v err=%v", result, err)
+	}
+
+	if production := configuredSpeechSynthesizer(&config.Config{Environment: "production"}); production != nil {
+		t.Fatal("production must not enable runtime TTS mock")
+	}
+	if testEnvironment := configuredSpeechSynthesizer(&config.Config{Environment: "test"}); testEnvironment != nil {
+		t.Fatal("non-development environments must not enable runtime TTS mock")
+	}
+}
 
 func TestPCMToWavUsesRecorderSampleRate(t *testing.T) {
 	wav := pcmToWav([]byte{0, 0, 1, 0})
@@ -167,7 +189,7 @@ func TestEvalVoiceSessionASRFallbackAndFailuresDoNotBreakText(t *testing.T) {
 	}
 }
 
-func TestEvalVoicePlaybackStatusUpdatesTrace(t *testing.T) {
+func TestEvalVoicePlaybackStatusAppendsInteractionLedger(t *testing.T) {
 	store := matchstate.NewStore()
 	matchID := "voice-playback-eval"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Spain", AwayTeam: "Germany"}); err != nil {
@@ -189,20 +211,32 @@ func TestEvalVoicePlaybackStatusUpdatesTrace(t *testing.T) {
 		t.Fatalf("Create goal error: %v", err)
 	}
 	tools := companion.NewStoreMemoryTools(store)
-	agent := companion.NewAgent(tools)
+	ledger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(tools).WithInteractionLedger(ledger)
 	result, err := handleVoiceSession(context.Background(), agent, nil, tts.NewMockClient([]byte("mp3")), matchID, "user-1", "刚才谁助攻？", "", fixedVoiceTime())
 	if err != nil {
 		t.Fatalf("handleVoiceSession error: %v", err)
 	}
-	if err := recordPlaybackStatus(context.Background(), tools, agent, matchID, result.Trace.ID, "user-1", "ok"); err != nil {
+	if err := recordPlaybackStatus(context.Background(), tools, agent, matchID, result.Trace.ID, "user-1", "started"); err != nil {
 		t.Fatalf("recordPlaybackStatus error: %v", err)
+	}
+	if err := recordPlaybackStatus(context.Background(), tools, agent, matchID, result.Trace.ID, "user-1", "ended"); err != nil {
+		t.Fatalf("recordPlaybackStatus ended error: %v", err)
+	}
+	events, err := ledger.List(context.Background(), "user-1", matchID, 100)
+	if err != nil {
+		t.Fatalf("List interaction ledger: %v", err)
+	}
+	turns := interaction.ProjectTurns(events)
+	if len(turns) != 1 || len(turns[0].PlaybackStates) != 2 || turns[0].PlaybackStates[0] != "started" || turns[0].PlaybackStates[1] != "ended" {
+		t.Fatalf("playback projection = %+v", turns)
 	}
 	trace, err := tools.GetTrace(context.Background(), matchID, result.Trace.ID)
 	if err != nil {
 		t.Fatalf("GetTrace error: %v", err)
 	}
-	if trace.Voice == nil || trace.Voice.TTSStatus != "ok" || trace.Voice.PlaybackStatus != "ok" {
-		t.Fatalf("expected playback metadata on trace, got %+v", trace.Voice)
+	if trace.Voice != nil && trace.Voice.PlaybackStatus != "" {
+		t.Fatalf("immutable trace was overwritten: %+v", trace.Voice)
 	}
 }
 
@@ -292,7 +326,7 @@ func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
 			snapshotCall++
 			return snapshots[index]
 		},
-		func(text, audio string) (voiceSessionResult, error) {
+		func(text, audio, factRefresh string) (voiceSessionResult, error) {
 			generationCall++
 			if generationCall == 1 {
 				return voiceSessionResult{
@@ -300,8 +334,8 @@ func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
 					Trace: companion.Trace{Observation: &observation.PendingObservation{ID: "obs-refresh"}},
 				}, nil
 			}
-			if text != "刚才谁进球？" || audio != "" {
-				t.Fatalf("refresh input = %q/%q, want recognized text without audio", text, audio)
+			if text != "刚才谁进球？" || audio != "" || factRefresh == "" {
+				t.Fatalf("refresh input = %q/%q/%q, want recognized text, no audio and fact revision", text, audio, factRefresh)
 			}
 			return voiceSessionResult{Text: text, Reply: "萨拉赫刚刚进球了。"}, nil
 		},
@@ -320,6 +354,41 @@ func TestVoiceTurnRefreshesOnceWhenCriticalFactChanges(t *testing.T) {
 	}
 	if result.Trace.Observation == nil || result.Trace.Observation.ID != "obs-refresh" {
 		t.Fatalf("refreshed trace lost original observation: %+v", result.Trace)
+	}
+}
+
+func TestVoiceTurnRefreshesWhenCriticalFactRevisionChanges(t *testing.T) {
+	snapshots := []matchstate.Snapshot{
+		{KeyEvents: []matchstate.MatchEvent{{ID: "goal-1", EventType: "goal", FactRevision: 1, FactStatus: matchstate.FactStatusConfirmed}}},
+		{KeyEvents: []matchstate.MatchEvent{{ID: "goal-1", EventType: "goal_cancelled", FactRevision: 2, FactStatus: matchstate.FactStatusReconciled}}},
+	}
+	snapshotCall := 0
+	generationCall := 0
+	result, err := handleVoiceTurnWithFactRefresh(
+		func() matchstate.Snapshot {
+			index := snapshotCall
+			if index >= len(snapshots) {
+				index = len(snapshots) - 1
+			}
+			snapshotCall++
+			return snapshots[index]
+		},
+		func(text, audio, factRefresh string) (voiceSessionResult, error) {
+			generationCall++
+			if generationCall == 1 {
+				return voiceSessionResult{Text: "这个球算吗？", Reply: "算，进球有效。"}, nil
+			}
+			return voiceSessionResult{Text: text, Reply: "不算，进球已取消。"}, nil
+		},
+		nil,
+		"这个球算吗？",
+		"",
+	)
+	if err != nil {
+		t.Fatalf("handleVoiceTurnWithFactRefresh error: %v", err)
+	}
+	if generationCall != 2 || result.Reply != "不算，进球已取消。" {
+		t.Fatalf("critical revision did not refresh answer: calls=%d result=%+v", generationCall, result)
 	}
 }
 

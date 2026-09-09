@@ -10,7 +10,7 @@ export const repoRoot = resolve(scriptsDir, '..', '..');
 export const backendDir = join(repoRoot, 'backend');
 
 export async function startEvalBackend({ environment = {} } = {}) {
-  const allowedOverrides = ['APP_ENV', 'AUTH_MODE', 'SESSION_SIGNING_KEY'];
+  const allowedOverrides = ['APP_ENV', 'AUTH_MODE', 'SESSION_SIGNING_KEY', 'QIUQIU_RUNTIME_TTS'];
   const environmentOverrides = Object.fromEntries(
     allowedOverrides
       .filter((name) => Object.hasOwn(environment, name))
@@ -35,6 +35,7 @@ export async function startEvalBackend({ environment = {} } = {}) {
       DEEPSEEK_API_KEY: '',
       MIMO_API_KEY: '',
       ELEVENLABS_API_KEY: '',
+      QIUQIU_RUNTIME_TTS: '0',
       APISPORTS_API_KEY: 'eval-api-sports-key',
       APISPORTS_BASE_URL: sportsAPI.baseUrl,
       ...environmentOverrides,

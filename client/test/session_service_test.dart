@@ -16,6 +16,11 @@ void main() {
       normalizeAPIBaseURL('ws://10.0.2.2:8080/ws/match/test'),
       'http://10.0.2.2:8080',
     );
+    expect(
+      normalizeAPIBaseURL(
+          'ws://127.0.0.1:8080/ws/match/demo-user-facing-flow?matchId=demo-user-facing-flow#live'),
+      'http://127.0.0.1:8080',
+    );
   });
 
   test('creates an anonymous session and persists rotated credentials',

@@ -2,6 +2,7 @@ package config
 
 import (
 	"crypto/rand"
+	"crypto/subtle"
 	"encoding/base64"
 	"fmt"
 	"net/url"
@@ -15,6 +16,7 @@ type Config struct {
 	Port                           string
 	Environment                    string
 	AppToken                       string
+	SecondaryAppToken              string
 	AuthMode                       string
 	SessionSigningKey              string
 	AllowedOrigins                 []string
@@ -50,6 +52,7 @@ func Load() *Config {
 		Port:                           getEnv("PORT", "8080"),
 		Environment:                    environment,
 		AppToken:                       strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		SecondaryAppToken:              strings.TrimSpace(os.Getenv("APP_TOKEN_SECONDARY")),
 		AuthMode:                       authMode,
 		SessionSigningKey:              sessionSigningKey,
 		AllowedOrigins:                 splitCSV(os.Getenv("ALLOWED_ORIGINS")),
@@ -139,6 +142,20 @@ func (c *Config) LegacyAuthAllowed() bool {
 		return true
 	}
 	return mode == ""
+}
+
+func (c *Config) OperatorTokenMatches(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	matched := 0
+	for _, configured := range []string{c.AppToken, c.SecondaryAppToken} {
+		if configured != "" && len(token) == len(configured) {
+			matched |= subtle.ConstantTimeCompare([]byte(token), []byte(configured))
+		}
+	}
+	return matched == 1
 }
 
 func developmentSessionSigningKey() string {
