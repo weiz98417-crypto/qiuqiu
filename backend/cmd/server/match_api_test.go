@@ -121,6 +121,30 @@ func TestMatchCatalogListsConfiguredMatches(t *testing.T) {
 	}
 }
 
+func TestMatchLifecycleAPIRequiresOperatorAndPersistsTransition(t *testing.T) {
+	store := matchstate.NewStore()
+	if _, _, err := store.SetConfig("lifecycle-api", matchstate.MatchConfig{HomeTeam: "A", AwayTeam: "B"}); err != nil {
+		t.Fatal(err)
+	}
+	cfg := &config.Config{AppToken: "eval-token"}
+	handler := handleMatchAPI(store, companion.NewStoreMemoryTools(store), store, cfg, nil, pipeline.NewPromptManager())
+	unauthorized := doJSON(t, handler, http.MethodPost, "/api/matches/lifecycle-api/lifecycle", map[string]string{"lifecycle": "live"})
+	if unauthorized.Code != http.StatusUnauthorized {
+		t.Fatalf("unauthorized status=%d", unauthorized.Code)
+	}
+	response := doJSON(t, handler, http.MethodPost, "/api/matches/lifecycle-api/lifecycle?token=eval-token", map[string]string{"lifecycle": "scheduled"})
+	if response.Code != http.StatusOK {
+		t.Fatalf("status=%d body=%s", response.Code, response.Body.String())
+	}
+	if got := store.Config("lifecycle-api").Lifecycle; got != matchstate.LifecycleScheduled {
+		t.Fatalf("lifecycle=%q", got)
+	}
+	missing := doJSON(t, handler, http.MethodPost, "/api/matches/missing/lifecycle?token=eval-token", map[string]string{"lifecycle": "live"})
+	if missing.Code != http.StatusNotFound {
+		t.Fatalf("missing status=%d body=%s", missing.Code, missing.Body.String())
+	}
+}
+
 var testIdempotencyCounter atomic.Uint64
 
 type fixedDirectorExtractor struct {

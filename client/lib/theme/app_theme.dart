@@ -9,6 +9,9 @@ abstract final class AppColors {
   static const muted = Color(0xFFAAB4C0);
   static const orange = Color(0xFFFF6B35);
   static const orangeDeep = Color(0xFFE83A24);
+  static const championBlue = Color(0xFF1769E8);
+  static const championBlueDeep = Color(0xFF0B2E68);
+  static const skyBlue = Color(0xFF55A8FF);
   static const green = Color(0xFF5FCB8B);
   static const yellow = Color(0xFFF2C94C);
   static const red = Color(0xFFF05D5E);
@@ -34,10 +37,10 @@ abstract final class AppFonts {
 abstract final class AppTheme {
   static ThemeData get dark {
     const colorScheme = ColorScheme.dark(
-      primary: AppColors.orange,
+      primary: AppColors.championBlue,
       onPrimary: Colors.white,
-      secondary: AppColors.green,
-      onSecondary: AppColors.night,
+      secondary: AppColors.championBlue,
+      onSecondary: Colors.white,
       surface: AppColors.terrace,
       onSurface: AppColors.ink,
       error: AppColors.red,
@@ -118,7 +121,7 @@ abstract final class AppTheme {
         ),
         focusedBorder: OutlineInputBorder(
           borderRadius: BorderRadius.all(Radius.circular(8)),
-          borderSide: BorderSide(color: AppColors.orange, width: 2),
+          borderSide: BorderSide(color: AppColors.skyBlue, width: 2),
         ),
       ),
       dividerTheme: const DividerThemeData(color: AppColors.line, thickness: 1),

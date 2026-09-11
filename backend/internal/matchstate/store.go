@@ -108,16 +108,35 @@ type MatchIntegrity struct {
 }
 
 type MatchConfig struct {
-	MatchID     string           `json:"matchId"`
-	HomeTeam    string           `json:"homeTeam"`
-	AwayTeam    string           `json:"awayTeam"`
-	Competition string           `json:"competition,omitempty"`
-	Kickoff     string           `json:"kickoff,omitempty"`
+	MatchID       string           `json:"matchId"`
+	HomeTeam      string           `json:"homeTeam"`
+	AwayTeam      string           `json:"awayTeam"`
+	Competition   string           `json:"competition,omitempty"`
+	Kickoff       string           `json:"kickoff,omitempty"`
+	Round         string           `json:"round,omitempty"`
+	Venue         string           `json:"venue,omitempty"`
+	Referee       string           `json:"referee,omitempty"`
+	HomeCoach     string           `json:"homeCoach,omitempty"`
+	AwayCoach     string           `json:"awayCoach,omitempty"`
+	HomeFormation string           `json:"homeFormation,omitempty"`
+	AwayFormation string           `json:"awayFormation,omitempty"`
+	Stats         []MatchStatistic `json:"stats,omitempty"`
+	// Lifecycle is the operator-managed publication state. Empty preserves
+	// legacy behaviour where status is inferred from the match clock.
+	Lifecycle   string           `json:"lifecycle,omitempty"`
 	HomePlayers []Player         `json:"homePlayers,omitempty"`
 	AwayPlayers []Player         `json:"awayPlayers,omitempty"`
 	Automation  AutomationPolicy `json:"automation"`
 	Integrity   MatchIntegrity   `json:"integrity"`
 	UpdatedAt   string           `json:"updatedAt"`
+}
+
+type MatchStatistic struct {
+	Key   string  `json:"key"`
+	Label string  `json:"label"`
+	Home  float64 `json:"home"`
+	Away  float64 `json:"away"`
+	Unit  string  `json:"unit,omitempty"`
 }
 
 type Player struct {
@@ -216,6 +235,13 @@ type Repository interface {
 	ReconcileFact(matchID, factID, operatorID string) (MatchEvent, Snapshot, error)
 	FactRevisions(matchID, factID string) []FactRevision
 	Subscribe(matchID string) (<-chan MatchEvent, func())
+}
+
+// LifecycleRepository exposes explicit operator lifecycle transitions without
+// forcing legacy repository implementations to adopt the API.
+type LifecycleRepository interface {
+	SetLifecycle(matchID, lifecycle string) (MatchConfig, error)
+	Lifecycle(matchID string) string
 }
 
 type OperatorTransactionRepository interface {
@@ -460,11 +486,20 @@ func (s *Store) SetConfig(matchID string, config MatchConfig) (MatchConfig, Snap
 	}
 	automationProvided := strings.TrimSpace(config.Automation.Mode) != ""
 	config.MatchID = matchID
+	config.Lifecycle = normalizeLifecycle(config.Lifecycle)
 	config.HomeTeam = defaultString(config.HomeTeam, "主队")
 	config.AwayTeam = defaultString(config.AwayTeam, "客队")
 	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 
 	s.mu.Lock()
+	previousLifecycle := normalizeConfig(matchID, s.configs[matchID]).Lifecycle
+	if config.Lifecycle != "" && !validLifecycleTransition(previousLifecycle, config.Lifecycle) {
+		s.mu.Unlock()
+		return MatchConfig{}, Snapshot{}, fmt.Errorf("%w: lifecycle transition %s -> %s is not allowed", ErrInvalid, previousLifecycle, config.Lifecycle)
+	}
+	if config.Lifecycle == "" {
+		config.Lifecycle = previousLifecycle
+	}
 	if !automationProvided {
 		config.Automation = normalizeConfig(matchID, s.configs[matchID]).Automation
 	}
@@ -481,6 +516,39 @@ func (s *Store) SetConfig(matchID string, config MatchConfig) (MatchConfig, Snap
 	s.mu.Unlock()
 
 	return config, snapshot, nil
+}
+
+func (s *Store) Lifecycle(matchID string) string {
+	s.mu.RLock()
+	defer s.mu.RUnlock()
+	return normalizeConfig(matchID, s.configs[matchID]).Lifecycle
+}
+
+func (s *Store) SetLifecycle(matchID, lifecycle string) (MatchConfig, error) {
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return MatchConfig{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	lifecycle = normalizeLifecycle(lifecycle)
+	if lifecycle == "" {
+		return MatchConfig{}, fmt.Errorf("%w: invalid lifecycle", ErrInvalid)
+	}
+	s.mu.Lock()
+	config, exists := s.configs[matchID]
+	if !exists {
+		s.mu.Unlock()
+		return MatchConfig{}, ErrNotFound
+	}
+	config = normalizeConfig(matchID, config)
+	if !validLifecycleTransition(config.Lifecycle, lifecycle) {
+		s.mu.Unlock()
+		return MatchConfig{}, fmt.Errorf("%w: lifecycle transition %s -> %s is not allowed", ErrInvalid, config.Lifecycle, lifecycle)
+	}
+	config.Lifecycle = lifecycle
+	config.UpdatedAt = s.now().UTC().Format(time.RFC3339Nano)
+	s.configs[matchID] = config
+	s.mu.Unlock()
+	return config, nil
 }
 
 func (s *Store) SetAutomation(matchID string, policy AutomationPolicy) (AutomationPolicy, error) {
@@ -1914,6 +1982,7 @@ func normalizeConfig(matchID string, config MatchConfig) MatchConfig {
 	config.AwayTeam = defaultString(config.AwayTeam, "客队")
 	config.HomePlayers = normalizePlayers(config.HomePlayers)
 	config.AwayPlayers = normalizePlayers(config.AwayPlayers)
+	config.Lifecycle = normalizeLifecycle(config.Lifecycle)
 	config.Automation = normalizeAutomationPolicy(config.Automation)
 	if strings.TrimSpace(config.Integrity.Status) == "" {
 		config.Integrity = MatchIntegrity{Status: "ok"}

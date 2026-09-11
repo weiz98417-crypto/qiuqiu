@@ -1134,8 +1134,20 @@
           <div class="setup-card-body setup-meta">
             <label>比赛 ID <input class="mono" id="preMatchId" value="test"></label>
             <label>赛事名称 <input id="competition" placeholder="例如：2026 世界杯小组赛" value="国际友谊赛"></label>
+            <label>轮次 <input id="round" placeholder="例如：小组赛第 1 轮" value=""></label>
             <label>开球时间 <input id="kickoff" type="datetime-local"></label>
             <label>场馆 <input id="venue" placeholder="输入场馆名称" value="国家体育场"></label>
+            <label>裁判 <input id="referee" placeholder="例如：主裁判姓名或裁判组"></label>
+            <label>供给状态
+              <select id="lifecycle">
+                <option value="draft">草稿（不公开）</option>
+                <option value="scheduled" selected>已排期（用户可见）</option>
+                <option value="live">直播中</option>
+                <option value="finished">已结束</option>
+                <option value="cancelled">已取消</option>
+                <option value="archived">已归档</option>
+              </select>
+            </label>
           </div>
         </section>
 
@@ -2420,7 +2432,15 @@ function configPayload() {
     homeTeam: team('home'),
     awayTeam: team('away'),
     competition: value('competition'),
+    round: value('round'),
     kickoff: value('kickoff'),
+    venue: value('venue'),
+    referee: value('referee'),
+    lifecycle: value('lifecycle'),
+    homeFormation: value('homeFormation'),
+    awayFormation: value('awayFormation'),
+    homeCoach: value('homeCoach'),
+    awayCoach: value('awayCoach'),
     homePlayers: parsePlayers(value('homePlayers')),
     awayPlayers: parsePlayers(value('awayPlayers'))
   };
@@ -2488,6 +2508,8 @@ async function savePrematchConfig() {
   syncMainFromPre();
   localStorage.setItem('qiuqiu.operator.meta', JSON.stringify({
     venue: value('venue'),
+    round: value('round'),
+    referee: value('referee'),
     homeFormation: value('homeFormation'),
     awayFormation: value('awayFormation'),
     homeCoach: value('homeCoach'),
@@ -2845,7 +2867,15 @@ async function loadConfig() {
     $('homeTeam').value = data.config.homeTeam || value('homeTeam') || '西班牙';
     $('awayTeam').value = data.config.awayTeam || value('awayTeam') || '德国';
     $('competition').value = data.config.competition || value('competition');
+    $('round').value = data.config.round || value('round');
     $('kickoff').value = data.config.kickoff || value('kickoff');
+    $('venue').value = data.config.venue || value('venue');
+    $('referee').value = data.config.referee || value('referee');
+    $('homeFormation').value = data.config.homeFormation || value('homeFormation');
+    $('awayFormation').value = data.config.awayFormation || value('awayFormation');
+    $('homeCoach').value = data.config.homeCoach || value('homeCoach');
+    $('awayCoach').value = data.config.awayCoach || value('awayCoach');
+    if (data.config.lifecycle) $('lifecycle').value = data.config.lifecycle;
     if (data.config.homePlayers?.length) $('homePlayers').value = playersToText(data.config.homePlayers);
     if (data.config.awayPlayers?.length) $('awayPlayers').value = playersToText(data.config.awayPlayers);
   }

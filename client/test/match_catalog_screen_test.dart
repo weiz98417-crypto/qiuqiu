@@ -68,4 +68,38 @@ void main() {
     expect(find.text('查看赛前'), findsOneWidget);
     expect(find.text('进入陪看'), findsNothing);
   });
+
+  testWidgets('opening a searched match resets catalog filters',
+      (tester) async {
+    final service = MatchCatalogService(
+      client: MockClient((_) async => http.Response(
+          '''
+        {"matches":[
+          {"matchId":"finished-1","homeTeam":"阿森纳","awayTeam":"考文垂城","status":"finished","liveLabel":"已结束"},
+          {"matchId":"live-1","homeTeam":"西班牙","awayTeam":"德国","status":"live","liveLabel":"直播中"}
+        ]}
+      ''',
+          200,
+          headers: {'content-type': 'application/json; charset=utf-8'})),
+    );
+    addTearDown(service.close);
+
+    await tester.pumpWidget(MaterialApp(
+      theme: AppTheme.dark,
+      home: MatchCatalogScreen(
+        apiBaseUrl: 'http://example.test',
+        service: service,
+        onSelected: (_) {},
+      ),
+    ));
+    await tester.pumpAndSettle();
+
+    await tester.enterText(find.byType(TextField), '阿森纳');
+    await tester.tap(find.text('回看陪聊'));
+    await tester.pumpAndSettle();
+
+    expect(
+        tester.widget<TextField>(find.byType(TextField)).controller?.text, '');
+    expect(find.text('西班牙 vs 德国'), findsOneWidget);
+  });
 }

@@ -1388,6 +1388,9 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				http.Error(w, err.Error(), http.StatusBadRequest)
 				return
 			}
+			if strings.TrimSpace(matchConfig.Lifecycle) == "" {
+				matchConfig.Lifecycle = matchstate.LifecycleScheduled
+			}
 			executeOperatorWrite(w, r, operatorWrites, matchID, "match.start", body, func(_ context.Context) (operatorwrite.Response, error) {
 				if sources != nil {
 					sources.Stop(matchID)
@@ -1863,6 +1866,37 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
 					"config":   saved,
 					"snapshot": store.PublicSnapshot(matchID),
+				})
+			})
+		case r.Method == http.MethodPost && resource == "lifecycle" && len(parts) == 2:
+			operator, authorized := operatorClaims(r, cfg)
+			if !authorized {
+				http.Error(w, "unauthorized", http.StatusUnauthorized)
+				return
+			}
+			var request struct {
+				Lifecycle string `json:"lifecycle"`
+			}
+			body, err := decodeOperatorJSON(w, r, &request)
+			if err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			executeOperatorWrite(w, r, operatorWrites, matchID, "lifecycle.set", body, func(_ context.Context) (operatorwrite.Response, error) {
+				lifecycleStore, ok := store.(matchstate.LifecycleRepository)
+				if !ok {
+					return operatorwrite.Response{}, operatorError(http.StatusNotImplemented, errors.New("match lifecycle unavailable"))
+				}
+				saved, err := lifecycleStore.SetLifecycle(matchID, request.Lifecycle)
+				if err != nil {
+					status := http.StatusBadRequest
+					if errors.Is(err, matchstate.ErrNotFound) {
+						status = http.StatusNotFound
+					}
+					return operatorwrite.Response{}, operatorError(status, err)
+				}
+				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+					"config": saved, "snapshot": store.PublicSnapshot(matchID), "operatorId": operator.Subject,
 				})
 			})
 		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
@@ -2370,7 +2404,7 @@ func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool 
 
 func isDemoMatchID(matchID string) bool {
 	matchID = strings.TrimSpace(matchID)
-	return matchID == "test" || strings.HasPrefix(matchID, "demo-")
+	return matchID == "test" || matchID == "operator-config-e2e" || strings.HasPrefix(matchID, "demo-")
 }
 
 func writeJSON(w http.ResponseWriter, status int, payload interface{}) {

@@ -59,6 +59,7 @@ class Live2dViewState extends State<Live2dView> {
   void initState() {
     super.initState();
     if (kIsWeb) {
+      live2d_bridge.configureLive2dSurface();
       _webReadyTimeout = Timer(const Duration(seconds: 8), () {
         if (mounted && !_modelReady && !_loadFailed) {
           _readyPoll?.cancel();
@@ -154,94 +155,96 @@ class Live2dViewState extends State<Live2dView> {
   Widget build(BuildContext context) {
     return Stack(
       children: [
-        InAppWebView(
-          initialUrlRequest: kIsWeb ? URLRequest(url: _webLive2dUrl) : null,
-          initialData: kIsWeb
-              ? null
-              : InAppWebViewInitialData(
-                  data: _htmlContent,
-                  mimeType: 'text/html',
-                  encoding: 'utf8',
-                  baseUrl: WebUri('qiuqiu://asset/'),
-                ),
-          initialSettings: InAppWebViewSettings(
-            transparentBackground: true,
-            javaScriptEnabled: true,
-            resourceCustomSchemes: const ['qiuqiu'],
-            disableContextMenu: true,
-            supportZoom: false,
+        IgnorePointer(
+          child: InAppWebView(
+            initialUrlRequest: kIsWeb ? URLRequest(url: _webLive2dUrl) : null,
+            initialData: kIsWeb
+                ? null
+                : InAppWebViewInitialData(
+                    data: _htmlContent,
+                    mimeType: 'text/html',
+                    encoding: 'utf8',
+                    baseUrl: WebUri('qiuqiu://asset/'),
+                  ),
+            initialSettings: InAppWebViewSettings(
+              transparentBackground: true,
+              javaScriptEnabled: true,
+              resourceCustomSchemes: const ['qiuqiu'],
+              disableContextMenu: true,
+              supportZoom: false,
+            ),
+            onLoadStop: (controller, url) {
+              if (!_modelReady) {
+                _readyPoll?.cancel();
+                _readyPoll = Timer.periodic(
+                  const Duration(milliseconds: 300),
+                  (_) => _checkReady(),
+                );
+              }
+            },
+            onLoadResourceWithCustomScheme: kIsWeb
+                ? null
+                : (controller, url) async {
+                    final urlStr = url.toString();
+                    if (!urlStr.startsWith('qiuqiu://asset/') ||
+                        urlStr.contains('..')) {
+                      return null;
+                    }
+                    final assetPath = urlStr.split('qiuqiu://asset/').last;
+                    final ext = assetPath.split('.').last.toLowerCase();
+                    const mimeMap = {
+                      'json': 'application/json',
+                      'moc3': 'application/octet-stream',
+                      'png': 'image/png',
+                      'cdi3': 'application/json',
+                      'exp3': 'application/json',
+                      'js': 'application/javascript',
+                    };
+                    try {
+                      final data = await rootBundle.load(
+                        'assets/live2d/$assetPath',
+                      );
+                      return CustomSchemeResponse(
+                        data: data.buffer.asUint8List(),
+                        contentType: mimeMap[ext] ?? 'application/octet-stream',
+                      );
+                    } catch (_) {
+                      return null;
+                    }
+                  },
+            onWebViewCreated: (controller) {
+              _controller = controller;
+              if (!kIsWeb) {
+                controller.addJavaScriptHandler(
+                  handlerName: 'onModelReady',
+                  callback: (args) {
+                    _readyPoll?.cancel();
+                    if (mounted) {
+                      setState(() {
+                        _modelReady = true;
+                        _loadFailed = false;
+                      });
+                    }
+                  },
+                );
+                controller.addJavaScriptHandler(
+                  handlerName: 'onModelError',
+                  callback: (args) {
+                    _readyPoll?.cancel();
+                    if (mounted) setState(() => _loadFailed = true);
+                  },
+                );
+              } else {
+                _webReadyTimeout?.cancel();
+                _webReadyTimeout = Timer(const Duration(seconds: 8), () {
+                  if (mounted && !_modelReady && !_loadFailed) {
+                    _readyPoll?.cancel();
+                    setState(() => _modelReady = true);
+                  }
+                });
+              }
+            },
           ),
-          onLoadStop: (controller, url) {
-            if (!_modelReady) {
-              _readyPoll?.cancel();
-              _readyPoll = Timer.periodic(
-                const Duration(milliseconds: 300),
-                (_) => _checkReady(),
-              );
-            }
-          },
-          onLoadResourceWithCustomScheme: kIsWeb
-              ? null
-              : (controller, url) async {
-                  final urlStr = url.toString();
-                  if (!urlStr.startsWith('qiuqiu://asset/') ||
-                      urlStr.contains('..')) {
-                    return null;
-                  }
-                  final assetPath = urlStr.split('qiuqiu://asset/').last;
-                  final ext = assetPath.split('.').last.toLowerCase();
-                  const mimeMap = {
-                    'json': 'application/json',
-                    'moc3': 'application/octet-stream',
-                    'png': 'image/png',
-                    'cdi3': 'application/json',
-                    'exp3': 'application/json',
-                    'js': 'application/javascript',
-                  };
-                  try {
-                    final data = await rootBundle.load(
-                      'assets/live2d/$assetPath',
-                    );
-                    return CustomSchemeResponse(
-                      data: data.buffer.asUint8List(),
-                      contentType: mimeMap[ext] ?? 'application/octet-stream',
-                    );
-                  } catch (_) {
-                    return null;
-                  }
-                },
-          onWebViewCreated: (controller) {
-            _controller = controller;
-            if (!kIsWeb) {
-              controller.addJavaScriptHandler(
-                handlerName: 'onModelReady',
-                callback: (args) {
-                  _readyPoll?.cancel();
-                  if (mounted) {
-                    setState(() {
-                      _modelReady = true;
-                      _loadFailed = false;
-                    });
-                  }
-                },
-              );
-              controller.addJavaScriptHandler(
-                handlerName: 'onModelError',
-                callback: (args) {
-                  _readyPoll?.cancel();
-                  if (mounted) setState(() => _loadFailed = true);
-                },
-              );
-            } else {
-              _webReadyTimeout?.cancel();
-              _webReadyTimeout = Timer(const Duration(seconds: 8), () {
-                if (mounted && !_modelReady && !_loadFailed) {
-                  _readyPoll?.cancel();
-                  setState(() => _modelReady = true);
-                }
-              });
-            }
-          },
         ),
         if (!kIsWeb && !_modelReady && !_loadFailed)
           Center(

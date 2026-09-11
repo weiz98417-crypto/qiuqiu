@@ -18,6 +18,7 @@ type MatchSummary struct {
 	AwayScore   int    `json:"awayScore"`
 	LiveLabel   string `json:"liveLabel"`
 	Status      string `json:"status"`
+	Lifecycle   string `json:"lifecycle,omitempty"`
 	UpdatedAt   string `json:"updatedAt,omitempty"`
 }
 
@@ -33,7 +34,11 @@ func (s *Store) PublicMatchCatalog() ([]MatchSummary, error) {
 	defer s.mu.RUnlock()
 	items := make([]MatchSummary, 0, len(s.configs))
 	for matchID, config := range s.configs {
-		items = append(items, summaryFromState(matchID, config, s.clocks[matchID], s.events[matchID]))
+		item := summaryFromState(matchID, config, s.clocks[matchID], s.events[matchID])
+		if item.Status != "scheduled" && item.Status != "live" && item.Status != "finished" {
+			continue
+		}
+		items = append(items, item)
 	}
 	sort.Slice(items, func(left, right int) bool {
 		if statusRank(items[left].Status) != statusRank(items[right].Status) {
@@ -70,19 +75,27 @@ func summaryFromState(matchID string, config MatchConfig, clock MatchClock, even
 	period := strings.TrimSpace(projection.Snapshot.Period)
 	liveLabel := "等待开赛"
 	status := "scheduled"
+	lifecycle := normalizeLifecycle(config.Lifecycle)
+	if lifecycle != "" {
+		status = lifecycle
+	}
 	switch strings.ToLower(period) {
 	case "fulltime", "full_time", "finished":
 		liveLabel = "已结束"
-		status = "finished"
+		if lifecycle == "" {
+			status = "finished"
+		}
 	case "first_half", "second_half", "extra_time", "halftime":
 		liveLabel = "直播中"
-		status = "live"
+		if lifecycle == "" {
+			status = "live"
+		}
 	}
 	return MatchSummary{
 		MatchID: matchID, HomeTeam: projection.Snapshot.HomeTeam, AwayTeam: projection.Snapshot.AwayTeam,
 		Competition: projection.Snapshot.Competition, Kickoff: config.Kickoff, Period: period,
 		Clock: projection.Snapshot.Clock, HomeScore: projection.Snapshot.Score.Home,
 		AwayScore: projection.Snapshot.Score.Away, LiveLabel: liveLabel, Status: status,
-		UpdatedAt: config.UpdatedAt,
+		UpdatedAt: config.UpdatedAt, Lifecycle: lifecycle,
 	}
 }

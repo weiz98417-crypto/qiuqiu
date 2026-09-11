@@ -1,4 +1,5 @@
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
 
 import '../theme/app_theme.dart';
 
@@ -140,7 +141,13 @@ class _ReplySubtitleCardState extends State<ReplySubtitleCard> {
                   ],
                 ),
               ),
-            ),
+            )
+                .animate()
+                .fadeIn(
+                  duration: 180.ms,
+                  curve: Curves.easeOutCubic,
+                )
+                .slideY(begin: 0.04, end: 0, duration: 220.ms),
           ),
         ),
       ),

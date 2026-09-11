@@ -12,6 +12,7 @@ class MatchCatalogItem {
   final String kickoff;
   final String liveLabel;
   final String status;
+  final String lifecycle;
   final int homeScore;
   final int awayScore;
 
@@ -23,6 +24,7 @@ class MatchCatalogItem {
     this.kickoff = '',
     this.liveLabel = '等待开赛',
     this.status = 'scheduled',
+    this.lifecycle = '',
     this.homeScore = 0,
     this.awayScore = 0,
   });
@@ -31,12 +33,13 @@ class MatchCatalogItem {
     int integer(String key) => int.tryParse(json[key]?.toString() ?? '') ?? 0;
     return MatchCatalogItem(
       matchId: json['matchId']?.toString() ?? '',
-      homeTeam: json['homeTeam']?.toString() ?? '主队',
-      awayTeam: json['awayTeam']?.toString() ?? '客队',
-      competition: json['competition']?.toString() ?? '',
+      homeTeam: _catalogNameZh(json['homeTeam']?.toString() ?? '主队'),
+      awayTeam: _catalogNameZh(json['awayTeam']?.toString() ?? '客队'),
+      competition: _catalogCompetitionZh(json['competition']?.toString() ?? ''),
       kickoff: json['kickoff']?.toString() ?? '',
       liveLabel: json['liveLabel']?.toString() ?? '等待开赛',
       status: json['status']?.toString() ?? 'scheduled',
+      lifecycle: json['lifecycle']?.toString() ?? '',
       homeScore: integer('homeScore'),
       awayScore: integer('awayScore'),
     );
@@ -44,6 +47,32 @@ class MatchCatalogItem {
 
   String get title => '$homeTeam vs $awayTeam';
 }
+
+const _catalogTeamNamesZh = <String, String>{
+  'Arsenal': '阿森纳',
+  'Coventry City': '考文垂城',
+  'Liverpool': '利物浦',
+  'Nottingham Forest': '诺丁汉森林',
+  'Athletic Club': '毕尔巴鄂竞技',
+  'Atlético Madrid': '马德里竞技',
+  'Levante': '莱万特',
+  'Real Betis': '皇家贝蒂斯',
+  'Internazionale': '国际米兰',
+  'Napoli': '那不勒斯',
+  'Juventus': '尤文图斯',
+  'Parma': '帕尔马',
+  'England': '英格兰',
+  'Congo DR': '刚果（金）',
+};
+
+String _catalogNameZh(String value) => _catalogTeamNamesZh[value] ?? value;
+
+String _catalogCompetitionZh(String value) => value
+    .replaceAll('English Premier League', '英格兰超级联赛')
+    .replaceAll('Premier League', '英超')
+    .replaceAll('La Liga', '西甲')
+    .replaceAll('Serie A', '意甲')
+    .replaceAll('FIFA World Cup', '国际足联世界杯');
 
 class MatchCatalogService {
   final http.Client _client;

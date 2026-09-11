@@ -36,6 +36,13 @@ func TestEventIDsRemainUniqueUnderConcurrentBurst(t *testing.T) {
 	}
 }
 
+func TestParseOptionalTimeAcceptsProviderMinutePrecision(t *testing.T) {
+	parsed := parseOptionalTime("2026-09-12T14:00Z")
+	if parsed == nil || parsed.UTC().Format(time.RFC3339) != "2026-09-12T14:00:00Z" {
+		t.Fatalf("parseOptionalTime() = %v", parsed)
+	}
+}
+
 func TestPostgresStoreIntegration(t *testing.T) {
 	databaseURL := os.Getenv("DATABASE_URL")
 	if databaseURL == "" {
@@ -56,6 +63,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	config, snapshot, err := store.SetConfig(matchID, MatchConfig{
 		HomeTeam: "西班牙",
 		AwayTeam: "德国",
+		Stats: []MatchStatistic{
+			{Key: "possessionPct", Label: "控球率", Home: 61.2, Away: 38.8, Unit: "%"},
+		},
 		HomePlayers: []Player{
 			{Number: "10", Name: "佩德里", Position: "CM"},
 			{Number: "8", Name: "法比安", Position: "CM"},
@@ -69,6 +79,9 @@ func TestPostgresStoreIntegration(t *testing.T) {
 	}
 	if len(store.Config(matchID).HomePlayers) != 2 {
 		t.Fatalf("players did not round-trip: %+v", store.Config(matchID).HomePlayers)
+	}
+	if got := store.Config(matchID).Stats; !reflect.DeepEqual(got, config.Stats) {
+		t.Fatalf("stats did not round-trip: got=%+v want=%+v", got, config.Stats)
 	}
 
 	events, unsubscribe := store.Subscribe(matchID)

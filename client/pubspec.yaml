@@ -19,6 +19,9 @@ dependencies:
   share_plus: ^10.0.0
   record: ^6.2.1
   web: ^1.1.1
+  flutter_animate: ^4.5.0
+  lottie: ^3.1.2
+  vibration: ^2.0.0
 
 dev_dependencies:
   flutter_test:
@@ -28,6 +31,13 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    - assets/images/match-card-stadium.png
+    - assets/images/match-card-blue-ball.png
+    - assets/images/match-card-digital-player.png
+    - assets/images/match-card-stadium-lights.png
+    - assets/images/stadium-sunset.png
+    - assets/images/stadium-stage.png
+    - assets/animations/goal-burst.json
     - assets/live2d/
     - assets/live2d/models/qiuqiu/
     - assets/live2d/models/qiuqiu/expressions/

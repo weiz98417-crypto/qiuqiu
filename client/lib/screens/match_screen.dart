@@ -1,8 +1,12 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
+import 'dart:ui' show ImageFilter;
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
+import 'package:flutter_animate/flutter_animate.dart';
+import 'package:lottie/lottie.dart';
+import 'package:vibration/vibration.dart';
 
 export '../services/match_view_data.dart';
 
@@ -12,11 +16,13 @@ import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
 import '../services/match_session_controller.dart';
 import '../services/match_view_data.dart';
+import '../services/match_overview_service.dart';
 import '../services/streaming_transcription.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
 import '../widgets/match_actions_menu.dart';
+import '../widgets/metal_button.dart';
 import '../widgets/reply_subtitle_card.dart';
 import 'reply_display.dart';
 import 'settings_screen.dart';
@@ -46,6 +52,7 @@ class _MatchScreenState extends State<MatchScreen> {
   final AudioPlayerService _audio = AudioPlayerService();
   final PreferencesService _preferences = PreferencesService();
   final SessionService _sessions = SessionService();
+  final MatchOverviewService _overviewService = MatchOverviewService();
   late final MatchSessionController _sessionController;
   final VADService _vad = VADService();
   final StreamingTranscription _streamingTranscription =
@@ -54,6 +61,9 @@ class _MatchScreenState extends State<MatchScreen> {
   final GlobalKey<Live2dViewState> _live2dKey = GlobalKey<Live2dViewState>();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   late final Future<void> _profileLoad;
+  MatchOverviewData _overview = const MatchOverviewData();
+  bool _overviewLoading = true;
+  String? _overviewError;
 
   UserProfile _profile = const UserProfile(
     nickname: '',
@@ -113,6 +123,7 @@ class _MatchScreenState extends State<MatchScreen> {
     );
     _sessionController.addListener(_onSessionStateChanged);
     _bindServices();
+    unawaited(_loadMatchOverview());
     _clockTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
       if (!mounted) return;
       _sessionController.tickClock(DateTime.now().toUtc());
@@ -180,6 +191,37 @@ class _MatchScreenState extends State<MatchScreen> {
         ? 'test'
         : requestedMatchId;
     return 'ws://10.0.2.2:8080/ws/match/${Uri.encodeComponent(matchId)}';
+  }
+
+  String _overviewMatchId() {
+    final requested = widget.matchId?.trim();
+    if (requested != null && requested.isNotEmpty) return requested;
+    if (kIsWeb) {
+      final fromPage = Uri.base.queryParameters['matchId']?.trim();
+      if (fromPage != null && fromPage.isNotEmpty) return fromPage;
+    }
+    return 'test';
+  }
+
+  Future<void> _loadMatchOverview() async {
+    try {
+      final overview = await _overviewService.fetch(
+        baseUrl: normalizeAPIBaseURL(_socketUrl()),
+        matchId: _overviewMatchId(),
+      );
+      if (!mounted) return;
+      setState(() {
+        _overview = overview;
+        _overviewLoading = false;
+        _overviewError = null;
+      });
+    } catch (error) {
+      if (!mounted) return;
+      setState(() {
+        _overviewLoading = false;
+        _overviewError = error.toString();
+      });
+    }
   }
 
   Future<void> _initialize() async {
@@ -263,6 +305,7 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'match_snapshot':
         final snapshot = _map(message['data']);
         if (snapshot != null) {
+          _overview = _overview.withSnapshot(snapshot);
           _sessionController.dispatch(
             MatchSnapshotSessionEvent(snapshot, DateTime.now().toUtc()),
           );
@@ -280,6 +323,7 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'match_event':
         final event = _map(message['data']);
         final snapshot = _map(message['snapshot']);
+        if (snapshot != null) _overview = _overview.withSnapshot(snapshot);
         final deliveryKey =
             message['deliveryKey']?.toString() ?? matchEventDeliveryKey(event);
         _sessionController.dispatch(MatchEventProjectionSessionEvent(
@@ -289,6 +333,7 @@ class _MatchScreenState extends State<MatchScreen> {
           now: DateTime.now().toUtc(),
         ));
         if (event != null) {
+          _vibrateForMatchEvent(event['eventType']?.toString());
           _sessionController.dispatch(MatchFactSessionEvent(
             event['factId']?.toString() ?? event['id']?.toString() ?? '',
             _integer(event['factRevision']) ?? 0,
@@ -381,10 +426,20 @@ class _MatchScreenState extends State<MatchScreen> {
       score: data?['score'] is String ? data!['score'] as String : null,
       minute: data?['minute'],
     ));
+    _vibrateForMatchEvent(eventType);
     _sessionController.receiveLegacyEventAnimation(
       _expressionForEvent(eventType),
       _motionForEvent(eventType),
     );
+  }
+
+  void _vibrateForMatchEvent(String? eventType) {
+    if (!kIsWeb &&
+        (eventType == 'goal' ||
+            eventType == 'penalty' ||
+            eventType == 'red_card')) {
+      unawaited(Vibration.vibrate(duration: 90));
+    }
   }
 
   void _handleMatchFactRetracted(Map<String, dynamic> message) {
@@ -976,6 +1031,7 @@ class _MatchScreenState extends State<MatchScreen> {
     unawaited(_audio.dispose());
     unawaited(_socket.dispose());
     _sessions.close();
+    _overviewService.close();
     super.dispose();
   }
 
@@ -987,74 +1043,93 @@ class _MatchScreenState extends State<MatchScreen> {
         if (!didPop) unawaited(_leaveMatch(confirm: _insideMatch));
       },
       child: Scaffold(
-        body: DecoratedBox(
-          decoration: const BoxDecoration(color: AppColors.night),
-          child: SafeArea(
-            child: Align(
-              alignment: Alignment.topCenter,
-              child: ConstrainedBox(
-                constraints: const BoxConstraints(maxWidth: 520),
-                child: _insideMatch
-                    ? _LiveMatchExperience(
-                        key: const ValueKey('live'),
-                        live2dKey: _live2dKey,
-                        match: _match,
-                        expression: _expression,
-                        motion: _motion,
-                        isSpeaking: _phase == MatchSessionPhase.speaking,
-                        phase: _phase,
-                        socketStatus: _socketStatus,
-                        continuousEnabled: _continuousEnabled,
-                        subtitlesEnabled: shouldShowReplyText(
-                          subtitlesEnabled: _profile.subtitlesEnabled,
-                          playbackFallback: _forceSubtitleFallback,
-                        ),
-                        qiuqiuLine: _qiuqiuLine,
-                        qiuqiuDetail: _qiuqiuDetail,
-                        userLine: _userLine,
-                        notice: _notice,
-                        textMode: _textMode,
-                        textController: _textController,
-                        onToggleContinuous: _toggleContinuous,
-                        audioInputLabel: _audioInputLabel,
-                        onChooseAudioInput: _chooseAudioInput,
-                        onOpenSettings: _openSettings,
-                        onLeave: _leaveMatch,
-                        onSwitchMatch: _switchMatch,
-                        onReturnToCatalog: () => _leaveMatch(confirm: false),
-                        onReconnect: _reconnect,
-                        onOpenText: () => setState(() => _textMode = true),
-                        onCloseText: () => setState(() => _textMode = false),
-                        onSendText: _sendText,
-                        onMicDown: _startPushToTalk,
-                        onMicUp: _stopPushToTalk,
-                      )
-                    : _MatchLobby(
-                        key: const ValueKey('lobby'),
-                        live2dKey: _live2dKey,
-                        match: _match,
-                        expression: _expression,
-                        motion: _motion,
-                        socketStatus: _socketStatus,
-                        onEnter: _enterMatch,
-                        onReconnect: _reconnect,
-                        onOpenSettings: _openSettings,
-                        onLeave: () => _leaveMatch(confirm: false),
-                      ),
+        body: Stack(
+          fit: StackFit.expand,
+          children: [
+            ImageFiltered(
+              imageFilter: ImageFilter.blur(sigmaX: 2, sigmaY: 2),
+              child: Image.asset(
+                'assets/images/stadium-stage.png',
+                fit: BoxFit.cover,
+                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
               ),
             ),
-          ),
+            const ColoredBox(color: Color(0x14070B12)),
+            SafeArea(
+              child: LayoutBuilder(
+                builder: (context, constraints) {
+                  final content = _insideMatch
+                      ? _LiveMatchExperience(
+                          key: const ValueKey('live'),
+                          live2dKey: _live2dKey,
+                          match: _match,
+                          expression: _expression,
+                          motion: _motion,
+                          isSpeaking: _phase == MatchSessionPhase.speaking,
+                          phase: _phase,
+                          socketStatus: _socketStatus,
+                          continuousEnabled: _continuousEnabled,
+                          subtitlesEnabled: shouldShowReplyText(
+                            subtitlesEnabled: _profile.subtitlesEnabled,
+                            playbackFallback: _forceSubtitleFallback,
+                          ),
+                          qiuqiuLine: _qiuqiuLine,
+                          qiuqiuDetail: _qiuqiuDetail,
+                          userLine: _userLine,
+                          notice: _notice,
+                          textMode: _textMode,
+                          textController: _textController,
+                          onToggleContinuous: _toggleContinuous,
+                          audioInputLabel: _audioInputLabel,
+                          onChooseAudioInput: _chooseAudioInput,
+                          onOpenSettings: _openSettings,
+                          onLeave: _leaveMatch,
+                          onSwitchMatch: _switchMatch,
+                          onReturnToCatalog: () => _leaveMatch(confirm: false),
+                          onReconnect: _reconnect,
+                          onOpenText: () => setState(() => _textMode = true),
+                          onCloseText: () => setState(() => _textMode = false),
+                          onSendText: _sendText,
+                          onMicDown: _startPushToTalk,
+                          onMicUp: _stopPushToTalk,
+                        )
+                      : _MatchLobby(
+                          key: const ValueKey('lobby'),
+                          match: _match,
+                          overview: _overview,
+                          overviewLoading: _overviewLoading,
+                          overviewError: _overviewError,
+                          socketStatus: _socketStatus,
+                          onEnter: _enterMatch,
+                          onReconnect: _reconnect,
+                          onOpenSettings: _openSettings,
+                          onLeave: () => _leaveMatch(confirm: false),
+                        );
+                  final isCompact = constraints.maxWidth <= 720;
+                  return Align(
+                    alignment: Alignment.topCenter,
+                    child: isCompact
+                        ? SizedBox.expand(child: content)
+                        : ConstrainedBox(
+                            constraints: const BoxConstraints(maxWidth: 520),
+                            child: content,
+                          ),
+                  );
+                },
+              ),
+            ),
+          ],
         ),
       ),
     );
   }
 }
 
-class _MatchLobby extends StatelessWidget {
-  final GlobalKey<Live2dViewState> live2dKey;
+class _MatchLobby extends StatefulWidget {
   final MatchViewData match;
-  final String expression;
-  final String? motion;
+  final MatchOverviewData overview;
+  final bool overviewLoading;
+  final String? overviewError;
   final SocketStatus socketStatus;
   final VoidCallback onEnter;
   final VoidCallback onReconnect;
@@ -1063,10 +1138,10 @@ class _MatchLobby extends StatelessWidget {
 
   const _MatchLobby({
     super.key,
-    required this.live2dKey,
     required this.match,
-    required this.expression,
-    required this.motion,
+    required this.overview,
+    required this.overviewLoading,
+    required this.overviewError,
     required this.socketStatus,
     required this.onEnter,
     required this.onReconnect,
@@ -1075,9 +1150,36 @@ class _MatchLobby extends StatelessWidget {
   });
 
   @override
+  State<_MatchLobby> createState() => _MatchLobbyState();
+}
+
+class _MatchLobbyState extends State<_MatchLobby> {
+  int _tabIndex = 0;
+
+  MatchOverviewData get details {
+    final overview = widget.overview;
+    return overview.copyWith(
+      homeScore: widget.match.homeScore,
+      awayScore: widget.match.awayScore,
+      period:
+          widget.match.period.isEmpty ? overview.period : widget.match.period,
+      clock: widget.match.clock.isEmpty ? overview.clock : widget.match.clock,
+      liveLabel: widget.match.liveLabel,
+    );
+  }
+
+  String _teamName(String value, String fallback) =>
+      value == '主队' || value == '客队' ? fallback : value;
+
+  @override
   Widget build(BuildContext context) {
+    final overview = details;
+    final homeTeam = _teamName(overview.homeTeam, widget.match.homeTeam);
+    final awayTeam = _teamName(overview.awayTeam, widget.match.awayTeam);
+    final title =
+        overview.competition.trim().isEmpty ? '比赛详情' : overview.competition;
     return ColoredBox(
-      color: AppColors.paper,
+      color: const Color(0xA60B2E68),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
           AppSpacing.md,
@@ -1092,123 +1194,82 @@ class _MatchLobby extends StatelessWidget {
               children: [
                 IconButton(
                   tooltip: '返回比赛列表',
-                  onPressed: onLeave,
-                  color: AppColors.paperInk,
+                  onPressed: widget.onLeave,
+                  color: AppColors.ink,
                   icon: const Icon(Icons.arrow_back_rounded),
                 ),
                 Expanded(
                   child: Text(
-                    '${match.competition} · ${match.liveLabel}',
+                    '$title · ${overview.liveLabel}',
+                    maxLines: 1,
+                    overflow: TextOverflow.ellipsis,
                     style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: AppColors.paperInk,
-                          letterSpacing: 1,
+                          color: AppColors.ink,
+                          letterSpacing: 0.6,
                         ),
                   ),
                 ),
-                _ConnectionMark(status: socketStatus, dark: true),
+                _ConnectionMark(status: widget.socketStatus, dark: true),
                 const SizedBox(width: AppSpacing.xs),
                 IconButton(
                   tooltip: '陪看设置',
-                  onPressed: onOpenSettings,
-                  color: AppColors.paperInk,
+                  onPressed: widget.onOpenSettings,
+                  color: AppColors.ink,
                   icon: const Icon(Icons.tune_rounded),
                 ),
               ],
             ),
-            const SizedBox(height: AppSpacing.xs),
-            Text(
-              '今晚，\n别一个人看。',
-              style: Theme.of(
-                context,
-              ).textTheme.displaySmall?.copyWith(color: AppColors.paperInk),
+            _MatchScoreHeader(
+              overview: overview,
+              homeTeam: homeTeam,
+              awayTeam: awayTeam,
             ),
-            const SizedBox(height: AppSpacing.lg),
+            const SizedBox(height: AppSpacing.sm),
+            if (widget.overviewLoading)
+              const LinearProgressIndicator(
+                minHeight: 2,
+                color: AppColors.skyBlue,
+                backgroundColor: Colors.transparent,
+              )
+            else if (widget.overviewError != null)
+              Text(
+                '详细资料暂时不可用，仍可查看实时比分和进入陪看。',
+                style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                      color: AppColors.yellow,
+                    ),
+              ),
+            const SizedBox(height: AppSpacing.sm),
+            _OverviewTabs(
+              selectedIndex: _tabIndex,
+              onSelected: (index) => setState(() => _tabIndex = index),
+            ),
+            const SizedBox(height: AppSpacing.sm),
             Expanded(
-              child: DecoratedBox(
-                decoration: BoxDecoration(
-                  color: AppColors.stage,
-                  border: Border.all(color: AppColors.paperInk, width: 2),
-                ),
-                child: Stack(
-                  children: [
-                    Positioned.fill(
-                      child: Live2dView(
-                        key: live2dKey,
-                        expression: expression,
-                        isSpeaking: false,
-                        motion: motion,
-                      ),
-                    ),
-                    Positioned(
-                      left: AppSpacing.md,
-                      top: AppSpacing.md,
-                      child: RotatedBox(
-                        quarterTurns: 1,
-                        child: Text(
-                          '${match.homeTeam.toUpperCase()} VS ${match.awayTeam.toUpperCase()}',
-                          style:
-                              Theme.of(context).textTheme.labelLarge?.copyWith(
-                                    color: AppColors.ink,
-                                    letterSpacing: 1,
-                                  ),
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      left: AppSpacing.md,
-                      bottom: AppSpacing.md,
-                      child: Text(
-                        '${match.homeScore}—${match.awayScore}',
-                        style:
-                            Theme.of(context).textTheme.displaySmall?.copyWith(
-                          color: AppColors.ink,
-                          fontSize: 64,
-                          height: 0.95,
-                          fontFamily: AppFonts.scoreboard,
-                          fontFeatures: const [
-                            FontFeature.tabularFigures(),
-                          ],
-                        ),
-                      ),
-                    ),
-                    Positioned(
-                      right: AppSpacing.md,
-                      bottom: AppSpacing.md,
-                      child: Text(
-                        '第 ${match.clock} 分钟',
-                        style: Theme.of(
-                          context,
-                        ).textTheme.labelLarge?.copyWith(
-                              color: AppColors.ink,
-                              fontFamily: AppFonts.scoreboard,
-                            ),
-                      ),
-                    ),
-                  ],
-                ),
+              child: SingleChildScrollView(
+                padding: const EdgeInsets.only(bottom: AppSpacing.sm),
+                child: switch (_tabIndex) {
+                  0 => _OverviewTab(overview: overview),
+                  1 => _LineupTab(overview: overview),
+                  2 => _EventsTab(overview: overview),
+                  _ => _StatsTab(overview: overview),
+                },
               ),
             ),
-            const SizedBox(height: AppSpacing.md),
-            if (socketStatus == SocketStatus.failed)
+            if (widget.socketStatus == SocketStatus.failed)
               OutlinedButton.icon(
-                onPressed: onReconnect,
+                onPressed: widget.onReconnect,
                 icon: const Icon(Icons.refresh_rounded),
-                label: const Text('重新连接后进入'),
+                label: const Text('重新连接比赛'),
               )
             else
-              FilledButton(
-                onPressed:
-                    socketStatus == SocketStatus.connected ? onEnter : null,
-                style: FilledButton.styleFrom(
-                  backgroundColor: AppColors.orangeDeep,
-                  foregroundColor: Colors.white,
-                  side: const BorderSide(color: AppColors.paperInk, width: 2),
-                  shadowColor: AppColors.paperInk,
-                  elevation: 4,
-                ),
+              MetalButton(
+                onPressed: widget.socketStatus == SocketStatus.connected
+                    ? widget.onEnter
+                    : null,
+                leading: const Icon(Icons.forum_rounded),
                 child: Text(
-                  socketStatus == SocketStatus.connected
-                      ? '进入球球的看台'
+                  widget.socketStatus == SocketStatus.connected
+                      ? '进入球球陪看'
                       : '正在连接比赛…',
                 ),
               ),
@@ -1218,6 +1279,775 @@ class _MatchLobby extends StatelessWidget {
     );
   }
 }
+
+class _MatchScoreHeader extends StatelessWidget {
+  final MatchOverviewData overview;
+  final String homeTeam;
+  final String awayTeam;
+
+  const _MatchScoreHeader({
+    required this.overview,
+    required this.homeTeam,
+    required this.awayTeam,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final scoreStyle = Theme.of(context).textTheme.displaySmall?.copyWith(
+      color: AppColors.ink,
+      fontFamily: AppFonts.scoreboard,
+      fontFeatures: const [FontFeature.tabularFigures()],
+    );
+    return _LobbyPanel(
+      padding: const EdgeInsets.fromLTRB(
+        AppSpacing.md,
+        AppSpacing.sm,
+        AppSpacing.md,
+        AppSpacing.md,
+      ),
+      child: Column(
+        children: [
+          Row(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              _StatusPill(label: overview.liveLabel),
+              if (overview.round.trim().isNotEmpty) ...[
+                const SizedBox(width: AppSpacing.xs),
+                Text(
+                  overview.round,
+                  style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                        color: AppColors.muted,
+                      ),
+                ),
+              ],
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Row(
+            children: [
+              Expanded(
+                child: Text(
+                  homeTeam,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.ink,
+                      ),
+                ),
+              ),
+              Column(
+                children: [
+                  Text('${overview.homeScore} — ${overview.awayScore}',
+                      style: scoreStyle),
+                  Text(
+                    overview.clock.trim().isEmpty ? '赛前' : overview.clock,
+                    style: Theme.of(context).textTheme.labelSmall?.copyWith(
+                          color: AppColors.skyBlue,
+                          fontFamily: AppFonts.scoreboard,
+                        ),
+                  ),
+                ],
+              ),
+              Expanded(
+                child: Text(
+                  awayTeam,
+                  textAlign: TextAlign.center,
+                  style: Theme.of(context).textTheme.titleLarge?.copyWith(
+                        color: AppColors.ink,
+                      ),
+                ),
+              ),
+            ],
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          Wrap(
+            alignment: WrapAlignment.center,
+            spacing: AppSpacing.md,
+            runSpacing: AppSpacing.xs,
+            children: [
+              if (overview.kickoff.trim().isNotEmpty)
+                _MetaLabel(
+                    icon: Icons.schedule_rounded, text: overview.kickoff),
+              if (overview.venue.trim().isNotEmpty)
+                _MetaLabel(icon: Icons.stadium_outlined, text: overview.venue),
+              if (overview.referee.trim().isNotEmpty)
+                _MetaLabel(icon: Icons.sports_rounded, text: overview.referee),
+            ],
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OverviewTabs extends StatelessWidget {
+  final int selectedIndex;
+  final ValueChanged<int> onSelected;
+
+  const _OverviewTabs({required this.selectedIndex, required this.onSelected});
+
+  @override
+  Widget build(BuildContext context) {
+    const labels = ['概览', '阵容', '事件', '数据'];
+    return SingleChildScrollView(
+      scrollDirection: Axis.horizontal,
+      child: Row(
+        children: [
+          for (var index = 0; index < labels.length; index++)
+            Padding(
+              padding: const EdgeInsets.only(right: AppSpacing.xs),
+              child: ChoiceChip(
+                label: Text(labels[index]),
+                selected: selectedIndex == index,
+                onSelected: (_) => onSelected(index),
+                selectedColor: AppColors.championBlue,
+                labelStyle: TextStyle(
+                  color: selectedIndex == index ? Colors.white : AppColors.ink,
+                  fontWeight: FontWeight.w700,
+                ),
+                side: BorderSide(
+                  color: selectedIndex == index
+                      ? AppColors.skyBlue
+                      : AppColors.ink.withValues(alpha: 0.28),
+                ),
+              ),
+            ),
+        ],
+      ),
+    );
+  }
+}
+
+class _OverviewTab extends StatelessWidget {
+  final MatchOverviewData overview;
+
+  const _OverviewTab({required this.overview});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        _LobbyPanel(
+          title: '比赛状态',
+          child: Wrap(
+            spacing: AppSpacing.xs,
+            runSpacing: AppSpacing.xs,
+            children: [
+              _InfoChip(label: _periodLabel(overview.period)),
+              _InfoChip(
+                  label: '比分 ${overview.homeScore} — ${overview.awayScore}'),
+              if (overview.halftimeHomeScore != null &&
+                  overview.halftimeAwayScore != null)
+                _InfoChip(
+                  label:
+                      '半场 ${overview.halftimeHomeScore} — ${overview.halftimeAwayScore}',
+                ),
+              _InfoChip(
+                  label:
+                      '黄牌 ${overview.cardCount('home', 'yellow_card')} · ${overview.cardCount('away', 'yellow_card')}'),
+              _InfoChip(
+                  label:
+                      '红牌 ${overview.cardCount('home', 'red_card')} · ${overview.cardCount('away', 'red_card')}'),
+            ],
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        _LobbyPanel(
+          title: '最新动态',
+          child: _EventList(
+            events:
+                overview.chronologicalEvents.take(5).toList(growable: false),
+            emptyLabel: '暂无公开比赛事件',
+          ),
+        ),
+        const SizedBox(height: AppSpacing.sm),
+        _LobbyPanel(
+          title: '球队信息',
+          child: Row(
+            crossAxisAlignment: CrossAxisAlignment.start,
+            children: [
+              Expanded(
+                child: _TeamMeta(
+                  name: overview.homeTeam,
+                  coach: overview.homeCoach,
+                  formation: overview.homeFormation,
+                ),
+              ),
+              const SizedBox(width: AppSpacing.md),
+              Expanded(
+                child: _TeamMeta(
+                  name: overview.awayTeam,
+                  coach: overview.awayCoach,
+                  formation: overview.awayFormation,
+                  alignEnd: true,
+                ),
+              ),
+            ],
+          ),
+        ),
+      ],
+    );
+  }
+}
+
+class _LineupTab extends StatelessWidget {
+  final MatchOverviewData overview;
+
+  const _LineupTab({required this.overview});
+
+  @override
+  Widget build(BuildContext context) {
+    if (overview.homePlayers.isEmpty && overview.awayPlayers.isEmpty) {
+      return const _EmptyLobbyState(
+        icon: Icons.groups_rounded,
+        title: '首发名单暂未公布',
+        detail: '比赛资料同步后，双方首发、替补和教练会显示在这里。',
+      );
+    }
+    return Column(
+      crossAxisAlignment: CrossAxisAlignment.stretch,
+      children: [
+        Row(
+          crossAxisAlignment: CrossAxisAlignment.start,
+          children: [
+            Expanded(
+              child: _TeamLineup(
+                name: overview.homeTeam,
+                coach: overview.homeCoach,
+                formation: overview.homeFormation,
+                starters: overview.homeStarters,
+                bench: overview.homeBench,
+              ),
+            ),
+            const SizedBox(width: AppSpacing.sm),
+            Expanded(
+              child: _TeamLineup(
+                name: overview.awayTeam,
+                coach: overview.awayCoach,
+                formation: overview.awayFormation,
+                starters: overview.awayStarters,
+                bench: overview.awayBench,
+                alignEnd: true,
+              ),
+            ),
+          ],
+        ),
+      ],
+    );
+  }
+}
+
+class _EventsTab extends StatelessWidget {
+  final MatchOverviewData overview;
+
+  const _EventsTab({required this.overview});
+
+  @override
+  Widget build(BuildContext context) {
+    return _LobbyPanel(
+      title: '完整比赛事件',
+      child: _EventList(
+        events: overview.chronologicalEvents,
+        emptyLabel: '暂无公开比赛事件',
+      ),
+    );
+  }
+}
+
+class _StatsTab extends StatelessWidget {
+  final MatchOverviewData overview;
+
+  const _StatsTab({required this.overview});
+
+  @override
+  Widget build(BuildContext context) {
+    if (overview.teamStats.isEmpty && overview.stats.isEmpty) {
+      return Column(
+        children: [
+          const _EmptyLobbyState(
+            icon: Icons.query_stats_rounded,
+            title: '详细数据暂未接入',
+            detail: '数据源提供控球率、射门、角球、犯规、越位、传球和 xG 后会自动显示。',
+          ),
+          const SizedBox(height: AppSpacing.sm),
+          _LobbyPanel(
+            title: '当前纪律情况',
+            child: Row(
+              mainAxisAlignment: MainAxisAlignment.spaceAround,
+              children: [
+                _DisciplineMetric(
+                  label: overview.homeTeam,
+                  yellow: overview.cardCount('home', 'yellow_card'),
+                  red: overview.cardCount('home', 'red_card'),
+                ),
+                _DisciplineMetric(
+                  label: overview.awayTeam,
+                  yellow: overview.cardCount('away', 'yellow_card'),
+                  red: overview.cardCount('away', 'red_card'),
+                ),
+              ],
+            ),
+          ),
+        ],
+      );
+    }
+    final rows = overview.teamStats.isNotEmpty
+        ? overview.teamStats
+            .map((stat) => _TeamStatRow(stat: stat))
+            .toList(growable: false)
+        : overview.stats.entries
+            .map((entry) => _StatRow(label: entry.key, value: '${entry.value}'))
+            .toList(growable: false);
+    return _LobbyPanel(
+      title: '比赛数据',
+      child: Column(
+        children: rows,
+      ),
+    );
+  }
+}
+
+class _LobbyPanel extends StatelessWidget {
+  final String? title;
+  final Widget child;
+  final EdgeInsetsGeometry padding;
+
+  const _LobbyPanel(
+      {this.title,
+      required this.child,
+      this.padding = const EdgeInsets.all(AppSpacing.sm)});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: const Color(0x40111824),
+        border: Border.all(color: AppColors.skyBlue.withValues(alpha: 0.28)),
+        borderRadius: BorderRadius.circular(12),
+      ),
+      child: Padding(
+        padding: padding,
+        child: Column(
+          crossAxisAlignment: CrossAxisAlignment.stretch,
+          children: [
+            if (title != null) ...[
+              Text(
+                title!,
+                style: Theme.of(context).textTheme.titleSmall?.copyWith(
+                      color: AppColors.ink,
+                      fontWeight: FontWeight.w800,
+                    ),
+              ),
+              const SizedBox(height: AppSpacing.xs),
+            ],
+            child,
+          ],
+        ),
+      ),
+    );
+  }
+}
+
+class _TeamLineup extends StatelessWidget {
+  final String name;
+  final String coach;
+  final String formation;
+  final List<MatchPlayerOverview> starters;
+  final List<MatchPlayerOverview> bench;
+  final bool alignEnd;
+
+  const _TeamLineup({
+    required this.name,
+    required this.coach,
+    required this.formation,
+    required this.starters,
+    required this.bench,
+    this.alignEnd = false,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    final alignment =
+        alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start;
+    return _LobbyPanel(
+      child: Column(
+        crossAxisAlignment: alignment,
+        children: [
+          Text(name,
+              style: Theme.of(context).textTheme.titleMedium?.copyWith(
+                  color: AppColors.ink, fontWeight: FontWeight.w800)),
+          if (coach.trim().isNotEmpty)
+            _SmallMeta(label: '教练 · $coach', alignEnd: alignEnd),
+          if (formation.trim().isNotEmpty)
+            _SmallMeta(label: '阵型 · $formation', alignEnd: alignEnd),
+          const SizedBox(height: AppSpacing.xs),
+          _LineupGroup(label: '首发', players: starters, alignEnd: alignEnd),
+          const SizedBox(height: AppSpacing.xs),
+          _LineupGroup(label: '替补', players: bench, alignEnd: alignEnd),
+        ],
+      ),
+    );
+  }
+}
+
+class _LineupGroup extends StatelessWidget {
+  final String label;
+  final List<MatchPlayerOverview> players;
+  final bool alignEnd;
+
+  const _LineupGroup(
+      {required this.label, required this.players, required this.alignEnd});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      crossAxisAlignment:
+          alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        Text(label,
+            style: Theme.of(context)
+                .textTheme
+                .labelSmall
+                ?.copyWith(color: AppColors.skyBlue)),
+        if (players.isEmpty)
+          Text('暂无',
+              style: Theme.of(context)
+                  .textTheme
+                  .labelSmall
+                  ?.copyWith(color: AppColors.muted))
+        else
+          for (final player in players)
+            Text(
+              '${player.number.isEmpty ? '·' : player.number} ${player.name}',
+              textAlign: alignEnd ? TextAlign.right : TextAlign.left,
+              style: Theme.of(context)
+                  .textTheme
+                  .labelSmall
+                  ?.copyWith(color: AppColors.ink, height: 1.6),
+            ),
+      ],
+    );
+  }
+}
+
+class _EventList extends StatelessWidget {
+  final List<MatchEventOverview> events;
+  final String emptyLabel;
+
+  const _EventList({required this.events, required this.emptyLabel});
+
+  @override
+  Widget build(BuildContext context) {
+    if (events.isEmpty)
+      return Text(emptyLabel, style: const TextStyle(color: AppColors.muted));
+    return Column(
+      children: [
+        for (final event in events)
+          Padding(
+            padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+            child: Row(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                SizedBox(
+                  width: 44,
+                  child: Text(event.displayClock,
+                      style: const TextStyle(
+                          color: AppColors.skyBlue,
+                          fontFamily: AppFonts.scoreboard)),
+                ),
+                Icon(_eventIcon(event.eventType),
+                    size: 17, color: _eventColor(event.eventType)),
+                const SizedBox(width: AppSpacing.xs),
+                Expanded(
+                  child: Text(
+                    '${event.teamName.isEmpty ? '' : '${event.teamName} · '}${event.label}',
+                    style: const TextStyle(color: AppColors.ink, height: 1.35),
+                  ),
+                ),
+                if (event.eventType == 'goal')
+                  Text('${event.homeScore}—${event.awayScore}',
+                      style: const TextStyle(
+                          color: AppColors.ink,
+                          fontFamily: AppFonts.scoreboard)),
+              ],
+            ),
+          ),
+      ],
+    );
+  }
+}
+
+class _TeamMeta extends StatelessWidget {
+  final String name;
+  final String coach;
+  final String formation;
+  final bool alignEnd;
+
+  const _TeamMeta(
+      {required this.name,
+      required this.coach,
+      required this.formation,
+      this.alignEnd = false});
+
+  @override
+  Widget build(BuildContext context) {
+    final align = alignEnd ? TextAlign.right : TextAlign.left;
+    return Column(
+      crossAxisAlignment:
+          alignEnd ? CrossAxisAlignment.end : CrossAxisAlignment.start,
+      children: [
+        Text(name,
+            textAlign: align,
+            style: const TextStyle(
+                color: AppColors.ink, fontWeight: FontWeight.w800)),
+        _SmallMeta(
+            label: coach.trim().isEmpty ? '教练资料暂无' : '教练 · $coach',
+            alignEnd: alignEnd),
+        _SmallMeta(
+            label: formation.trim().isEmpty ? '阵型资料暂无' : '阵型 · $formation',
+            alignEnd: alignEnd),
+      ],
+    );
+  }
+}
+
+class _SmallMeta extends StatelessWidget {
+  final String label;
+  final bool alignEnd;
+
+  const _SmallMeta({required this.label, required this.alignEnd});
+
+  @override
+  Widget build(BuildContext context) {
+    return Text(label,
+        textAlign: alignEnd ? TextAlign.right : TextAlign.left,
+        style:
+            const TextStyle(color: AppColors.muted, fontSize: 12, height: 1.5));
+  }
+}
+
+class _MetaLabel extends StatelessWidget {
+  final IconData icon;
+  final String text;
+
+  const _MetaLabel({required this.icon, required this.text});
+
+  @override
+  Widget build(BuildContext context) {
+    return Row(
+      mainAxisSize: MainAxisSize.min,
+      children: [
+        Icon(icon, size: 14, color: AppColors.skyBlue),
+        const SizedBox(width: 4),
+        Text(text,
+            style: const TextStyle(color: AppColors.muted, fontSize: 11)),
+      ],
+    );
+  }
+}
+
+class _StatusPill extends StatelessWidget {
+  final String label;
+
+  const _StatusPill({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+        color: AppColors.championBlue.withValues(alpha: 0.72),
+        borderRadius: BorderRadius.circular(99),
+        border: Border.all(color: AppColors.skyBlue.withValues(alpha: 0.75)),
+      ),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 10, vertical: 4),
+        child: Text(label,
+            style: const TextStyle(
+                color: Colors.white,
+                fontSize: 12,
+                fontWeight: FontWeight.w800)),
+      ),
+    );
+  }
+}
+
+class _InfoChip extends StatelessWidget {
+  final String label;
+
+  const _InfoChip({required this.label});
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: BoxDecoration(
+          color: AppColors.night.withValues(alpha: 0.38),
+          borderRadius: BorderRadius.circular(8)),
+      child: Padding(
+        padding: const EdgeInsets.symmetric(horizontal: 8, vertical: 6),
+        child: Text(label,
+            style: const TextStyle(color: AppColors.ink, fontSize: 12)),
+      ),
+    );
+  }
+}
+
+class _DisciplineMetric extends StatelessWidget {
+  final String label;
+  final int yellow;
+  final int red;
+
+  const _DisciplineMetric(
+      {required this.label, required this.yellow, required this.red});
+
+  @override
+  Widget build(BuildContext context) {
+    return Column(
+      children: [
+        Text(label,
+            style: const TextStyle(
+                color: AppColors.ink, fontWeight: FontWeight.w700)),
+        const SizedBox(height: 4),
+        Text('黄 $yellow  ·  红 $red',
+            style: const TextStyle(color: AppColors.muted, fontSize: 12)),
+      ],
+    );
+  }
+}
+
+class _StatRow extends StatelessWidget {
+  final String label;
+  final String value;
+
+  const _StatRow({required this.label, required this.value});
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 5),
+      child: Row(
+        mainAxisAlignment: MainAxisAlignment.spaceBetween,
+        children: [
+          Text(label, style: const TextStyle(color: AppColors.muted)),
+          Text(value,
+              style: const TextStyle(
+                  color: AppColors.ink, fontWeight: FontWeight.w800)),
+        ],
+      ),
+    );
+  }
+}
+
+class _TeamStatRow extends StatelessWidget {
+  final MatchTeamStat stat;
+
+  const _TeamStatRow({required this.stat});
+
+  String _value(double value) {
+    final number = value == value.roundToDouble()
+        ? value.toInt().toString()
+        : value.toStringAsFixed(1);
+    return '$number${stat.unit}';
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    return Padding(
+      padding: const EdgeInsets.symmetric(vertical: 7),
+      child: Row(
+        children: [
+          Expanded(
+            child: Text(
+              _value(stat.home),
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontWeight: FontWeight.w800,
+                fontFamily: AppFonts.scoreboard,
+              ),
+            ),
+          ),
+          Expanded(
+            flex: 2,
+            child: Text(
+              stat.label,
+              textAlign: TextAlign.center,
+              style: const TextStyle(color: AppColors.muted, fontSize: 12),
+            ),
+          ),
+          Expanded(
+            child: Text(
+              _value(stat.away),
+              textAlign: TextAlign.right,
+              style: const TextStyle(
+                color: AppColors.ink,
+                fontWeight: FontWeight.w800,
+                fontFamily: AppFonts.scoreboard,
+              ),
+            ),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+class _EmptyLobbyState extends StatelessWidget {
+  final IconData icon;
+  final String title;
+  final String detail;
+
+  const _EmptyLobbyState(
+      {required this.icon, required this.title, required this.detail});
+
+  @override
+  Widget build(BuildContext context) {
+    return _LobbyPanel(
+      child: Column(
+        children: [
+          Icon(icon, color: AppColors.skyBlue, size: 34),
+          const SizedBox(height: AppSpacing.xs),
+          Text(title,
+              style: const TextStyle(
+                  color: AppColors.ink, fontWeight: FontWeight.w800)),
+          const SizedBox(height: 4),
+          Text(detail,
+              textAlign: TextAlign.center,
+              style: const TextStyle(
+                  color: AppColors.muted, fontSize: 12, height: 1.45)),
+        ],
+      ),
+    );
+  }
+}
+
+IconData _eventIcon(String eventType) => switch (eventType) {
+      'goal' => Icons.sports_soccer_rounded,
+      'yellow_card' => Icons.crop_square_rounded,
+      'red_card' => Icons.square_rounded,
+      'substitution' => Icons.swap_vert_rounded,
+      'penalty' || 'penalty_awarded' => Icons.gpp_good_rounded,
+      'var_check' || 'var_result' => Icons.tv_rounded,
+      'injury' => Icons.healing_rounded,
+      _ => Icons.circle_outlined,
+    };
+
+Color _eventColor(String eventType) => switch (eventType) {
+      'goal' => AppColors.orange,
+      'yellow_card' => AppColors.yellow,
+      'red_card' => AppColors.red,
+      'substitution' => AppColors.green,
+      _ => AppColors.skyBlue,
+    };
+
+String _periodLabel(String period) => switch (period.trim().toLowerCase()) {
+      '' || 'pre_match' => '赛前',
+      'first_half' => '上半场',
+      'half_time' || 'halftime' => '中场休息',
+      'second_half' => '下半场',
+      'extra_time' => '加时赛',
+      'penalties' => '点球大战',
+      'finished' || 'full_time' || 'fulltime' => '全场结束',
+      _ => period,
+    };
 
 class _LiveMatchExperience extends StatelessWidget {
   final GlobalKey<Live2dViewState> live2dKey;
@@ -1284,66 +2114,68 @@ class _LiveMatchExperience extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     final largeText = MediaQuery.textScalerOf(context).scale(16) > 22;
-    return ColoredBox(
-      color: AppColors.stage,
-      child: Column(
-        children: [
-          if (largeText)
-            _HorizontalScoreBar(match: match)
-          else
-            const SizedBox.shrink(),
-          Expanded(
-            child: Row(
-              crossAxisAlignment: CrossAxisAlignment.stretch,
-              children: [
-                if (!largeText)
-                  _ScoreRail(match: match, onOpenSettings: onOpenSettings),
-                Expanded(
-                  child: Column(
-                    children: [
-                      Expanded(
-                        child: _CharacterStage(
-                          match: match,
-                          live2dKey: live2dKey,
-                          expression: expression,
-                          motion: motion,
-                          isSpeaking: isSpeaking,
-                          socketStatus: socketStatus,
-                          subtitlesEnabled: subtitlesEnabled,
-                          qiuqiuLine: qiuqiuLine,
-                          qiuqiuDetail: qiuqiuDetail,
-                          onLeave: onLeave,
-                          onSwitchMatch: onSwitchMatch,
-                          onReturnToCatalog: onReturnToCatalog,
-                          onOpenSettings: onOpenSettings,
-                          onReconnect: onReconnect,
+    return Stack(
+      fit: StackFit.expand,
+      children: [
+        Column(
+          children: [
+            if (largeText)
+              _HorizontalScoreBar(match: match)
+            else
+              const SizedBox.shrink(),
+            Expanded(
+              child: Row(
+                crossAxisAlignment: CrossAxisAlignment.stretch,
+                children: [
+                  if (!largeText)
+                    _ScoreRail(match: match, onOpenSettings: onOpenSettings),
+                  Expanded(
+                    child: Column(
+                      children: [
+                        Expanded(
+                          child: _CharacterStage(
+                            match: match,
+                            live2dKey: live2dKey,
+                            expression: expression,
+                            motion: motion,
+                            isSpeaking: isSpeaking,
+                            socketStatus: socketStatus,
+                            subtitlesEnabled: subtitlesEnabled,
+                            qiuqiuLine: qiuqiuLine,
+                            qiuqiuDetail: qiuqiuDetail,
+                            onLeave: onLeave,
+                            onSwitchMatch: onSwitchMatch,
+                            onReturnToCatalog: onReturnToCatalog,
+                            onOpenSettings: onOpenSettings,
+                            onReconnect: onReconnect,
+                          ),
                         ),
-                      ),
-                      _ConversationDock(
-                        phase: phase,
-                        continuousEnabled: continuousEnabled,
-                        userLine: userLine,
-                        notice: notice,
-                        textMode: textMode,
-                        textController: textController,
-                        onToggleContinuous: onToggleContinuous,
-                        audioInputLabel: audioInputLabel,
-                        onChooseAudioInput: onChooseAudioInput,
-                        onOpenSettings: onOpenSettings,
-                        onOpenText: onOpenText,
-                        onCloseText: onCloseText,
-                        onSendText: onSendText,
-                        onMicDown: onMicDown,
-                        onMicUp: onMicUp,
-                      ),
-                    ],
+                        _ConversationDock(
+                          phase: phase,
+                          continuousEnabled: continuousEnabled,
+                          userLine: userLine,
+                          notice: notice,
+                          textMode: textMode,
+                          textController: textController,
+                          onToggleContinuous: onToggleContinuous,
+                          audioInputLabel: audioInputLabel,
+                          onChooseAudioInput: onChooseAudioInput,
+                          onOpenSettings: onOpenSettings,
+                          onOpenText: onOpenText,
+                          onCloseText: onCloseText,
+                          onSendText: onSendText,
+                          onMicDown: onMicDown,
+                          onMicUp: onMicUp,
+                        ),
+                      ],
+                    ),
                   ),
-                ),
-              ],
+                ],
+              ),
             ),
-          ),
-        ],
-      ),
+          ],
+        ),
+      ],
     );
   }
 }
@@ -1359,7 +2191,7 @@ class _ScoreRail extends StatelessWidget {
     return SizedBox(
       width: 76,
       child: ColoredBox(
-        color: AppColors.orangeDeep,
+        color: const Color(0xB30B2E68),
         child: Padding(
           padding: const EdgeInsets.symmetric(vertical: AppSpacing.md),
           child: Column(
@@ -1412,7 +2244,7 @@ class _HorizontalScoreBar extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: AppColors.orangeDeep,
+      color: const Color(0xB30B2E68),
       child: Padding(
         padding: const EdgeInsets.symmetric(
           horizontal: AppSpacing.md,
@@ -1478,13 +2310,27 @@ class _CharacterStage extends StatelessWidget {
         return Stack(
           fit: StackFit.expand,
           children: [
-            const ColoredBox(color: AppColors.stage),
             Live2dView(
               key: live2dKey,
               expression: expression,
               isSpeaking: isSpeaking,
               motion: motion,
             ),
+            if (match.recentEventLabels.any((label) => label.contains('进球')))
+              Positioned.fill(
+                child: IgnorePointer(
+                  child: Center(
+                    child: SizedBox(
+                      width: 180,
+                      height: 180,
+                      child: Lottie.asset(
+                        'assets/animations/goal-burst.json',
+                        repeat: false,
+                      ),
+                    ),
+                  ),
+                ),
+              ),
             Positioned(
               top: AppSpacing.md,
               left: AppSpacing.md,
@@ -1757,7 +2603,7 @@ class _ConversationDock extends StatelessWidget {
   @override
   Widget build(BuildContext context) {
     return ColoredBox(
-      color: AppColors.paper,
+      color: const Color(0xB30B2E68),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
           AppSpacing.md,
@@ -1784,7 +2630,7 @@ class _ConversationDock extends StatelessWidget {
                   child: Text(
                     _phaseLabel,
                     style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                          color: AppColors.paperInk,
+                          color: AppColors.ink,
                         ),
                   ),
                 ),
@@ -1804,7 +2650,7 @@ class _ConversationDock extends StatelessWidget {
                           const Icon(
                             Icons.mic_external_on_outlined,
                             size: 17,
-                            color: AppColors.paperInk,
+                            color: AppColors.ink,
                           ),
                           const SizedBox(width: AppSpacing.xxs),
                           ConstrainedBox(
@@ -1816,7 +2662,7 @@ class _ConversationDock extends StatelessWidget {
                               style: Theme.of(context)
                                   .textTheme
                                   .labelSmall
-                                  ?.copyWith(color: AppColors.paperInk),
+                                  ?.copyWith(color: AppColors.ink),
                             ),
                           ),
                         ],
@@ -1832,7 +2678,7 @@ class _ConversationDock extends StatelessWidget {
                 notice!,
                 style: Theme.of(
                   context,
-                ).textTheme.bodyMedium?.copyWith(color: AppColors.paperInk),
+                ).textTheme.bodyMedium?.copyWith(color: AppColors.ink),
               ),
             ] else if (userLine.isNotEmpty) ...[
               const SizedBox(height: AppSpacing.xs),
@@ -1841,13 +2687,13 @@ class _ConversationDock extends StatelessWidget {
                 maxLines: 2,
                 overflow: TextOverflow.ellipsis,
                 style: Theme.of(context).textTheme.bodyLarge?.copyWith(
-                      color: AppColors.paperInk,
+                      color: AppColors.ink,
                       fontWeight: FontWeight.w600,
                     ),
               ),
             ],
             const SizedBox(height: AppSpacing.sm),
-            const Divider(height: 1, color: AppColors.paperInk),
+            const Divider(height: 1, color: AppColors.skyBlue),
             const SizedBox(height: AppSpacing.sm),
             if (textMode)
               _TextComposer(
@@ -1889,7 +2735,7 @@ class _ConversationDock extends StatelessWidget {
                       child: Center(
                         child: Icon(
                           Icons.more_horiz_rounded,
-                          color: AppColors.paperInk,
+                          color: AppColors.ink,
                         ),
                       ),
                     ),
@@ -1905,14 +2751,15 @@ class _ConversationDock extends StatelessWidget {
   Color get _phaseColor {
     switch (phase) {
       case MatchSessionPhase.welcoming:
-        return AppColors.orangeDeep;
+        return AppColors.championBlue;
       case MatchSessionPhase.listening:
+        return AppColors.yellow;
       case MatchSessionPhase.userSpeaking:
         return AppColors.green;
       case MatchSessionPhase.understanding:
         return AppColors.yellow;
       case MatchSessionPhase.speaking:
-        return AppColors.orangeDeep;
+        return AppColors.championBlue;
       case MatchSessionPhase.permissionDenied:
       case MatchSessionPhase.offline:
       case MatchSessionPhase.failed:
@@ -1960,23 +2807,38 @@ class _VoiceOrb extends StatelessWidget {
 
   @override
   Widget build(BuildContext context) {
-    final background = switch (phase) {
-      MatchSessionPhase.welcoming => AppColors.orangeDeep,
-      MatchSessionPhase.listening => AppColors.yellow,
-      MatchSessionPhase.userSpeaking => AppColors.green,
-      MatchSessionPhase.understanding => AppColors.paperInk,
-      MatchSessionPhase.speaking => AppColors.orangeDeep,
+    final gradientColors = switch (phase) {
+      MatchSessionPhase.listening || MatchSessionPhase.reconnecting => const [
+          Color(0xFFFFF2A8),
+          AppColors.yellow,
+          Color(0xFFC68A18),
+        ],
+      MatchSessionPhase.userSpeaking => const [
+          Color(0xFFB8F4D0),
+          AppColors.green,
+          Color(0xFF17865A),
+        ],
+      MatchSessionPhase.understanding => const [
+          Color(0xFFC4E5FF),
+          AppColors.skyBlue,
+          Color(0xFF1E6DB8),
+        ],
       MatchSessionPhase.permissionDenied ||
       MatchSessionPhase.offline ||
       MatchSessionPhase.failed =>
-        AppColors.red,
-      MatchSessionPhase.reconnecting => AppColors.yellow,
-      MatchSessionPhase.recovered => AppColors.green,
-      MatchSessionPhase.idle => AppColors.orangeDeep,
+        const [
+          Color(0xFFFFB7B8),
+          AppColors.red,
+          Color(0xFFAA2E3A),
+        ],
+      _ => const [
+          Color(0xFF9BCBFF),
+          AppColors.championBlue,
+          AppColors.championBlueDeep,
+        ],
     };
-    final foreground = phase == MatchSessionPhase.listening
-        ? AppColors.paperInk
-        : Colors.white;
+    final foreground =
+        phase == MatchSessionPhase.listening ? AppColors.night : Colors.white;
     final label = switch (phase) {
       MatchSessionPhase.welcoming => '你好呀',
       MatchSessionPhase.listening => '聆听中',
@@ -1990,32 +2852,85 @@ class _VoiceOrb extends StatelessWidget {
       MatchSessionPhase.recovered => '已恢复',
       MatchSessionPhase.idle => continuousEnabled ? '直接说' : '按住说',
     };
+    final isVoiceActive = phase == MatchSessionPhase.listening ||
+        phase == MatchSessionPhase.userSpeaking;
+    final orb = AnimatedContainer(
+      duration: const Duration(milliseconds: 180),
+      curve: Curves.easeOutQuart,
+      width: 80,
+      height: 80,
+      decoration: BoxDecoration(
+        gradient: LinearGradient(
+          begin: Alignment.topLeft,
+          end: Alignment.bottomRight,
+          stops: const [0, 0.42, 1],
+          colors: gradientColors,
+        ),
+        shape: BoxShape.circle,
+        border: Border.all(
+          color: AppColors.ink.withValues(alpha: 0.9),
+          width: 2,
+        ),
+        boxShadow: [
+          const BoxShadow(
+            color: AppColors.night,
+            offset: Offset(4, 5),
+            blurRadius: 1,
+          ),
+          BoxShadow(
+            color: gradientColors.last.withValues(alpha: 0.55),
+            offset: const Offset(0, 5),
+            blurRadius: 10,
+          ),
+        ],
+      ),
+      alignment: Alignment.center,
+      child: Stack(
+        alignment: Alignment.center,
+        children: [
+          Positioned(
+            top: 10,
+            left: 16,
+            right: 16,
+            child: IgnorePointer(
+              child: Container(
+                height: 8,
+                decoration: BoxDecoration(
+                  borderRadius: BorderRadius.circular(99),
+                  gradient: LinearGradient(
+                    colors: [
+                      AppColors.ink.withValues(alpha: 0.48),
+                      AppColors.ink.withValues(alpha: 0),
+                    ],
+                  ),
+                ),
+              ),
+            ),
+          ),
+          Text(
+            label,
+            textAlign: TextAlign.center,
+            style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                  color: foreground,
+                  fontWeight: FontWeight.w800,
+                ),
+          ),
+        ],
+      ),
+    );
     return Semantics(
       button: true,
       label: continuousEnabled ? '语音状态：$label' : '按住和球球说话',
-      child: AnimatedContainer(
-        duration: const Duration(milliseconds: 180),
-        curve: Curves.easeOutQuart,
-        width: 80,
-        height: 80,
-        decoration: BoxDecoration(
-          color: background,
-          shape: BoxShape.circle,
-          border: Border.all(color: AppColors.paperInk, width: 2),
-          boxShadow: const [
-            BoxShadow(color: AppColors.paperInk, offset: Offset(5, 5)),
-          ],
-        ),
-        alignment: Alignment.center,
-        child: Text(
-          label,
-          textAlign: TextAlign.center,
-          style: Theme.of(context).textTheme.labelMedium?.copyWith(
-                color: foreground,
-                fontWeight: FontWeight.w800,
-              ),
-        ),
-      ),
+      child: isVoiceActive
+          ? orb.animate(onPlay: (controller) => controller.repeat()).shimmer(
+                delay: 300.ms,
+                duration: 1600.ms,
+                color: Colors.white.withValues(alpha: 0.34),
+                angle: 0.65,
+                size: 2.6,
+                blendMode: BlendMode.srcATop,
+              )
+          : orb,
     );
   }
 }
@@ -2034,7 +2949,7 @@ class _DockAction extends StatelessWidget {
       child: TextButton(
         onPressed: onPressed,
         style: TextButton.styleFrom(
-          foregroundColor: AppColors.paperInk,
+          foregroundColor: AppColors.ink,
           padding: EdgeInsets.zero,
         ),
         child: Text(label),
@@ -2061,7 +2976,7 @@ class _TextComposer extends StatelessWidget {
         IconButton(
           tooltip: '回到语音',
           onPressed: onClose,
-          color: AppColors.paperInk,
+          color: AppColors.ink,
           icon: const Icon(Icons.mic_rounded),
         ),
         const SizedBox(width: AppSpacing.xs),
@@ -2069,15 +2984,15 @@ class _TextComposer extends StatelessWidget {
           child: TextField(
             controller: controller,
             autofocus: true,
-            style: const TextStyle(color: AppColors.paperInk),
+            style: const TextStyle(color: AppColors.ink),
             textInputAction: TextInputAction.send,
             onSubmitted: (_) => onSend(),
             decoration: const InputDecoration(
               isDense: true,
               filled: true,
-              fillColor: Colors.white,
+              fillColor: AppColors.terrace,
               hintText: '直接和球球说…',
-              hintStyle: TextStyle(color: Color(0xFF665F58)),
+              hintStyle: TextStyle(color: AppColors.muted),
             ),
           ),
         ),

@@ -8,6 +8,17 @@ import (
 	"time"
 )
 
+func TestSetConfigPreservesTechnicalStatistics(t *testing.T) {
+	store := NewStore()
+	want := []MatchStatistic{{Key: "possessionPct", Label: "控球率", Home: 61.2, Away: 38.8, Unit: "%"}}
+	if _, _, err := store.SetConfig("stats-match", MatchConfig{HomeTeam: "阿森纳", AwayTeam: "考文垂城", Stats: want}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if got := store.Config("stats-match").Stats; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Stats = %#v, want %#v", got, want)
+	}
+}
+
 func TestEventObserverRunsWithoutMatchSubscriber(t *testing.T) {
 	store := NewStore()
 	observed := make(chan MatchEvent, 1)

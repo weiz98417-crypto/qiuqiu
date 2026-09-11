@@ -2,14 +2,18 @@ import 'package:flutter/foundation.dart' show kIsWeb;
 import 'package:flutter/material.dart';
 
 import '../services/browser_history.dart';
+import '../services/match_catalog_service.dart';
 import '../services/session_service.dart';
 import 'match_catalog_screen.dart';
 import 'match_screen.dart';
 
+bool shouldAutoEnterMatch(MatchCatalogItem _) => false;
+
 class MatchEntryScreen extends StatefulWidget {
   static const _configuredSocketUrl = String.fromEnvironment('QIUQIU_WS_URL');
+  final MatchCatalogService? catalogService;
 
-  const MatchEntryScreen({super.key});
+  const MatchEntryScreen({super.key, this.catalogService});
 
   @override
   State<MatchEntryScreen> createState() => _MatchEntryScreenState();
@@ -55,13 +59,16 @@ class _MatchEntryScreenState extends State<MatchEntryScreen> {
     }
     return MatchCatalogScreen(
       apiBaseUrl: _apiBaseUrl,
+      service: widget.catalogService,
       onSelected: (match) {
         Navigator.of(context).push(
           MaterialPageRoute<void>(
             builder: (_) => MatchScreen(
               matchId: match.matchId,
               onExit: () => Navigator.of(context).pop(),
-              autoEnter: match.status != 'scheduled',
+              // Every catalog selection opens the match data view first. The
+              // user must explicitly enter companion mode from that overview.
+              autoEnter: shouldAutoEnterMatch(match),
               initialMatch: MatchViewData(
                 homeTeam: match.homeTeam,
                 awayTeam: match.awayTeam,

@@ -252,8 +252,16 @@ func (s *PostgresStore) SetConfig(matchID string, config MatchConfig) (MatchConf
 	automationProvided := strings.TrimSpace(config.Automation.Mode) != ""
 	config = normalizeConfig(matchID, config)
 	config.MatchID = matchID
+	previous := s.Config(matchID)
+	if config.Lifecycle != "" && !validLifecycleTransition(previous.Lifecycle, config.Lifecycle) {
+		return MatchConfig{}, Snapshot{}, fmt.Errorf("%w: lifecycle transition %s -> %s is not allowed", ErrInvalid, previous.Lifecycle, config.Lifecycle)
+	}
 	config.UpdatedAt = time.Now().UTC().Format(time.RFC3339Nano)
 	automationJSON, err := json.Marshal(config.Automation)
+	if err != nil {
+		return MatchConfig{}, Snapshot{}, err
+	}
+	statsJSON, err := json.Marshal(config.Stats)
 	if err != nil {
 		return MatchConfig{}, Snapshot{}, err
 	}
@@ -266,16 +274,29 @@ func (s *PostgresStore) SetConfig(matchID string, config MatchConfig) (MatchConf
 
 	kickoff := parseOptionalTime(config.Kickoff)
 	_, err = tx.Exec(ctx, `
-		INSERT INTO matches (id, home_team, away_team, competition, kickoff, automation, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
+		INSERT INTO matches (
+			id, home_team, away_team, competition, kickoff, round, venue, referee,
+			home_coach, away_coach, home_formation, away_formation, stats, automation, lifecycle, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $9, $10, $11, $12, $13, $14, $15, $16, $6, COALESCE(NULLIF($8, ''), 'draft'), now())
 		ON CONFLICT (id) DO UPDATE SET
 			home_team = EXCLUDED.home_team,
 			away_team = EXCLUDED.away_team,
 			competition = EXCLUDED.competition,
 			kickoff = EXCLUDED.kickoff,
+			round = EXCLUDED.round,
+			venue = EXCLUDED.venue,
+			referee = EXCLUDED.referee,
+			home_coach = EXCLUDED.home_coach,
+			away_coach = EXCLUDED.away_coach,
+			home_formation = EXCLUDED.home_formation,
+			away_formation = EXCLUDED.away_formation,
+			stats = EXCLUDED.stats,
+			lifecycle = CASE WHEN $8 <> '' THEN EXCLUDED.lifecycle ELSE matches.lifecycle END,
 			automation = CASE WHEN $7 THEN EXCLUDED.automation ELSE matches.automation END,
 			updated_at = now()
-	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, kickoff, automationJSON, automationProvided)
+	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, kickoff, automationJSON, automationProvided, config.Lifecycle,
+		config.Round, config.Venue, config.Referee, config.HomeCoach, config.AwayCoach, config.HomeFormation, config.AwayFormation, statsJSON)
 	if err != nil {
 		return MatchConfig{}, Snapshot{}, err
 	}
@@ -311,13 +332,22 @@ func (s *PostgresStore) SetAutomation(matchID string, policy AutomationPolicy) (
 		return AutomationPolicy{}, err
 	}
 	config := s.Config(matchID)
+	statsJSON, err := json.Marshal(config.Stats)
+	if err != nil {
+		return AutomationPolicy{}, err
+	}
 	_, err = s.pool.Exec(ctx, `
-		INSERT INTO matches (id, home_team, away_team, competition, kickoff, automation, updated_at)
-		VALUES ($1, $2, $3, $4, $5, $6, now())
+		INSERT INTO matches (
+			id, home_team, away_team, competition, kickoff, round, venue, referee,
+			home_coach, away_coach, home_formation, away_formation, stats, automation, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
 		ON CONFLICT (id) DO UPDATE SET
 			automation = EXCLUDED.automation,
 			updated_at = now()
-	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, parseOptionalTime(config.Kickoff), automationJSON)
+	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, parseOptionalTime(config.Kickoff),
+		config.Round, config.Venue, config.Referee, config.HomeCoach, config.AwayCoach,
+		config.HomeFormation, config.AwayFormation, statsJSON, automationJSON)
 	if err != nil {
 		return AutomationPolicy{}, err
 	}
@@ -329,13 +359,22 @@ func (s *PostgresStore) Config(matchID string) MatchConfig {
 	var config MatchConfig
 	var kickoff *time.Time
 	var automationJSON []byte
+	var statsJSON []byte
 	var integrityJSON []byte
 	var updatedAt time.Time
+	var lifecycle string
 	err := s.pool.QueryRow(ctx, `
-		SELECT id, home_team, away_team, competition, kickoff, automation, integrity, updated_at
+		SELECT id, home_team, away_team, competition, kickoff, round, venue, referee,
+			home_coach, away_coach, home_formation, away_formation, stats,
+			automation, integrity, lifecycle, updated_at
 		FROM matches
 		WHERE id = $1
-	`, matchID).Scan(&config.MatchID, &config.HomeTeam, &config.AwayTeam, &config.Competition, &kickoff, &automationJSON, &integrityJSON, &updatedAt)
+	`, matchID).Scan(
+		&config.MatchID, &config.HomeTeam, &config.AwayTeam, &config.Competition, &kickoff,
+		&config.Round, &config.Venue, &config.Referee, &config.HomeCoach, &config.AwayCoach,
+		&config.HomeFormation, &config.AwayFormation, &statsJSON, &automationJSON, &integrityJSON,
+		&lifecycle, &updatedAt,
+	)
 	if errors.Is(err, pgx.ErrNoRows) {
 		return normalizeConfig(matchID, MatchConfig{})
 	}
@@ -348,13 +387,65 @@ func (s *PostgresStore) Config(matchID string) MatchConfig {
 	if len(automationJSON) > 0 {
 		_ = json.Unmarshal(automationJSON, &config.Automation)
 	}
+	if len(statsJSON) > 0 {
+		_ = json.Unmarshal(statsJSON, &config.Stats)
+	}
 	if len(integrityJSON) > 0 {
 		_ = json.Unmarshal(integrityJSON, &config.Integrity)
 	}
 	config.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+	config.Lifecycle = lifecycle
 	config.HomePlayers = s.players(ctx, matchID, "home")
 	config.AwayPlayers = s.players(ctx, matchID, "away")
 	return normalizeConfig(matchID, config)
+}
+
+func (s *PostgresStore) Lifecycle(matchID string) string {
+	return s.Config(matchID).Lifecycle
+}
+
+func (s *PostgresStore) SetLifecycle(matchID, lifecycle string) (MatchConfig, error) {
+	ctx := context.Background()
+	matchID = strings.TrimSpace(matchID)
+	if matchID == "" {
+		return MatchConfig{}, fmt.Errorf("%w: matchId is required", ErrInvalid)
+	}
+	lifecycle = normalizeLifecycle(lifecycle)
+	if lifecycle == "" {
+		return MatchConfig{}, fmt.Errorf("%w: invalid lifecycle", ErrInvalid)
+	}
+	current := s.Config(matchID)
+	var exists bool
+	if err := s.pool.QueryRow(ctx, `SELECT EXISTS(SELECT 1 FROM matches WHERE id = $1)`, matchID).Scan(&exists); err != nil {
+		return MatchConfig{}, err
+	}
+	if !exists {
+		return MatchConfig{}, ErrNotFound
+	}
+	if !validLifecycleTransition(current.Lifecycle, lifecycle) {
+		return MatchConfig{}, fmt.Errorf("%w: lifecycle transition %s -> %s is not allowed", ErrInvalid, current.Lifecycle, lifecycle)
+	}
+	automationJSON, err := json.Marshal(current.Automation)
+	if err != nil {
+		return MatchConfig{}, err
+	}
+	statsJSON, err := json.Marshal(current.Stats)
+	if err != nil {
+		return MatchConfig{}, err
+	}
+	if _, err := s.pool.Exec(ctx, `
+		INSERT INTO matches (
+			id, home_team, away_team, competition, kickoff, round, venue, referee,
+			home_coach, away_coach, home_formation, away_formation, stats, automation, lifecycle, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, $15, now())
+		ON CONFLICT (id) DO UPDATE SET lifecycle = EXCLUDED.lifecycle, updated_at = now()
+	`, matchID, current.HomeTeam, current.AwayTeam, current.Competition, parseOptionalTime(current.Kickoff),
+		current.Round, current.Venue, current.Referee, current.HomeCoach, current.AwayCoach,
+		current.HomeFormation, current.AwayFormation, statsJSON, automationJSON, lifecycle); err != nil {
+		return MatchConfig{}, err
+	}
+	return s.Config(matchID), nil
 }
 
 func (s *PostgresStore) PublicMatchCatalog() ([]MatchSummary, error) {
@@ -375,11 +466,13 @@ func (s *PostgresStore) PublicMatchCatalog() ([]MatchSummary, error) {
 		}
 		clock := s.Clock(item.MatchID)
 		events, eventsErr := s.events(context.Background(), item.MatchID, true)
-		if eventsErr == nil {
-			config := s.Config(item.MatchID)
-			item = summaryFromState(item.MatchID, config, clock, events)
-		} else {
-			item.UpdatedAt = updatedAt.UTC().Format(time.RFC3339Nano)
+		config := s.Config(item.MatchID)
+		if eventsErr != nil {
+			events = nil
+		}
+		item = summaryFromState(item.MatchID, config, clock, events)
+		if item.Status != LifecycleScheduled && item.Status != LifecycleLive && item.Status != LifecycleFinished {
+			continue
 		}
 		items = append(items, item)
 	}
@@ -1606,11 +1699,20 @@ func ensureMatch(ctx context.Context, tx pgx.Tx, matchID string, config MatchCon
 	if err != nil {
 		return err
 	}
+	statsJSON, err := json.Marshal(config.Stats)
+	if err != nil {
+		return err
+	}
 	_, err = tx.Exec(ctx, `
-		INSERT INTO matches (id, home_team, away_team, competition, automation, updated_at)
-		VALUES ($1, $2, $3, $4, $5, now())
+		INSERT INTO matches (
+			id, home_team, away_team, competition, kickoff, round, venue, referee,
+			home_coach, away_coach, home_formation, away_formation, stats, automation, updated_at
+		)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now())
 		ON CONFLICT (id) DO NOTHING
-	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, automationJSON)
+	`, matchID, config.HomeTeam, config.AwayTeam, config.Competition, parseOptionalTime(config.Kickoff),
+		config.Round, config.Venue, config.Referee, config.HomeCoach, config.AwayCoach,
+		config.HomeFormation, config.AwayFormation, statsJSON, automationJSON)
 	return err
 }
 
@@ -1707,7 +1809,12 @@ func parseOptionalTime(value string) *time.Time {
 	if value == "" {
 		return nil
 	}
-	layouts := []string{time.RFC3339Nano, "2006-01-02T15:04", "2006-01-02 15:04:05"}
+	layouts := []string{
+		time.RFC3339Nano,
+		"2006-01-02T15:04Z07:00",
+		"2006-01-02T15:04",
+		"2006-01-02 15:04:05",
+	}
 	for _, layout := range layouts {
 		if t, err := time.Parse(layout, value); err == nil {
 			return &t
