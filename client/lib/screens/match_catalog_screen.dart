@@ -1,10 +1,10 @@
 import 'package:flutter/material.dart';
-import 'dart:ui' show ImageFilter;
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../services/match_catalog_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/metal_button.dart';
+import '../widgets/mobile_theme_canvas.dart';
 
 class MatchCatalogScreen extends StatefulWidget {
   final String apiBaseUrl;
@@ -77,179 +77,167 @@ class _MatchCatalogScreenState extends State<MatchCatalogScreen> {
   Widget build(BuildContext context) {
     return Scaffold(
       backgroundColor: AppColors.night,
-      body: Stack(
-        fit: StackFit.expand,
-        children: [
-          ImageFiltered(
-            imageFilter: ImageFilter.blur(sigmaX: 7, sigmaY: 7),
-            child: Image.asset(
-              'assets/images/stadium-sunset.png',
-              fit: BoxFit.cover,
-              errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-            ),
-          ),
-          const ColoredBox(color: Color(0x66070B12)),
-          SafeArea(
-            child: Center(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final stageWidth =
-                      constraints.maxWidth < 520 ? constraints.maxWidth : 520.0;
-                  final isPhoneWidth = constraints.maxWidth <= 560;
-                  return SizedBox(
-                    width: stageWidth,
-                    height: constraints.maxHeight,
-                    child: DecoratedBox(
-                      decoration: BoxDecoration(
-                        color: const Color(0xA6111824),
-                        borderRadius: BorderRadius.circular(
-                          isPhoneWidth ? 0 : 24,
-                        ),
-                        boxShadow: isPhoneWidth
-                            ? const []
-                            : const [
-                                BoxShadow(
-                                  color: Color(0x66000000),
-                                  blurRadius: 28,
-                                  offset: Offset(0, 12),
-                                ),
-                              ],
+      body: MobileThemeCanvas(
+        backgroundAsset: 'assets/images/stadium-sunset.png',
+        overlayColor: const Color(0x26070B12),
+        child: SafeArea(
+          child: Center(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final stageWidth =
+                    constraints.maxWidth < 520 ? constraints.maxWidth : 520.0;
+                final isPhoneWidth = constraints.maxWidth <= 560;
+                return SizedBox(
+                  width: stageWidth,
+                  height: constraints.maxHeight,
+                  child: DecoratedBox(
+                    decoration: BoxDecoration(
+                      color: const Color(0x24111824),
+                      borderRadius: BorderRadius.circular(
+                        isPhoneWidth ? 0 : 24,
                       ),
-                      child: FutureBuilder<List<MatchCatalogItem>>(
-                        future: _matches,
-                        builder: (context, snapshot) {
-                          if (snapshot.connectionState ==
-                              ConnectionState.waiting) {
-                            return const Center(
-                              child: CircularProgressIndicator(),
-                            );
-                          }
-                          if (snapshot.hasError) {
-                            return _CatalogMessage(
-                              icon: Icons.cloud_off_rounded,
-                              title: '比赛列表暂时没加载出来',
-                              detail: '检查网络后重试，已经进入的比赛不会受影响。',
-                              actionLabel: '重新加载',
-                              onAction: _retry,
-                            );
-                          }
-                          final allMatches = snapshot.data ?? const [];
-                          final matches = _visible(allMatches);
-                          return Column(
-                            children: [
-                              SizedBox(
-                                height: 64,
-                                child: Padding(
-                                  padding:
-                                      const EdgeInsets.fromLTRB(20, 8, 12, 4),
-                                  child: Row(
-                                    children: [
-                                      const Expanded(
-                                        child: Text(
-                                          '选择一场比赛',
-                                          style: TextStyle(
-                                            color: AppColors.ink,
-                                            fontSize: 20,
-                                            fontWeight: FontWeight.w800,
-                                          ),
-                                        ),
-                                      ),
-                                      IconButton(
-                                        tooltip: '刷新比赛',
-                                        onPressed: _retry,
-                                        color: AppColors.ink,
-                                        icon: const Icon(Icons.refresh_rounded),
-                                      ),
-                                    ],
-                                  ),
-                                ),
+                      boxShadow: isPhoneWidth
+                          ? const []
+                          : const [
+                              BoxShadow(
+                                color: Color(0x66000000),
+                                blurRadius: 28,
+                                offset: Offset(0, 12),
                               ),
-                              Padding(
+                            ],
+                    ),
+                    child: FutureBuilder<List<MatchCatalogItem>>(
+                      future: _matches,
+                      builder: (context, snapshot) {
+                        if (snapshot.connectionState ==
+                            ConnectionState.waiting) {
+                          return const Center(
+                            child: CircularProgressIndicator(),
+                          );
+                        }
+                        if (snapshot.hasError) {
+                          return _CatalogMessage(
+                            icon: Icons.cloud_off_rounded,
+                            title: '比赛列表暂时没加载出来',
+                            detail: '检查网络后重试，已经进入的比赛不会受影响。',
+                            actionLabel: '重新加载',
+                            onAction: _retry,
+                          );
+                        }
+                        final allMatches = snapshot.data ?? const [];
+                        final matches = _visible(allMatches);
+                        return Column(
+                          children: [
+                            SizedBox(
+                              height: 64,
+                              child: Padding(
                                 padding:
-                                    const EdgeInsets.fromLTRB(16, 8, 16, 12),
-                                child: TextField(
-                                  controller: _searchController,
-                                  onChanged: (value) =>
-                                      setState(() => _query = value),
-                                  decoration: const InputDecoration(
-                                    prefixIcon: Icon(Icons.search_rounded),
-                                    hintText: '搜索球队或赛事',
-                                  ),
-                                ),
-                              ),
-                              SingleChildScrollView(
-                                scrollDirection: Axis.horizontal,
-                                padding:
-                                    const EdgeInsets.symmetric(horizontal: 16),
+                                    const EdgeInsets.fromLTRB(20, 8, 12, 4),
                                 child: Row(
                                   children: [
-                                    for (final filter in const [
-                                      ('all', '全部'),
-                                      ('live', '直播中'),
-                                      ('scheduled', '未开始'),
-                                      ('finished', '已结束'),
-                                    ])
-                                      Padding(
-                                        padding:
-                                            const EdgeInsets.only(right: 8),
-                                        child: ChoiceChip(
-                                          label: Text(filter.$2),
-                                          selected: _filter == filter.$1,
-                                          onSelected: (_) => setState(
-                                            () => _filter = filter.$1,
-                                          ),
+                                    const Expanded(
+                                      child: Text(
+                                        '选择一场比赛',
+                                        style: TextStyle(
+                                          color: AppColors.ink,
+                                          fontSize: 20,
+                                          fontWeight: FontWeight.w800,
                                         ),
                                       ),
+                                    ),
+                                    IconButton(
+                                      tooltip: '刷新比赛',
+                                      onPressed: _retry,
+                                      color: AppColors.ink,
+                                      icon: const Icon(Icons.refresh_rounded),
+                                    ),
                                   ],
                                 ),
                               ),
-                              const SizedBox(height: 12),
-                              Expanded(
-                                child: allMatches.isEmpty
-                                    ? _CatalogMessage(
-                                        icon: Icons.sports_soccer_rounded,
-                                        title: '还没有可看的比赛',
-                                        detail: '比赛创建后会自动出现在这里。',
-                                        actionLabel: '刷新',
-                                        onAction: _retry,
-                                      )
-                                    : matches.isEmpty
-                                        ? const _CatalogMessage(
-                                            icon: Icons.search_off_rounded,
-                                            title: '没有找到匹配的比赛',
-                                            detail: '换个球队名或切换筛选条件试试。',
-                                          )
-                                        : RefreshIndicator(
-                                            onRefresh: () async => _retry(),
-                                            child: ListView.separated(
-                                              physics:
-                                                  const AlwaysScrollableScrollPhysics(),
-                                              padding: const EdgeInsets.all(16),
-                                              itemCount: matches.length,
-                                              separatorBuilder: (_, __) =>
-                                                  const SizedBox(height: 12),
-                                              itemBuilder: (context, index) {
-                                                final match = matches[index];
-                                                return _MatchCatalogCard(
-                                                  match: match,
-                                                  onTap: () =>
-                                                      _selectMatch(match),
-                                                );
-                                              },
-                                            ),
-                                          ),
+                            ),
+                            Padding(
+                              padding: const EdgeInsets.fromLTRB(16, 8, 16, 12),
+                              child: TextField(
+                                controller: _searchController,
+                                onChanged: (value) =>
+                                    setState(() => _query = value),
+                                decoration: const InputDecoration(
+                                  prefixIcon: Icon(Icons.search_rounded),
+                                  hintText: '搜索球队或赛事',
+                                ),
                               ),
-                            ],
-                          );
-                        },
-                      ),
+                            ),
+                            SingleChildScrollView(
+                              scrollDirection: Axis.horizontal,
+                              padding:
+                                  const EdgeInsets.symmetric(horizontal: 16),
+                              child: Row(
+                                children: [
+                                  for (final filter in const [
+                                    ('all', '全部'),
+                                    ('live', '直播中'),
+                                    ('scheduled', '未开始'),
+                                    ('finished', '已结束'),
+                                  ])
+                                    Padding(
+                                      padding: const EdgeInsets.only(right: 8),
+                                      child: ChoiceChip(
+                                        label: Text(filter.$2),
+                                        selected: _filter == filter.$1,
+                                        onSelected: (_) => setState(
+                                          () => _filter = filter.$1,
+                                        ),
+                                      ),
+                                    ),
+                                ],
+                              ),
+                            ),
+                            const SizedBox(height: 12),
+                            Expanded(
+                              child: allMatches.isEmpty
+                                  ? _CatalogMessage(
+                                      icon: Icons.sports_soccer_rounded,
+                                      title: '还没有可看的比赛',
+                                      detail: '比赛创建后会自动出现在这里。',
+                                      actionLabel: '刷新',
+                                      onAction: _retry,
+                                    )
+                                  : matches.isEmpty
+                                      ? const _CatalogMessage(
+                                          icon: Icons.search_off_rounded,
+                                          title: '没有找到匹配的比赛',
+                                          detail: '换个球队名或切换筛选条件试试。',
+                                        )
+                                      : RefreshIndicator(
+                                          onRefresh: () async => _retry(),
+                                          child: ListView.separated(
+                                            physics:
+                                                const AlwaysScrollableScrollPhysics(),
+                                            padding: const EdgeInsets.all(16),
+                                            itemCount: matches.length,
+                                            separatorBuilder: (_, __) =>
+                                                const SizedBox(height: 12),
+                                            itemBuilder: (context, index) {
+                                              final match = matches[index];
+                                              return _MatchCatalogCard(
+                                                match: match,
+                                                onTap: () =>
+                                                    _selectMatch(match),
+                                              );
+                                            },
+                                          ),
+                                        ),
+                            ),
+                          ],
+                        );
+                      },
                     ),
-                  );
-                },
-              ),
+                  ),
+                );
+              },
             ),
           ),
-        ],
+        ),
       ),
     );
   }

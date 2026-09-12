@@ -1,7 +1,6 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'dart:ui' show ImageFilter;
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
@@ -23,6 +22,7 @@ import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
 import '../widgets/match_actions_menu.dart';
 import '../widgets/metal_button.dart';
+import '../widgets/mobile_theme_canvas.dart';
 import '../widgets/reply_subtitle_card.dart';
 import 'reply_display.dart';
 import 'settings_screen.dart';
@@ -1043,82 +1043,74 @@ class _MatchScreenState extends State<MatchScreen> {
         if (!didPop) unawaited(_leaveMatch(confirm: _insideMatch));
       },
       child: Scaffold(
-        body: Stack(
-          fit: StackFit.expand,
-          children: [
-            ImageFiltered(
-              imageFilter: ImageFilter.blur(sigmaX: 2, sigmaY: 2),
-              child: Image.asset(
-                'assets/images/stadium-stage.png',
-                fit: BoxFit.cover,
-                errorBuilder: (_, __, ___) => const SizedBox.shrink(),
-              ),
+        backgroundColor: AppColors.night,
+        body: MobileThemeCanvas(
+          backgroundAsset: 'assets/images/stadium-stage.png',
+          overlayColor:
+              _insideMatch ? const Color(0x0D070B12) : const Color(0x1F0B2E68),
+          child: SafeArea(
+            child: LayoutBuilder(
+              builder: (context, constraints) {
+                final content = _insideMatch
+                    ? _LiveMatchExperience(
+                        key: const ValueKey('live'),
+                        live2dKey: _live2dKey,
+                        match: _match,
+                        expression: _expression,
+                        motion: _motion,
+                        isSpeaking: _phase == MatchSessionPhase.speaking,
+                        phase: _phase,
+                        socketStatus: _socketStatus,
+                        continuousEnabled: _continuousEnabled,
+                        subtitlesEnabled: shouldShowReplyText(
+                          subtitlesEnabled: _profile.subtitlesEnabled,
+                          playbackFallback: _forceSubtitleFallback,
+                        ),
+                        qiuqiuLine: _qiuqiuLine,
+                        qiuqiuDetail: _qiuqiuDetail,
+                        userLine: _userLine,
+                        notice: _notice,
+                        textMode: _textMode,
+                        textController: _textController,
+                        onToggleContinuous: _toggleContinuous,
+                        audioInputLabel: _audioInputLabel,
+                        onChooseAudioInput: _chooseAudioInput,
+                        onOpenSettings: _openSettings,
+                        onLeave: _leaveMatch,
+                        onSwitchMatch: _switchMatch,
+                        onReturnToCatalog: () => _leaveMatch(confirm: false),
+                        onReconnect: _reconnect,
+                        onOpenText: () => setState(() => _textMode = true),
+                        onCloseText: () => setState(() => _textMode = false),
+                        onSendText: _sendText,
+                        onMicDown: _startPushToTalk,
+                        onMicUp: _stopPushToTalk,
+                      )
+                    : _MatchLobby(
+                        key: const ValueKey('lobby'),
+                        match: _match,
+                        overview: _overview,
+                        overviewLoading: _overviewLoading,
+                        overviewError: _overviewError,
+                        socketStatus: _socketStatus,
+                        onEnter: _enterMatch,
+                        onReconnect: _reconnect,
+                        onOpenSettings: _openSettings,
+                        onLeave: () => _leaveMatch(confirm: false),
+                      );
+                final isCompact = constraints.maxWidth <= 720;
+                return Align(
+                  alignment: Alignment.topCenter,
+                  child: isCompact
+                      ? SizedBox.expand(child: content)
+                      : ConstrainedBox(
+                          constraints: const BoxConstraints(maxWidth: 520),
+                          child: content,
+                        ),
+                );
+              },
             ),
-            const ColoredBox(color: Color(0x14070B12)),
-            SafeArea(
-              child: LayoutBuilder(
-                builder: (context, constraints) {
-                  final content = _insideMatch
-                      ? _LiveMatchExperience(
-                          key: const ValueKey('live'),
-                          live2dKey: _live2dKey,
-                          match: _match,
-                          expression: _expression,
-                          motion: _motion,
-                          isSpeaking: _phase == MatchSessionPhase.speaking,
-                          phase: _phase,
-                          socketStatus: _socketStatus,
-                          continuousEnabled: _continuousEnabled,
-                          subtitlesEnabled: shouldShowReplyText(
-                            subtitlesEnabled: _profile.subtitlesEnabled,
-                            playbackFallback: _forceSubtitleFallback,
-                          ),
-                          qiuqiuLine: _qiuqiuLine,
-                          qiuqiuDetail: _qiuqiuDetail,
-                          userLine: _userLine,
-                          notice: _notice,
-                          textMode: _textMode,
-                          textController: _textController,
-                          onToggleContinuous: _toggleContinuous,
-                          audioInputLabel: _audioInputLabel,
-                          onChooseAudioInput: _chooseAudioInput,
-                          onOpenSettings: _openSettings,
-                          onLeave: _leaveMatch,
-                          onSwitchMatch: _switchMatch,
-                          onReturnToCatalog: () => _leaveMatch(confirm: false),
-                          onReconnect: _reconnect,
-                          onOpenText: () => setState(() => _textMode = true),
-                          onCloseText: () => setState(() => _textMode = false),
-                          onSendText: _sendText,
-                          onMicDown: _startPushToTalk,
-                          onMicUp: _stopPushToTalk,
-                        )
-                      : _MatchLobby(
-                          key: const ValueKey('lobby'),
-                          match: _match,
-                          overview: _overview,
-                          overviewLoading: _overviewLoading,
-                          overviewError: _overviewError,
-                          socketStatus: _socketStatus,
-                          onEnter: _enterMatch,
-                          onReconnect: _reconnect,
-                          onOpenSettings: _openSettings,
-                          onLeave: () => _leaveMatch(confirm: false),
-                        );
-                  final isCompact = constraints.maxWidth <= 720;
-                  return Align(
-                    alignment: Alignment.topCenter,
-                    child: isCompact
-                        ? SizedBox.expand(child: content)
-                        : ConstrainedBox(
-                            constraints: const BoxConstraints(maxWidth: 520),
-                            child: content,
-                          ),
-                  );
-                },
-              ),
-            ),
-          ],
+          ),
         ),
       ),
     );
@@ -1179,7 +1171,7 @@ class _MatchLobbyState extends State<_MatchLobby> {
     final title =
         overview.competition.trim().isEmpty ? '比赛详情' : overview.competition;
     return ColoredBox(
-      color: const Color(0xA60B2E68),
+      color: const Color(0x330B2E68),
       child: Padding(
         padding: const EdgeInsets.fromLTRB(
           AppSpacing.md,
