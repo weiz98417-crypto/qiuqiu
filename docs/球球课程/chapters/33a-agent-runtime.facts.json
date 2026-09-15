@@ -1,0 +1,137 @@
+{
+  "id": "33a-agent-runtime",
+  "title": "数字球友 Agent 运行时与决策编排",
+  "source_chapter": "docs/球球全套资料/4.产品设计/33A-数字球友Agent运行时与决策编排设计.md",
+  "status_summary": { "implemented": 10, "partial": 1, "planned": 0, "concept": 2 },
+  "claims": [
+    {
+      "claim": "Agent 运行时真实存在且是一个 3061 行单体（backend/internal/companion/agent.go），统一入口 Plan 按 5 种回合类型分发：用户回合、比赛事件、初次见面、观察消解、投递回执",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "85-93" },
+        { "path": "backend/internal/companion/agent.go", "lines": "502-560" }
+      ],
+      "evidence": "code",
+      "note": "旧文档设想的 manifest/多组件编排未实现；现实是 intent 路由 + relationship 决策 + 语言实现全在一个包里"
+    },
+    {
+      "claim": "意图路由是确定性文本分类：Classify 识别比分/事件断言、比分询问、控制命令（别说/少说/闭嘴/安静/别播报）、日程等意图，并拒绝『把比分改成』类写入请求",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/companion/agent.go", "lines": "1777-1801" }],
+      "evidence": "code",
+      "note": "对应旧文档 P4『用户主动请求』的入口裁决，但实现为关键词/正则分类而非优先级图"
+    },
+    {
+      "claim": "事实类意图不经 LLM 生成：比分断言、比分状态、最近事件、追问、球员问题全部 allowRealize=false，用模板基于事实快照确定性作答，trace 记录 claim_policy/fact_policy 原因",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/companion/agent.go", "lines": "818-946" }],
+      "evidence": "code",
+      "note": "比分断言先经 assessMatchClaim 校验，未核实会标 ClaimStatusUnverified 并入观察流程（agent.go:832-846）"
+    },
+    {
+      "claim": "回应计划是结构化 Decision：Actions（10 种沟通动作）+ RelationshipView + PresentationPlan + SpeechPlan + Memories + ReasonCodes，由 relationship.Director.Apply 统一组装并以 CompareAndSwap 带版本写入",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "246-261" },
+        { "path": "backend/internal/relationship/director.go", "lines": "71-117" }
+      ],
+      "evidence": "code",
+      "note": "文本/语音/舞台消费同一份 Decision 的不同字段，对应旧文档『同一回应计划多出口』"
+    },
+    {
+      "claim": "幂等与去重真实存在：同一 Signal 的 Decision 经 DecisionBySignal 复用，traceID 由 userId+matchId+signal 稳定派生，服务端另有信号级 deduper，冲突回 ErrTraceConflict",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/director.go", "lines": "30-56" },
+        { "path": "backend/internal/companion/agent.go", "lines": "788-795" },
+        { "path": "backend/cmd/server/main.go", "lines": "134-134" }
+      ],
+      "evidence": "code",
+      "note": "对应旧文档 run 合同『不因重试产生重复副作用』的最小子集"
+    },
+    {
+      "claim": "工具调用全部留痕于 Trace.ToolCalls：conversation.read_recent（追问取 8 条、短语冷却取 12 条）、match.read_snapshot、match.search_events、match.get_player_timeline、match.verify_user_claim、relationship.apply、response.emit_companion_reply、trace.write_decision",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "928-928" },
+        { "path": "backend/internal/companion/agent.go", "lines": "2782-2791" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1490-1492" }
+      ],
+      "evidence": "code",
+      "note": "是日志型 trace，不是旧文档的 run.started/qualification.checked 事件合同"
+    },
+    {
+      "claim": "沉默是一等输出：比赛事件输出被禁用、自然主动冷却中、用户要求安静时决策为 ActSilence；speechFor 对 ActSilence 返回 nil；空回合被记录为 chosen_silence 投递事件",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "73-84" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "117-118" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "354-357" },
+        { "path": "backend/internal/companion/agent.go", "lines": "651-661" }
+      ],
+      "evidence": "code",
+      "note": "比赛反应无话可说时 trace 记 mode:silence（agent.go:1568-1572）"
+    },
+    {
+      "claim": "事实失效与更正链：新一轮事实到达时 markPriorFactTurnsStale 把同 signal 的旧回合标 Stale（source=fact_revision）；关键事件决策只允许一次事实刷新（critical_fact_refresh_limit），刷新后 SpeechPlan/Presentation 同步重算",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "679-708" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1549-1552" },
+        { "path": "backend/internal/relationship/director.go", "lines": "33-46" }
+      ],
+      "evidence": "code",
+      "note": "对应旧文档 P2/P3『更正使旧计划失效』的可执行版本"
+    },
+    {
+      "claim": "用户控制优先于生成：比赛事件 OutputAllowed=false 直接 ActSilence；用户说话中 Voice 语音 InterruptMode=after_user；控制命令立即返回固定短确认；呈现门在推送前再次校验（Expression 为空不发表演、Reply 为空不投递）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "73-75" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "365-367" },
+        { "path": "backend/internal/companion/agent.go", "lines": "948-949" },
+        { "path": "backend/cmd/server/main.go", "lines": "591-602" }
+      ],
+      "evidence": "code",
+      "note": "OutputAllowed 由运营自动化门 + proactive=quiet/manual 标签决定（main.go:568-576）"
+    },
+    {
+      "claim": "决策/表达分离有护栏：LLM 实现层拿到的输入只含已决定动作与内容约束，产出经 validateRealizedText（禁词表含恋爱化/依赖性/内部术语）与对话一致性校验，任一失败回退确定性底稿",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/realize.go", "lines": "24-42" },
+        { "path": "backend/internal/companion/agent.go", "lines": "2572-2590" },
+        { "path": "backend/internal/companion/agent.go", "lines": "2684-2684" }
+      ],
+      "evidence": "code",
+      "note": "validateRealizedText 跨度 2684-2780，含宝贝/亲爱的/导播台/Trace 等禁词"
+    },
+    {
+      "claim": "主动性有真实冷却而非预算分类：InitiativeBudget 记录 natural 模式上次主动时间，非关键事件默认 90 秒冷却（可由运营配置覆盖），关键事件单独记 LastCriticalAt",
+      "status": "partial",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "222-226" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "76-92" }
+      ],
+      "evidence": "code",
+      "note": "旧文档的主动资格四问/许可分类未实现；现实只有模式+冷却时间戳"
+    },
+    {
+      "claim": "run 状态机（received/qualifying/planning/waiting_approval/executing/presenting）、预算字段（max_model_calls/token_budget 等）、终止原因枚举、agent_manifest_version 版本锁定、waiting_approval 审批流均为 concept，无代码对应",
+      "status": "concept",
+      "anchors": [{ "path": "docs/球球全套资料/4.产品设计/33A-数字球友Agent运行时与决策编排设计.md", "lines": "317-335" }],
+      "evidence": "doc",
+      "note": "全库无 Budget/Approval 命名的运行时字段；唯一 Budget 是 InitiativeBudget"
+    },
+    {
+      "claim": "Trace 合同（run.started/qualification.checked/guardrail.checked 等 7 事件）与『能按 run_id 回放』要求为 concept：现实 Trace 是单条记录，含 Intent/ToolCalls/Claim/Reason/RelationshipDecision/LatencyMS 字段",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/33A-数字球友Agent运行时与决策编排设计.md", "lines": "616-630" },
+        { "path": "backend/internal/companion/agent.go", "lines": "170-179" }
+      ],
+      "evidence": "code",
+      "note": "锚点 2 是现实 Trace 结构；它记录决策要素但不构成可回放事件流"
+    }
+  ]
+}

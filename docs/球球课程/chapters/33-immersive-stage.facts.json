@@ -1,0 +1,129 @@
+{
+  "id": "33-immersive-stage",
+  "title": "沉浸式舞台与 Live2D 交互",
+  "source_chapter": "docs/球球全套资料/4.产品设计/33-沉浸式舞台与Live2D交互设计.md",
+  "status_summary": { "implemented": 10, "partial": 1, "planned": 0, "concept": 2 },
+  "claims": [
+    {
+      "claim": "Live2D 舞台是一个非交互背景层：渲染在 InAppWebView（native）或 iframe（web）里，外层包 IgnorePointer，web 端再把 iframe 的 pointerEvents 置为 none，所有指针事件让给上层的 Flutter 控件",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "156-160" },
+        { "path": "client/lib/widgets/live2d_bridge_web.dart", "lines": "50-58" }
+      ],
+      "evidence": "code",
+      "note": "加载的 Cubism 模型也设置 autoInteract:false，角色不响应注视/点按（live2d_view.dart:340）"
+    },
+    {
+      "claim": "事实与控制位于舞台之上且独立可达：顶部栏有返回/陪看设置按钮与比分头，下方状态轮播显示比赛状态，底部字幕卡可滚动显示台词；舞台无法遮挡它们",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "client/lib/screens/match_screen.dart", "lines": "1185-1218" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2326-2338" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2372-2382" }
+      ],
+      "evidence": "code",
+      "note": "Live2dView 是 Stack 的第一层子节点（match_screen.dart:2305-2310），事实/控制叠在其上"
+    },
+    {
+      "claim": "舞台词汇只有一条合法来源：后端 presentation 消息携带 PresentationPlan，客户端经白名单+别名表校验后生效；另有 legacy expression 消息通道，同样必须过 normalizeExpression 白名单",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/cmd/server/main.go", "lines": "591-599" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "346-358" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "363-373" },
+        { "path": "client/lib/services/presentation_state.dart", "lines": "2-51" }
+      ],
+      "evidence": "code",
+      "note": "服务端只在 Expression 非空时才推送 presentation（main.go:591）"
+    },
+    {
+      "claim": "表情与动作到 Cubism 的映射是静态表：13 个表情映射到 7 个 expression 索引，7 个动作名映射到模型动作组（cheer→celebrate、focus→listen 组第 1 段）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "324-324" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "358-368" }
+      ],
+      "evidence": "code",
+      "note": "exprMap 与 presentation_state.dart 白名单一一对应；未知表情回退索引 0"
+    },
+    {
+      "claim": "说话口型不是逐音素同步：setSpeaking 切换布尔值，50ms 定时器在说话时给 ParamJawOpen 随机 0.25..1.0 幅度，停止时衰减回 0",
+      "status": "implemented-at",
+      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "370-385" }],
+      "evidence": "code",
+      "note": "旧文档假设的『口型围绕当前回应』实为随机嘴型近似"
+    },
+    {
+      "claim": "加载失败诚实呈现而非表演化：native 端轮询 window.modelReady 30 次（300ms 间隔）失败后显示『重新请球球入场』重试按钮，模型错误经 onModelError 上报；web 端 8 秒超时直接放行避免卡死",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "102-122" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "230-236" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "249-283" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "63-68" }
+      ],
+      "evidence": "code",
+      "note": "失败提示是控件文案，没有『角色累了』之类拟人化失败叙述"
+    },
+    {
+      "claim": "模型资产经 qiuqiu://asset 自定义 scheme 从 Flutter assets 提供，扩展名映射 MIME（moc3→application/octet-stream 等），路径含 .. 直接拒绝",
+      "status": "implemented-at",
+      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "185-214" }],
+      "evidence": "code",
+      "note": "web 端则从配置的 QIUQIU_LIVE2D_URL 或同源 /live2d.html 加载（live2d_view.dart:48-56）"
+    },
+    {
+      "claim": "进球庆祝是独立于角色的非交互覆盖层：进球标签触发 Lottie goal-burst 动画包 IgnorePointer，一次播放不循环",
+      "status": "implemented-at",
+      "anchors": [{ "path": "client/lib/screens/match_screen.dart", "lines": "2311-2325" }],
+      "evidence": "code",
+      "note": "庆祝与角色动作（cheer）分属两层，互不阻塞控制"
+    },
+    {
+      "claim": "舞台故障不阻塞核心控制：WebSocket failed 时右上角出现『重新连接』按钮，字幕开关独立于舞台生效",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2362-2371" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2372-2382" }
+      ],
+      "evidence": "code",
+      "note": "字幕由 subtitlesEnabled 偏好控制，与 Live2D 加载状态无关"
+    },
+    {
+      "claim": "用户对舞台的控制是偏好项级别的：声音开关即时作用于音频播放，字幕开关、连续对话开关、话痨度存在于 UserProfile；没有旧文档设想的『收起角色/静态显示/减少动效/停止当前动作』等舞台专属即时控制",
+      "status": "partial",
+      "anchors": [
+        { "path": "client/lib/services/preferences_service.dart", "lines": "76-82" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "911-915" }
+      ],
+      "evidence": "code",
+      "note": "设置经 SettingsScreen 保存后 _audio.setMuted 立即生效"
+    },
+    {
+      "claim": "舞台只能变安静不能被任意增强：表演的强度上限由后端 PresentationPlan 决定（能量、语速、hold 均为受控字段），客户端不生成任何自发动作；唯一自发状态是 hold 到期按 returnMode 回落",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "351-360" },
+        { "path": "client/lib/services/presentation_state.dart", "lines": "118-129" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "941-949" }
+      ],
+      "evidence": "code",
+      "note": "对应旧文档『角色可见性不等于角色主动性』原则的落地方式"
+    },
+    {
+      "claim": "旧文档的五层舞台结构（安全控制/事实/任务/角色/氛围）、四种可见性模式（完整/紧凑/静态/隐藏）与动作强度四级分类均无代码对应，为 concept",
+      "status": "concept",
+      "anchors": [{ "path": "docs/球球全套资料/4.产品设计/33-沉浸式舞台与Live2D交互设计.md", "lines": "63-97" }],
+      "evidence": "doc",
+      "note": "现实是三层：非交互舞台背景 / 事实与控制覆盖层 / 字幕层，无可见性模式切换"
+    },
+    {
+      "claim": "闲置动作、注视镜头、互动手势（点击/长按角色触发反馈）全部未实现：舞台层 IgnorePointer 且 autoInteract 关闭，不存在任何闲置动作库或触碰反馈路径",
+      "status": "concept",
+      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "156-160" }],
+      "evidence": "code",
+      "note": "旧文档允许的『可选闲置动作』在实现里被整体省略而非受控开放"
+    }
+  ]
+}

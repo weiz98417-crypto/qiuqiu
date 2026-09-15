@@ -1,0 +1,106 @@
+{
+  "id": "32-emotion-presentation",
+  "title": "情绪动力学与 Live2D 表演编排",
+  "source_chapter": "docs/球球全套资料/4.产品设计/32-情绪动力学与Live2D表演编排设计.md",
+  "status_summary": { "implemented": 12, "partial": 1, "planned": 0, "concept": 1 },
+  "claims": [
+    {
+      "claim": "情绪状态是五个连续维度：valence（愉快度）、arousal（激活度）、tension（紧张度）、confidence（确信度）、engagement（投入度），全部为 0..1（valence -1..1）浮点值，随比赛事件更新",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/types.go", "lines": "342-349" }],
+      "evidence": "code",
+      "note": "与旧文档五维度一一对应；AffectState 只在后端策略层使用，不作为滑杆暴露给用户"
+    },
+    {
+      "claim": "比赛事件按类型驱动情绪增量：goal 提升愉快/激活（各 +0.8），var_check 提升紧张 (+0.6) 并降低确信 (-0.5)，goal_cancelled 大幅降低愉快 (-1.2)，shot_missed 轻微负向",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/affect.go", "lines": "9-40" }, { "path": "backend/internal/relationship/policy.go", "lines": "71-72" }],
+      "evidence": "code",
+      "note": "由 Director.Apply 在处理 SignalMatchEvent 时调用 updateAffect"
+    },
+    {
+      "claim": "情绪按指数曲线衰减回基线：arousal 90 秒回到 0.2、tension/confidence 2 分钟、valence/engagement 10 分钟",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/affect.go", "lines": "53-67" }],
+      "evidence": "code",
+      "note": "decayTo 用 exp(-elapsed/halfwidth) 实现，是 AffectState 的衰减，不是被删 expression 引擎的表演衰减"
+    },
+    {
+      "claim": "表演的唯一合同是 PresentationPlan：Affect + Expression + Motion + VoiceStyle + VoiceEnergy + VoiceSpeed + HoldMS + ReturnMode，由后端随回合产出",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/types.go", "lines": "351-360" }, { "path": "docs/adr/0005-presentation-single-contract.md", "lines": "7-9" }],
+      "evidence": "code",
+      "note": "Decision 内嵌该计划（types.go:254），随 Decision 由 Director.Apply 组装（director.go:101）"
+    },
+    {
+      "claim": "比赛事件到表演的映射：goal→excited/cheer/2600ms，var_check→tense/hold/2200ms，goal_cancelled→deflated/settle/low_disappointed/2800ms；其余回落 focus/focus 基线",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/affect.go", "lines": "69-123" }],
+      "evidence": "code",
+      "note": "presentationFor 按 Signal 类型和事件类型分支；用户回合→chat/speak，会话开启→happy/hello"
+    },
+    {
+      "claim": "观察消解（用户赛况断言核实后）有独立表演模板：确认→excited/cheer/VoiceEnergy 0.9/1800ms，被驳倒→deflated/slump/VoiceEnergy 0.45/1600ms，默认→focus/speak",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/companion/agent.go", "lines": "491-500" }],
+      "evidence": "code",
+      "note": "observationPresentation 硬编码三档，ReturnMode 均为 watching"
+    },
+    {
+      "claim": "用户表达想安静时，表演立即收敛为低强度：expression low / motion idle / voiceStyle quiet / energy 0.2 / hold 3200ms，且决策层同时给出 ActSilence",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/affect.go", "lines": "80-87" }, { "path": "backend/internal/relationship/policy.go", "lines": "117-118" }],
+      "evidence": "code",
+      "note": "触发词含『不想分析/缓会儿/先别说话』（affect.go:125-127）及 CueNeedsSilence 线索"
+    },
+    {
+      "claim": "客户端以严格白名单消费表演：13 个表情、7 个动作、8 个语音风格、4 个回落模式；后端旧命名（deflated/slump/low/tense/hold/settle）经别名表映射（deflated→sad、slump→idle 等），任一字段不在白名单则整个表演包丢弃",
+      "status": "implemented-at",
+      "anchors": [{ "path": "client/lib/services/presentation_state.dart", "lines": "2-51" }, { "path": "client/lib/services/presentation_state.dart", "lines": "88-115" }],
+      "evidence": "code",
+      "note": "别名表的存在正是因为后端 presentationFor/observationPresentation 仍发旧词汇"
+    },
+    {
+      "claim": "表演是有限时长的：holdMs 被钳制在 0..10000ms，客户端用 Timer 到期后按 returnMode 回落到 resting 状态（listening/idle/focus），且仅当呈现包未被他者替换时才回落",
+      "status": "implemented-at",
+      "anchors": [{ "path": "client/lib/services/presentation_state.dart", "lines": "105-129" }, { "path": "client/lib/screens/match_screen.dart", "lines": "941-949" }, { "path": "client/lib/services/match_session_controller.dart", "lines": "376-385" }],
+      "evidence": "code",
+      "note": "returnPresentation 用 identical 校验 expected，防止新表演被旧定时器覆盖"
+    },
+    {
+      "claim": "激活度门控语言强度：arousal≥0.7 且用户开启冒犯语许可才允许 mild_non_directed，arousal≥0.9 且关系阶段≥WatchBuddy 才允许 strong_non_directed；arousal≥0.7 时抑制稳定性偏好的追问",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/policy.go", "lines": "412-418" }, { "path": "backend/internal/relationship/policy.go", "lines": "179-181" }],
+      "evidence": "code",
+      "note": "旧文档『高激活不逼用户』原则的真实形态是这两处阈值门"
+    },
+    {
+      "claim": "语音能量与语速由 arousal 推导：energy = clamp(0.35+arousal*0.55)，speed = clamp(0.9+arousal*0.15, 0.8, 1.1)",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/relationship/affect.go", "lines": "74-76" }],
+      "evidence": "code",
+      "note": "即旧文档『激活度=外显速度与能量』的可执行版本，仅作用于语音参数"
+    },
+    {
+      "claim": "决策与表达分离：LLM 实现层只把已决定的沟通动作说成自然中文，不得改变动作/事实/边界，另以 438 字节的系统提示约束人设",
+      "status": "implemented-at",
+      "anchors": [{ "path": "backend/internal/companion/realize.go", "lines": "24-42" }, { "path": "backend/prompts/v1.0/system.txt", "lines": "1-4" }],
+      "evidence": "code",
+      "note": "语言层降级或越界时回退到确定性 reliable 底稿（agent.go:2572-2590）"
+    },
+    {
+      "claim": "旧文档设想的用户控制三档（安静/只回应/有限提示）与低动态开关未按该形态实现；现实是客户端偏好项（soundEnabled/subtitlesEnabled/talkativeness/continuousConversation）加文本即时指令（别说/少说/闭嘴/安静→ActSilence）",
+      "status": "partial",
+      "anchors": [{ "path": "client/lib/services/preferences_service.dart", "lines": "76-82" }, { "path": "backend/internal/companion/agent.go", "lines": "1797-1801" }, { "path": "backend/internal/relationship/policy.go", "lines": "117-118" }],
+      "evidence": "code",
+      "note": "talkativeness 随 user_speech 上送但后端无任何消费点（backend 全库无 Talkativeness 引用）"
+    },
+    {
+      "claim": "旧文档核心机制『五连续维度+七舞台状态双层模型、状态机转场、防抖与表演衰减引擎』整体为 concept：无任何舞台状态机存在；其曾被错误描述的 expression/engine.go 已作为死代码删除（ADR-0005），连续维度仅以 AffectState 形式存活",
+      "status": "concept",
+      "anchors": [{ "path": "docs/adr/0005-presentation-single-contract.md", "lines": "3-13" }],
+      "evidence": "doc",
+      "note": "backend/internal/expression 目录已不存在；七个舞台状态、触发/衰减假设表均无代码对应"
+    }
+  ]
+}

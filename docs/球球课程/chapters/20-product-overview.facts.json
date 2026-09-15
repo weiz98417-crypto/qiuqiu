@@ -1,0 +1,162 @@
+{
+  "id": "20-product-overview",
+  "title": "产品设计总览（事实源）",
+  "source_chapter": "docs/球球全套资料/4.产品设计/20-产品设计总览.md",
+  "status_summary": { "implemented": 9, "partial": 2, "planned": 0, "concept": 3 },
+  "claims": [
+    {
+      "claim": "产品定位是「数字球友 Digital Ballmate」：通过一起看球发展关系的持久数字陪伴，明确不是主播、通用助手或恋爱对象",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "CONTEXT.md", "lines": "7-9" },
+        { "path": "PRODUCT.md", "lines": "17-19" },
+        { "path": "README.md", "lines": "1-3" }
+      ],
+      "evidence": "doc",
+      "note": "定位语言以根目录 CONTEXT.md 术语表为准；PRODUCT.md 补充「不是会播报比分的工具」。"
+    },
+    {
+      "claim": "系统真实形态是 Go 单体（backend/cmd/server）+ Flutter/Live2D 客户端 + docker-compose 三容器（backend/postgres+pgvector/redis），不存在微服务拆分",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/cmd/server/main.go", "lines": "386-425" },
+        { "path": "backend/Dockerfile", "lines": "6,21" },
+        { "path": "docker-compose.yml", "lines": "1-49" },
+        { "path": "client/lib", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "cmd/server/main.go 在一个 mux 上挂齐 /health、/api/sessions、/api/me、/api/matches、/operator.html、/ws/match。"
+    },
+    {
+      "claim": "旧资料集描述的多服务拆分（cmd/scenario、cmd/gateway、cmd/realtime、cmd/facts 等）从未存在",
+      "status": "concept",
+      "anchors": [
+        { "path": "backend/cmd", "lines": "dir" },
+        { "path": "docs/adr/0004-content-constitution-evidence-anchors.md", "lines": "31-34" }
+      ],
+      "evidence": "doc",
+      "note": "真实对应物：backend/cmd 下只有 server/evals/eval-audit/latency-test/verify-datasource 五个入口；ADR-0004 明确「cmd/scenario 等服务从未存在，以 backend/cmd/server 单体为准」。backend/main.go 是仅含 /health 与 /ws/match 的最小残留入口（backend/main.go:20-28），生产镜像构建的是 ./cmd/server。"
+    },
+    {
+      "claim": "后端按领域分包：internal 下 21 个包（matchstate/companion/conversation/relationship/observation/privacy/operatorwrite/directordraft/interaction/evals 等）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal", "lines": "dir" },
+        { "path": "backend/cmd/server/main.go", "lines": "22-42" }
+      ],
+      "evidence": "code",
+      "note": "main.go 的 import 列表即运行时真实依赖的包集合。"
+    },
+    {
+      "claim": "语音陪看链路为 VAD→ASR→事件融合→LLM→TTS→Live2D 表情动作，客户端经 WebSocket 连接",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "README.md", "lines": "106-115" },
+        { "path": "backend/internal/asr", "lines": "dir" },
+        { "path": "backend/internal/tts", "lines": "dir" },
+        { "path": "client/lib/services/vad_service.dart", "lines": "dir" },
+        { "path": "client/lib/services/presentation_state.dart", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "LLM/TTS 统一走 MiMo（docker-compose.yml:18-21）。"
+    },
+    {
+      "claim": "关系阶段为四态：first_meeting/familiar/watch_buddy/old_ballmate，阶段描述互动规范而非奖励等级",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "CONTEXT.md", "lines": "17-19" },
+        { "path": "backend/internal/relationship/types.go", "lines": "100-106" }
+      ],
+      "evidence": "code",
+      "note": "旧总纲「不做亲密等级」的边界在代码里体现为 Stage 枚举 + 显式 _Avoid_: Intimacy level。"
+    },
+    {
+      "claim": "「比赛事实 Match Fact」是带时间范围、来源归属、确认与更正史的一等公民，由事实账本重放产生公共读视图",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "CONTEXT.md", "lines": "85-92" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "dir" },
+        { "path": "backend/migrations/022_fact_ledger_recorded_sequence.sql", "lines": "1-10" },
+        { "path": "README.md", "lines": "136-139" }
+      ],
+      "evidence": "code",
+      "note": "FACT_LEDGER_PUBLIC_READS 开关可回退旧投影（README.md:138）。"
+    },
+    {
+      "claim": "旧总纲「四维统一控制模型」（陪看密度/信息保护/声音方式/动态强度四个彼此独立的维度）只有部分落进客户端",
+      "status": "partial",
+      "anchors": [
+        { "path": "client/lib/screens/settings_screen.dart", "lines": "93-160" },
+        { "path": "client/lib/screens/settings_screen.dart", "lines": "96-100" }
+      ],
+      "evidence": "code",
+      "note": "真实设置项：话痨程度 3 档（安静/刚好/热闹，settings_screen.dart:98）、连续对话（:111-112）、字幕（:122-123）、声音（:134）、支持球队（:144）。「信息保护」「动态强度」没有独立设置项；防剧透由服务端观察协调承担（PENDING_OBSERVATION_COORDINATION，docker-compose.yml:26）。"
+    },
+    {
+      "claim": "README 宣称的 talkativeness 0-10 十档与实现漂移：客户端只有 3 档，且 backend 代码不读取该字段",
+      "status": "partial",
+      "anchors": [
+        { "path": "README.md", "lines": "117-127" },
+        { "path": "client/lib/screens/settings_screen.dart", "lines": "96-100" },
+        { "path": "client/lib/services/preferences_service.dart", "lines": "9,30" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "568,895" }
+      ],
+      "evidence": "code",
+      "note": "talkativeness 随偏好档案上行（match_screen.dart:568），但 grep backend 无任何 Talkativeness 引用；0-10 档位表是文档残留。"
+    },
+    {
+      "claim": "旧总纲 PR-01..PR-10 验收矩阵编号体系在仓库中无对应物",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/20-产品设计总览.md", "lines": "204-219" },
+        { "path": "evals/cases/boundary", "lines": "dir" }
+      ],
+      "evidence": "doc",
+      "note": "真实对应物：其主题（事实更正、剧透、命令注入、未证实主张）由 boundary 黄金用例以可执行断言承载（如 evals/cases/boundary/correction-revokes-old-facts.json），而非编号矩阵。"
+    },
+    {
+      "claim": "旧总纲的能力成熟度分级 L1 拉取/L2 许可/L3 受限主动是设想，代码中无该分级制度",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/20-产品设计总览.md", "lines": "287-304" },
+        { "path": "evals/cases/regression/manual-proactive-line.json", "lines": "dir" },
+        { "path": "backend/internal/conversation", "lines": "dir" }
+      ],
+      "evidence": "doc",
+      "note": "真实对应物：主动发言是单一可回归的调度行为（regression 用例 manual-proactive-line + conversation 调度包），没有 L1/L2/L3 资格链。"
+    },
+    {
+      "claim": "架构图以 archify JSON 为事实源（architecture/archify 下 15 张图），showcase 生成页不入库",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "architecture/README.md", "lines": "7-40" },
+        { "path": "architecture/archify", "lines": "dir" }
+      ],
+      "evidence": "doc",
+      "note": "00-overview 至 11-delivery-assurance 加 agent-core/technical-layers/technical-modules。"
+    },
+    {
+      "claim": "企业运营人员使用独立控制台（/operator.html + 导播草稿/操作幂等包），不出现在用户端信息架构",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "PRODUCT.md", "lines": "9-11" },
+        { "path": "backend/cmd/server/main.go", "lines": "408-412" },
+        { "path": "backend/internal/directordraft", "lines": "dir" },
+        { "path": "backend/internal/operatorwrite", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "口令经 APP_TOKEN/SESSION_SIGNING_KEY 管理（docker-compose.yml:11-14，README.md:104）。"
+    },
+    {
+      "claim": "用户身份是短期匿名会话：客户端启动时申请会话令牌，服务端把身份绑定在令牌上，设备匿名身份单独建表",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "README.md", "lines": "104" },
+        { "path": "backend/cmd/server/session_api.go", "lines": "dir" },
+        { "path": "backend/migrations/026_anonymous_device_identities.sql", "lines": "1-9" }
+      ],
+      "evidence": "code",
+      "note": "对应旧总纲「匿名身份」关切；客户端不编译服务端口令。"
+    }
+  ]
+}

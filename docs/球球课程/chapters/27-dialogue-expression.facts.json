@@ -1,0 +1,132 @@
+{
+  "id": "27-dialogue-expression",
+  "title": "数字球友对话与表达",
+  "source_chapter": "docs/球球全套资料/4.产品设计/27-数字球友对话与表达设计.md",
+  "status_summary": { "implemented": 11, "partial": 0, "planned": 0, "concept": 1 },
+  "claims": [
+    {
+      "claim": "对话采用「决策/表达分离」架构：确定性策略表决定沟通动作，LLM 语言实现层只把已决定的动作说成自然中文，不能改变沟通动作、关系阶段、事实、边界、调侃许可或是否追问",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/realize.go", "lines": "35-42" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1056-1068" }
+      ],
+      "evidence": "code",
+      "note": "realize.go 系统提示词明文：「只负责把已经决定好的沟通动作说成自然中文…不能改变沟通动作、关系阶段、事实、不确定性、边界、调侃许可或是否追问」"
+    },
+    {
+      "claim": "表达由 10 种沟通动作组合驱动：ack/analyze/ask/disagree/opinion/recall/react/repair/silence/tease，由 applyPolicy 按信号类型与用户线索确定性选择",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "263-276" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "48-187" }
+      ],
+      "evidence": "code",
+      "note": "策略产出 Decision{Actions, Speech, Presentation}（director.go:71-107）"
+    },
+    {
+      "claim": "未证实事实保持保留：FactMode=unverified 时输出 react+disagree（reason=unverified_fact_requires_reserve），eval 黄金用例要求台词含「还没跟上」且禁止附和「对，佩德里」",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "158-160" },
+        { "path": "evals/cases/boundary/user-claim-unverified.json", "lines": "1-27" }
+      ],
+      "evidence": "eval",
+      "note": "对应旧文档事实层「待确认不下结论」"
+    },
+    {
+      "claim": "控制层即时执行：用户说「别说/少说/闭嘴/安静/别播报」被分类为 control_command，返回固定回复「收到，我会少说一点，关键变化再提醒你。」，不进入 LLM 发挥",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "1798-1800" },
+        { "path": "backend/internal/companion/agent.go", "lines": "948-949" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "安静请求立即生效：「不想分析/缓会儿/先别说话」推断为 needs_silence 线索，策略产出 ActSilence，表演层同步切为 low/idle/quiet、VoiceEnergy 0.2",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "117-119" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "204-206" },
+        { "path": "backend/internal/relationship/affect.go", "lines": "80-87" }
+      ],
+      "evidence": "code",
+      "note": "场景一致性测试 16_user_needs_quiet_after_loss 断言 ActSilence + expression=low"
+    },
+    {
+      "claim": "修复回合：用户反馈「开我玩笑/你怎么老说/又重复/大道理/分析太多/太啰嗦」触发 ActRepair 并进入 RepairState（banter_boundary/repetition/over_analysis），修复期间表达被压缩到 2 句 40 字、禁分析禁调侃禁脏话，连续 3 个正常回合后修复完成",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "494-517" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "394-404" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "139-148" }
+      ],
+      "evidence": "code",
+      "note": "场景测试 09/10/12 断言 ActRepair + RepairActive"
+    },
+    {
+      "claim": "表达长度有硬上限：默认每次最多 2 句 80 字；分析请求放宽到 3 句 160 字；修复中收紧为 40 字；这些数值作为约束注入语言实现层提示词",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "381-393" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "405-408" },
+        { "path": "backend/internal/companion/realize.go", "lines": "57-58" }
+      ],
+      "evidence": "code",
+      "note": "对应旧文档「比例感/短句优先」"
+    },
+    {
+      "claim": "提问克制：QuestionAllowed 仅当动作含 ActAsk；稳定偏好追问需关系≥familiar、唤醒度<0.7 且最近 4 个动作记录里没有 ask，即约每 5 回合最多一次有价值的提问",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "179-181" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "388" },
+        { "path": "backend/internal/relationship/content_policy_test.go", "lines": "42-72" }
+      ],
+      "evidence": "eval",
+      "note": "测试名 TestStablePreferenceAllowsOneValuableQuestionPerFiveTurns"
+    },
+    {
+      "claim": "不同意见不被附和：意见冲突线索或人身侮辱词（废物/垃圾/蠢货/裁判瞎/人没了）触发 disagree+opinion，拒绝附和攻击并给出观点",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "161-166" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "552-559" }
+      ],
+      "evidence": "code",
+      "note": "场景测试 17_user_insults_player 断言 disagree+opinion"
+    },
+    {
+      "claim": "情绪与闲聊走轻量通道：emotion_reaction 与 personal_share 意图只产出 react 动作，未命中任何规则时默认 ack",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "167-169" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "183-186" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "复读规避：每次表达策略携带 RecentPhraseHashes，语言实现层据此避免重复近期说法",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "392" },
+        { "path": "backend/internal/relationship/types.go", "lines": "380" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "旧文档的「五层对话模型」「发言前七项检查表」「人工评估量表八维度」「十条验收门」作为完整制度不存在于代码；其中个别项（控制优先、待确认、比例感、修复）以代码分支形式实现了子集，评估侧仅有 evals/cases 下 baseline/boundary/regression 三个场景集",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/27-数字球友对话与表达设计.md", "lines": "67-81,284-296,583-623,731-741" },
+        { "path": "evals/cases/regression/deictic-goal-praise-without-evidence.json", "lines": "1-30" }
+      ],
+      "evidence": "doc",
+      "note": "旧文档把这些检查写成用户可感知的逐句门禁；现实中决策只有策略表一处，且不向用户展示检查过程"
+    }
+  ]
+}

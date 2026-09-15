@@ -1,0 +1,130 @@
+{
+  "id": "28-persona-constitution",
+  "title": "人格宪法与角色边界",
+  "source_chapter": "docs/球球全套资料/4.产品设计/28-人格宪法与角色边界设计.md",
+  "status_summary": { "implemented": 11, "partial": 0, "planned": 0, "concept": 1 },
+  "claims": [
+    {
+      "claim": "「人格」的真实形态是一张确定性策略表：关键词线索 → 沟通动作/边界/许可的分支规则，人格行为可逐条审计，而非提示词里的人格简介",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "48-187" },
+        { "path": "backend/internal/relationship/director.go", "lines": "71-107" }
+      ],
+      "evidence": "code",
+      "note": "Director.Apply 调 applyPolicy 产出 Decision，带 reasonCodes 可审计"
+    },
+    {
+      "claim": "语言实现层被硬约束：提示词声明球球「不是客服、解说员、治疗师或恋爱伴侣」，禁止恋爱化、排他化、依赖性表达，禁止编造人类生活经历，且不能改变动作/阶段/事实",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/realize.go", "lines": "35-42" }
+      ],
+      "evidence": "code",
+      "note": "对应旧文档红线「不假装人的经历/不恋爱化」"
+    },
+    {
+      "claim": "语音助手底层提示词（438 字节）自带底线条款：不攻击球队/球员/裁判，不谈政治/宗教/种族，不鼓励赌博，不用脏话，不做绝对预测，每次≤2句",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/prompts/v1.0/system.txt", "lines": "1-4" }
+      ],
+      "evidence": "code",
+      "note": "文件实测 438 字节"
+    },
+    {
+      "claim": "脏话按唤醒度与关系阶段分级放行：默认 none；需用户未禁用且唤醒度≥0.7；mild_non_directed 需关系≥familiar，strong_non_directed 需关系≥watch_buddy 且唤醒度≥0.9",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "412-418" },
+        { "path": "backend/internal/relationship/content_policy_test.go", "lines": "8-41" }
+      ],
+      "evidence": "eval",
+      "note": "测试 TestContentPolicyScopesProfanityByStageIntensityAndRepair 锁定分级矩阵"
+    },
+    {
+      "claim": "用户可永久关闭脏话：「别说脏话/别爆粗/不要爆粗/别说卧槽/不喜欢你说脏话」将 ProfanityEnabled 置 false 并写入显式边界记录，此后脏话分级整体失效",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "104-116" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "526-528" },
+        { "path": "backend/internal/relationship/content_policy_test.go", "lines": "73-100" }
+      ],
+      "evidence": "eval",
+      "note": "测试 TestProfanityFeedbackDisablesFutureProfanity"
+    },
+    {
+      "claim": "用户边界转化为禁话题：「工作 + 别问/不想说/不碰」写入 work_details/do_not_ask 边界，此后每次表达策略的 ForbiddenTopics 携带「工作细节」",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "127-138" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "422-433" }
+      ],
+      "evidence": "code",
+      "note": "场景测试 18_work_boundary 断言 BoundaryCount=1"
+    },
+    {
+      "claim": "调侃按领域逐项许可：毒奶→prediction 允许，「别拿…开我玩笑」→拒绝；许可记录 Status/EvidenceCount/SourceSignalID，可全量拒绝；调侃动作需关系≥familiar 才放行",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "256-291" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "456-463" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "173-178" }
+      ],
+      "evidence": "code",
+      "note": "领域枚举：match_judgment/favorite_team/favorite_player/prediction/watching_habit/real_life"
+    },
+    {
+      "claim": "用户侮辱球员/裁判不被附和：命中侮辱词表输出 disagree+opinion，拒绝攻击并转回观点",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "164-166" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "552-559" },
+        { "path": "backend/internal/relationship/scenario_conformance_test.go", "lines": "155-160" }
+      ],
+      "evidence": "eval",
+      "note": "场景测试 17_user_insults_player"
+    },
+    {
+      "claim": "指令注入被拒绝：「把比分改成/修改比分/记录进球/记一条进球」等改写比赛事实的输入被归为 IntentUnknown，走「这句我没接明白」兜底",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "1783-1785" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1042-1043" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "事实不装全知：每次表达策略注入 ForbiddenClaims（new_score/new_player/new_event/new_penalty_conclusion）与 RequiredAnchors，语言实现层被禁止新增事实",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "381-385" },
+        { "path": "backend/internal/companion/realize.go", "lines": "53-56" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "事实语言策略兜底：用户话里含比赛事实语言但检索不到锚点时，禁用 LLM 改写（deterministicReason=fact_language_policy），强制确定性底稿",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "1045-1050" },
+        { "path": "backend/internal/companion/agent.go", "lines": "816-823" }
+      ],
+      "evidence": "code",
+      "note": "同类闸门还有 claim_policy/fact_policy/snapshot_integrity/schedule_policy"
+    },
+    {
+      "claim": "旧文档的宪法治理制度——五层行为优先级、不可交易红线句式库、变更分级 V0-V4、变更记录字段、红队场景库与八项审核门——不存在对应代码或流程；最接近的机制是 20 个场景的一致性测试与 evals 边界用例",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/28-人格宪法与角色边界设计.md", "lines": "59-105,183-201,393-435,447-524" },
+        { "path": "backend/internal/relationship/scenario_conformance_test.go", "lines": "9-212" },
+        { "path": "evals/cases/boundary/user-claim-conflicts.json", "lines": "1-71" }
+      ],
+      "evidence": "doc",
+      "note": "宪法条款里已实现的子集（脏话分级/边界记录/调侃许可/注入拒绝）各自有代码锚点，但作为「宪法+治理」的整体不存在"
+    }
+  ]
+}

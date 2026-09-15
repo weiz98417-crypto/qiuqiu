@@ -1,0 +1,151 @@
+{
+  "id": "56-postgres-migrations",
+  "title": "PostgreSQL 持久化、迁移与数据生命周期（事实源）",
+  "source_chapter": "docs/球球全套资料/5.AI Coding工程实践/56-PostgreSQL持久化、迁移与数据生命周期.md",
+  "status_summary": { "implemented": 9, "partial": 1, "planned": 0, "concept": 3 },
+  "claims": [
+    {
+      "claim": "模式演化由 backend/migrations 下 40 个顺序 SQL 迁移承载，编号 001-038（010/011/012 各两文件重号、缺 025）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations", "lines": "dir" },
+        { "path": "backend/migrations/010_match_lifecycle.sql", "lines": "dir" },
+        { "path": "backend/migrations/010_relationship_memory_evidence.sql", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "实测 40 个文件；旧章与课程 README 写「38 个」均为计数漂移。迁移按文件名排序执行、记录于 schema_migrations。"
+    },
+    {
+      "claim": "迁移序列即系统演化史：陪看记忆与赛事自动化(001-005)→关系导播(006-009,010-012)→可信交互地基(013)→事实修订与兼容(014-015)→隐私生命周期(016)→导播幂等/outbox(017)→观察协调(018-020)→事实账本与冲突调和(021-024,027-028)→匿名设备身份(026)→阵容/调度(029-030)→互动与投递账本(031-038)",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations/001_companion_match_memory.sql", "lines": "1-2" },
+        { "path": "backend/migrations/006_relationship_director.sql", "lines": "1-13" },
+        { "path": "backend/migrations/013_trusted_interaction_foundation.sql", "lines": "1,51,76,90,107" },
+        { "path": "backend/migrations/018_pending_match_observations.sql", "lines": "1-13" },
+        { "path": "backend/migrations/031_interaction_ledger.sql", "lines": "1-24" },
+        { "path": "backend/migrations/032_delivery_ledger.sql", "lines": "1-11" }
+      ],
+      "evidence": "code",
+      "note": "001 启用 pgvector 扩展；038 是当前最新（interaction_ledger 增 trace_payload）。"
+    },
+    {
+      "claim": "013_trusted_interaction_foundation 一迁移建立五张核心表：user_sessions、fact_revisions、idempotency_records、outbox_messages、privacy_tombstones",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations/013_trusted_interaction_foundation.sql", "lines": "1,51,76,90,107" }
+      ],
+      "evidence": "code",
+      "note": "旧章把幂等/出站/墓碑分散在三个域，现实里它们同属 013 的可信交互地基。"
+    },
+    {
+      "claim": "事实账本单调序与冲突调和：022 加 recorded_sequence 序列，023 建 fact_conflicts+members，024 建冲突边图，027/028 决议审计与回填",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations/022_fact_ledger_recorded_sequence.sql", "lines": "1-10" },
+        { "path": "backend/migrations/023_fact_conflicts.sql", "lines": "1-19" },
+        { "path": "backend/migrations/024_fact_conflict_graph.sql", "lines": "1-16" },
+        { "path": "backend/migrations/027_fact_conflict_resolution_audit.sql", "lines": "1-14" },
+        { "path": "backend/internal/matchstate/conflict_resolution.go", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "023 的 status CHECK 约束只有 open/resolved 两态，比旧章「冲突簇+处理理由」的状态机描述更窄。"
+    },
+    {
+      "claim": "017_operator_idempotency_outbox 把幂等记录升级为带 operation/response/status_code 的通用操作账本，并给 outbox_messages 建聚合唯一索引保证同事件单消息",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations/017_operator_idempotency_outbox.sql", "lines": "4-27" }
+      ],
+      "evidence": "code",
+      "note": "idx_outbox_aggregate_delivery 唯一索引先删除重复历史再建。"
+    },
+    {
+      "claim": "迁移由 Go 端执行：文件名排序、单事务、pg_advisory_xact_lock 串行化、schema_migrations 表记录已应用项",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "1639-1685" },
+        { "path": "backend/cmd/server/main.go", "lines": "216" },
+        { "path": "backend/Dockerfile", "lines": "21" }
+      ],
+      "evidence": "code",
+      "note": "服务启动时以 migrations 目录调用 OpenPostgresStore；无独立 migrate CLI，旧章「四阶段扩展/双写/回填/收紧」流程无工具支撑。"
+    },
+    {
+      "claim": "事务性 outbox：RunOutbox 每 250ms 轮询 pending 消息，FOR UPDATE SKIP LOCKED 领取，30 秒租约，指数退避重试，10 次失败置 failed",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "110-126" },
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "145-157" },
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "166-173" },
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "189-199" },
+        { "path": "backend/cmd/server/main.go", "lines": "369-370" }
+      ],
+      "evidence": "code",
+      "note": "postges.go 全文 2151 行；服务器启动时 go outboxRunner.RunOutbox(outboxCtx)。"
+    },
+    {
+      "claim": "同一次导播操作的全部写入共享一个事务：写入路径经 beginMutation 复用 operatorwrite.Transaction 上下文",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "89-108" },
+        { "path": "backend/internal/operatorwrite", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "对应旧章「事实发布事务」的最小实现：账本写入与出站意图原子提交。"
+    },
+    {
+      "claim": "隐私生命周期落地为 privacy 包五操作（Status/Export/RequestDeletion/ProcessDeletion/CleanupExpired），保留期 PRIVACY_RETENTION_DAYS 默认 30 天",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/privacy/service.go", "lines": "75-111" },
+        { "path": "backend/internal/config/config.go", "lines": "68" },
+        { "path": "docker-compose.yml", "lines": "25" },
+        { "path": "backend/migrations/016_privacy_lifecycle.sql", "lines": "1-13" }
+      ],
+      "evidence": "code",
+      "note": "016 给 privacy_tombstones 补 job_id/错误字段与 pending 部分索引，支撑删除任务状态查询。"
+    },
+    {
+      "claim": "「删除先建屏障、迟到写入被拒」部分成立：privacy_tombstones 在 auth/privacy 写入路径被检查，但备份恢复重放屏障无自动化",
+      "status": "partial",
+      "anchors": [
+        { "path": "backend/internal/privacy/postgres.go", "lines": "199-213,247,275-292" },
+        { "path": "backend/internal/auth/postgres.go", "lines": "dir" },
+        { "path": "backend/internal/companion/privacy_integration_test.go", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "有隐私集成测试覆盖删除生命周期；无恢复演练脚本。"
+    },
+    {
+      "claim": "旧章设计的 principals/session_controls/access_grants/device_contexts/source_observations/fact_snapshots/preferences/memory_items/consent_records/audit_entries 等表从未创建",
+      "status": "concept",
+      "anchors": [
+        { "path": "backend/migrations", "lines": "dir" },
+        { "path": "docs/球球全套资料/5.AI Coding工程实践/56-PostgreSQL持久化、迁移与数据生命周期.md", "lines": "154-282" }
+      ],
+      "evidence": "code",
+      "note": "真实对应物：user_sessions(013:1)、relationship_states(006:1)、pending_match_observations(018:1)、interaction_ledger(031:1)、anonymous_device_identities(026:1)。真实 schema 走事件账本而非宽域快照。"
+    },
+    {
+      "claim": "备份、恢复与灾难演练在仓库中不存在",
+      "status": "concept",
+      "anchors": [
+        { "path": "docker-compose.yml", "lines": "38-41" },
+        { "path": "scripts", "lines": "dir" }
+      ],
+      "evidence": "code",
+      "note": "postgres 仅挂 postgres_data 卷，无 pg_dump/恢复脚本/演练测试；scripts/ 下只有 pgvector 安装等开发脚本。"
+    },
+    {
+      "claim": "旧章 R0-R5 六级保留分层未实现，现实中只有两处期限：互动账本 30 天 expires_at 与隐私保留 30 天",
+      "status": "concept",
+      "anchors": [
+        { "path": "backend/migrations/031_interaction_ledger.sql", "lines": "24" },
+        { "path": "backend/internal/config/config.go", "lines": "68" }
+      ],
+      "evidence": "code",
+      "note": "无 R0 临时/R3 事实治理/R4 受限责任等分级机制。"
+    }
+  ]
+}

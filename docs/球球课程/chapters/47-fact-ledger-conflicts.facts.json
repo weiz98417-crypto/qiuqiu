@@ -1,0 +1,144 @@
+{
+  "id": "47-fact-ledger-conflicts",
+  "title": "比赛事实账本与冲突调和",
+  "source_chapter": "docs/球球全套资料/5.AI Coding工程实践/47-比赛事实账本与冲突调和.md",
+  "status_summary": { "implemented": 13, "partial": 0, "planned": 0, "concept": 1 },
+  "claims": [
+    {
+      "claim": "账本是追加式事件表：每场事件带场次级 recorded_sequence 序号，重复或残缺序号在重放前被拒绝",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations/022_fact_ledger_recorded_sequence.sql", "lines": "1-12" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "279-302" }
+      ],
+      "evidence": "code",
+      "note": "orderFactEvents 拒绝重复序号并要求完整历史都带序号"
+    },
+    {
+      "claim": "Replay(input, uptoSequence) 可从任意账本位置重放出同一投影，输出带 ProjectorVersion=fact-ledger-projector/v1 与 ProjectedSequence",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "80-97" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "11" }
+      ],
+      "evidence": "code",
+      "note": "版本与序号写入快照在 fact_ledger.go:248-251"
+    },
+    {
+      "claim": "进球投影有六态机 pending/active/cancelled/checkpointed/revoked/unavailable：撤销按 RevisionOf 关联回退比分，score_correction 把活跃进球检查点化，重复取消或先取消后确认都报错",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "62-69" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "156-209" }
+      ],
+      "evidence": "code",
+      "note": "撤销进球在 181-198 分支处理，负比分在 211-213 兜底拒绝"
+    },
+    {
+      "claim": "追加即验证：新事件先在候选历史投影上校验——进球必须精确把比分 +1、非进球不得改比分、score_correction 必须带 correctionReason、goal_cancelled/var_result 必须带 revisionOf",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "679-682" },
+        { "path": "backend/internal/matchstate/store.go", "lines": "1486-1528" },
+        { "path": "backend/internal/matchstate/store.go", "lines": "1445-1459" }
+      ],
+      "evidence": "code",
+      "note": "Create 入口调用 FactLedgerEngine.ValidateAppend"
+    },
+    {
+      "claim": "跨源互斥候选不覆盖旧值而是进冲突簇：新事件标 conflict，簇记录成员（accepted/candidate）与边（cross_source_fact_conflict），相交簇自动合并",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "650-674" },
+        { "path": "backend/internal/matchstate/store.go", "lines": "936-998" }
+      ],
+      "evidence": "code",
+      "note": "成员/边去重见 appendConflictMember/appendConflictEdge（1000-1027）"
+    },
+    {
+      "claim": "冲突图持久化为三张表：fact_conflicts（open/resolved）、fact_conflict_members（accepted/candidate）、fact_conflict_edges（有序边 + 遗留数据回填）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/migrations/023_fact_conflicts.sql", "lines": "1-20" },
+        { "path": "backend/migrations/024_fact_conflict_graph.sql", "lines": "1-31" }
+      ],
+      "evidence": "code",
+      "note": "024:18-31 回填 legacy_accepted_candidate 边"
+    },
+    {
+      "claim": "调和=在互斥边约束下选择可行集：被选事实 reconcile、边对手 revoke、孤立 conflict 事实释放回 provisional，无剩余边则簇 resolved",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/conflict_resolution.go", "lines": "51-168" },
+        { "path": "backend/internal/matchstate/fact_commands.go", "lines": "28-108" }
+      ],
+      "evidence": "code",
+      "note": "选中的互斥对直接报 mutually exclusive 错（82-88）"
+    },
+    {
+      "claim": "并发/重复裁决安全：对已 resolved 的簇再次裁决报错；操作员写统一走 Idempotency-Key + payload 哈希，facts.confirm/revoke/reconcile 与 conflicts.resolve 是原子操作",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/conflict_resolution.go", "lines": "52-54" },
+        { "path": "backend/cmd/server/operator_write_api.go", "lines": "46-93" },
+        { "path": "backend/migrations/017_operator_idempotency_outbox.sql", "lines": "1-18" }
+      ],
+      "evidence": "code",
+      "note": "重放响应带 Idempotency-Replayed 头"
+    },
+    {
+      "claim": "兼容接口保留：对开放簇的 reconcile/revoke 走 legacyConflictResolution，未显式选边时强制要求显式解决冲突",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "1107-1138" },
+        { "path": "backend/internal/matchstate/conflict_resolution.go", "lines": "19-49" }
+      ],
+      "evidence": "code",
+      "note": "chosenFactID 经 CompatibleSelectionForLegacyChoice 换算为兼容选边，HTTP 入口 cmd/server/main.go:1756-1770"
+    },
+    {
+      "claim": "事务性 outbox：事件与 outbox_messages 同事务写入，聚合键 eventID:revision:status 去重，后台每 250ms FOR UPDATE SKIP LOCKED 轮询发布并带 30 秒租约重试",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "222-239" },
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "110-178" }
+      ],
+      "evidence": "code",
+      "note": "同一事件的多个状态只保留最新待发布消息（017 迁移唯一索引）"
+    },
+    {
+      "claim": "修订历史 fact_revisions 按追加去重持久化；裁决审计补齐 reason/resolved_by 字段",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "1750-1764" },
+        { "path": "backend/migrations/027_fact_conflict_resolution_audit.sql", "lines": "1-10" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "公共读双轨灰度：FACT_LEDGER_PUBLIC_READS 决定读走账本投影还是旧版过滤；两条路径持续对账（FactProjectionAudit），投影失败时 integrity=conflict 而不回退旧值",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/config/config.go", "lines": "70" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "304-329" }
+      ],
+      "evidence": "code",
+      "note": "读路径开关经 store.go:288-298 注入 Store/PostgresStore"
+    },
+    {
+      "claim": "用户观察隔离：用户输入只产生观察记录（observation.record），账本没有任何从用户观察写事实的入口",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/companion/agent.go", "lines": "1228-1260" } ],
+      "evidence": "code",
+      "note": "observation.Coordinator 接口无任何 matchstate 写方法（coordinator.go:77-94）"
+    },
+    {
+      "claim": "旧文档 §10 的 make bootstrap-ledger/verify-ledger-append/scenario-* 命令与 cmd/facts 等独立微服务不存在；真实入口是 backend/cmd/server 单体进程",
+      "status": "concept",
+      "anchors": [ { "path": "backend/cmd/server/main.go", "lines": "290-318" } ],
+      "evidence": "doc",
+      "note": "cmd/ 下只有 server/verify-datasource/eval-audit/evals/latency-test；仓库无 Makefile，账本验证在包内测试与 eval 中"
+    }
+  ]
+}

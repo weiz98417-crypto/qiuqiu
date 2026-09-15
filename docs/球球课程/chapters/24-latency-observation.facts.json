@@ -1,0 +1,114 @@
+{
+  "id": "24-latency-observation",
+  "title": "直播延迟与用户观察协调",
+  "source_chapter": "docs/球球全套资料/4.产品设计/24-直播延迟与用户观察协调设计.md",
+  "status_summary": { "implemented": 10, "partial": 0, "planned": 0, "concept": 2 },
+  "claims": [
+    {
+      "claim": "用户「我刚看到进球」类声明被解析为 FactClaim 并只进入观察协调器，全程没有从用户输入写比赛事实的代码路径",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/companion/agent.go", "lines": "826-845" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1228-1260" }
+      ],
+      "evidence": "code",
+      "note": "无法解析的声明标记 ClaimStatusUnverified 后仍只记观察"
+    },
+    {
+      "claim": "观察有七个状态 pending_sync/corroborating/confirmed/contradicted/conflict/expired/superseded，与数据库 CHECK 约束逐字一致",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/observation/coordinator.go", "lines": "15-25" },
+        { "path": "backend/migrations/018_pending_match_observations.sql", "lines": "25-32" }
+      ],
+      "evidence": "code",
+      "note": "旧文档只设计了 4-5 层，实现比文档更细"
+    },
+    {
+      "claim": "观察幂等去重：user_id+match_id+signal_id 唯一约束加活跃观察语义去重；每用户每场最多 5 条活跃观察，最旧的转 superseded",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/observation/coordinator.go", "lines": "119-149" },
+        { "path": "backend/migrations/018_pending_match_observations.sql", "lines": "32" }
+      ],
+      "evidence": "code",
+      "note": "超限原因记为 pending observation limit exceeded"
+    },
+    {
+      "claim": "事实事件驱动观察状态机：provisional→corroborating；第二个不同候选→conflict；confirmed/reconciled→confirmed；revoked→contradicted 且跟进窗口至少延长 45 秒",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/observation/coordinator.go", "lines": "493-552" } ],
+      "evidence": "code",
+      "note": "重复投递经 repeatedResolution 去重（410-425）"
+    },
+    {
+      "claim": "反向矛盾检测：用户声称进球后，若确认到达的是 shot/save/miss/goal_cancelled，观察直接转 contradicted",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/observation/coordinator.go", "lines": "467-481" } ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "跟随/调和窗口按事件类型区分（var_result/goal_cancelled 45s/2min；shot/save/黄牌/换人 10s/45s；默认 15s/1min），并按数据源新鲜度放大",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/observation/coordinator.go", "lines": "326-348" },
+        { "path": "backend/internal/datasource/manager.go", "lines": "160-186" }
+      ],
+      "evidence": "code",
+      "note": "数据源离线/降级时调和窗口放大到 90s-2min"
+    },
+    {
+      "claim": "调和窗口到期由后台循环每 5 秒 Expire 转 expired；确认/矛盾产生带 deliveryKey 的 Resolution，断线后可按窗口恢复投递",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/cmd/server/main.go", "lines": "1063-1076" },
+        { "path": "backend/internal/companion/agent.go", "lines": "431-452" },
+        { "path": "backend/migrations/020_observation_resolution_outbox.sql", "lines": "1-14" }
+      ],
+      "evidence": "code",
+      "note": "过期/投递状态持久化在 observation_resolution_outbox"
+    },
+    {
+      "claim": "确认后的可靠文案按事件类型生成，撤销对应固定话术；confirmed/contradicted 分别绑定 excited/deflated 表演计划",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/observation/coordinator.go", "lines": "441-465" },
+        { "path": "backend/internal/companion/agent.go", "lines": "491-500" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "观察回应可被抑制（SuppressFollowUp 清跟进窗口与未投递交付）；事实撤销时客户端收到 match_fact_retracted 收敛旧内容",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/observation/coordinator.go", "lines": "237-266" },
+        { "path": "backend/cmd/server/main.go", "lines": "541-549" }
+      ],
+      "evidence": "code",
+      "note": "客户端处理在 client/lib/screens/match_screen.dart:343"
+    },
+    {
+      "claim": "Postgres 协调器在事务内先取用户隐私锁并检查删除状态，再读写 pending_match_observations",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/observation/postgres.go", "lines": "46-67" } ],
+      "evidence": "code",
+      "note": "协调器经配置开关启用：cmd/server/main.go:306-318"
+    },
+    {
+      "claim": "旧文档的五时钟模型（T0/Tu/Ts/Td/Tr）没有显式建模；代码用 ReceivedAt/FollowUpDeadline/ReconcileUntil 三个时间戳近似用户窗口",
+      "status": "concept",
+      "anchors": [ { "path": "backend/internal/observation/coordinator.go", "lines": "42-63" } ],
+      "evidence": "doc",
+      "note": "五时钟是分析框架，不是代码里的类型"
+    },
+    {
+      "claim": "旧文档的用户剧透偏好设置（严格防剧透/有限提示/事实优先）不存在；默认行为是只投递已确认事实，主动推送由操作员 AutomationPolicy 门控",
+      "status": "concept",
+      "anchors": [ { "path": "backend/internal/conversation/proactive_gate.go", "lines": "17-19" } ],
+      "evidence": "doc",
+      "note": "Allow() 只看策略模式与事件类型，与任何用户偏好无关"
+    }
+  ]
+}

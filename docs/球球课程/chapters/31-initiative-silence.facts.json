@@ -1,0 +1,152 @@
+{
+  "id": "31-initiative-silence",
+  "title": "主动发言、主动沉默与话痨控制",
+  "source_chapter": "docs/球球全套资料/4.产品设计/31-主动发言、主动沉默与话痨控制设计.md",
+  "status_summary": { "implemented": 11, "partial": 1, "planned": 0, "concept": 2 },
+  "claims": [
+    {
+      "claim": "主动发言资格门只有两个条件：比赛自动化模式为 active 且事件类型在白名单内；不存在旧文档描述的按用户分项许可的分类体系",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/conversation/proactive_gate.go", "lines": "15-17" },
+        { "path": "backend/cmd/server/main.go", "lines": "568-586" }
+      ],
+      "evidence": "code",
+      "note": "Allow 签名里另有两个被忽略的参数（critical/now），说明曾计划扩展但未实现"
+    },
+    {
+      "claim": "事件标签可覆盖资格门：事件带 proactive=quiet 标签强制沉默，带 proactive=manual 标签走 AllowManual（恒真，供导播手写话术）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/cmd/server/main.go", "lines": "571-576" },
+        { "path": "backend/internal/conversation/proactive_gate.go", "lines": "19-21" }
+      ],
+      "evidence": "code",
+      "note": "eval 用例 regression.manual-proactive-line 依赖 manual 通道"
+    },
+    {
+      "claim": "自然节奏控制是冷却时间戳不是配额计数器：InitiativeBudget 只存 Mode/LastNormalAt/LastCriticalAt；非关键事件距上次普通发言不足 90 秒（或策略 CooldownSeconds）即产出 ActSilence（natural_initiative_cooldown）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "222-226" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "79-92" },
+        { "path": "backend/cmd/server/main.go", "lines": "584" }
+      ],
+      "evidence": "code",
+      "note": "旧文档「场内/时段/整场三层预算」无对应数据结构"
+    },
+    {
+      "claim": "用户回合抢占主动回合：SubmitUser 会取消正在进行的主动回合并把自己插到队列最前",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/conversation/scheduler.go", "lines": "198-206" },
+        { "path": "backend/cmd/server/main.go", "lines": "632" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "主动回合按 dedupe key + TTL 去重：同 key 未过期的新回合被丢弃，排队中过期的回合出队时静默删除",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/conversation/scheduler.go", "lines": "186-197" },
+        { "path": "backend/internal/conversation/scheduler.go", "lines": "139-147" }
+      ],
+      "evidence": "code",
+      "note": "TTL 由 proactiveTTL/speech.Delivery.TTLSeconds 决定（normal 30s / critical 90s）"
+    },
+    {
+      "claim": "主动回合按紧急度插队：critical（进球/红牌/点球/VAR/半场/终场等）插到普通主动回合之前",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/conversation/scheduler.go", "lines": "207-218" },
+        { "path": "backend/cmd/server/main.go", "lines": "2253-2260" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "主动回合有播放状态机：注册播放后 90 秒（默认 PlaybackTimeout）内未开始即回收；播放中断/超时/外部 interrupt 都会终结该回合并启动下一个",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/conversation/scheduler.go", "lines": "70-72" },
+        { "path": "backend/internal/conversation/scheduler.go", "lines": "221-262" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "用户安静线索立即生效：「不想分析/缓会儿/先别说话」→ needs_silence → ActSilence（user_requested_quiet），表演层同步降为 low/idle/quiet",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "117-119" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "204-206" },
+        { "path": "backend/internal/relationship/affect.go", "lines": "80-87" }
+      ],
+      "evidence": "code",
+      "note": "场景测试 16_user_needs_quiet_after_loss 断言 silence+low"
+    },
+    {
+      "claim": "主动沉默能撤回已起草内容：策略只产出 silence 时 SpeechPlan 为 nil，agent 丢弃已生成的回复并记录 relationship_chosen_silence",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "354-357" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1057-1060" }
+      ],
+      "evidence": "code",
+      "note": "比赛事件流上 OutputAllowed=false 同样直接 ActSilence（policy.go:73-75）"
+    },
+    {
+      "claim": "被纠正后降低主动：banter_boundary 与 over_analysis 两类修复的行为约束都含 reduce_initiative，修复期间表达被压缩且调侃清零",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "494-517" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "398-404" }
+      ],
+      "evidence": "code",
+      "note": "场景测试 09/10/12 断言修复进入"
+    },
+    {
+      "claim": "客户端「话痨程度」（安静/刚好/热闹）只存在于 Flutter 端并随 user_speech 上送，后端不读取该字段；后端 InitiativeMode 恒为默认值 natural，用户设置尚未接入主动性控制",
+      "status": "partial",
+      "anchors": [
+        { "path": "client/lib/screens/settings_screen.dart", "lines": "93-108" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "568" },
+        { "path": "backend/cmd/server/main.go", "lines": "861-875" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "17-19" }
+      ],
+      "evidence": "code",
+      "note": "user_speech 处理只读 text/audio/userId/signalId/timezone；全仓无任何 Go 代码引用 talkativeness"
+    },
+    {
+      "claim": "旧文档的三层发言预算（单个事件/时段/整场）与类别级冷却期没有对应实现：现实只有单一时间冷却 + 事件级 TTL 去重，预算耗尽/时段差异/跨通道冷却均为设想",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/31-主动发言、主动沉默与话痨控制设计.md", "lines": "243-287,398-405" },
+        { "path": "backend/internal/relationship/types.go", "lines": "222-226" }
+      ],
+      "evidence": "doc",
+      "note": "审计结论：预算作为配额计数器是虚构；真实机制是冷却时间戳"
+    },
+    {
+      "claim": "旧文档「主动触发四分类（安全状态/用户请求/已许可节奏/有限回顾）+ 单项许可准入」是虚构：现实没有用户主动许可的分类体系，资格门只有操作模式+事件白名单+事件标签覆盖",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/31-主动发言、主动沉默与话痨控制设计.md", "lines": "38-111,194-241" },
+        { "path": "backend/internal/conversation/proactive_gate.go", "lines": "15-21" }
+      ],
+      "evidence": "doc",
+      "note": "审计结论已确认该条为虚构"
+    },
+    {
+      "claim": "导播手写主动话术原样播出：manual 事件的 proactiveText 在 eval 用例中要求逐字送达、不被球球改写",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "evals/cases/regression/manual-proactive-line.json", "lines": "1-35" },
+        { "path": "backend/cmd/server/main.go", "lines": "574-576" }
+      ],
+      "evidence": "eval",
+      "note": ""
+    }
+  ]
+}

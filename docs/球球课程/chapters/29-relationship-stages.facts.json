@@ -1,0 +1,138 @@
+{
+  "id": "29-relationship-stages",
+  "title": "关系阶段与信任成长",
+  "source_chapter": "docs/球球全套资料/4.产品设计/29-关系阶段与信任成长设计.md",
+  "status_summary": { "implemented": 10, "partial": 2, "planned": 0, "concept": 1 },
+  "claims": [
+    {
+      "claim": "关系阶段机已实现，为四阶段 first_meeting → familiar → watch_buddy → old_ballmate，由 advanceStage 在每次决策后推进；阶段名与旧文档的「初见/已校准/共同观赛/长期默契」完全不同",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "100-105" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "302-320" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "升级由行为证据触发而非用户显式设置：familiar 需≥2 场共同观看+2 类证据；watch_buddy 需≥3 场+3 类证据；old_ballmate 需≥6 场+召回过共同瞬间+（持续分歧或完成过修复）。这与旧文档「阶段改变只允许用户设置动作触发」的设计相反",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "310-319" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "322-342" }
+      ],
+      "evidence": "code",
+      "note": "证据类计数来自用户线索（说「我喜欢…」/「接着上次」/接受判断等），不是设置面板"
+    },
+    {
+      "claim": "阶段证据是 9 个线索计数器（SharedMatches/StablePreferences/ContinuedThreads/AcceptedJudgments/AcceptedInitiatives/AllowedBanterScopes/SharedMomentsRecalled/ContinuedDisagreements/CompletedRepairs），由 applyUserCues 按用户话术递增",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "154-165" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "237-300" }
+      ],
+      "evidence": "code",
+      "note": "没有旧文档禁止的单一「亲密度分数」，阶段门槛读的是分类计数"
+    },
+    {
+      "claim": "修复中阻止升级：RepairState.Active 时 advanceStage 直接返回，修复完成需连续 3 个正常跟回合并计入 CompletedRepairs",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "307-309" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "139-148" }
+      ],
+      "evidence": "code",
+      "note": "对应旧文档状态机中的 R_修复中"
+    },
+    {
+      "claim": "信任以时间戳记录：JudgmentAcceptedAt/InitiativeAcceptedAt/CallbackAcceptedAt/CorrectionContinuedAt 在用户接受判断/主动/回 call/继续纠正时写入",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "125-130" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "246-255" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "294-298" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "共同瞬间记忆按需引用：比赛事件写入 shared_moment 记忆；只有当用户发出召回线索（「想起/记得+上次那场」等）时才被选入决策上下文，不是常驻摘要",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/memory.go", "lines": "15-17" },
+        { "path": "backend/internal/relationship/memory.go", "lines": "129-130" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "213-216" }
+      ],
+      "evidence": "code",
+      "note": "selectRelationshipMemories 的匹配条件即 CueSharedMomentRecalled"
+    },
+    {
+      "claim": "未完话题记忆 14 天自动过期，过期引用被排除",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/memory.go", "lines": "33-37" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "熟悉感有阶段门槛：召回共同瞬间默认只给 recall；要附带调侃（recall+tease）需关系≥watch_buddy 且存在允许的调侃领域",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "149-154" }
+      ],
+      "evidence": "code",
+      "note": "场景测试 20_old_ballmate_shared_moment 断言 recall+tease"
+    },
+    {
+      "claim": "边界撤销只有一半：禁话题过滤会跳过 RevokedAt 非空的边界，但仓库中不存在把关系边界 RevokedAt 写值的代码路径（仅 auth 会话有撤销），用户没有可撤销关系边界的入口",
+      "status": "partial",
+      "anchors": [
+        { "path": "backend/internal/relationship/types.go", "lines": "181" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "425-427" }
+      ],
+      "evidence": "code",
+      "note": "缺口：无 revoke 写路径、无用户控制面入口"
+    },
+    {
+      "claim": "用户控制面远小于旧文档要求：客户端设置页只有称呼、话痨程度、连续对话、字幕、声音五项；没有「暂停连续性」「重置为初见」「查看与编辑已保存内容」入口",
+      "status": "partial",
+      "anchors": [
+        { "path": "client/lib/screens/settings_screen.dart", "lines": "80-139" }
+      ],
+      "evidence": "code",
+      "note": "旧文档 §8.1 要求首屏含暂停/查看/重置三入口"
+    },
+    {
+      "claim": "首次见面流程：session_opened 记录 FirstMetAt 与 SharedMatches，首个决策是 ack（first_meeting_observed）；首见问候语以 30 秒 TTL 的主动回合送达并记录 GreetingDeliveredAt",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/policy.go", "lines": "57-70" },
+        { "path": "backend/cmd/server/main.go", "lines": "842" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "49-56" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "旧文档的许可制度与控制面——三层许可（本场/跨场/长期）、暂停状态 P、已清空状态 X、阶段可见日志页、一键降级/清空、确认面板与「稍后再说」等价路径——均无代码对应",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/4.产品设计/29-关系阶段与信任成长设计.md", "lines": "183-272,276-311,406-431" },
+        { "path": "client/lib/screens/settings_screen.dart", "lines": "80-139" }
+      ],
+      "evidence": "doc",
+      "note": "代码里最接近的状态只有 Repair（R）；暂停/清空/日志页不存在"
+    },
+    {
+      "claim": "20 个场景一致性测试锁定阶段行为：prepareStage 用真实信号序列（场次+线索）构造各阶段，断言决策动作、阶段、表演与修复状态",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/relationship/scenario_conformance_test.go", "lines": "9-212" },
+        { "path": "backend/internal/relationship/scenario_conformance_test.go", "lines": "240-269" }
+      ],
+      "evidence": "eval",
+      "note": "含 02_familiar_user_returns、15_return_after_long_absence 等跨场场景"
+    }
+  ]
+}

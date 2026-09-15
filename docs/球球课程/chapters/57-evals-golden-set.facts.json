@@ -1,0 +1,142 @@
+{
+  "id": "57-evals-golden-set",
+  "title": "Evals 评测、黄金集与自动回归（事实源）",
+  "source_chapter": "docs/球球全套资料/5.AI Coding工程实践/57-Evals评测、黄金集与自动回归.md",
+  "status_summary": { "implemented": 9, "partial": 0, "planned": 0, "concept": 4 },
+  "claims": [
+    {
+      "claim": "黄金集是 13 个版本化 JSON 用例，分三个套件：baseline 3 个、boundary 6 个、regression 4 个",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "evals/cases/baseline", "lines": "dir" },
+        { "path": "evals/cases/boundary", "lines": "dir" },
+        { "path": "evals/cases/regression", "lines": "dir" },
+        { "path": "evals/cases/boundary/correction-revokes-old-facts.json", "lines": "1-7" }
+      ],
+      "evidence": "eval",
+      "note": "baseline：goal-assist-follow-up、player-timeline-and-smalltalk、voice-asr-intent；boundary 含 ASR 同音、命令注入、未证实主张、用户主张冲突；regression 含指代吹捧无证据、导播手动主动线、润色锚点不符、供应商回退。"
+    },
+    {
+      "claim": "用例 schema 强制版本号 \"2026-07\"、suite 枚举与 id 命名规则 ^(baseline|boundary|regression)\\.[a-z0-9-]+$",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "evals/schema/eval-case.schema.json", "lines": "5-17" }
+      ],
+      "evidence": "code",
+      "note": "required: version/id/suite/summary/config；additionalProperties: false。"
+    },
+    {
+      "claim": "旧章 §3.2 的用例字段（case_id/collection_version/risk_level P0/preconditions/forbidden/judges）与真实 schema 完全不同",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/5.AI Coding工程实践/57-Evals评测、黄金集与自动回归.md", "lines": "121-148" },
+        { "path": "evals/schema/eval-case.schema.json", "lines": "5-17" },
+        { "path": "evals/cases/boundary/correction-revokes-old-facts.json", "lines": "41-55" }
+      ],
+      "evidence": "code",
+      "note": "真实对应物：断言放在 turns[].expect（mustMention/mustNotMention/requiredTools/forbiddenTools）与 final；无风险分级字段，\"blocker\" 只以 tag 形式存在（如 correction-revokes-old-facts.json:6）。"
+    },
+    {
+      "claim": "判定器是纯确定性文本/轨迹断言：mustMention、mustNotMention、requiredTools、forbiddenTools 四类检查",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/evals/runner.go", "lines": "194-218" },
+        { "path": "backend/internal/evals/journey_runner.go", "lines": "10" }
+      ],
+      "evidence": "code",
+      "note": "另有 gradeVoice/gradeProactive/gradeTraceContract 等专用判定（runner.go:130-256）。"
+    },
+    {
+      "claim": "旧章「规则+模型判定双轨、语义判定器、人工复核」不存在：评测运行完全确定，LLM 由 scriptedRealizer 脚本替身代替",
+      "status": "concept",
+      "anchors": [
+        { "path": "backend/internal/evals/runner.go", "lines": "340" },
+        { "path": "docs/球球全套资料/5.AI Coding工程实践/57-Evals评测、黄金集与自动回归.md", "lines": "53,199-211" }
+      ],
+      "evidence": "code",
+      "note": "真实对应物：离线档完全离线可跑（scripts/evals/run.mjs:10-18 屏蔽密钥）；模型真实验证只出现在 release 档的 MiMo 语音冒烟（run.mjs:57-59），不是裁判。"
+    },
+    {
+      "claim": "记分卡输出 totalCases/passedCases/failedCases/passRate 与 factSafetyRate/trajectoryRate/traceCompleteRate 三率",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/evals/types.go", "lines": "104-117" },
+        { "path": "backend/internal/evals/runner.go", "lines": "303-327" }
+      ],
+      "evidence": "code",
+      "note": "runner_test.go:23-24 断言确定性判定三率必须为 1。"
+    },
+    {
+      "claim": "失败即阻断：任何用例失败使 cmd/evals 以 exit 1 退出，报告含 gitRevision 写入 JSON 工件",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/cmd/evals/main.go", "lines": "15-38" },
+        { "path": "backend/internal/evals/types.go", "lines": "119-127" }
+      ],
+      "evidence": "code",
+      "note": "-suite 支持 baseline/boundary/regression/逗号组合/all；-out 指定报告路径。"
+    },
+    {
+      "claim": "运行分四档 tier：offline（go test + 黄金集全量 + voice-ui 冒烟）、pr（加会话隔离/runtime e2e/轨迹审计/互动审计/Playwright）、nightly（加基准与 Postgres 集成测试）、release（要求 MIMO_API_KEY 真机语音冒烟）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "scripts/evals/run.mjs", "lines": "6,20-22" },
+        { "path": "scripts/evals/run.mjs", "lines": "24-39" },
+        { "path": "scripts/evals/run.mjs", "lines": "57-67" },
+        { "path": "package.json", "lines": "5-10" }
+      ],
+      "evidence": "code",
+      "note": "run.mjs 共 84 行；package.json 提供 eval:offline/pr/nightly/release 四个 npm 脚本。"
+    },
+    {
+      "claim": "非 release 档将 DEEPSEEK/MIMO/ELEVENLABS/APISPORTS 密钥清空，保证离线/PR 评测不依赖外部服务",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "scripts/evals/run.mjs", "lines": "10-18" }
+      ],
+      "evidence": "code",
+      "note": "release 档反向要求 MIMO_API_KEY，可从 backend/.env 读取（run.mjs:74-84）。"
+    },
+    {
+      "claim": "nightly 档跑 companion 基准（BenchmarkEvalCompanionRecentEventAnswer，count=3）并在设置 DATABASE_URL 时跑 matchstate/companion 的 Postgres 集成测试",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "scripts/evals/run.mjs", "lines": "62-67" }
+      ],
+      "evidence": "code",
+      "note": "对应旧章「定时全量」层；仓库无 GitHub scheduled workflow，nightly 需手动/自建触发。"
+    },
+    {
+      "claim": "CI 门：evals.yml 在 pull_request/push master/workflow_dispatch 触发，跑 go test、flutter analyze/test/build web 后执行 --tier pr 并上传 artifacts/evals",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": ".github/workflows/evals.yml", "lines": "3-12" },
+        { "path": ".github/workflows/evals.yml", "lines": "23-44" }
+      ],
+      "evidence": "eval",
+      "note": "门禁效果由 cmd/evals 的 exit code 与各 runCommand 抛错保证；单一 pr-evals job，20 分钟超时。"
+    },
+    {
+      "claim": "浏览器旅程评测是 tests/evals 下 11 个 Playwright spec（单 worker、失败截图/trace、JSON 报告到 artifacts/evals/browser.json）",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "playwright.config.mjs", "lines": "4-16" },
+        { "path": "tests/evals", "lines": "dir" },
+        { "path": "tests/evals/fact-lifecycle.spec.mjs", "lines": "dir" }
+      ],
+      "evidence": "eval",
+      "note": "spec 覆盖：投递去重、麦克风、VAD、语音运行时、连接检查、事实生命周期、进球跟进、观察协调、导播鉴权、导播控制、workflows；旧章若计 13 个 spec 为计数漂移（13 是黄金用例数）。"
+    },
+    {
+      "claim": "旧章「每场景四种变形（状态/时序/媒介/措辞）+ P0/P1 豁免制度 + 场景退役流程」无制度载体",
+      "status": "concept",
+      "anchors": [
+        { "path": "docs/球球全套资料/5.AI Coding工程实践/57-Evals评测、黄金集与自动回归.md", "lines": "151-195,288-313" },
+        { "path": "evals/cases/boundary/asr-homophone-assist.json", "lines": "dir" },
+        { "path": "evals/cases/boundary/unknown-fact-and-command-injection.json", "lines": "dir" }
+      ],
+      "evidence": "eval",
+      "note": "真实对应物：schema 无变形字段；对抗性变形以独立 boundary 用例近似（同音字、命令注入、未证实主张），豁免/退役无任何记录机制。"
+    }
+  ]
+}

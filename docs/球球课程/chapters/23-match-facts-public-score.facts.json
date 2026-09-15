@@ -1,0 +1,113 @@
+{
+  "id": "23-match-facts-public-score",
+  "title": "比赛事实与公开比分",
+  "source_chapter": "docs/球球全套资料/4.产品设计/23-比赛事实与公开比分设计.md",
+  "status_summary": { "implemented": 10, "partial": 1, "planned": 0, "concept": 1 },
+  "claims": [
+    {
+      "claim": "每个比赛事件携带五值事实状态 provisional/confirmed/revoked/conflict/reconciled，旧文档的中文状态词典在代码里就是这套英文名",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/matchstate/store.go", "lines": "29-35" } ],
+      "evidence": "code",
+      "note": "旧文档「待确认」=provisional、「有争议」=conflict、「已更正」=事件 Status 'corrected'，枚举名已漂移"
+    },
+    {
+      "claim": "事件入库时按来源自动推导事实状态：操作员/系统/无来源默认 confirmed，外部提供方默认 provisional",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/matchstate/store.go", "lines": "1341-1361" } ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "只有 active、visibility=public 且 confirmed/reconciled 的事件是公开事实；候选不参与公共快照投影",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "1363-1377" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "150-156" }
+      ],
+      "evidence": "code",
+      "note": "投影循环只消费 IsPublicFact 事件"
+    },
+    {
+      "claim": "比分不是存储值而是投影结果：进球 +1、goal_cancelled 按 RevisionOf 关联回退、score_correction 显式设定，且不可产生负比分",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "156-213" } ],
+      "evidence": "code",
+      "note": "追加校验要求进球必须精确把比分 +1（store.go:1486-1528）"
+    },
+    {
+      "claim": "快照对象自带完整性状态 integrity(ok/conflict)、投影版本与投影序号；投影规则失败时降级为 integrity=conflict 的空投影，不回退旧比分",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "201-220" },
+        { "path": "backend/internal/matchstate/fact_ledger.go", "lines": "318-329" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "事实状态机受约束：撤销可从 provisional/confirmed/conflict/reconciled 进入，reconciled 只能从 conflict 进入，非法转移直接报错",
+      "status": "implemented-at",
+      "anchors": [ { "path": "backend/internal/matchstate/store.go", "lines": "1472-1484" } ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "跨源互斥候选（同事件类型、45 秒时钟窗、不同队伍/球员）不覆盖旧值，而是新事件标 conflict 且快照 integrity 转 conflict",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "650-674" },
+        { "path": "backend/internal/matchstate/store.go", "lines": "1567-1585" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "每次事实状态变化都追加一条 FactRevision 修订历史（fact_id+revision 去重），操作员可查询修订链",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/postgres.go", "lines": "1750-1764" },
+        { "path": "backend/cmd/server/main.go", "lines": "1826-1833" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "撤销事实时向在线客户端推送 match_snapshot + match_fact_retracted，客户端据此移除已展示的旧反应而非静默改数字",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/cmd/server/main.go", "lines": "541-549" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "343" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "自动发布由 AutomationPolicy 门控（active/paused、事件类型白名单、冷却 0-300 秒），而不是旧文档描述的「资格链」",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "2001-2051" },
+        { "path": "backend/internal/conversation/proactive_gate.go", "lines": "17-19" }
+      ],
+      "evidence": "code",
+      "note": ""
+    },
+    {
+      "claim": "旧文档的来源分层 S0-S4 未实现为来源等级门槛；来源只作为字符串身份记入修订历史，冲突按事件类型+时钟窗判定",
+      "status": "partial",
+      "anchors": [
+        { "path": "backend/internal/matchstate/store.go", "lines": "1567-1585" },
+        { "path": "backend/internal/matchstate/store.go", "lines": "1179-1187" }
+      ],
+      "evidence": "code",
+      "note": "fact_revisions 记录 source_type，但无按层确认门槛"
+    },
+    {
+      "claim": "旧文档的四类信息卡（已确认比分卡/待确认提示/更正说明卡/进度保护入口）与用户剧透偏好设置没有对应前端实现",
+      "status": "concept",
+      "anchors": [ { "path": "client/lib/services/match_session_controller.dart", "lines": "1345-1351" } ],
+      "evidence": "doc",
+      "note": "客户端只有 factStatus 交付键与撤销处理；独立的信息卡组件与剧透偏好设置未找到"
+    }
+  ]
+}
