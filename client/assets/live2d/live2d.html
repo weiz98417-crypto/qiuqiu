@@ -13,6 +13,116 @@
 </head>
 <body>
 <canvas id="live2d"></canvas>
+<script type="module">
+// Real lip sync: wLipSync (WASM MFCC -> visemes, vendored under vendor/wlipsync/)
+// analyzes the queued TTS audio. Playback stays in the Flutter player (native
+// soloud / top-window Audio); this iframe only taps the bytes for mouth
+// driving. When the analyser is unavailable the mouth falls back to the audio
+// envelope, then to the legacy random jitter.
+(function() {
+    var state = { ctx: null, node: null, buffer: null, source: null, startedAt: 0, pendingStart: false };
+
+    function ensureCtx() {
+        if (!state.ctx) {
+            var Ctx = window.AudioContext || window.webkitAudioContext;
+            if (!Ctx) return null;
+            state.ctx = new Ctx();
+            document.addEventListener('pointerdown', function() {
+                if (state.ctx && state.ctx.state === 'suspended') {
+                    state.ctx.resume().catch(function() {});
+                }
+            }, true);
+        }
+        return state.ctx;
+    }
+
+    (async function() {
+        try {
+            var wlipsync = await import('/live2d-assets/vendor/wlipsync/wlipsync-single.js');
+            var profileResp = await fetch('/live2d-assets/vendor/wlipsync/profile.bin');
+            var profile = wlipsync.parseBinaryProfile(await profileResp.arrayBuffer());
+            var ctx = ensureCtx();
+            if (!ctx) return;
+            state.node = await wlipsync.createWLipSyncNode(ctx, profile);
+        } catch (e) {
+            console.warn('wLipSync unavailable, using envelope fallback:', e);
+        }
+    })();
+
+    window.qLipSync = {
+        queue: function(dataUrl) {
+            var ctx = ensureCtx();
+            if (!ctx) return;
+            state.buffer = null;
+            state.pendingStart = false;
+            fetch(dataUrl).then(function(resp) { return resp.arrayBuffer(); })
+                .then(function(bytes) { return ctx.decodeAudioData(bytes); })
+                .then(function(decoded) {
+                    state.buffer = decoded;
+                    if (state.pendingStart) {
+                        state.pendingStart = false;
+                        window.qLipSync.start();
+                    }
+                })
+                .catch(function(e) { console.warn('lip sync decode failed:', e); });
+        },
+        start: function() {
+            var ctx = ensureCtx();
+            if (!ctx) return;
+            if (!state.buffer) {
+                // Decode still in flight; start once queue() completes.
+                state.pendingStart = true;
+                return;
+            }
+            this.stop();
+            ctx.resume().catch(function() {});
+            var source = ctx.createBufferSource();
+            source.buffer = state.buffer;
+            if (state.node) source.connect(state.node);
+            state.source = source;
+            state.startedAt = ctx.currentTime;
+            source.onended = function() { if (state.source === source) state.source = null; };
+            try { source.start(0); } catch (e) { state.source = null; }
+        },
+        stop: function() {
+            state.pendingStart = false;
+            if (!state.source) return;
+            try { state.source.stop(); } catch (e) {}
+            state.source = null;
+        },
+        sample: function() {
+            if (!state.node || !state.source || !state.ctx || state.ctx.state !== 'running') return null;
+            var w = state.node.weights;
+            var volume = state.node.volume || 0;
+            var a = (w.A || 0) * volume;
+            var i = (w.I || 0) * volume;
+            var u = (w.U || 0) * volume;
+            var e = (w.E || 0) * volume;
+            var o = (w.O || 0) * volume;
+            if (a + i + u + e + o <= 0.01) return null;
+            return {
+                open: Math.min(1, a + 0.8 * o + 0.6 * e + 0.3 * i + 0.2 * u),
+                form: Math.max(i, 0.4 * e) - Math.max(u, 0.7 * o),
+                funnel: Math.max(u, 0.7 * o),
+                stretch: Math.max(i, 0.4 * e)
+            };
+        },
+        sampleEnvelope: function() {
+            if (!state.buffer || !state.source || !state.ctx || state.ctx.state !== 'running') return null;
+            var elapsed = state.ctx.currentTime - state.startedAt;
+            if (elapsed < 0 || elapsed > state.buffer.duration) return null;
+            var rate = state.buffer.sampleRate;
+            var data = state.buffer.getChannelData(0);
+            var start = Math.floor(elapsed * rate);
+            var end = Math.min(start + Math.floor(rate * 0.05), data.length);
+            var sum = 0;
+            for (var i = start; i < end; i++) sum += data[i] * data[i];
+            var rms = Math.sqrt(sum / Math.max(1, end - start));
+            return { open: Math.min(1, rms * 6), form: 0, funnel: 0, stretch: 0 };
+        }
+    };
+})();
+</script>
 <script>
 var app = new PIXI.Application({
     view: document.getElementById('live2d'),
@@ -24,7 +134,6 @@ var app = new PIXI.Application({
 var model = null;
 window.modelReady = false;
 var speaking = false;
-var mouthValue = 0;
 var currentMode = 'idle';
 var modeUntil = 0;
 var idleTimer = null;
@@ -54,8 +163,10 @@ var exprMap = {
 };
 var motionGroups = {
     hello: [['hello', 0]],
-    cheer: [['idle', 1]],
+    cheer: [['celebrate', 0]],
     celebrate: [['celebrate', 0], ['celebrate', 1]],
+    celebrate_01: [['celebrate', 0]],
+    celebrate_02: [['celebrate', 1]],
     miss: [['miss', 0]],
     complain: [['complain', 0]],
     analysis: [['analysis', 0]],
@@ -63,8 +174,16 @@ var motionGroups = {
     agree: [['agree', 0]],
     wave: [['wave', 0]],
     idle: [['idle', 0], ['idle', 1], ['idle', 2]],
+    idle_01: [['idle', 0]],
+    idle_02: [['idle', 1]],
+    idle_03: [['idle', 2]],
+    focus: [['listen', 1]],
     listen: [['listen', 0], ['listen', 1]],
+    listen_01: [['listen', 0]],
+    listen_02: [['listen', 1]],
     speak: [['speak', 0], ['speak', 1]],
+    speak_01: [['speak', 0]],
+    speak_02: [['speak', 1]],
     think: [['think', 0]],
 };
 var actionMap = {
@@ -627,7 +746,6 @@ function setSpeaking(v) {
         currentMode = 'speak';
         modeUntil = Date.now() + 3000;
     } else {
-        mouthValue = 0;
         currentMode = 'idle';
         modeUntil = 0;
         scheduleIdle();
@@ -637,7 +755,18 @@ function setSpeaking(v) {
 window.addEventListener('message', function(event) {
     if (event.source !== window.parent) return;
     var data = event.data;
-    if (!data || data.type !== 'qiuqiu-live2d-state') return;
+    if (!data || typeof data.type !== 'string') return;
+    if (data.type === 'qiuqiu-live2d-audio') {
+        if (window.qLipSync) window.qLipSync.queue(data.audio);
+        return;
+    }
+    if (data.type === 'qiuqiu-live2d-lipsync') {
+        if (!window.qLipSync) return;
+        if (data.command === 'start') window.qLipSync.start();
+        else window.qLipSync.stop();
+        return;
+    }
+    if (data.type !== 'qiuqiu-live2d-state') return;
     if (data.expression) setExpression(data.expression);
     if (data.motion) {
         if (actionMap[data.motion]) performAction(data.motion);
@@ -646,16 +775,43 @@ window.addEventListener('message', function(event) {
     setSpeaking(data.speaking === true);
 });
 
+var mouth = { open: 0, form: 0, funnel: 0, stretch: 0 };
+
+function applyMouth() {
+    if (!model) return;
+    try {
+        var core = model.internalModel.coreModel;
+        core.setParameterValueById('ParamMouthOpenY', mouth.open);
+        core.setParameterValueById('ParamJawOpen', mouth.open);
+        core.setParameterValueById('ParamMouthForm', mouth.form);
+        core.setParameterValueById('ParamMouthFunnel', mouth.funnel);
+        core.setParameterValueById('ParamMouthStretchLeft', mouth.stretch);
+        core.setParameterValueById('ParamMouthStretchRight', mouth.stretch);
+    } catch(e) {}
+}
+
 setInterval(function() {
     if (!model) return;
+    var target = { open: 0, form: 0, funnel: 0, stretch: 0 };
     if (speaking) {
-        mouthValue = 0.25 + Math.random() * 0.75;
-    } else {
-        mouthValue += (0 - mouthValue) * 0.25;
+        var q = window.qLipSync;
+        var viseme = q ? q.sample() : null;
+        var envelope = viseme || (q ? q.sampleEnvelope() : null);
+        if (viseme) {
+            target = viseme;
+        } else if (envelope) {
+            target = envelope;
+        } else {
+            // Analyser not ready (vendor libs missing or audio not decoded):
+            // legacy random jaw jitter keeps the mouth alive.
+            target.open = 0.25 + Math.random() * 0.75;
+        }
     }
-    try {
-        model.internalModel.coreModel.setParameterValueById('ParamJawOpen', mouthValue);
-    } catch(e) {}
+    mouth.open += (target.open - mouth.open) * 0.5;
+    mouth.form += (target.form - mouth.form) * 0.3;
+    mouth.funnel += (target.funnel - mouth.funnel) * 0.4;
+    mouth.stretch += (target.stretch - mouth.stretch) * 0.4;
+    applyMouth();
 }, 50);
 
 app.ticker.add(function(delta) {

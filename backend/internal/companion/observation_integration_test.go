@@ -84,7 +84,7 @@ func TestConfirmedObservationCreatesGroundedFollowUp(t *testing.T) {
 	if followUps[0].Reply != "跟上了，确实是萨拉赫进的。" || followUps[0].Trace.ID == "" {
 		t.Fatalf("follow-up = %+v", followUps[0])
 	}
-	if followUps[0].Presentation.Expression != "excited" || followUps[0].Presentation.Motion != "cheer" {
+	if followUps[0].Presentation.Expression != "excited" || followUps[0].Presentation.Motion != "celebrate" {
 		t.Fatalf("presentation = %+v", followUps[0].Presentation)
 	}
 }

@@ -33,6 +33,69 @@ void main() {
     expect(presentation?.expression, 'sad');
     expect(presentation?.motion, 'idle');
   });
+
+  test('nod alias resolves into the agree motion', () {
+    final presentation = CompanionPresentation.fromReplyData({
+      'presentation': {
+        'expression': 'happy',
+        'motion': 'nod',
+        'voiceStyle': 'warm',
+        'returnMode': 'decay_to_focus',
+      },
+    });
+    expect(presentation?.motion, 'agree');
+  });
+
+  test('accepts the full motion pack and still rejects unknowns', () {
+    for (final motion in [
+      'celebrate',
+      'celebrate_02',
+      'miss',
+      'complain',
+      'analysis',
+      'tense',
+      'agree',
+      'wave',
+      'idle_02',
+      'speak_02',
+    ]) {
+      final presentation = CompanionPresentation.fromReplyData({
+        'presentation': {
+          'expression': 'chat',
+          'motion': motion,
+          'voiceStyle': 'natural',
+          'returnMode': 'decay_to_focus',
+        },
+      });
+      expect(presentation?.motion, motion, reason: motion);
+    }
+    expect(
+      CompanionPresentation.fromReplyData({
+        'presentation': {
+          'expression': 'chat',
+          'motion': 'dab',
+          'voiceStyle': 'natural',
+          'returnMode': 'decay_to_focus',
+        },
+      }),
+      isNull,
+    );
+  });
+
+  test('presentation parses the affect vector for idle tiers', () {
+    final presentation = CompanionPresentation.fromReplyData({
+      'presentation': {
+        'expression': 'deflated',
+        'motion': 'complain',
+        'voiceStyle': 'low_disappointed',
+        'returnMode': 'decay_to_idle',
+        'affect': {'valence': -0.7, 'arousal': 0.3},
+      },
+    });
+    expect(presentation?.valence, -0.7);
+    expect(presentation?.arousal, 0.3);
+  });
+
   test('single sentence reply does not invent companion filler', () {
     expect(splitReplyForDisplay('这脚真离谱。'), ('这脚真离谱。', ''));
   });
@@ -82,9 +145,38 @@ void main() {
       presentationReturnState(base.copyWith(returnMode: 'decay_to_listening')),
       ('listening', 'listen'),
     );
+    // Neutral affect decays into the calm idle tier.
     expect(
       presentationReturnState(base.copyWith(returnMode: 'decay_to_idle')),
-      ('idle', 'idle'),
+      ('idle', 'idle_02'),
     );
+  });
+
+  test('decay_to_idle picks the idle tier motion from the affect vector', () {
+    const deflated = CompanionPresentation(
+      expression: 'sad',
+      motion: 'complain',
+      voiceStyle: 'low_disappointed',
+      voiceEnergy: 0.35,
+      voiceSpeed: 0.92,
+      hold: Duration(milliseconds: 2800),
+      returnMode: 'decay_to_idle',
+      valence: -0.8,
+      arousal: 0.2,
+    );
+    expect(presentationReturnState(deflated), ('idle', 'idle_01'));
+
+    const energetic = CompanionPresentation(
+      expression: 'excited',
+      motion: 'celebrate',
+      voiceStyle: 'excited',
+      voiceEnergy: 0.9,
+      voiceSpeed: 1.05,
+      hold: Duration(milliseconds: 2600),
+      returnMode: 'decay_to_idle',
+      valence: 0.6,
+      arousal: 0.8,
+    );
+    expect(presentationReturnState(energetic), ('idle', 'idle_03'));
   });
 }

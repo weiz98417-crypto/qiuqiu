@@ -5,3 +5,7 @@ void sendLive2dState({
   required bool speaking,
   String? motion,
 }) {}
+
+void sendLive2dAudio(String dataUrl) {}
+
+void sendLive2dLipSyncCommand(String command) {}

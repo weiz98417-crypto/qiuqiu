@@ -10,6 +10,7 @@ import 'package:vibration/vibration.dart';
 export '../services/match_view_data.dart';
 
 import '../services/audio_player.dart';
+import '../services/idle_tier_picker.dart';
 import '../services/preferences_service.dart';
 import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
@@ -60,6 +61,7 @@ class _MatchScreenState extends State<MatchScreen> {
   final TextEditingController _textController = TextEditingController();
   final GlobalKey<Live2dViewState> _live2dKey = GlobalKey<Live2dViewState>();
   final List<StreamSubscription<dynamic>> _subscriptions = [];
+  final IdleTierPicker _idlePicker = IdleTierPicker();
   late final Future<void> _profileLoad;
   MatchOverviewData _overview = const MatchOverviewData();
   bool _overviewLoading = true;
@@ -77,6 +79,7 @@ class _MatchScreenState extends State<MatchScreen> {
   String _userId = '';
   int _signalSequence = 0;
   Timer? _presentationReturnTimer;
+  Timer? _idleTicker;
   Timer? _clockTicker;
   String _deviceId = '';
 
@@ -127,6 +130,9 @@ class _MatchScreenState extends State<MatchScreen> {
     _clockTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
       if (!mounted) return;
       _sessionController.tickClock(DateTime.now().toUtc());
+    });
+    _idleTicker = Timer.periodic(const Duration(seconds: 30), (_) {
+      _repickIdleMotion();
     });
     _profileLoad = _initialize();
     unawaited(_profileLoad);
@@ -348,6 +354,10 @@ class _MatchScreenState extends State<MatchScreen> {
           'presentation': _map(message['data']),
         });
         if (presentation != null) {
+          _idlePicker.updateAffect(
+            valence: presentation.valence,
+            arousal: presentation.arousal,
+          );
           _sessionController.receivePresentation(
             presentation: presentation,
             source: message['source']?.toString(),
@@ -408,6 +418,12 @@ class _MatchScreenState extends State<MatchScreen> {
       final eventId = data?['eventId']?.toString();
       final traceId = data?['traceId'] as String?;
       final presentation = CompanionPresentation.fromReplyData(data);
+      if (presentation != null) {
+        _idlePicker.updateAffect(
+          valence: presentation.valence,
+          arousal: presentation.arousal,
+        );
+      }
       final parts = splitReplyForDisplay(reply.trim());
       _sessionController.receiveReply(
         text: parts.$1,
@@ -625,6 +641,15 @@ class _MatchScreenState extends State<MatchScreen> {
     if (!mounted) return;
     if (state.status == AudioPlaybackStatus.failed) {
       debugPrint('Audio playback failed: ${state.error}');
+    }
+    // Lip sync follows the platform audio playback lifecycle.
+    final live2d = _live2dKey.currentState;
+    if (live2d != null) {
+      if (state.status == AudioPlaybackStatus.started) {
+        live2d.startLipSync();
+      } else {
+        live2d.stopLipSync();
+      }
     }
     _sessionController.dispatch(PlaybackSessionEvent(
       switch (state.status) {
@@ -948,6 +973,20 @@ class _MatchScreenState extends State<MatchScreen> {
     });
   }
 
+  /// Quiet-stretch idle re-pick: maps the last received affect vector onto a
+  /// tier and replays the tier's idle motion (hysteresis in IdleTierPicker).
+  void _repickIdleMotion() {
+    if (!mounted) return;
+    final state = _sessionController.state;
+    if (state.activePresentation != null ||
+        state.phase != MatchSessionPhase.idle) {
+      return;
+    }
+    final motion = _idlePicker.maybeRepick(DateTime.now().toUtc());
+    if (motion == null || motion == state.motion) return;
+    _sessionController.setMotion(motion);
+  }
+
   void _runSessionCommands() {
     while (true) {
       final commands = _sessionController.takeCommands();
@@ -965,6 +1004,10 @@ class _MatchScreenState extends State<MatchScreen> {
           case PauseAudioCommand():
             unawaited(_audio.pause());
           case PlayAudioCommand(:final audio, :final metadata):
+            _live2dKey.currentState?.queueLipSyncAudio(
+              audio,
+              mime: metadata.mime,
+            );
             unawaited(_audio.playEncoded(
               audio,
               mime: metadata.mime,
@@ -1019,6 +1062,7 @@ class _MatchScreenState extends State<MatchScreen> {
   @override
   void dispose() {
     _presentationReturnTimer?.cancel();
+    _idleTicker?.cancel();
     _clockTicker?.cancel();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());

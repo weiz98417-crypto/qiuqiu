@@ -491,9 +491,13 @@ func (a *Agent) observationResponses(ctx context.Context, resolutions []observat
 func observationPresentation(status observation.Status) relationship.PresentationPlan {
 	switch status {
 	case observation.StatusConfirmed:
-		return relationship.PresentationPlan{Expression: "excited", Motion: "cheer", VoiceStyle: "excited", VoiceEnergy: 0.9, VoiceSpeed: 1.05, HoldMS: 1800, ReturnMode: "watching"}
+		// Trigger: observation resolved to confirmed — the called shot landed,
+		// so the body celebrates (client accepts 'cheer' as a legacy alias).
+		return relationship.PresentationPlan{Expression: "excited", Motion: "celebrate", VoiceStyle: "excited", VoiceEnergy: 0.9, VoiceSpeed: 1.05, HoldMS: 1800, ReturnMode: "watching"}
 	case observation.StatusContradicted:
-		return relationship.PresentationPlan{Expression: "deflated", Motion: "slump", VoiceStyle: "soft", VoiceEnergy: 0.45, VoiceSpeed: 0.95, HoldMS: 1600, ReturnMode: "watching"}
+		// Trigger: observation resolved to contradicted — the called shot was
+		// wrong, so the body plays the near-miss gesture.
+		return relationship.PresentationPlan{Expression: "deflated", Motion: "miss", VoiceStyle: "soft", VoiceEnergy: 0.45, VoiceSpeed: 0.95, HoldMS: 1600, ReturnMode: "watching"}
 	default:
 		return relationship.PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"}
 	}

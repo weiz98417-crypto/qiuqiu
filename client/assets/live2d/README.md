@@ -12,6 +12,17 @@ The browser runtime uses Cubism 5 Web assets:
 
 The backend serves this folder at `/assets/`, plus `/live2d.html`, `/app.html`, and `/test-expressions.html`.
 
+## Lip Sync
+
+`vendor/wlipsync/` vendors wLipSync 1.3.1 (npm `wlipsync`, MIT) plus its example
+viseme profile (`profile.bin`). Both `live2d.html` and the native WebView page
+in `client/lib/widgets/live2d_view.dart` load it lazily: the page decodes the
+TTS bytes pushed from Flutter, wLipSync turns them into viseme weights, and the
+mouth parameters are driven from those. If the vendor files are missing or the
+audio-worklet is unavailable, the page falls back to an RMS envelope and then
+to the legacy random jaw jitter. Re-download pinned versions with
+`node scripts/fetch-lipsync-libs.mjs`.
+
 ## Project Motion Pack
 
 The first football companion motion pack was created inside this project for the current `qiuqiu` model parameter set:

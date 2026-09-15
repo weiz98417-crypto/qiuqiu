@@ -112,7 +112,7 @@ func TestAgentHandlesMutedMatchEventWithoutProducingSpeech(t *testing.T) {
 	if response.Decision.Speech != nil {
 		t.Fatalf("speech = %+v, want nil", response.Decision.Speech)
 	}
-	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "cheer" {
+	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "celebrate" {
 		t.Fatalf("presentation = %+v", response.Presentation)
 	}
 }
@@ -171,7 +171,7 @@ func TestAgentHandlesAllowedMatchEventAsOnePlannedTurn(t *testing.T) {
 	if response.Decision.ID == "" || response.Trace.RelationshipDecision == nil || response.Trace.RelationshipDecision.ID != response.Decision.ID {
 		t.Fatalf("decision mismatch: response=%+v trace=%+v", response.Decision, response.Trace.RelationshipDecision)
 	}
-	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "cheer" {
+	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "celebrate" {
 		t.Fatalf("presentation = %+v", response.Presentation)
 	}
 }

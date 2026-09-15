@@ -44,3 +44,20 @@
 ## Sequencing
 
 1 → 2 → 3 & 4 (parallelizable once 2 lands) → 5 continuous. C4 ships value on day one and de-risks the presentation contract before memory changes touch context assembly.
+
+## C4 implementation notes
+
+### 1.5 TTS-audio routing decision (resolved)
+
+**Chosen: route the TTS bytes into the WebView and analyze them there; playback stays in the platform player.**
+
+- Audible playback keeps living where it does today: `flutter_soloud` natively on Android/iOS (`client/lib/services/audio_player_native.dart`) and a top-window `Audio` element on Flutter Web (`audio_player_web.dart`). The existing started/ended/interrupted/failed state machine, mute handling, and playback dedupe stay untouched.
+- At `PlayAudioCommand` time the same WAV/MP3 bytes are also handed to the Live2D surface (`Live2dViewState.queueLipSyncAudio` → `evaluateJavascript` on the native InAppWebView, `postMessage {'type': 'qiuqiu-live2d-audio'}` to the iframe on Web). The page decodes them with its own `AudioContext.decodeAudioData`.
+- On playback `started`/`ended` the view sends `qLipSync.start()`/`qLipSync.stop()`; the page starts a muted `BufferSource` into the wLipSync node (analysis-only — never connected to `destination`, so there is no double audio), and the 50 ms mouth ticker drives the model's mouth parameters: open amount on `ParamJawOpen` (plus a `ParamMouthOpenY` attempt for future models), viseme shape on `ParamMouthForm`/`ParamMouthFunnel`/`ParamMouthStretchLeft/Right`. The qiuqiu model carries no `ParamMouthOpenY`/`ParamMouthForm` IDs (verified against its cdi3.json), so those writes are no-ops and the ARKit-style IDs above do the visible work.
+- Fallback ladder when the analyser is unavailable (vendor assets missing, `AudioContext`/audio-worklet blocked, context suspended): (1) wLipSync visemes → (2) RMS envelope of the decoded buffer at the audio clock → (3) the old random jaw jitter. Nothing is deleted; the app works before vendoring.
+- **pixi-live2d-display-lipsyncpatch was evaluated and intentionally not swapped in**: its dist requires `pixi.js ^7` while the repo vendors PIXI 6.5.x plus `live2d.min.js`/`live2d-display-bundle.js` on both surfaces; replacing the runtime is outside C4's safe scope. The lipsync *mechanism* (audio → visemes → model mouth parameters) is implemented in-page against the existing runtime, with wLipSync supplying the WASM MFCC analysis.
+- Vendored (real files, not placeholders): `client/assets/live2d/vendor/wlipsync/{wlipsync-single.js,profile.bin,LICENSE}` — wLipSync 1.3.1 (npm `wlipsync`, MIT) + the repo's example 5-vowel calibration profile; pinned re-download script: `scripts/fetch-lipsync-libs.mjs`. `pubspec.yaml` lists the new asset dirs.
+
+### 1.6 Idle tiers
+
+`IdleTierPicker` (`client/lib/services/idle_tier_picker.dart`) stores the `affect` vector now carried by `CompanionPresentation`; thresholds: deflated (arousal ≤ 0.15 or valence ≤ −0.35), energetic (arousal ≥ 0.55 and valence ≥ 0.15), calm otherwise → idle_01/02/03. Re-pick every 30 s while the session is idle; tier switches are locked to once per 60 s unless the affect crosses the threshold by a 0.1 margin. `presentationReturnState('decay_to_idle')` now returns the tier motion directly (calm `idle_02` for neutral affect).

@@ -44,6 +44,29 @@ void sendLive2dState({
     'motion': motion,
     'speaking': speaking,
   });
+  _postToLive2dFrame(payload);
+}
+
+/// Hands the current TTS reply audio (as a data URL) to the Live2D iframe for
+/// lip-sync analysis; playback itself stays in the top-window player.
+void sendLive2dAudio(String dataUrl) {
+  final payload = jsonEncode({
+    'type': 'qiuqiu-live2d-audio',
+    'audio': dataUrl,
+  });
+  _postToLive2dFrame(payload);
+}
+
+/// Starts/stops lip-sync analysis in the Live2D iframe.
+void sendLive2dLipSyncCommand(String command) {
+  final payload = jsonEncode({
+    'type': 'qiuqiu-live2d-lipsync',
+    'command': command,
+  });
+  _postToLive2dFrame(payload);
+}
+
+void _postToLive2dFrame(String payload) {
   final script = web.HTMLScriptElement()
     ..text = '''
       (function() {
