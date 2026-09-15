@@ -5,7 +5,7 @@ export async function openTextMode(page) {
   const catalogIndex = await configuredMatchIndex(page);
   const catalogEntries = page.getByRole('button', { name: /进入陪看|查看赛前|回看陪聊/ });
   const catalogEntry = catalogEntries.nth(catalogIndex ?? 0);
-  const enterMatchButton = page.getByRole('button', { name: '进入球球的看台' });
+  const enterMatchButton = page.getByRole('button', { name: /进入球球(?:陪看|的看台)/ });
   const moreButton = page.getByRole('button', { name: '更多陪看方式' });
   const textModeItem = page.getByRole('menuitem', { name: '改用文字说' });
 
