@@ -14,7 +14,7 @@
 
 - [ ] 2.1 Add `memobase-server` to `docker-compose.yml`; wire extraction-LLM endpoint/key env vars (reuse backend adapter config); document image pin.
 - [ ] 2.2 Create `backend/internal/memory`: `Memories` interface + Memobase adapter + in-memory fake adapter (two adapters ⇒ real seam).
-- [ ] 2.3 Async observation pipeline: turn-end hook → local queue → Memobase insert; retries with backoff; extraction decisions persisted with reason codes (audit).
+- [ ] 2.3 Async observation pipeline: Moment writers = turn pipeline (emotional exchanges, user facts, promises) + match events (user-team goals/cards/VAR); enqueue-time importance heuristic (auditable; Memobase never rewrites it); local queue → Memobase insert; retries with backoff; extraction decisions persisted with reason codes (audit).
 - [ ] 2.4 Recall path: context assembly in `agent.go` uses `Recall` (recency × importance × relevance) alongside/ahead of `conversation.read_recent`.
 - [ ] 2.5 Reflection beat: post-match + idle job synthesizing insights into profile entries; every insight cites Ledger sequence(s).
 - [ ] 2.6 Degradation: Memobase down ⇒ backlog locally, fall back to `read_recent`; no user-visible error; test it.

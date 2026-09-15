@@ -24,6 +24,8 @@ type Memories interface {
 
 - **Division of labor**: the Interaction Ledger keeps recording immutable facts (turns, match events, delivery outcomes). Memobase stores mutable synthesis: the user profile and event summaries. Nothing deletes from the Ledger; Memobase entries always cite a Ledger sequence for provenance.
 - **Write path**: turn ends → Ledger append (unchanged, ms) → async queue → Memobase insert (LLM extraction happens here; retries with backoff; every accepted/rejected extraction gets a reason code persisted locally for audit — the fact-first culture applies to memory too).
+- **Importance scoring**: each Moment carries an importance score assigned at enqueue time by a deterministic heuristic (event class: goal/card/COMEBACK > routine; user-signal markers: explicit statements > small talk; relationship-stage weighting). The enqueue-time score is the auditable one; Memobase synthesis may refine the profile but never rewrites the moment's score.
+- **Moment writers**: turn pipeline (emotional exchanges, explicit user facts/preferences, promises) and match events (goals, cards, VAR drama involving the user's tracked teams) — Shared Moments per CONTEXT.md.
 - **Read path**: `agent.go` context assembly replaces/augments `conversation.read_recent` with `Recall` (top-k) + `Portrait`. The realizer receives the portrait block; ForbiddenClaims/RequiredAnchors discipline unchanged.
 - **Reflection**: scheduled beat (post-match + idle) synthesizes insights ("user cares about midfield playmakers") — stored as profile entries, cited by later turns.
 - **Degradation**: Memobase unreachable → observe queue drains to local disk/backlog table, system runs Ledger-only (read_recent fallback). No user-visible error.
