@@ -1,0 +1,2 @@
+# Archify 生成物不参与 GitHub 语言统计（事实源在 archify/*.json）
+architecture/showcase/*.html linguist-generated=true

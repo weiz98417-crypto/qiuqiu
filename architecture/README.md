@@ -4,10 +4,8 @@
 
 ## 入口
 
-- 直接打开 [`index.html`](index.html) 进入图集目录。
-- 需要按顺序打开全部 15 张图时，打开 [`showcase/index.html`](showcase/index.html)。
-- 需要单张图的交互追踪、搜索和演示模式时，打开 [`showcase/00-overview.html`](showcase/00-overview.html)。
-- 需要代码评审或文档嵌入时，使用 `showcase/` 中对应图的 SVG 导出或截图。
+- `showcase/` 下的整合讲解页（HTML）是 Archify `deliver` 的本地生成物，不入库；需要查看时基于 `archify/*.json` 重新执行 `archify deliver` 生成。
+- 需要单张图的交互追踪、搜索和演示模式时，使用生成页自带的功能；需要代码评审或文档嵌入时，使用生成页的 SVG 导出或截图。
 
 ## 阅读顺序
 
@@ -35,7 +33,7 @@
 
 1. C4 静态层级和部署事实维护在 `structurizr/workspace.dsl`。
 2. 总图、Agent Core、技术模块图、时序图和数据流维护在 `archify/*.json`。
-3. HTML 是 Archify `deliver` 生成物，不手工修改。
+3. HTML 是 Archify `deliver` 生成物，不入库，不手工修改。
 4. “逻辑职责”表示当前代码中的责任边界，不暗示独立进程；`planned` 节点代表路线图，不代表当前已部署能力。
 5. Redis 在图中表示会话、短期状态和协调；它不是事实源。PostgreSQL + Outbox 才是可追溯事实和事务消息底座。
 6. 09–11 是工程合同级补充视图：09 约定实时消息怎么传，10 约定事实和失败如何变状态，11 约定表现结果如何回执并进入评测和收缩。它们不替代 01–07 的边界、时序和部署图。
