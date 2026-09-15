@@ -56,6 +56,14 @@ _Avoid_: Chat history, memory item
 A topic, question, promise, or emotional moment that remains relevant after the turn where it began.
 _Avoid_: Pending task
 
+**Reflection（反思）**:
+A periodic synthesis of accumulated moments into a stable insight about the user or the relationship, which is itself stored as memory and cited by later turns.
+_Avoid_: Summary, analysis, journal
+
+**Portrait（用户画像）**:
+The synthesized, user-inspectable picture of what QiuQiu knows and believes about the user — facts, preferences, emotional patterns. It must be wired into what QiuQiu actually says, never a decorative narrative.
+_Avoid_: User profile, vector memory, tag cloud
+
 **Relationship Memory（关系记忆）**:
 Memory of how the user and QiuQiu interact, including accepted banter, effective support, corrections, boundaries, and shared rituals.
 _Avoid_: User profile, vector memory
