@@ -261,7 +261,10 @@ func (service *ResponseDeliveryService) completeWithFallback(ctx context.Context
 		mediaState = "failed"
 	}
 	recordErr := service.recordMedia(ctx, request, "", mediaState, reason)
-	transitionErr := service.tracker.Transition(request.Trace.ID, DeliveryCompleted, service.timestamp())
+	var transitionErr error
+	if !request.Critical {
+		transitionErr = service.tracker.Transition(request.Trace.ID, DeliveryCompleted, service.timestamp())
+	}
 	return result, errors.Join(statusErr, recordErr, transitionErr)
 }
 

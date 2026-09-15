@@ -118,7 +118,7 @@ func TestResponseDeliveryServiceDeliversTextAndAudioOnce(t *testing.T) {
 	}
 }
 
-func TestResponseDeliveryServiceFallsBackToTextWhenTTSFails(t *testing.T) {
+func TestResponseDeliveryServiceKeepsCriticalTextFallbackRecoverableUntilAcknowledged(t *testing.T) {
 	sink := &responseSinkStub{}
 	synthesizer := &responseSynthesizerStub{err: errors.New("provider unavailable")}
 	tracker := newResponseTrackerStub()
@@ -127,6 +127,8 @@ func TestResponseDeliveryServiceFallsBackToTextWhenTTSFails(t *testing.T) {
 		media = append(media, event)
 		return nil
 	}))
+	now := time.Date(2026, 9, 8, 10, 0, 0, 0, time.UTC)
+	service.now = func() time.Time { return now }
 	result, err := service.Deliver(context.Background(), responseRequest(), nil)
 	if err != nil {
 		t.Fatalf("deliver fallback: %v", err)
@@ -138,8 +140,27 @@ func TestResponseDeliveryServiceFallsBackToTextWhenTTSFails(t *testing.T) {
 		t.Fatalf("fallback evidence missing: statuses=%+v media=%+v", sink.statuses, media)
 	}
 	record, _ := tracker.Lookup("trace-1")
+	if record.State != DeliveryTextDelivered {
+		t.Fatalf("critical text fallback should remain recoverable, got %+v", record)
+	}
+	if pending := tracker.core.Ledger().Pending(now.Add(time.Second)); len(pending) != 1 || pending[0].Key != record.Key {
+		t.Fatalf("critical text fallback missing from recovery ledger: %+v", pending)
+	}
+}
+
+func TestResponseDeliveryServiceCompletesNonCriticalTextFallback(t *testing.T) {
+	sink := &responseSinkStub{}
+	tracker := newResponseTrackerStub()
+	service := NewResponseDeliveryService(sink, nil, tracker, nil)
+	request := responseRequest()
+	request.Critical = false
+
+	if _, err := service.Deliver(context.Background(), request, nil); err != nil {
+		t.Fatalf("deliver fallback: %v", err)
+	}
+	record, _ := tracker.Lookup(request.Trace.ID)
 	if record.State != DeliveryCompleted {
-		t.Fatalf("text fallback should complete delivery, got %+v", record)
+		t.Fatalf("non-critical text fallback should complete delivery, got %+v", record)
 	}
 }
 
