@@ -3,11 +3,88 @@ package companion
 import (
 	"context"
 	"errors"
+	"strings"
 	"testing"
 	"time"
 
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/relationship"
 )
+
+func TestMatchEventPraiseDoesNotAffirmMissingEvent(t *testing.T) {
+	for _, input := range []string{"刚刚那个球真漂亮吧", "刚刚的进球真漂亮吧"} {
+		t.Run(input, func(t *testing.T) {
+			store := matchstate.NewStore()
+			agent := NewAgent(NewStoreMemoryTools(store)).WithDirector(
+				relationship.NewDirector(relationship.NewMemoryRepository()),
+			).WithRealizer(fakeRealizer{text: "确实漂亮！这脚球太漂亮了。"}, time.Second)
+
+			response, err := agent.HandleMessage(context.Background(), MessageRequest{
+				SignalID: "match-praise-no-event",
+				MatchID:  "match-praise-no-event",
+				UserID:   "user-1",
+				Text:     input,
+				Now:      time.Date(2026, 7, 17, 6, 30, 0, 0, time.UTC),
+			})
+			if err != nil {
+				t.Fatalf("HandleMessage error: %v", err)
+			}
+			if response.Intent != IntentEmotionReaction {
+				t.Fatalf("intent = %q, want %q", response.Intent, IntentEmotionReaction)
+			}
+			if strings.Contains(response.Reply, "漂亮") || strings.Contains(response.Reply, "确实") {
+				t.Fatalf("reply affirmed an event that does not exist: %q", response.Reply)
+			}
+			assertContains(t, response.Reply, "还没看到你说的那一下")
+			assertToolCalled(t, response.Trace, "match.search_events")
+			assertToolCalled(t, response.Trace, "match.verify_user_claim")
+			if response.Trace.Claim == nil || response.Trace.Claim.Kind != "event_reference" || response.Trace.Claim.Status != ClaimStatusUnverified {
+				t.Fatalf("claim assessment = %+v, want unverified event reference", response.Trace.Claim)
+			}
+		})
+	}
+}
+
+func TestDeicticMatchPraiseUsesConfirmedRecentEvent(t *testing.T) {
+	store := matchstate.NewStore()
+	matchID := "deictic-praise-confirmed-event"
+	setFactClaimClock(t, store, matchID, "first_half", 31*60+15)
+	goal, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType:   "goal",
+		Period:      "first_half",
+		Clock:       "31:15",
+		TeamID:      "home",
+		PlayerName:  "萨拉赫",
+		Score:       matchstate.Score{Home: 1},
+		Description: "萨拉赫禁区内推射破门。",
+		Visibility:  "public",
+	})
+	if err != nil {
+		t.Fatalf("Create goal error: %v", err)
+	}
+	agent := NewAgent(NewStoreMemoryTools(store)).WithDirector(
+		relationship.NewDirector(relationship.NewMemoryRepository()),
+	).WithRealizer(fakeRealizer{text: "我没看到任何比赛动态。"}, time.Second)
+
+	response, err := agent.HandleMessage(context.Background(), MessageRequest{
+		SignalID: "deictic-praise-confirmed-event",
+		MatchID:  matchID,
+		UserID:   "user-1",
+		Text:     "刚刚那个球真漂亮吧",
+		Now:      time.Date(2026, 7, 17, 6, 31, 0, 0, time.UTC),
+	})
+	if err != nil {
+		t.Fatalf("HandleMessage error: %v", err)
+	}
+	assertContains(t, response.Reply, "萨拉赫禁区内推射破门")
+	assertToolCalled(t, response.Trace, "match.search_events")
+	if response.Trace.Claim == nil || response.Trace.Claim.Status != ClaimStatusConfirmed {
+		t.Fatalf("claim assessment = %+v, want confirmed event reference", response.Trace.Claim)
+	}
+	if len(response.Trace.RetrievedEvent) != 1 || response.Trace.RetrievedEvent[0] != goal.ID {
+		t.Fatalf("retrieved events = %v, want %s", response.Trace.RetrievedEvent, goal.ID)
+	}
+}
 
 func TestFalseScoreClaimUsesMatchFactsBeforeRealization(t *testing.T) {
 	store := matchstate.NewStore()
@@ -17,7 +94,6 @@ func TestFalseScoreClaimUsesMatchFactsBeforeRealization(t *testing.T) {
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
-
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
 		MatchID: matchID,
 		UserID:  "user-1",
@@ -75,6 +151,7 @@ func TestWrongScorerClaimIsCorrectedFromRecentGoal(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 23*60+41)
 	goal, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -124,6 +201,7 @@ func TestUnknownRosterNameInGoalClaimIsStillVerified(t *testing.T) {
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 41*60)
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -160,6 +238,13 @@ func TestUnconfirmedGoalClaimWaitsForMatchEvidence(t *testing.T) {
 	matchID := "fact-claim-unconfirmed-goal"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
+	}
+	setFactClaimClock(t, store, matchID, "first_half", 1)
+	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
+		EventType: "kickoff", Period: "first_half", Clock: "00:01",
+		Description: "比赛开始。", Visibility: "public",
+	}); err != nil {
+		t.Fatalf("Create kickoff error: %v", err)
 	}
 
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
@@ -444,6 +529,7 @@ func TestWrongScoringTeamClaimIsCorrected(t *testing.T) {
 	}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
 	}
+	setFactClaimClock(t, store, matchID, "first_half", 31*60)
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType:   "goal",
 		Period:      "first_half",
@@ -503,6 +589,16 @@ func TestHypotheticalScoreIsNotTreatedAsMatchFact(t *testing.T) {
 		}
 		assertNotContains(t, response.Reply, "3比0领先")
 		assertToolNotCalled(t, response.Trace, "match.verify_user_claim")
+	}
+}
+
+func setFactClaimClock(t *testing.T, store *matchstate.Store, matchID, period string, elapsedSeconds int) {
+	t.Helper()
+	current := store.Clock(matchID)
+	if _, err := store.SetClock(matchID, matchstate.ClockCommand{
+		Action: matchstate.ClockActionSet, Period: period, ElapsedSeconds: &elapsedSeconds, ExpectedVersion: current.Version, Source: "test-fixture",
+	}); err != nil {
+		t.Fatalf("SetClock error: %v", err)
 	}
 }
 

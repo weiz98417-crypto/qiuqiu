@@ -132,6 +132,28 @@ let vadPoll = null;
 let audioUnlocked = false;
 let pendingAudioMime = 'audio/mpeg';
 let pendingAudioTraceId = '';
+let latestMatchSnapshot = null;
+let liveMatchClock = null;
+const seenMatchEventIds = new Set();
+const seenReactionEventIds = new Set();
+const seenPresentationDeliveryIds = new Set();
+const seenAudioDeliveryIds = new Set();
+let skipNextAudioBlob = false;
+
+function rememberDeliveryId(seen, eventId) {
+  const normalized = String(eventId || '').trim();
+  if (!normalized) return true;
+  if (seen.has(normalized)) return false;
+  seen.add(normalized);
+  if (seen.size > 256) seen.delete(seen.values().next().value);
+  return true;
+}
+
+function matchEventDeliveryKey(eventData) {
+  const eventId = String(eventData?.id || '').trim();
+  if (!eventId) return '';
+  return `${eventId}:${eventData?.factRevision || 0}:${eventData?.factStatus || ''}`;
+}
 
 function addMessage(kind, text) {
   const el = document.createElement('div');
@@ -181,6 +203,12 @@ async function unlockAudio() {
 
 function playAudioBlob(data, mime) {
   const traceId = pendingAudioTraceId;
+  if (skipNextAudioBlob) {
+    skipNextAudioBlob = false;
+    pendingAudioTraceId = '';
+    reportVoicePlayback(traceId, 'skipped');
+    return;
+  }
   pendingAudioTraceId = '';
   const blob = new Blob([data], { type: mime || pendingAudioMime || 'audio/mpeg' });
   const url = URL.createObjectURL(blob);
@@ -239,18 +267,43 @@ function speakFor(text) {
   }, Math.max(1800, Math.min(5600, text.length * 140)));
 }
 
-function formatMatchSnapshot(snapshot) {
+function currentClockSeconds(clock = liveMatchClock) {
+  if (!clock) return 0;
+  let elapsed = Number(clock.elapsedSeconds || 0);
+  if (clock.running && clock.anchorAt) {
+    const anchor = new Date(clock.anchorAt).getTime();
+    if (Number.isFinite(anchor)) elapsed += Math.max(0, Math.floor((Date.now() - anchor) / 1000));
+  }
+  return Math.max(0, elapsed);
+}
+
+function formatMatchClock(clock = liveMatchClock) {
+  const elapsed = currentClockSeconds(clock);
+  return `${String(Math.floor(elapsed / 60)).padStart(2, '0')}:${String(elapsed % 60).padStart(2, '0')}`;
+}
+
+function periodName(period) {
+  return ({ pre_match: '赛前', first_half: '上半场', halftime: '中场', second_half: '下半场', extra_time: '加时', fulltime: '完场' })[period] || period || '赛前';
+}
+
+function formatMatchSnapshot(snapshot = latestMatchSnapshot) {
   if (!snapshot) return '等待比赛状态...';
   const home = snapshot.homeTeam || '主队';
   const away = snapshot.awayTeam || '客队';
   const score = snapshot.score || { home: 0, away: 0 };
-  const clock = snapshot.clock || '00:00';
-  const period = snapshot.period || 'pre_match';
-  return `${home} ${score.home || 0}-${score.away || 0} ${away} · ${period} ${clock}`;
+  const clock = liveMatchClock || snapshot.matchClock;
+  const clockText = clock ? formatMatchClock(clock) : snapshot.clock || '00:00';
+  const period = clock?.period || snapshot.period || 'pre_match';
+  return `${home} ${score.home || 0}-${score.away || 0} ${away} · ${periodName(period)} ${clockText}`;
+}
+
+function renderMatchStatus() {
+  match.textContent = formatMatchSnapshot(latestMatchSnapshot);
 }
 
 function handleMatchEvent(eventData, snapshot) {
-  if (snapshot) match.textContent = formatMatchSnapshot(snapshot);
+  if (snapshot) latestMatchSnapshot = snapshot;
+  renderMatchStatus();
   if (!eventData) return;
   const action = eventData.recommendedAction || inferAction(eventData.description || '');
   const clock = eventData.clock || '';
@@ -293,11 +346,29 @@ function connect() {
       return;
     }
     if (msg.type === 'match_snapshot') {
-      match.textContent = formatMatchSnapshot(msg.data);
+      latestMatchSnapshot = msg.data || latestMatchSnapshot;
+      if (msg.data?.matchClock) liveMatchClock = msg.data.matchClock;
+      renderMatchStatus();
+      return;
+    }
+    if (msg.type === 'match_clock') {
+      liveMatchClock = msg.data || liveMatchClock;
+      renderMatchStatus();
       return;
     }
     if (msg.type === 'match_event') {
-      handleMatchEvent(msg.data, msg.snapshot);
+      if (msg.snapshot) latestMatchSnapshot = msg.snapshot;
+      renderMatchStatus();
+      if (rememberDeliveryId(seenMatchEventIds, msg.deliveryKey || matchEventDeliveryKey(msg.data))) {
+        handleMatchEvent(msg.data, null);
+      }
+      return;
+    }
+    if (msg.type === 'presentation') {
+      if (msg.source === 'match_reaction' && !rememberDeliveryId(seenPresentationDeliveryIds, msg.deliveryKey || msg.eventId)) return;
+      const presentation = msg.data || {};
+      liveCall('setMood', presentation.expression || 'idle');
+      liveCall('performAction', presentation.motion || presentation.expression || 'focus');
       return;
     }
     if (msg.type === 'expression') {
@@ -312,8 +383,10 @@ function connect() {
       return;
     }
     if (msg.type === 'voice_audio') {
+      skipNextAudioBlob = msg.source === 'match_reaction' && !rememberDeliveryId(seenAudioDeliveryIds, msg.deliveryKey || msg.eventId);
       pendingAudioMime = msg.mime || 'audio/mpeg';
       pendingAudioTraceId = msg.traceId || '';
+      if (skipNextAudioBlob) return;
       setVoiceStatus('正在播放球球语音回复。', 'replying');
       return;
     }
@@ -323,7 +396,9 @@ function connect() {
       return;
     }
     if (msg.type === 'event' && msg.event === 'qiuqiu_reply') {
-      const text = (msg.data && msg.data.text) || '';
+      const replyData = msg.data || {};
+      if (replyData.source === 'match_reaction' && !rememberDeliveryId(seenReactionEventIds, replyData.deliveryKey || replyData.eventId)) return;
+      const text = replyData.text || '';
       addMessage('bot', text || '我刚刚有点走神，再说一遍？');
       speakFor(text);
       setVoiceStatus('可以继续说或打字。', 'idle');
@@ -338,7 +413,12 @@ function sendText(text, preferredAction) {
   if (!value || !ws || ws.readyState !== WebSocket.OPEN) return;
   addMessage('user', value);
   liveCall('performAction', preferredAction || inferAction(value) || 'listen');
-  ws.send(JSON.stringify({ type: 'user_speech', text: value, talkativeness: talk.value }));
+  ws.send(JSON.stringify({
+    type: 'user_speech',
+    text: value,
+    talkativeness: talk.value,
+    timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+  }));
 }
 
 async function toggleMic() {
@@ -406,7 +486,12 @@ function readVAD() {
     vadPoll = null;
     setVoiceStatus('球球正在理解。', 'processing');
     liveCall('performAction', 'analysis');
-    ws.send(JSON.stringify({ type: 'user_speech', audio: result.audio, talkativeness: talk.value }));
+    ws.send(JSON.stringify({
+      type: 'user_speech',
+      audio: result.audio,
+      talkativeness: talk.value,
+      timezone: Intl.DateTimeFormat().resolvedOptions().timeZone || '',
+    }));
   }
 }
 
@@ -425,6 +510,7 @@ document.getElementById('reconnect').addEventListener('click', connect);
 mic.addEventListener('click', toggleMic);
 
 addMessage('bot', '我准备好了，开场、进球、可惜、吐槽、生气、紧张、好奇、安慰和战术分析都可以接。');
+window.setInterval(renderMatchStatus, 250);
 connect();
 </script>
 </body>

@@ -246,6 +246,8 @@ type StateUpdate struct {
 type Decision struct {
 	ID            string               `json:"id"`
 	SignalID      string               `json:"signalId"`
+	FactRevision  string               `json:"factRevision,omitempty"`
+	RefreshCount  int                  `json:"refreshCount,omitempty"`
 	StateVersion  int64                `json:"stateVersion"`
 	Actions       []CommunicationAct   `json:"actions"`
 	Relationship  RelationshipView     `json:"relationship"`

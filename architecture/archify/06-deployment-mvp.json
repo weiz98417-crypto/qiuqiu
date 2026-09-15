@@ -1,0 +1,27 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜MVP 部署拓扑", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1120, 700] },
+  "components": [
+    { "id": "client", "type": "frontend", "label": "Flutter Web / Mobile", "sublabel": "用户设备", "pos": [30, 330], "size": [180, 82] },
+    { "id": "proxy", "type": "cloud", "label": "反向代理 / TLS（外部前置）", "sublabel": "生产入口，不在 Compose 内", "pos": [245, 330], "size": [210, 82] },
+    { "id": "go", "type": "backend", "label": "Go Backend", "sublabel": "Ingress · Auth · Agent · Director · Outbox", "pos": [560, 330], "size": [220, 90] },
+    { "id": "redis", "type": "database", "label": "Redis 7", "sublabel": "短期会话 / 协调（非事实源）", "pos": [720, 200], "size": [190, 82] },
+    { "id": "postgres", "type": "database", "label": "PostgreSQL", "sublabel": "Compose service · 多域持久化", "pos": [720, 500], "size": [190, 82] },
+    { "id": "ai", "type": "external", "label": "外部 AI API", "sublabel": "ASR / LLM / TTS", "pos": [925, 200], "size": [160, 82] },
+    { "id": "match", "type": "external", "label": "比赛数据 API", "sublabel": "外部依赖", "pos": [925, 500], "size": [160, 82] }
+  ],
+  "boundaries": [ { "kind": "region", "label": "单台云 VM / Docker Compose", "wraps": ["proxy", "go", "redis", "postgres"], "pad": 30 } ],
+  "connections": [
+    { "id": "client-proxy", "from": "client", "to": "proxy", "label": "HTTPS / WebSocket", "variant": "emphasis", "labelAt": [227, 430] },
+    { "id": "proxy-go", "from": "proxy", "to": "go", "label": "转发请求与音频", "variant": "emphasis", "fromSide": "right", "toSide": "left", "labelAt": [487, 430] },
+    { "id": "go-redis", "from": "go", "to": "redis", "variant": "dashed", "fromSide": "top", "toSide": "left" },
+    { "id": "go-postgres", "from": "go", "to": "postgres", "label": "事实 / 审计", "fromSide": "bottom", "toSide": "top", "via": [[670, 440],[815, 440]], "labelAt": [740, 430] },
+    { "id": "go-ai", "from": "go", "to": "ai", "label": "HTTPS / WebSocket", "fromSide": "top", "toSide": "bottom", "via": [[670, 310],[1005, 310]], "labelAt": [900, 296] },
+    { "id": "go-match", "from": "go", "to": "match", "label": "轮询 / 接入", "fromSide": "bottom", "toSide": "top", "labelAt": [900, 430] }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "当前 MVP 事实", "items": ["单台 VM 承载 Compose 服务", "客户端与后端可同源部署"] },
+    { "dot": "slate", "title": "不在此图中的内容", "items": ["没有画多副本或故障转移", "Outbox Runner、Auth、Privacy 是 Go 内部逻辑模块", "外部 API 不属于 VM 内部"] }
+  ]
+}

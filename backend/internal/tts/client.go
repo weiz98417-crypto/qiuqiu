@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/resilience"
 )
 
 var ErrNotConfigured = errors.New("tts provider is not configured")
@@ -22,6 +24,7 @@ type Client struct {
 	voice      string
 	httpClient *http.Client
 	mockAudio  []byte
+	breaker    *resilience.CircuitBreaker
 }
 
 func NewClient(apiKey string) *Client {
@@ -29,10 +32,11 @@ func NewClient(apiKey string) *Client {
 		apiKey:  apiKey,
 		baseURL: "https://api.xiaomimimo.com/v1",
 		model:   "mimo-v2.5-tts",
-		voice:   "Chloe",
+		voice:   "冰糖",
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
+		breaker: resilience.NewCircuitBreaker(3, 10*time.Second),
 	}
 }
 
@@ -66,6 +70,13 @@ func (c *Client) WithVoice(voice string) *Client {
 	return c
 }
 
+func (c *Client) CircuitState() resilience.State {
+	if c == nil {
+		return resilience.StateOpen
+	}
+	return c.breaker.State()
+}
+
 type SynthesizeResult struct {
 	AudioData []byte
 	Duration  time.Duration
@@ -75,6 +86,11 @@ type SynthesizeResult struct {
 // Synthesize calls MiMo Text-to-Speech API.
 // voiceID overrides the configured MiMo voice when supplied.
 func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*SynthesizeResult, error) {
+	return c.SynthesizeWithInstruction(ctx, text, voiceID, "")
+}
+
+// SynthesizeWithInstruction asks MiMo to perform the text according to a natural-language direction.
+func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, instruction string) (*SynthesizeResult, error) {
 	start := time.Now()
 	if c == nil {
 		return nil, ErrNotConfigured
@@ -85,18 +101,24 @@ func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*Synthes
 	if strings.TrimSpace(c.apiKey) == "" {
 		return nil, ErrNotConfigured
 	}
+	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("tts unavailable: %w", err)
+	}
 	voice := strings.TrimSpace(voiceID)
 	if voice == "" || strings.HasPrefix(voice, "cgSg") {
 		voice = c.voice
 	}
+	messages := make([]map[string]string, 0, 2)
+	if instruction = strings.TrimSpace(instruction); instruction != "" {
+		messages = append(messages, map[string]string{"role": "user", "content": instruction})
+	}
+	messages = append(messages, map[string]string{"role": "assistant", "content": text})
 	payload := map[string]interface{}{
-		"model": defaultString(c.model, "mimo-v2.5-tts"),
-		"messages": []map[string]string{
-			{"role": "assistant", "content": text},
-		},
+		"model":    defaultString(c.model, "mimo-v2.5-tts"),
+		"messages": messages,
 		"audio": map[string]string{
 			"format": "wav",
-			"voice":  defaultString(voice, "Chloe"),
+			"voice":  defaultString(voice, "冰糖"),
 		},
 	}
 
@@ -109,11 +131,13 @@ func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*Synthes
 
 	resp, err := c.httpClient.Do(httpReq)
 	if err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.breaker.Failure(time.Now().UTC())
 		errBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("tts error %d: %s", resp.StatusCode, string(errBody))
 	}
@@ -128,16 +152,20 @@ func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*Synthes
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts decode: %w", err)
 	}
 	if len(raw.Choices) == 0 || strings.TrimSpace(raw.Choices[0].Message.Audio.Data) == "" {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts returned no audio")
 	}
 	audio, err := decodeBase64(raw.Choices[0].Message.Audio.Data)
 	if err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("tts decode audio: %w", err)
 	}
 
+	c.breaker.Success()
 	return &SynthesizeResult{
 		AudioData: audio,
 		Duration:  time.Since(start),

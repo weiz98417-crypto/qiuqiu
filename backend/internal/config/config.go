@@ -1,45 +1,82 @@
 package config
 
 import (
+	"crypto/rand"
+	"crypto/subtle"
+	"encoding/base64"
 	"fmt"
 	"net/url"
 	"os"
 	"strconv"
 	"strings"
+	"time"
 )
 
 type Config struct {
-	Port            string
-	Environment     string
-	AppToken        string
-	AllowedOrigins  []string
-	DatabaseURL     string
-	RedisAddr       string
-	MiMoAPIKey      string
-	MiMoBaseURL     string
-	MiMoModel       string
-	MiMoVoice       string
-	APISportsAPIKey string
+	Port                           string
+	Environment                    string
+	AppToken                       string
+	SecondaryAppToken              string
+	AuthMode                       string
+	SessionSigningKey              string
+	AllowedOrigins                 []string
+	DatabaseURL                    string
+	RedisAddr                      string
+	MiMoAPIKey                     string
+	MiMoBaseURL                    string
+	MiMoModel                      string
+	MiMoVoice                      string
+	CompanionRealizerTimeoutMS     int
+	APISportsAPIKey                string
+	APISportsBaseURL               string
+	PrivacyRetentionDays           int
+	PendingObservationCoordination bool
+	FactLedgerPublicReads          bool
 }
 
 func Load() *Config {
+	environment := getEnv("APP_ENV", "development")
+	authMode := strings.TrimSpace(os.Getenv("AUTH_MODE"))
+	if authMode == "" {
+		if strings.EqualFold(environment, "production") {
+			authMode = "session"
+		} else {
+			authMode = "dual"
+		}
+	}
+	sessionSigningKey := strings.TrimSpace(os.Getenv("SESSION_SIGNING_KEY"))
+	if sessionSigningKey == "" && !strings.EqualFold(environment, "production") {
+		sessionSigningKey = developmentSessionSigningKey()
+	}
 	return &Config{
-		Port:            getEnv("PORT", "8080"),
-		Environment:     getEnv("APP_ENV", "development"),
-		AppToken:        strings.TrimSpace(os.Getenv("APP_TOKEN")),
-		AllowedOrigins:  splitCSV(os.Getenv("ALLOWED_ORIGINS")),
-		DatabaseURL:     getEnv("DATABASE_URL", ""),
-		RedisAddr:       getEnv("REDIS_ADDR", "localhost:6379"),
-		MiMoAPIKey:      getEnv("MIMO_API_KEY", ""),
-		MiMoBaseURL:     getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-		MiMoModel:       getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
-		MiMoVoice:       getEnv("MIMO_VOICE", "Chloe"),
-		APISportsAPIKey: strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		Port:                           getEnv("PORT", "8080"),
+		Environment:                    environment,
+		AppToken:                       strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		SecondaryAppToken:              strings.TrimSpace(os.Getenv("APP_TOKEN_SECONDARY")),
+		AuthMode:                       authMode,
+		SessionSigningKey:              sessionSigningKey,
+		AllowedOrigins:                 splitCSV(os.Getenv("ALLOWED_ORIGINS")),
+		DatabaseURL:                    getEnv("DATABASE_URL", ""),
+		RedisAddr:                      getEnv("REDIS_ADDR", "localhost:6379"),
+		MiMoAPIKey:                     getEnv("MIMO_API_KEY", ""),
+		MiMoBaseURL:                    getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
+		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
+		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		APISportsBaseURL:               getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
+		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
+		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
+		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),
 	}
 }
 
 func (c *Config) RedisEnabled() bool {
 	return c.RedisAddr != ""
+}
+
+func (c *Config) CompanionRealizerTimeout() time.Duration {
+	return time.Duration(c.CompanionRealizerTimeoutMS) * time.Millisecond
 }
 
 func (c *Config) WSReadLimit() int64 {
@@ -59,6 +96,18 @@ func (c *Config) MaxConnsPerIP() int {
 }
 
 func (c *Config) Validate() error {
+	if c.CompanionRealizerTimeoutMS == 0 {
+		c.CompanionRealizerTimeoutMS = 5000
+	}
+	if c.CompanionRealizerTimeoutMS < 0 || c.CompanionRealizerTimeoutMS > 10000 {
+		return fmt.Errorf("COMPANION_REALIZER_TIMEOUT_MS must be between 1 and 10000")
+	}
+	if c.PrivacyRetentionDays == 0 {
+		c.PrivacyRetentionDays = 30
+	}
+	if c.PrivacyRetentionDays < 0 {
+		return fmt.Errorf("PRIVACY_RETENTION_DAYS must be greater than zero")
+	}
 	if strings.EqualFold(c.Environment, "production") {
 		if strings.TrimSpace(c.AppToken) == "" {
 			return fmt.Errorf("APP_TOKEN is required when APP_ENV=production")
@@ -66,8 +115,55 @@ func (c *Config) Validate() error {
 		if strings.TrimSpace(c.MiMoAPIKey) == "" {
 			return fmt.Errorf("MIMO_API_KEY is required when APP_ENV=production")
 		}
+		if strings.TrimSpace(c.SessionSigningKey) == "" {
+			return fmt.Errorf("SESSION_SIGNING_KEY is required when APP_ENV=production")
+		}
+		if len(strings.TrimSpace(c.SessionSigningKey)) < 32 {
+			return fmt.Errorf("SESSION_SIGNING_KEY must be at least 32 characters")
+		}
 	}
 	return nil
+}
+
+func (c *Config) SessionAuthRequired() bool {
+	if strings.EqualFold(c.Environment, "production") {
+		return true
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.AuthMode))
+	return mode == "session"
+}
+
+func (c *Config) LegacyAuthAllowed() bool {
+	if strings.EqualFold(c.Environment, "production") {
+		return false
+	}
+	mode := strings.ToLower(strings.TrimSpace(c.AuthMode))
+	if mode == "legacy" || mode == "dual" {
+		return true
+	}
+	return mode == ""
+}
+
+func (c *Config) OperatorTokenMatches(token string) bool {
+	token = strings.TrimSpace(token)
+	if token == "" {
+		return false
+	}
+	matched := 0
+	for _, configured := range []string{c.AppToken, c.SecondaryAppToken} {
+		if configured != "" && len(token) == len(configured) {
+			matched |= subtle.ConstantTimeCompare([]byte(token), []byte(configured))
+		}
+	}
+	return matched == 1
+}
+
+func developmentSessionSigningKey() string {
+	key := make([]byte, 32)
+	if _, err := rand.Read(key); err == nil {
+		return base64.RawURLEncoding.EncodeToString(key)
+	}
+	return ""
 }
 
 func (c *Config) OriginAllowed(origin string) bool {
@@ -131,6 +227,16 @@ func getEnvInt(key string, fallback int) int {
 		n, err := strconv.Atoi(v)
 		if err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvBool(key string, fallback bool) bool {
+	if value := strings.TrimSpace(os.Getenv(key)); value != "" {
+		parsed, err := strconv.ParseBool(value)
+		if err == nil {
+			return parsed
 		}
 	}
 	return fallback

@@ -4,6 +4,8 @@ import 'dart:typed_data';
 
 import 'package:web_socket_channel/web_socket_channel.dart';
 
+import 'client_timezone.dart';
+
 enum SocketStatus { connecting, connected, reconnecting, disconnected, failed }
 
 class WebSocketService {
@@ -19,9 +21,15 @@ class WebSocketService {
   String _token = '';
   int _reconnectAttempts = 0;
   int _connectionGeneration = 0;
+  bool _connected = false;
   bool _disposed = false;
+  Future<String?> Function()? _refreshToken;
 
   static const int _maxReconnectAttempts = 5;
+
+  void setRefreshTokenCallback(Future<String?> Function()? callback) {
+    _refreshToken = callback;
+  }
 
   Stream<Map<String, dynamic>> get onMessage => _messageController.stream;
   Stream<Uint8List> get onBinary => _binaryController.stream;
@@ -39,9 +47,25 @@ class WebSocketService {
   Future<void> _open(String url, {required bool reconnecting}) async {
     if (_disposed) return;
     final generation = ++_connectionGeneration;
+    _connected = false;
     _emitStatus(
       reconnecting ? SocketStatus.reconnecting : SocketStatus.connecting,
     );
+
+    if (reconnecting && _refreshToken != null) {
+      try {
+        final refreshedToken = await _refreshToken!();
+        if (_disposed || generation != _connectionGeneration) return;
+        if (refreshedToken == null || refreshedToken.trim().isEmpty) {
+          _scheduleReconnect(generation);
+          return;
+        }
+        _token = refreshedToken;
+      } catch (_) {
+        _scheduleReconnect(generation);
+        return;
+      }
+    }
 
     await _channelSubscription?.cancel();
     await _channel?.sink.close();
@@ -62,6 +86,7 @@ class WebSocketService {
       }
 
       _reconnectAttempts = 0;
+      _connected = true;
       _emitStatus(SocketStatus.connected);
       _startHeartbeat();
       _channelSubscription = channel.stream.listen(
@@ -104,6 +129,7 @@ class WebSocketService {
 
   void _scheduleReconnect(int generation) {
     if (_disposed || generation != _connectionGeneration) return;
+    _connected = false;
     _pingTimer?.cancel();
     if (_reconnectTimer?.isActive ?? false) return;
     final url = _url;
@@ -126,9 +152,11 @@ class WebSocketService {
   }
 
   bool send(Map<String, dynamic> message) {
-    if (_disposed || _channel == null) return false;
+    if (_disposed || !_connected || _channel == null) return false;
     try {
-      _channel!.sink.add(jsonEncode(message));
+      _channel!.sink.add(
+        jsonEncode(withClientContext(message, clientTimezone())),
+      );
       return true;
     } catch (_) {
       return false;
@@ -144,6 +172,7 @@ class WebSocketService {
   Future<void> dispose() async {
     if (_disposed) return;
     _disposed = true;
+    _connected = false;
     _connectionGeneration++;
     _reconnectTimer?.cancel();
     _pingTimer?.cancel();
@@ -153,4 +182,17 @@ class WebSocketService {
     await _binaryController.close();
     await _statusController.close();
   }
+}
+
+Map<String, dynamic> withClientContext(
+  Map<String, dynamic> message,
+  String timezone,
+) {
+  final type = message['type'];
+  if ((type != 'user_speech' && type != 'asr_start') ||
+      timezone.trim().isEmpty ||
+      message.containsKey('timezone')) {
+    return message;
+  }
+  return {...message, 'timezone': timezone.trim()};
 }

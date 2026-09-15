@@ -11,6 +11,8 @@ import (
 	"net/http"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/resilience"
 )
 
 var ErrNotConfigured = errors.New("asr provider is not configured")
@@ -22,6 +24,7 @@ type Client struct {
 	model      string
 	httpClient *http.Client
 	mockText   string
+	breaker    *resilience.CircuitBreaker
 }
 
 func NewClient(apiKey string) *Client {
@@ -30,6 +33,7 @@ func NewClient(apiKey string) *Client {
 		baseURL:    "https://api.xiaomimimo.com/v1",
 		model:      "mimo-v2.5-asr",
 		httpClient: &http.Client{Timeout: 30 * time.Second},
+		breaker:    resilience.NewCircuitBreaker(3, 10*time.Second),
 	}
 }
 
@@ -56,6 +60,13 @@ func (c *Client) WithModel(model string) *Client {
 	return c
 }
 
+func (c *Client) CircuitState() resilience.State {
+	if c == nil {
+		return resilience.StateOpen
+	}
+	return c.breaker.State()
+}
+
 type Result struct {
 	Text       string  `json:"text"`
 	Confidence float64 `json:"confidence"`
@@ -74,6 +85,9 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, hints []string) (
 	}
 	if strings.TrimSpace(c.apiKey) == "" {
 		return nil, ErrNotConfigured
+	}
+	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
+		return nil, fmt.Errorf("asr unavailable: %w", err)
 	}
 	payload := map[string]interface{}{
 		"model": defaultString(c.model, "mimo-v2.5-asr"),
@@ -103,11 +117,13 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, hints []string) (
 
 	resp, err := c.httpClient.Do(req)
 	if err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("asr request: %w", err)
 	}
 	defer resp.Body.Close()
 
 	if resp.StatusCode != http.StatusOK {
+		c.breaker.Failure(time.Now().UTC())
 		errBody, _ := io.ReadAll(resp.Body)
 		return nil, fmt.Errorf("asr error %d: %s", resp.StatusCode, string(errBody))
 	}
@@ -120,12 +136,15 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, hints []string) (
 		} `json:"choices"`
 	}
 	if err := json.NewDecoder(resp.Body).Decode(&raw); err != nil {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("asr decode: %w", err)
 	}
 	if len(raw.Choices) == 0 {
+		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("asr returned no choices")
 	}
 
+	c.breaker.Success()
 	return &Result{
 		Text:       strings.TrimSpace(raw.Choices[0].Message.Content),
 		Confidence: 0,

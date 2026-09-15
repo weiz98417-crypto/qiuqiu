@@ -1,5 +1,5 @@
 import 'package:flutter/material.dart';
-import 'screens/match_screen.dart';
+import 'screens/match_entry_screen.dart';
 import 'theme/app_theme.dart';
 
 void main() {
@@ -16,7 +16,7 @@ class QiuQiuApp extends StatelessWidget {
       debugShowCheckedModeBanner: false,
       theme: AppTheme.dark,
       themeMode: ThemeMode.dark,
-      home: const MatchScreen(),
+      home: const MatchEntryScreen(),
     );
   }
 }

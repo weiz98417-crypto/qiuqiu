@@ -1,0 +1,5 @@
+ALTER TABLE interaction_ledger
+  ADD COLUMN IF NOT EXISTS input_text TEXT,
+  ADD COLUMN IF NOT EXISTS output_text TEXT,
+  ADD COLUMN IF NOT EXISTS decision JSONB,
+  ADD COLUMN IF NOT EXISTS presentation JSONB;

@@ -27,11 +27,14 @@ type TraceAuditReport struct {
 func AuditTraces(traces []companion.Trace) TraceAuditReport {
 	report := TraceAuditReport{SchemaVersion: SchemaVersion, AuditedAt: time.Now().UTC(), TraceCount: len(traces)}
 	for _, trace := range traces {
-		if strings.TrimSpace(trace.Output) == "" || strings.TrimSpace(trace.Reason) == "" {
-			report.add(trace.ID, "blocker", "trace", "missing output or reason")
-		}
 		tools := toolsIn(trace)
-		if !tools["trace.write_decision"] && trace.Reason != "operator_event_proactive_line" {
+		if strings.TrimSpace(trace.Reason) == "" {
+			report.add(trace.ID, "blocker", "trace", "missing reason")
+		}
+		if strings.TrimSpace(trace.Output) == "" && !usesExplicitSilence(trace.ToolCalls) {
+			report.add(trace.ID, "blocker", "trace", "missing output without an explicit silence decision")
+		}
+		if !tools["trace.write_decision"] {
 			report.add(trace.ID, "warning", "trace", "missing trace.write_decision tool marker")
 		}
 		for _, call := range trace.ToolCalls {
@@ -81,6 +84,15 @@ func AuditTraces(traces []companion.Trace) TraceAuditReport {
 		}
 	}
 	return report
+}
+
+func usesExplicitSilence(calls []companion.ToolCall) bool {
+	for _, call := range calls {
+		if call.Name == "response.emit_companion_reply" && call.Args["mode"] == "silence" {
+			return true
+		}
+	}
+	return false
 }
 
 func usesDeterministicClaimPolicy(calls []companion.ToolCall) bool {

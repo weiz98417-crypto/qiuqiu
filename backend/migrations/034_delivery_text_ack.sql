@@ -1,0 +1,2 @@
+ALTER TABLE delivery_ledger
+  ADD COLUMN IF NOT EXISTS text_acknowledged BOOLEAN NOT NULL DEFAULT FALSE;

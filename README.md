@@ -70,10 +70,13 @@ qiuqiu/
 # 1. 配置环境变量
 cp backend/.env.example .env
 # 编辑 .env 填入:
-#   - APP_TOKEN: 随机生成的服务访问口令（生产环境必填）
+#   - APP_TOKEN: 随机生成的导播台运营口令（生产环境必填）
+#   - SESSION_SIGNING_KEY: 至少 32 位的用户会话签名密钥（生产环境必填）
 #   - ALLOWED_ORIGINS: 用户端和企业控制台的 HTTPS 来源
 #   - POSTGRES_PASSWORD: 独立的数据库强密码
 #   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
+#   - PENDING_OBSERVATION_COORDINATION: 直播延迟事实协调开关（默认 true）
+#   - FACT_LEDGER_PUBLIC_READS: 事实账本公共读路径开关（默认 true；设为 false 回退旧投影）
 
 # 2. 构建并启动服务（镜像内会自行编译 Flutter Web）
 docker compose up -d --build
@@ -86,7 +89,7 @@ docker compose up -d --build
 ```bash
 cd backend
 cp .env.example .env   # 本地可不设置 APP_TOKEN；生产环境必须设置
-go run cmd/server/main.go
+go run ./cmd/server
 ```
 
 **客户端:**
@@ -95,11 +98,10 @@ go run cmd/server/main.go
 cd client
 flutter pub get
 flutter run \
-  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test \
-  --dart-define=QIUQIU_APP_TOKEN=你的服务访问口令
+  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test
 ```
 
-由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。用户端不会显示服务端口令或模型配置；企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
+客户端启动时会向后端申请短期匿名会话，服务端把用户身份绑定在会话令牌上，客户端不再编译服务端口令。由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
 
 ## 对话管道
 
@@ -123,6 +125,17 @@ flutter run \
 | 4-6 | 正常 — 重要事件和间歇闲聊 |
 | 7-9 | 活泼 — 频繁互动和吐槽 |
 | 10 | 话痨 — 几乎不间断评论 |
+
+## 核心可信链改造方案
+
+已确认的鉴权、比赛事实、隐私生命周期和导播幂等改造方案见：
+
+- [核心可信链改造方案](docs/security-facts-privacy-idempotency-plan.md)
+- [直播延迟下的事实协调方案](docs/live-latency-fact-coordination-solution.md)
+
+直播延迟事实协调默认开启。用户先看到现场时，球球会立即回应但不会把用户说法写进公共比分；导播台或外部数据源确认、撤销事实后，服务端只向对应用户补充确认或纠正，并在断线重连后继续未完成的跟进。可通过 `PENDING_OBSERVATION_COORDINATION=false` 暂停新增观察与异步跟进。
+
+公共比分、公共事件、客户端 WebSocket 初始快照和球球比赛上下文默认使用事实账本重放结果。紧急回退时可设置 `FACT_LEDGER_PUBLIC_READS=false` 恢复旧公共投影；影子差异审计仍会保留。
 
 ## License
 

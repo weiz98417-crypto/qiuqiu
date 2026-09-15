@@ -30,6 +30,28 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 	if decision, ok, err := d.repository.DecisionBySignal(ctx, signal.UserID, signal.MatchID, signal.ID); err != nil {
 		return Decision{}, err
 	} else if ok {
+		if signal.Kind == SignalMatchEvent && signal.Match != nil && signal.Match.Critical && signal.FactRevision != "" && signal.FactRevision != decision.FactRevision {
+			state, loadErr := d.repository.Load(ctx, signal.UserID, signal.MatchID)
+			if loadErr != nil {
+				return Decision{}, loadErr
+			}
+			normalizeStateBundle(&state, signal.UserID, signal.MatchID)
+			refreshedDecision := cloneDecision(decision)
+			if decision.RefreshCount == 0 {
+				refreshedDecision.FactRevision = signal.FactRevision
+				refreshedDecision.RefreshCount = 1
+				refreshedDecision.ReasonCodes = append(refreshedDecision.ReasonCodes, "critical_fact_refreshed")
+				refreshedDecision.Speech = speechFor(signal, decision.Actions, state.Relationship, state.Match)
+				refreshedDecision.Presentation = presentationFor(state.Match.Affect, signal, decision.Actions)
+			}
+			refreshed, found, refreshErr := d.repository.RefreshDecision(ctx, signal.UserID, signal.MatchID, signal.ID, refreshedDecision)
+			if refreshErr != nil {
+				return Decision{}, refreshErr
+			}
+			if found {
+				return refreshed, nil
+			}
+		}
 		return decision, nil
 	}
 
@@ -63,6 +85,7 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 		decision := Decision{
 			ID:           decisionID,
 			SignalID:     signal.ID,
+			FactRevision: signal.FactRevision,
 			StateVersion: state.Match.Version,
 			Actions:      actions,
 			Relationship: RelationshipView{

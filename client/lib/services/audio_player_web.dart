@@ -28,7 +28,6 @@ class AudioPlayerService {
     Uint8List audio, {
     required String mime,
     String? traceId,
-    double speed = 1,
   }) async {
     if (_muted || _disposed || audio.isEmpty) return;
     await pause(notify: false);
@@ -40,7 +39,6 @@ class AudioPlayerService {
     );
     final source = 'data:$mime;base64,${base64Encode(audio)}';
     final encodedTraceId = jsonEncode(traceId);
-    final playbackSpeed = speed.clamp(0.8, 1.2).toDouble();
     _runJavaScript('''
       (function() {
         var bridge = document.getElementById('__qAudioDiv');
@@ -71,7 +69,6 @@ class AudioPlayerService {
           window.__qAudio.src = '';
         }
         var player = new Audio(${jsonEncode(source)});
-        player.playbackRate = $playbackSpeed;
         var terminal = false;
         var blockedReported = false;
         function finish(state, message) {

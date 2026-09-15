@@ -7,13 +7,12 @@
 ```bash
 flutter pub get
 flutter run \
-  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test \
-  --dart-define=QIUQIU_APP_TOKEN=本地服务口令
+  --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test
 ```
 
 - Android 模拟器访问本机后端使用 `10.0.2.2`。
 - Web 正式构建默认使用当前域名的同源 WebSocket；Flutter 开发服务需通过 `QIUQIU_WS_URL` 指向后端。
-- 本地后端未设置 `APP_TOKEN` 时，可以省略 `QIUQIU_APP_TOKEN`。
+- 客户端启动时自动申请短期匿名会话，不需要注入服务端口令。
 - 浏览器若拦截首次主动语音，字幕和动作会照常出现，第一次触碰页面会继续播放待播语音。
 
 ## 验证

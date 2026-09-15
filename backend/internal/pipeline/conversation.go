@@ -2,7 +2,7 @@ package pipeline
 
 // ConversationContext tracks recent dialog turns for multi-turn coherence.
 type ConversationContext struct {
-	turns   []ConversationTurn
+	turns    []ConversationTurn
 	maxTurns int
 }
 

@@ -6,11 +6,63 @@ import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 
+typedef VoiceActivityDecision = ({bool detected, bool started});
+
+const voiceRecordConfig = RecordConfig(
+  encoder: AudioEncoder.pcm16bits,
+  sampleRate: 16000,
+  numChannels: 1,
+  echoCancel: true,
+  noiseSuppress: true,
+);
+
+class VoiceActivityGate {
+  static const double defaultStartThreshold = 0.015;
+  static const double defaultContinueThreshold = 0.006;
+  static const int defaultMinimumSpeechFrames = 2;
+
+  VoiceActivityGate({
+    this.startThreshold = defaultStartThreshold,
+    this.continueThreshold = defaultContinueThreshold,
+    this.minimumSpeechFrames = defaultMinimumSpeechFrames,
+  });
+
+  final double startThreshold;
+  final double continueThreshold;
+  final int minimumSpeechFrames;
+  int _speechFrames = 0;
+
+  int get speechFrames => _speechFrames;
+  bool get hasConfirmedSpeech => _speechFrames >= minimumSpeechFrames;
+
+  VoiceActivityDecision observe(double rms) {
+    final wasConfirmed = hasConfirmedSpeech;
+    final threshold = wasConfirmed ? continueThreshold : startThreshold;
+    final detected = rms > threshold;
+    if (detected) {
+      _speechFrames++;
+    } else if (!wasConfirmed) {
+      _speechFrames = 0;
+    }
+    return (
+      detected: detected,
+      started: !wasConfirmed && hasConfirmedSpeech,
+    );
+  }
+
+  void reset() {
+    _speechFrames = 0;
+  }
+}
+
 class VADService {
-  final _eventController = StreamController<VADEvent>.broadcast();
+  final _eventController = StreamController<VADEvent>.broadcast(sync: true);
+  final _audioChunkController =
+      StreamController<Uint8List>.broadcast(sync: true);
   final _recorder = AudioRecorder();
   final _audioBuffer = <Uint8List>[];
   final _preRoll = Queue<Uint8List>();
+  final _voiceActivity = VoiceActivityGate();
 
   StreamSubscription<Uint8List>? _recordSubscription;
   Timer? _silenceTimer;
@@ -20,20 +72,30 @@ class VADService {
   bool _finishingSentence = false;
   bool _disposed = false;
   bool _audioSessionConfigured = false;
-  int _speechFrames = 0;
+  String _selectedInputDeviceId = '';
 
-  static const double silenceThreshold = 0.035;
-  static const int minSpeechFrames = 4;
-  static const int silenceTimeoutMs = 760;
+  static const int silenceTimeoutMs = 1400;
   static const int maxDurationMs = 15000;
   static const int preRollFrames = 4;
 
   Stream<VADEvent> get events => _eventController.stream;
+  Stream<Uint8List> get audioChunks => _audioChunkController.stream;
+  Stream<List<AudioInputDevice>> get inputDevices => const Stream.empty();
   bool get isListening => _sessionActive;
   VADMode get mode => _mode;
   String get debugInfo => '';
+  String get selectedInputDeviceId => _selectedInputDeviceId;
+  String get activeInputDeviceId => _selectedInputDeviceId;
 
   Future<bool> hasPermission() => _recorder.hasPermission();
+
+  Future<List<AudioInputDevice>> refreshInputDevices() async => const [
+        AudioInputDevice(id: '', label: '系统默认麦克风'),
+      ];
+
+  Future<void> selectInputDevice(String deviceId) async {
+    _selectedInputDeviceId = deviceId;
+  }
 
   Future<void> startListening(VADMode mode) async {
     if (_disposed) return;
@@ -58,16 +120,12 @@ class VADService {
       return;
     }
 
-    _speechFrames = 0;
+    _voiceActivity.reset();
     _preRoll.clear();
     _silenceTimer?.cancel();
     try {
       final stream = await _recorder.startStream(
-        const RecordConfig(
-          encoder: AudioEncoder.pcm16bits,
-          sampleRate: 16000,
-          numChannels: 1,
-        ),
+        voiceRecordConfig,
       );
       if (!_sessionActive || _disposed) {
         await _recorder.stop();
@@ -92,34 +150,39 @@ class VADService {
   void _processAudio(Uint8List pcm) {
     if (!_sessionActive || !_captureActive || pcm.isEmpty) return;
     final rms = _calculateRms(pcm);
-    final speechDetected = rms > silenceThreshold;
+    final hadConfirmedSpeech = _voiceActivity.hasConfirmedSpeech;
 
     if (_mode == VADMode.pushToTalk) {
       _audioBuffer.add(pcm);
-    } else if (_speechFrames < minSpeechFrames) {
+      _emitAudioChunk(pcm);
+    } else if (!hadConfirmedSpeech) {
       _preRoll.addLast(pcm);
       while (_preRoll.length > preRollFrames) {
         _preRoll.removeFirst();
       }
     } else {
       _audioBuffer.add(pcm);
+      _emitAudioChunk(pcm);
     }
 
-    if (speechDetected) {
-      _speechFrames++;
+    final activity = _voiceActivity.observe(rms);
+    if (activity.detected) {
       _silenceTimer?.cancel();
       _silenceTimer = null;
-      if (_speechFrames == minSpeechFrames) {
+      if (activity.started) {
         if (_mode == VADMode.freeTalk) {
           _audioBuffer.addAll(_preRoll);
+          for (final chunk in _preRoll) {
+            _emitAudioChunk(chunk);
+          }
           _preRoll.clear();
         }
         _emit(const VADEvent.speaking());
       }
-      if (_speechFrames >= maxDurationMs ~/ 50) {
+      if (_voiceActivity.speechFrames >= maxDurationMs ~/ 50) {
         unawaited(_finishSentence());
       }
-    } else if (_speechFrames >= minSpeechFrames) {
+    } else if (_voiceActivity.hasConfirmedSpeech) {
       _silenceTimer ??= Timer(
         const Duration(milliseconds: silenceTimeoutMs),
         () => unawaited(_finishSentence()),
@@ -147,7 +210,7 @@ class VADService {
     _silenceTimer = null;
     await _stopCapture();
 
-    final hasSpeech = _speechFrames >= minSpeechFrames;
+    final hasSpeech = _voiceActivity.hasConfirmedSpeech;
     if (hasSpeech || _mode == VADMode.pushToTalk) {
       _emit(const VADEvent.sentenceEnd());
     }
@@ -170,7 +233,7 @@ class VADService {
     _sessionActive = false;
     _silenceTimer?.cancel();
     _silenceTimer = null;
-    _speechFrames = 0;
+    _voiceActivity.reset();
     _preRoll.clear();
     unawaited(_stopCapture());
     _emit(const VADEvent.idle());
@@ -219,11 +282,18 @@ class VADService {
     }
   }
 
+  void _emitAudioChunk(Uint8List audio) {
+    if (!_disposed && !_audioChunkController.isClosed && audio.isNotEmpty) {
+      _audioChunkController.add(audio);
+    }
+  }
+
   void dispose() {
     if (_disposed) return;
     stopListening();
     _disposed = true;
     unawaited(_eventController.close());
+    unawaited(_audioChunkController.close());
     unawaited(_recorder.dispose());
   }
 }
@@ -252,4 +322,12 @@ enum VADState {
   idle,
   permissionDenied,
   failure,
+}
+
+@immutable
+class AudioInputDevice {
+  final String id;
+  final String label;
+
+  const AudioInputDevice({required this.id, required this.label});
 }

@@ -5,6 +5,18 @@
   "tags": ["claim-safety", "latency", "uncertainty"],
   "summary": "没有比赛证据时，用户报告的进球必须保持待确认。",
   "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:01",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
   "turns": [
     {
       "id": "unconfirmed-goal",

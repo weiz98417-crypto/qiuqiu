@@ -1,0 +1,2 @@
+ALTER TABLE matches
+  ADD COLUMN IF NOT EXISTS stats JSONB NOT NULL DEFAULT '[]'::jsonb;

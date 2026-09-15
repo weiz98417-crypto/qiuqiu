@@ -1,0 +1,30 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜生产部署目标（规划）", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1320, 680] },
+  "components": [
+    { "id": "client", "type": "frontend", "label": "Flutter Web / Mobile", "sublabel": "用户设备", "pos": [40, 260], "size": [190, 82] },
+    { "id": "edge", "type": "cloud", "label": "CDN / WAF / TLS", "sublabel": "planned · 全球入口", "pos": [300, 260], "size": [190, 82] },
+    { "id": "api-a", "type": "backend", "label": "Go API / WS × N", "sublabel": "planned · Sticky WS · shared scheduler", "pos": [580, 130], "size": [220, 86] },
+    { "id": "api-b", "type": "backend", "label": "Go Event Worker × N", "sublabel": "planned · Outbox · replay · DLQ", "pos": [580, 360], "size": [220, 86] },
+    { "id": "redis", "type": "database", "label": "托管 Redis", "sublabel": "planned · shared state", "pos": [880, 100], "size": [190, 82] },
+    { "id": "postgres", "type": "database", "label": "托管 PostgreSQL", "sublabel": "planned · facts · replay", "pos": [880, 360], "size": [190, 82] },
+    { "id": "ai", "type": "external", "label": "外部 AI API", "sublabel": "ASR / LLM / TTS", "pos": [1130, 100], "size": [170, 82] },
+    { "id": "match", "type": "external", "label": "比赛数据 API", "sublabel": "多源 / 备用", "pos": [1130, 500], "size": [170, 82] },
+    { "id": "observability", "type": "cloud", "label": "监控 / 日志 / 告警", "sublabel": "planned · trace / metrics / alerts", "pos": [880, 270], "size": [190, 82] }
+  ],
+  "connections": [
+    { "id": "client-edge", "from": "client", "to": "edge", "label": "HTTPS / WebSocket", "variant": "emphasis", "labelAt": [265, 360] },
+    { "id": "edge-api-a", "from": "edge", "to": "api-a", "label": "路由到 API 副本", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [500, 220] },
+    { "id": "edge-api-b", "from": "edge", "to": "api-b", "label": "事件入口", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [500, 350] },
+    { "id": "api-a-redis", "from": "api-a", "to": "redis", "label": "会话缓存", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [835, 140] },
+    { "id": "api-b-postgres", "from": "api-b", "to": "postgres", "label": "事实账本", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [835, 390] },
+    { "id": "api-a-ai", "from": "api-a", "to": "ai", "label": "AI 能力调用", "variant": "dashed", "fromSide": "top", "toSide": "top", "via": [[690, 70], [1215, 70]], "labelAt": [990, 55] },
+    { "id": "api-b-match", "from": "api-b", "to": "match", "label": "多源接入", "variant": "dashed", "fromSide": "right", "toSide": "left", "labelAt": [990, 480] },
+    { "id": "api-observe", "from": "api-a", "to": "observability", "label": "指标 / 日志", "variant": "dashed", "fromSide": "bottom", "toSide": "top", "labelAt": [820, 245] }
+  ],
+  "cards": [
+    { "dot": "amber", "title": "规划态标识", "items": ["所有扩容、托管和多源节点均为 planned", "落地前需补容量与成本决策"] },
+    { "dot": "emerald", "title": "演进方向", "items": ["入口、API、事件处理解耦", "数据层增加备份与故障恢复", "补 Sticky WS、共享调度、事件广播与重放游标"] }
+  ]
+}

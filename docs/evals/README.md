@@ -24,7 +24,7 @@ The offline runner uses deterministic graders for product-critical behavior:
 
 LLM judges are deliberately not the authority for match facts. When ReplyRealizer is enabled, deterministic fact routes still bypass it; later subjective judges for warmth and concision must be calibrated against human annotations before they can affect release decisions.
 
-All factual reply routes bypass free-form realization entirely. Cross-source contradictions are represented as `snapshot.integrity.status = conflict`; the companion must hold the disputed fact as unverified until operators reconcile it. At present, only a match reset clears the conflict because an explicit conflict-resolution endpoint has not been implemented yet.
+All factual reply routes bypass free-form realization entirely. Cross-source contradictions are represented as `snapshot.integrity.status = conflict`; the companion must hold the disputed fact as unverified until operators explicitly keep the accepted fact or adopt a candidate through the conflict-resolution endpoint.
 
 ## Commands
 

@@ -14,6 +14,7 @@ type StateRepository interface {
 	Load(ctx context.Context, userID, matchID string) (StateBundle, error)
 	CompareAndSwap(ctx context.Context, expected ExpectedVersions, update StateUpdate) error
 	DecisionBySignal(ctx context.Context, userID, matchID, signalID string) (Decision, bool, error)
+	RefreshDecision(ctx context.Context, userID, matchID, signalID string, update Decision) (Decision, bool, error)
 }
 
 type MatchResetter interface {
@@ -74,6 +75,22 @@ func (r *MemoryRepository) DecisionBySignal(_ context.Context, userID, matchID, 
 	defer r.mu.Unlock()
 	decision, ok := r.decisions[decisionKey(userID, matchID, signalID)]
 	return cloneDecision(decision), ok, nil
+}
+
+func (r *MemoryRepository) RefreshDecision(_ context.Context, userID, matchID, signalID string, update Decision) (Decision, bool, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	key := decisionKey(userID, matchID, signalID)
+	decision, ok := r.decisions[key]
+	if !ok {
+		return Decision{}, false, nil
+	}
+	if decision.RefreshCount >= 1 {
+		return cloneDecision(decision), true, nil
+	}
+	update.ID, update.SignalID = decision.ID, decision.SignalID
+	r.decisions[key] = cloneDecision(update)
+	return cloneDecision(update), true, nil
 }
 
 func (r *MemoryRepository) ResetMatch(matchID string) error {

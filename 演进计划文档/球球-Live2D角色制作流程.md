@@ -3,7 +3,6 @@
 > 从 AI 生图到 Live2D 模型，全 AI 工具链。无需手绘、无需手动绑骨。
 
 ---
-
 ## 流程总览
 
 ```
@@ -231,10 +230,3 @@ flutter:
 | Step 3 导出的文件夹 | .model3.json + .moc3 + textures |
 
 ---
-
-## 参考
-
-- [Live2D Cubism Editor 下载](https://www.live2d.com/en/download/cubism/)
-- [Cubism Editor 手册](https://docs.live2d.com/en/cubism-editor-manual/top/)
-- [Textoon GitHub](https://github.com/Human3DAIGC/Textoon)
-- [CartoonAlive 论文](https://arxiv.org/abs/2507.17327)（未开源，阿里巴巴通义实验室）

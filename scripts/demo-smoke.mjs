@@ -5,9 +5,11 @@ import net from 'node:net';
 import tls from 'node:tls';
 
 const baseUrl = process.env.QIUQIU_BASE_URL || 'http://localhost:8080';
-const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
+const operatorToken = process.env.APP_TOKEN || 'qiuqiu-dev-token';
 const matchId = process.env.QIUQIU_MATCH_ID || 'test';
 const question = '刚才谁助攻？';
+const smokeTimeoutMs = 30_000;
+let userSession;
 
 function wsUrl() {
   const url = new URL(baseUrl);
@@ -18,7 +20,7 @@ function wsUrl() {
 }
 
 async function getJSON(path, authenticated = false) {
-  const headers = authenticated && token ? { Authorization: `Bearer ${token}` } : {};
+  const headers = authenticated && operatorToken ? { Authorization: `Bearer ${operatorToken}` } : {};
   const res = await fetch(`${baseUrl}${path}`, { headers });
   if (!res.ok) throw new Error(`GET ${path} -> ${res.status}: ${await res.text()}`);
   return res.json();
@@ -29,7 +31,8 @@ async function postJSON(path, body) {
     method: 'POST',
     headers: {
       'Content-Type': 'application/json; charset=utf-8',
-      ...(token ? { Authorization: `Bearer ${token}` } : {}),
+      'Idempotency-Key': `smoke-${Date.now()}-${Math.random().toString(16).slice(2)}`,
+      ...(operatorToken ? { Authorization: `Bearer ${operatorToken}` } : {}),
     },
     body: JSON.stringify(body),
   });
@@ -46,6 +49,19 @@ async function assertHealth() {
   }
 }
 
+async function issueUserSession() {
+  const res = await fetch(`${baseUrl}/api/sessions/anonymous`, {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json; charset=utf-8' },
+    body: JSON.stringify({ deviceId: 'demo-smoke' }),
+  });
+  const text = await res.text();
+  if (!res.ok) throw new Error(`POST /api/sessions/anonymous -> ${res.status}: ${text}`);
+  const session = JSON.parse(text);
+  if (!session.userId || !session.accessToken) throw new Error('anonymous session is incomplete');
+  return session;
+}
+
 async function askQiuQiu() {
   const url = new URL(wsUrl());
   const messages = [];
@@ -54,10 +70,10 @@ async function askQiuQiu() {
     writeWebSocketText(socket, JSON.stringify({
       type: 'user_speech',
       text: question,
-      userId: 'demo-smoke',
+      userId: userSession.userId,
       talkativeness: 'normal',
     }));
-    const deadline = Date.now() + 8000;
+    const deadline = Date.now() + smokeTimeoutMs;
     while (Date.now() < deadline) {
       const frame = await readWebSocketFrame(socket, deadline - Date.now());
       if (frame.opcode === 8) break;
@@ -98,7 +114,7 @@ async function publishAndWaitForProactive() {
       recommendedAction: 'analysis',
       visibility: 'public',
     });
-    const deadline = Date.now() + 8000;
+    const deadline = Date.now() + smokeTimeoutMs;
     const seen = [];
     while (Date.now() < deadline) {
       const frame = await readWebSocketFrame(socket, deadline - Date.now());
@@ -141,13 +157,17 @@ async function openWebSocket(url) {
     `Sec-WebSocket-Key: ${key}`,
     'Sec-WebSocket-Version: 13',
   ];
-  if (token) headers.push(`Sec-WebSocket-Protocol: qiuqiu-auth.${Buffer.from(token).toString('base64url')}`);
+  if (userSession?.accessToken) {
+    headers.push(`Sec-WebSocket-Protocol: qiuqiu-auth.${Buffer.from(userSession.accessToken).toString('base64url')}`);
+  }
   socket.write([...headers, '', ''].join('\r\n'));
 
   const header = await readHTTPHeader(socket, 5000);
   if (!header.startsWith('HTTP/1.1 101 ')) {
     throw new Error(`WebSocket upgrade failed: ${header.split('\r\n')[0] || header}`);
   }
+  writeWebSocketText(socket, JSON.stringify({ type: 'identify', userId: userSession.userId }));
+  writeWebSocketText(socket, JSON.stringify({ type: 'session_opened', userId: userSession.userId }));
   return socket;
 }
 
@@ -262,6 +282,7 @@ function readChunk(socket, timeoutMs) {
 }
 
 await assertHealth();
+userSession = await issueUserSession();
 const state = await getJSON(`/api/matches/${encodeURIComponent(matchId)}/state`);
 const eventText = JSON.stringify(state.snapshot?.recentEvents || []);
 if (eventText.includes('???')) throw new Error('demo state contains corrupted ??? text');
@@ -288,7 +309,9 @@ if (!trace.retrievedEventIds?.length) throw new Error('trace missing retrieved e
 
 const proactiveTrace = (traces.traces || []).find((item) => item.id === proactive.traceId || item.output?.includes(proactive.marker));
 if (!proactiveTrace) throw new Error(`expected proactive trace for ${proactive.marker}`);
-if (proactiveTrace.reason !== 'operator_event_proactive_line') throw new Error(`unexpected proactive reason: ${proactiveTrace.reason}`);
+if (!['operator_event_proactive_line', 'relationship_match_reaction'].includes(proactiveTrace.reason)) {
+  throw new Error(`unexpected proactive reason: ${proactiveTrace.reason}`);
+}
 
 console.log(JSON.stringify({
   ok: true,

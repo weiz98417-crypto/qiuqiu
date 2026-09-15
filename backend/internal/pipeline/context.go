@@ -86,13 +86,13 @@ func (e *ContextEnricher) Enrich(ev *event.StandardEvent) *EnrichedContext {
 	e.mu.Unlock()
 
 	ctx := &EnrichedContext{
-		ScoreBefore: formatScore(state.PreviousHome, state.PreviousAway),
-		ScoreAfter:  formatScore(state.HomeScore, state.AwayScore),
-		IsEqualizer: ev.Type == "goal" && state.HomeScore == state.AwayScore && state.HomeScore > 0,
-		IsWinner:    ev.Type == "goal" && ev.Minute > 85,
-		IsHatTrick:  ev.Type == "goal" && state.PlayerGoals[ev.Player.Name] >= 3,
-		TimeContext: getTimeContext(ev.Minute),
-		HalfContext: getHalfContext(state.Half),
+		ScoreBefore:  formatScore(state.PreviousHome, state.PreviousAway),
+		ScoreAfter:   formatScore(state.HomeScore, state.AwayScore),
+		IsEqualizer:  ev.Type == "goal" && state.HomeScore == state.AwayScore && state.HomeScore > 0,
+		IsWinner:     ev.Type == "goal" && ev.Minute > 85,
+		IsHatTrick:   ev.Type == "goal" && state.PlayerGoals[ev.Player.Name] >= 3,
+		TimeContext:  getTimeContext(ev.Minute),
+		HalfContext:  getHalfContext(state.Half),
 		Significance: calcSignificance(ev, state),
 	}
 

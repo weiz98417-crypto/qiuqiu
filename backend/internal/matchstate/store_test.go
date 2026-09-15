@@ -2,10 +2,45 @@ package matchstate
 
 import (
 	"errors"
+	"reflect"
 	"sync"
 	"testing"
 	"time"
 )
+
+func TestSetConfigPreservesTechnicalStatistics(t *testing.T) {
+	store := NewStore()
+	want := []MatchStatistic{{Key: "possessionPct", Label: "控球率", Home: 61.2, Away: 38.8, Unit: "%"}}
+	if _, _, err := store.SetConfig("stats-match", MatchConfig{HomeTeam: "阿森纳", AwayTeam: "考文垂城", Stats: want}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if got := store.Config("stats-match").Stats; !reflect.DeepEqual(got, want) {
+		t.Fatalf("Stats = %#v, want %#v", got, want)
+	}
+}
+
+func TestEventObserverRunsWithoutMatchSubscriber(t *testing.T) {
+	store := NewStore()
+	observed := make(chan MatchEvent, 1)
+	store.SetEventObserver(func(event MatchEvent) error {
+		observed <- event
+		return nil
+	})
+	created, _, err := store.Create("observer-without-client", MatchEvent{
+		EventType: "kickoff", Period: "first_half", Clock: "00:01", Description: "match started",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	select {
+	case event := <-observed:
+		if event.ID != created.ID || event.MatchID != "observer-without-client" {
+			t.Fatalf("observed event = %+v, want created event", event)
+		}
+	case <-time.After(time.Second):
+		t.Fatal("event observer was not called without a match subscriber")
+	}
+}
 
 func TestUnsubscribeIsSafeDuringPublish(t *testing.T) {
 	store := NewStore()
@@ -30,6 +65,95 @@ func TestUnsubscribeIsSafeDuringPublish(t *testing.T) {
 	wait.Wait()
 }
 
+func TestPublicFactViewHidesProvisionalEvents(t *testing.T) {
+	store := NewStore()
+	if _, _, err := store.SetConfig("public-facts", MatchConfig{HomeTeam: "Arsenal", AwayTeam: "Liverpool"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	created, _, err := store.Create("public-facts", MatchEvent{
+		Source:      "api-sports",
+		Period:      "first_half",
+		Clock:       "12:00",
+		EventType:   "goal",
+		TeamID:      "home",
+		TeamName:    "Arsenal",
+		PlayerName:  "Saka",
+		Score:       Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+	})
+	if err != nil {
+		t.Fatalf("Create error: %v", err)
+	}
+	if created.FactStatus != FactStatusProvisional {
+		t.Fatalf("fact status = %q, want %q", created.FactStatus, FactStatusProvisional)
+	}
+	if snapshot := store.PublicSnapshot("public-facts"); snapshot.Score != (Score{}) || len(snapshot.RecentEvents) != 0 {
+		t.Fatalf("public snapshot exposed provisional fact: %+v", snapshot)
+	}
+	if events := store.PublicEvents("public-facts"); len(events) != 0 {
+		t.Fatalf("public events = %+v, want none", events)
+	}
+}
+
+func TestCreateDiscardsDerivedAuditScores(t *testing.T) {
+	store := NewStore()
+	forgedReported := Score{Home: 7, Away: 6}
+	forgedEffective := Score{Home: 9, Away: 8}
+	created, _, err := store.Create("derived-score-input", MatchEvent{
+		EventType:           "goal",
+		Period:              "first_half",
+		Clock:               "12:00",
+		TeamID:              "home",
+		Score:               Score{Home: 1},
+		ReportedScore:       &forgedReported,
+		EffectiveScoreAfter: &forgedEffective,
+		Description:         "home goal",
+	})
+	if err != nil {
+		t.Fatalf("Create: %v", err)
+	}
+	if created.ReportedScore != nil || created.EffectiveScoreAfter != nil {
+		t.Fatalf("derived audit scores survived create: %+v", created)
+	}
+	events := store.Events("derived-score-input")
+	if len(events) != 1 || events[0].ReportedScore != nil || events[0].EffectiveScoreAfter != nil {
+		t.Fatalf("stored event retained derived audit scores: %+v", events)
+	}
+}
+
+func TestConfirmFactPublishesProvisionalEvent(t *testing.T) {
+	store := NewStore()
+	created, _, err := store.Create("confirm-fact", MatchEvent{
+		Source:      "api-sports",
+		Period:      "first_half",
+		Clock:       "12:00",
+		EventType:   "goal",
+		TeamID:      "home",
+		PlayerName:  "Saka",
+		Score:       Score{Home: 1},
+		Description: "Saka scored",
+		Visibility:  "public",
+	})
+	if err != nil {
+		t.Fatalf("Create provisional event: %v", err)
+	}
+	confirmed, snapshot, err := store.ConfirmFact("confirm-fact", created.FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("ConfirmFact: %v", err)
+	}
+	if confirmed.FactStatus != FactStatusConfirmed || !confirmed.Confirmed || confirmed.ConfirmedBy != "operator-1" || confirmed.PublicAt == "" {
+		t.Fatalf("confirmed fact = %+v", confirmed)
+	}
+	if snapshot.Score != (Score{Home: 1}) || len(snapshot.RecentEvents) != 1 {
+		t.Fatalf("public snapshot after confirmation = %+v", snapshot)
+	}
+	revisions := store.FactRevisions("confirm-fact", created.FactID)
+	if len(revisions) != 2 || revisions[0].Status != FactStatusProvisional || revisions[1].Status != FactStatusConfirmed {
+		t.Fatalf("fact revisions = %+v", revisions)
+	}
+}
+
 func TestEvalBaselineFullMatchFlow(t *testing.T) {
 	store := NewStore()
 	matchID := "eval-baseline"
@@ -52,6 +176,11 @@ func TestEvalBaselineFullMatchFlow(t *testing.T) {
 	normalized := store.Config(matchID)
 	if got := len(normalized.HomePlayers); got != 1 {
 		t.Fatalf("expected empty players to be trimmed in normalized view, got %d", got)
+	}
+	if _, err := store.SetClock(matchID, ClockCommand{
+		Action: ClockActionSet, Period: "first_half", ElapsedSeconds: intPointer(23*60 + 41), ExpectedVersion: 0,
+	}); err != nil {
+		t.Fatalf("SetClock error: %v", err)
 	}
 
 	events, unsubscribe := store.Subscribe(matchID)
@@ -114,6 +243,11 @@ func TestGoalVARCancellationRevisesTheAuthoritativeScore(t *testing.T) {
 		t.Fatalf("Create goal: %v", err)
 	}
 	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "var_result", Period: "second_half", Clock: "78:35", Score: Score{Home: 1}, Description: "VAR确认越位。",
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("unreferenced VAR result error = %v, want ErrInvalid", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
 		EventType: "var_result", Period: "second_half", Clock: "78:40", Score: Score{Home: 1}, Description: "VAR确认越位。", RevisionOf: goal.ID,
 	}); err != nil {
 		t.Fatalf("Create VAR result: %v", err)
@@ -129,6 +263,63 @@ func TestGoalVARCancellationRevisesTheAuthoritativeScore(t *testing.T) {
 	}
 	if len(snapshot.KeyEvents) < 3 || snapshot.KeyEvents[0].EventType != "goal_cancelled" {
 		t.Fatalf("key events = %+v", snapshot.KeyEvents)
+	}
+}
+
+func TestGoalCancellationMustReferenceTheActiveGoalItRemoves(t *testing.T) {
+	store := NewStore()
+	matchID := "goal-cancellation-reference"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "利物浦", AwayTeam: "切尔西"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "second_half", Clock: "78:00", TeamID: "home", Score: Score{Home: 1}, Description: "萨拉赫进球。",
+	}); err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	note, _, err := store.Create(matchID, MatchEvent{
+		EventType: "operator_note", Period: "second_half", Clock: "78:10", Score: Score{Home: 1}, Description: "VAR开始检查。",
+	})
+	if err != nil {
+		t.Fatalf("Create note: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		EventType: "goal_cancelled", Period: "second_half", Clock: "78:45", TeamID: "home", Score: Score{}, Description: "进球取消。", RevisionOf: note.ID,
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("goal cancellation reference error = %v, want ErrInvalid", err)
+	}
+	if snapshot := store.PublicSnapshot(matchID); snapshot.Score != (Score{Home: 1}) || len(snapshot.RecentEvents) != 2 {
+		t.Fatalf("invalid cancellation changed public state: %+v", snapshot)
+	}
+}
+
+func TestScoreCorrectionRequiresReasonAndOverridesThePublicScore(t *testing.T) {
+	store := NewStore()
+	matchID := "audited-score-correction"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{HomeTeam: "利物浦", AwayTeam: "切尔西"}); err != nil {
+		t.Fatalf("SetConfig: %v", err)
+	}
+	if _, _, err := store.Create(matchID, MatchEvent{
+		EventType: "goal", Period: "first_half", Clock: "12:00", TeamID: "home", Score: Score{Home: 1}, Description: "主队进球。",
+	}); err != nil {
+		t.Fatalf("Create goal: %v", err)
+	}
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType: "score_correction", Period: "first_half", Clock: "12:20", Score: Score{}, Description: "比分更正为0比0。",
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("missing score correction reason error = %v, want ErrInvalid", err)
+	}
+	corrected, snapshot, err := store.Create(matchID, MatchEvent{
+		EventType: "score_correction", Period: "first_half", Clock: "12:20", Score: Score{}, Description: "比分更正为0比0。",
+		Evidence: map[string]any{"correctionReason": "现场记分牌回退，原进球无效。"}, ProactiveText: "__quiet__",
+	})
+	if err != nil {
+		t.Fatalf("Create score correction: %v", err)
+	}
+	if corrected.EventType != "score_correction" || snapshot.Score != (Score{}) || snapshot.LastPublicDescription != "比分更正为0比0。" {
+		t.Fatalf("score correction result = %+v / %+v", corrected, snapshot)
 	}
 }
 
@@ -161,6 +352,7 @@ func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
 	}
 	if _, _, err := store.Create(matchID, MatchEvent{
 		Source:      "operator",
+		FactID:      "manual-fact",
 		EventType:   "goal",
 		Period:      "first_half",
 		Clock:       "23:41",
@@ -204,9 +396,507 @@ func TestCrossSourceGoalDoesNotDoubleCountOrHideConflict(t *testing.T) {
 	if !errors.Is(err, ErrConflict) {
 		t.Fatalf("conflicting cross-source goal error = %v, want ErrConflict", err)
 	}
-	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1, Away: 0}) || len(snapshot.KeyEvents) != 1 || snapshot.Integrity.Status != "conflict" {
-		t.Fatalf("cross-source duplicate changed snapshot: %+v", snapshot)
+	if snapshot := store.Snapshot(matchID); snapshot.Score != (Score{Home: 1}) || len(snapshot.KeyEvents) != 1 || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("cross-source conflict should preserve the accepted score: %+v", snapshot)
 	}
+	events := store.Events(matchID)
+	if len(events) != 2 || events[0].FactStatus != FactStatusConflict || events[1].FactStatus != FactStatusConfirmed {
+		t.Fatalf("conflict candidates = %+v", events)
+	}
+	if public := store.PublicEvents(matchID); len(public) != 1 || public[0].FactID != "manual-fact" {
+		t.Fatalf("public facts changed during open conflict: %+v", public)
+	}
+	if _, _, err := store.Correct(matchID, events[1].ID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "25:00", TeamID: "home",
+		TeamName: "西班牙", PlayerName: "佩德里", Score: Score{Home: 1}, Description: "试图脱离冲突关系。",
+	}); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("detaching conflict correction error = %v, want ErrInvalid", err)
+	}
+	for _, event := range events {
+		if event.Source == "operator" && event.FactID != "manual-fact" {
+			t.Fatalf("manual fact id changed on conflict: %+v", event)
+		}
+	}
+	reconciled, snapshot, err := store.ReconcileFact(matchID, events[0].FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("ReconcileFact: %v", err)
+	}
+	if reconciled.FactStatus != FactStatusReconciled || snapshot.Score != (Score{Away: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("reconciled event/snapshot = %+v / %+v", reconciled, snapshot)
+	}
+	if public := store.PublicEvents(matchID); len(public) != 1 || public[0].FactID != reconciled.FactID {
+		t.Fatalf("public facts after reconciliation = %+v", public)
+	}
+	if conflicts := store.FactConflicts(matchID); len(conflicts) != 1 || conflicts[0].Status != ConflictStatusResolved || conflicts[0].ChosenFactID != reconciled.FactID {
+		t.Fatalf("legacy reconciliation did not resolve formal conflict: %+v", conflicts)
+	}
+}
+
+func TestRevokingLastConflictCandidateRestoresIntegrity(t *testing.T) {
+	store := NewStore()
+	matchID := "reject-conflict-candidate"
+	if _, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	}); err != nil {
+		t.Fatalf("Create accepted goal: %v", err)
+	}
+	_, _, err := store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "冲突候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create conflict candidate error = %v", err)
+	}
+	candidate := store.Events(matchID)[0]
+	_, snapshot, err := store.RevokeFact(matchID, candidate.FactID, "operator-1")
+	if err != nil {
+		t.Fatalf("Revoke conflict candidate: %v", err)
+	}
+	if snapshot.Score != (Score{Home: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("snapshot after rejecting conflict = %+v", snapshot)
+	}
+	if conflicts := store.FactConflicts(matchID); len(conflicts) != 1 || conflicts[0].Status != ConflictStatusResolved {
+		t.Fatalf("legacy candidate rejection did not resolve formal conflict: %+v", conflicts)
+	}
+}
+
+func TestConflictSetRequiresExplicitResolution(t *testing.T) {
+	store := NewStore()
+	matchID := "explicit-conflict-resolution"
+	accepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "主队进球。",
+	})
+	if err != nil {
+		t.Fatalf("Create accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+		Score: Score{Away: 1}, Description: "客队冲突候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+	}
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || conflicts[0].Status != ConflictStatusOpen {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
+	conflict := conflicts[0]
+	if len(conflict.Members) != 2 {
+		t.Fatalf("conflict members = %+v", conflict.Members)
+	}
+	roles := map[string]ConflictMemberRole{}
+	for _, member := range conflict.Members {
+		roles[member.FactID] = member.Role
+	}
+	if roles[accepted.FactID] != ConflictMemberAccepted {
+		t.Fatalf("accepted member role = %q", roles[accepted.FactID])
+	}
+	var candidateFactID string
+	for factID, role := range roles {
+		if role == ConflictMemberCandidate {
+			candidateFactID = factID
+		}
+	}
+	if candidateFactID == "" {
+		t.Fatalf("candidate member missing: %+v", conflict.Members)
+	}
+
+	resolved, chosen, snapshot, err := store.ResolveFactConflict(matchID, conflict.ID, accepted.FactID, "operator-1", "保留现场人工记录")
+	if err != nil {
+		t.Fatalf("ResolveFactConflict: %v", err)
+	}
+	if resolved.Status != ConflictStatusResolved || resolved.ChosenFactID != accepted.FactID || resolved.ResolvedBy != "operator-1" {
+		t.Fatalf("resolved conflict = %+v", resolved)
+	}
+	if chosen.FactID != accepted.FactID || chosen.FactStatus != FactStatusConfirmed {
+		t.Fatalf("chosen fact = %+v", chosen)
+	}
+	if snapshot.Score != (Score{Home: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("resolved snapshot = %+v", snapshot)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == candidateFactID && event.FactStatus != FactStatusRevoked {
+			t.Fatalf("candidate event = %+v", event)
+		}
+	}
+}
+
+func TestResolvingConflictPublishesRetractionsAndProjectedFacts(t *testing.T) {
+	t.Run("adopting candidate publishes effective score", func(t *testing.T) {
+		store := NewStore()
+		matchID := "projected-conflict-signal"
+		if _, _, err := store.Create(matchID, MatchEvent{
+			Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+			Score: Score{Home: 1}, Description: "accepted home goal",
+		}); err != nil {
+			t.Fatalf("Create accepted goal: %v", err)
+		}
+		updates, unsubscribe := store.Subscribe(matchID)
+		defer unsubscribe()
+		_, _, err := store.Create(matchID, MatchEvent{
+			Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+			Score: Score{Home: 7, Away: 4}, Description: "candidate with an untrusted reported score",
+		})
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+		}
+		<-updates // The candidate notification is not the resolution signal under test.
+		conflict := store.FactConflicts(matchID)[0]
+		candidateFactID := conflictCandidateFact(t, conflict)
+		if _, _, _, err := store.ResolveFactConflict(matchID, conflict.ID, candidateFactID, "operator-1", "adopt verified candidate"); err != nil {
+			t.Fatalf("ResolveFactConflict: %v", err)
+		}
+		first := waitForMatchEvent(t, updates)
+		second := waitForMatchEvent(t, updates)
+		if first.FactStatus != FactStatusRevoked {
+			t.Fatalf("first resolution event = %+v, want retraction", first)
+		}
+		if second.FactID != candidateFactID || second.FactStatus != FactStatusReconciled || second.Score != (Score{Away: 1}) {
+			t.Fatalf("published resolution event = %+v", second)
+		}
+	})
+
+	t.Run("keeping accepted fact publishes candidate retraction", func(t *testing.T) {
+		store := NewStore()
+		matchID := "quiet-conflict-rejection"
+		accepted, _, err := store.Create(matchID, MatchEvent{
+			Source: "operator", EventType: "goal", Period: "first_half", Clock: "20:00", TeamID: "home",
+			Score: Score{Home: 1}, Description: "accepted home goal",
+		})
+		if err != nil {
+			t.Fatalf("Create accepted goal: %v", err)
+		}
+		updates, unsubscribe := store.Subscribe(matchID)
+		defer unsubscribe()
+		_, _, err = store.Create(matchID, MatchEvent{
+			Source: "provider", EventType: "goal", Period: "first_half", Clock: "20:10", TeamID: "away",
+			Score: Score{Away: 1}, Description: "conflicting candidate",
+		})
+		if !errors.Is(err, ErrConflict) {
+			t.Fatalf("Create conflict candidate error = %v, want ErrConflict", err)
+		}
+		<-updates
+		conflict := store.FactConflicts(matchID)[0]
+		if _, _, _, err := store.ResolveFactConflict(matchID, conflict.ID, accepted.FactID, "operator-1", "keep accepted fact"); err != nil {
+			t.Fatalf("ResolveFactConflict: %v", err)
+		}
+		select {
+		case event := <-updates:
+			if event.FactStatus != FactStatusRevoked {
+				t.Fatalf("keeping accepted fact published %+v, want retraction", event)
+			}
+		case <-time.After(time.Second):
+			t.Fatal("keeping accepted fact did not publish candidate retraction")
+		}
+	})
+}
+
+func waitForMatchEvent(t *testing.T, updates <-chan MatchEvent) MatchEvent {
+	t.Helper()
+	select {
+	case event := <-updates:
+		return event
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for match event")
+		return MatchEvent{}
+	}
+}
+
+func TestBridgeCandidateMergesIntersectingOpenConflictSets(t *testing.T) {
+	store := NewStore()
+	matchID := "bridge-conflict-sets"
+	store.factConflicts[matchID] = []FactConflict{
+		{
+			ID: "conflict-a", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: "2026-07-20T10:00:00Z",
+			Members: []FactConflictMember{{FactID: "accepted-a", Role: ConflictMemberAccepted}, {FactID: "candidate-a", Role: ConflictMemberCandidate}},
+		},
+		{
+			ID: "conflict-b", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: "2026-07-20T10:01:00Z",
+			Members: []FactConflictMember{{FactID: "accepted-b", Role: ConflictMemberAccepted}, {FactID: "candidate-b", Role: ConflictMemberCandidate}},
+		},
+	}
+	events := []MatchEvent{
+		{FactID: "accepted-a", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		{FactID: "accepted-b", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+	}
+	store.recordFactConflictLocked(matchID, events, []int{0, 1}, MatchEvent{FactID: "bridge-candidate"}, "2026-07-20T10:02:00Z")
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || conflicts[0].ID != "conflict-a" || conflicts[0].Status != ConflictStatusOpen {
+		t.Fatalf("merged conflicts = %+v", conflicts)
+	}
+	roles := make(map[string]ConflictMemberRole)
+	for _, member := range conflicts[0].Members {
+		roles[member.FactID] = member.Role
+	}
+	if len(roles) != 5 || roles["accepted-a"] != ConflictMemberAccepted || roles["accepted-b"] != ConflictMemberAccepted || roles["bridge-candidate"] != ConflictMemberCandidate {
+		t.Fatalf("merged conflict members = %+v", conflicts[0].Members)
+	}
+}
+
+func TestBridgeConflictResolutionPreservesCompatibleAcceptedFacts(t *testing.T) {
+	store := NewStore()
+	matchID := "bridge-resolution-compatible-facts"
+	first, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "first accepted goal",
+	})
+	if err != nil {
+		t.Fatalf("Create first accepted goal: %v", err)
+	}
+	second, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:30", TeamID: "home",
+		Score: Score{Home: 2}, Description: "second accepted goal",
+	})
+	if err != nil {
+		t.Fatalf("Create second accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider", EventType: "goal", Period: "first_half", Clock: "10:15", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "bridge candidate",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create bridge candidate error = %v, want ErrConflict", err)
+	}
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || len(conflicts[0].Edges) != 2 {
+		t.Fatalf("bridge conflict = %+v, want two direct conflict edges", conflicts)
+	}
+	resolved, changed, snapshot, err := store.ResolveFactConflictSelection(matchID, conflicts[0].ID, []string{first.FactID, second.FactID}, "operator-1", "保留两次已确认进球")
+	if err != nil {
+		t.Fatalf("ResolveFactConflictSelection: %v", err)
+	}
+	if resolved.Status != ConflictStatusResolved || len(resolved.SelectedFactIDs) != 2 || len(changed) != 0 {
+		t.Fatalf("resolution = %+v, changed = %+v", resolved, changed)
+	}
+	if snapshot.Score != (Score{Home: 2}) {
+		t.Fatalf("snapshot after keeping compatible facts = %+v", snapshot)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == first.FactID || event.FactID == second.FactID {
+			if event.FactStatus != FactStatusConfirmed {
+				t.Fatalf("accepted fact was revoked: %+v", event)
+			}
+		}
+	}
+}
+
+func TestConflictSelectionLeavesIndependentEdgesOpen(t *testing.T) {
+	store := NewStore()
+	matchID := "partial-conflict-graph-resolution"
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	store.events[matchID] = []MatchEvent{
+		{ID: "event-a", MatchID: matchID, Source: "operator", Period: "first_half", Clock: "10:00", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Description: "accepted A", Status: "active", Visibility: "public", FactID: "accepted-a", FactRevision: 1, FactStatus: FactStatusConfirmed, Confirmed: true, CreatedAt: now, RecordedSequence: 1},
+		{ID: "event-x", MatchID: matchID, Source: "provider-x", Period: "first_half", Clock: "10:10", EventType: "goal", TeamID: "away", Score: Score{Away: 1}, Description: "candidate X", Status: "active", Visibility: "public", FactID: "candidate-x", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 2},
+		{ID: "event-b", MatchID: matchID, Source: "operator", Period: "first_half", Clock: "20:00", EventType: "goal", TeamID: "home", Score: Score{Home: 2}, Description: "accepted B", Status: "active", Visibility: "public", FactID: "accepted-b", FactRevision: 1, FactStatus: FactStatusConfirmed, Confirmed: true, CreatedAt: now, RecordedSequence: 3},
+		{ID: "event-y", MatchID: matchID, Source: "provider-y", Period: "first_half", Clock: "20:10", EventType: "goal", TeamID: "away", Score: Score{Home: 1, Away: 1}, Description: "candidate Y", Status: "active", Visibility: "public", FactID: "candidate-y", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 4},
+	}
+	store.factConflicts[matchID] = []FactConflict{{
+		ID: "conflict-graph", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: now,
+		Members: []FactConflictMember{
+			{FactID: "accepted-a", Role: ConflictMemberAccepted},
+			{FactID: "candidate-x", Role: ConflictMemberCandidate},
+			{FactID: "accepted-b", Role: ConflictMemberAccepted},
+			{FactID: "candidate-y", Role: ConflictMemberCandidate},
+		},
+		Edges: []FactConflictEdge{
+			{LeftFactID: "accepted-a", RightFactID: "candidate-x"},
+			{LeftFactID: "accepted-b", RightFactID: "candidate-y"},
+		},
+	}}
+	store.configs[matchID] = MatchConfig{MatchID: matchID, Integrity: MatchIntegrity{Status: "conflict"}}
+
+	conflict, changed, snapshot, err := store.ResolveFactConflictSelection(matchID, "conflict-graph", []string{"candidate-x"}, "operator-1", "采用候选 X")
+	if err != nil {
+		t.Fatalf("ResolveFactConflictSelection: %v", err)
+	}
+	if conflict.Status != ConflictStatusOpen || len(conflict.Edges) != 1 || conflict.Edges[0].LeftFactID != "accepted-b" || conflict.Edges[0].RightFactID != "candidate-y" {
+		t.Fatalf("remaining conflict = %+v", conflict)
+	}
+	if len(changed) != 1 || changed[0].FactID != "candidate-x" || changed[0].Score != (Score{Away: 1}) {
+		t.Fatalf("published events = %+v", changed)
+	}
+	if snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("snapshot after partial resolution = %+v", snapshot)
+	}
+	statuses := make(map[string]FactStatus)
+	for _, event := range store.Events(matchID) {
+		statuses[event.FactID] = event.FactStatus
+	}
+	if statuses["accepted-a"] != FactStatusRevoked || statuses["candidate-x"] != FactStatusReconciled || statuses["accepted-b"] != FactStatusConfirmed || statuses["candidate-y"] != FactStatusConflict {
+		t.Fatalf("fact statuses after partial resolution = %+v", statuses)
+	}
+
+	conflict, changed, snapshot, err = store.ResolveFactConflictSelection(matchID, "conflict-graph", []string{"accepted-b"}, "operator-2", "保留已确认事实 B")
+	if err != nil {
+		t.Fatalf("final ResolveFactConflictSelection: %v", err)
+	}
+	if conflict.Status != ConflictStatusResolved || !reflect.DeepEqual(conflict.SelectedFactIDs, []string{"accepted-b", "candidate-x"}) {
+		t.Fatalf("final conflict selection history = %+v", conflict)
+	}
+	if len(changed) != 0 || snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "ok" {
+		t.Fatalf("final changed = %+v, snapshot = %+v", changed, snapshot)
+	}
+}
+
+func TestConflictSelectionReleasesUnselectedCandidateWithoutRemainingEdges(t *testing.T) {
+	store := NewStore()
+	matchID := "conflict-graph-orphan-release"
+	now := time.Date(2026, 7, 21, 10, 0, 0, 0, time.UTC).Format(time.RFC3339Nano)
+	store.events[matchID] = []MatchEvent{
+		{ID: "event-a", MatchID: matchID, Source: "operator", Period: "first_half", Clock: "10:00", EventType: "goal", TeamID: "home", Score: Score{Home: 1}, Description: "accepted A", Status: "active", Visibility: "public", FactID: "accepted-a", FactRevision: 1, FactStatus: FactStatusConfirmed, Confirmed: true, CreatedAt: now, RecordedSequence: 1},
+		{ID: "event-b", MatchID: matchID, Source: "provider-b", Period: "first_half", Clock: "10:05", EventType: "goal", TeamID: "away", Score: Score{Away: 1}, Description: "candidate B", Status: "active", Visibility: "public", FactID: "candidate-b", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 2},
+		{ID: "event-c", MatchID: matchID, Source: "provider-c", Period: "first_half", Clock: "10:10", EventType: "goal", TeamID: "home", Score: Score{Home: 2}, Description: "candidate C", Status: "active", Visibility: "public", FactID: "candidate-c", FactRevision: 1, FactStatus: FactStatusConflict, CreatedAt: now, RecordedSequence: 3},
+	}
+	store.factConflicts[matchID] = []FactConflict{{
+		ID: "chain-conflict", MatchID: matchID, Status: ConflictStatusOpen, DetectedAt: now,
+		Members: []FactConflictMember{
+			{FactID: "accepted-a", Role: ConflictMemberAccepted},
+			{FactID: "candidate-b", Role: ConflictMemberCandidate},
+			{FactID: "candidate-c", Role: ConflictMemberCandidate},
+		},
+		Edges: []FactConflictEdge{
+			{LeftFactID: "accepted-a", RightFactID: "candidate-b"},
+			{LeftFactID: "candidate-b", RightFactID: "candidate-c"},
+		},
+	}}
+	store.configs[matchID] = MatchConfig{MatchID: matchID, Integrity: MatchIntegrity{Status: "conflict"}}
+
+	conflict, changed, snapshot, err := store.ResolveFactConflictSelection(matchID, "chain-conflict", []string{"accepted-a"}, "operator-1", "保留已确认事实")
+	if err != nil {
+		t.Fatalf("ResolveFactConflictSelection: %v", err)
+	}
+	if conflict.Status != ConflictStatusResolved || len(changed) != 0 || snapshot.Score != (Score{Home: 1}) {
+		t.Fatalf("conflict = %+v, changed = %+v, snapshot = %+v", conflict, changed, snapshot)
+	}
+	statuses := make(map[string]FactStatus)
+	for _, event := range store.Events(matchID) {
+		statuses[event.FactID] = event.FactStatus
+	}
+	if statuses["accepted-a"] != FactStatusConfirmed || statuses["candidate-b"] != FactStatusRevoked || statuses["candidate-c"] != FactStatusProvisional {
+		t.Fatalf("fact statuses after chain resolution = %+v", statuses)
+	}
+}
+
+func TestBridgeConflictMergePreservesPartialSelectionHistory(t *testing.T) {
+	store := NewStore()
+	matchID := "bridge-conflict-selection-history"
+	store.factConflicts[matchID] = []FactConflict{
+		{
+			ID: "conflict-a", MatchID: matchID, Status: ConflictStatusOpen,
+			Members:         []FactConflictMember{{FactID: "accepted-a", Role: ConflictMemberAccepted}, {FactID: "candidate-a", Role: ConflictMemberCandidate}},
+			Edges:           []FactConflictEdge{{LeftFactID: "accepted-a", RightFactID: "candidate-a"}},
+			SelectedFactIDs: []string{"accepted-a"},
+			Reason:          "partial A", ResolvedBy: "operator-a",
+		},
+		{
+			ID: "conflict-b", MatchID: matchID, Status: ConflictStatusOpen,
+			Members:         []FactConflictMember{{FactID: "accepted-b", Role: ConflictMemberAccepted}, {FactID: "candidate-b", Role: ConflictMemberCandidate}},
+			Edges:           []FactConflictEdge{{LeftFactID: "accepted-b", RightFactID: "candidate-b"}},
+			SelectedFactIDs: []string{"accepted-b"},
+			Reason:          "partial B", ResolvedBy: "operator-b",
+		},
+	}
+	events := []MatchEvent{
+		{FactID: "accepted-a", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+		{FactID: "accepted-b", Status: "active", Visibility: "public", FactStatus: FactStatusConfirmed},
+	}
+	store.recordFactConflictLocked(matchID, events, []int{0, 1}, MatchEvent{FactID: "bridge-candidate"}, time.Now().UTC().Format(time.RFC3339Nano))
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 1 || !reflect.DeepEqual(conflicts[0].SelectedFactIDs, []string{"accepted-a", "accepted-b"}) || conflicts[0].Reason != "partial A" || conflicts[0].ResolvedBy != "operator-a" {
+		t.Fatalf("merged selection history = %+v", conflicts)
+	}
+}
+
+func TestResolvingOneConflictDoesNotChangeAnotherOpenConflict(t *testing.T) {
+	store := NewStore()
+	matchID := "scoped-conflict-resolution"
+	firstAccepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "10:00", TeamID: "home",
+		Score: Score{Home: 1}, Description: "第一组原事实。",
+	})
+	if err != nil {
+		t.Fatalf("Create first accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider-a", EventType: "goal", Period: "first_half", Clock: "10:10", TeamID: "away",
+		Score: Score{Away: 1}, Description: "第一组候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create first candidate error = %v, want ErrConflict", err)
+	}
+	secondAccepted, _, err := store.Create(matchID, MatchEvent{
+		Source: "operator", EventType: "goal", Period: "first_half", Clock: "30:00", TeamID: "home",
+		Score: Score{Home: 2}, Description: "第二组原事实。",
+	})
+	if err != nil {
+		t.Fatalf("Create second accepted goal: %v", err)
+	}
+	_, _, err = store.Create(matchID, MatchEvent{
+		Source: "provider-b", EventType: "goal", Period: "first_half", Clock: "30:10", TeamID: "away",
+		Score: Score{Home: 1, Away: 1}, Description: "第二组候选。",
+	})
+	if !errors.Is(err, ErrConflict) {
+		t.Fatalf("Create second candidate error = %v, want ErrConflict", err)
+	}
+
+	conflicts := store.FactConflicts(matchID)
+	if len(conflicts) != 2 {
+		t.Fatalf("open conflicts = %+v", conflicts)
+	}
+	firstConflict := conflictContainingFact(t, conflicts, firstAccepted.FactID)
+	secondConflict := conflictContainingFact(t, conflicts, secondAccepted.FactID)
+	firstCandidate := conflictCandidateFact(t, firstConflict)
+	secondCandidate := conflictCandidateFact(t, secondConflict)
+
+	resolved, _, snapshot, err := store.ResolveFactConflict(matchID, firstConflict.ID, firstCandidate, "operator-1", "采用第一组外部源")
+	if err != nil {
+		t.Fatalf("Resolve first conflict: %v", err)
+	}
+	if resolved.ChosenFactID != firstCandidate || snapshot.Score != (Score{Home: 1, Away: 1}) || snapshot.Integrity.Status != "conflict" {
+		t.Fatalf("first resolution result = %+v / %+v", resolved, snapshot)
+	}
+
+	after := store.FactConflicts(matchID)
+	stillOpen := conflictContainingFact(t, after, secondAccepted.FactID)
+	if stillOpen.Status != ConflictStatusOpen {
+		t.Fatalf("second conflict = %+v", stillOpen)
+	}
+	for _, event := range store.Events(matchID) {
+		if event.FactID == secondAccepted.FactID && event.FactStatus != FactStatusConfirmed {
+			t.Fatalf("second accepted fact changed: %+v", event)
+		}
+		if event.FactID == secondCandidate && event.FactStatus != FactStatusConflict {
+			t.Fatalf("second candidate changed: %+v", event)
+		}
+	}
+}
+
+func conflictContainingFact(t *testing.T, conflicts []FactConflict, factID string) FactConflict {
+	t.Helper()
+	for _, conflict := range conflicts {
+		for _, member := range conflict.Members {
+			if member.FactID == factID {
+				return conflict
+			}
+		}
+	}
+	t.Fatalf("conflict containing fact %q not found: %+v", factID, conflicts)
+	return FactConflict{}
+}
+
+func conflictCandidateFact(t *testing.T, conflict FactConflict) string {
+	t.Helper()
+	for _, member := range conflict.Members {
+		if member.Role == ConflictMemberCandidate {
+			return member.FactID
+		}
+	}
+	t.Fatalf("candidate missing from conflict: %+v", conflict)
+	return ""
 }
 
 func TestSubscriberReceivesBurstWithoutDroppingEvents(t *testing.T) {
@@ -280,6 +970,8 @@ func TestEvalBoundariesNormalizeAndReject(t *testing.T) {
 		{name: "missing clock", ev: MatchEvent{EventType: "goal", Description: "x"}},
 		{name: "missing description", ev: MatchEvent{EventType: "goal", Clock: "01:00"}},
 		{name: "unsupported event", ev: MatchEvent{EventType: "alien_invasion", Clock: "01:00", Description: "x"}},
+		{name: "unsupported fact status", ev: MatchEvent{EventType: "shot", Clock: "01:00", Description: "x", FactStatus: "unknown"}},
+		{name: "confidence out of range", ev: MatchEvent{EventType: "shot", Clock: "01:00", Description: "x", Confidence: 1.1}},
 	}
 	for _, tt := range tests {
 		t.Run(tt.name, func(t *testing.T) {
@@ -407,6 +1099,76 @@ func TestRejectsScorerAssignedToWrongConfiguredTeam(t *testing.T) {
 	})
 	if !errors.Is(err, ErrInvalid) {
 		t.Fatalf("wrong-team scorer error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestRejectsSubstitutionAcrossConfiguredTeams(t *testing.T) {
+	store := NewStore()
+	matchID := "fact-integrity-substitution-team"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam:    "西班牙",
+		AwayTeam:    "德国",
+		HomePlayers: []Player{{Name: "佩德里"}},
+		AwayPlayers: []Player{{Name: "穆西亚拉"}},
+	}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	_, _, err := store.Create(matchID, MatchEvent{
+		EventType:   "substitution",
+		Period:      "second_half",
+		Clock:       "62:00",
+		TeamID:      "home",
+		TeamName:    "西班牙",
+		Score:       Score{},
+		Description: "西班牙换人。",
+		Participants: []Participant{
+			{Role: "sub_on", Name: "佩德里", TeamID: "home", TeamName: "西班牙"},
+			{Role: "sub_off", Name: "穆西亚拉", TeamID: "away", TeamName: "德国"},
+		},
+	})
+	if !errors.Is(err, ErrInvalid) {
+		t.Fatalf("cross-team substitution error = %v, want ErrInvalid", err)
+	}
+}
+
+func TestSubstitutionRequiresBenchPlayerAndReplaysConfirmedLineup(t *testing.T) {
+	store := NewStore()
+	const matchID = "lineup-substitution"
+	if _, _, err := store.SetConfig(matchID, MatchConfig{
+		HomeTeam: "Spain",
+		AwayTeam: "Germany",
+		HomePlayers: []Player{
+			{Name: "Starter One", Lineup: "starter"},
+			{Name: "Starter Two", Lineup: "starter"},
+			{Name: "Bench One", Lineup: "bench"},
+		},
+	}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+
+	newSubstitution := func(clock, subOn, subOff string) MatchEvent {
+		return MatchEvent{
+			EventType: "substitution", Period: "second_half", Clock: clock,
+			TeamID: "home", TeamName: "Spain", Score: Score{}, Description: "Spain substitution",
+			Participants: []Participant{
+				{Role: "sub_on", Name: subOn, TeamID: "home", TeamName: "Spain"},
+				{Role: "sub_off", Name: subOff, TeamID: "home", TeamName: "Spain"},
+			},
+		}
+	}
+
+	if _, _, err := store.Create(matchID, newSubstitution("60:00", "Starter Two", "Starter One")); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("starter cannot be sub_on: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("61:00", "Bench One", "Starter One")); err != nil {
+		t.Fatalf("valid substitution error: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("62:00", "Starter One", "Starter One")); !errors.Is(err, ErrInvalid) {
+		t.Fatalf("same player substitution should be rejected: %v", err)
+	}
+	if _, _, err := store.Create(matchID, newSubstitution("63:00", "Starter One", "Bench One")); err != nil {
+		t.Fatalf("confirmed lineup should allow the reverse change: %v", err)
 	}
 }
 

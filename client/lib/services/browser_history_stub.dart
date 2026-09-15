@@ -1,0 +1,1 @@
+void replaceBrowserUrl(Uri uri) {}

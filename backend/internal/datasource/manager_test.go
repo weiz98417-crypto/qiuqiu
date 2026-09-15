@@ -23,6 +23,43 @@ func TestManagerDefaultsToManualSource(t *testing.T) {
 	if status.Sources[SourceAPISports].State != StateUnconfigured {
 		t.Fatalf("api-sports state = %q, want unconfigured", status.Sources[SourceAPISports].State)
 	}
+	manual := status.Sources[SourceManual]
+	if manual.Freshness != FreshnessUnknown || !manual.UserMayLead || manual.ExpectedDelay != "normal" {
+		t.Fatalf("manual health = %+v, want unknown freshness and user-lead warning", manual)
+	}
+	if api := status.Sources[SourceAPISports]; api.Freshness != FreshnessOffline || !api.UserMayLead {
+		t.Fatalf("unconfigured api health = %+v, want offline", api)
+	}
+}
+
+func TestSourceHealthUsesFiveMinuteP95AndPollFreshness(t *testing.T) {
+	now := time.Now().UTC()
+	manager := NewManager(context.Background(), matchstate.NewStore(), nil, ManagerConfig{PollInterval: 3 * time.Second})
+	t.Cleanup(manager.Close)
+	manager.mu.Lock()
+	manager.active["match-health"] = SourceAPISports
+	manager.runs["match-health"] = &sourceRun{status: SourceStatus{Type: SourceAPISports, State: StateRunning}}
+	manager.mu.Unlock()
+	for _, latency := range []time.Duration{100 * time.Millisecond, 300 * time.Millisecond, 200 * time.Millisecond} {
+		manager.updatePollStatus("match-health", PollReport{At: now, Latency: latency})
+	}
+
+	status := manager.Status("match-health").Sources[SourceAPISports]
+	if status.Freshness != FreshnessFresh || status.UserMayLead {
+		t.Fatalf("fresh source health = %+v", status)
+	}
+	if status.LatencyP95MS != 300 || status.FreshnessThresholdMS != 6300 {
+		t.Fatalf("latency health = %+v, want p95=300 threshold=6300", status)
+	}
+
+	manager.mu.Lock()
+	manager.runs["match-health"].status.State = StateError
+	manager.runs["match-health"].status.LastPollAt = now.Add(-30 * time.Second).Format(time.RFC3339Nano)
+	manager.mu.Unlock()
+	status = manager.Status("match-health").Sources[SourceAPISports]
+	if status.Freshness != FreshnessOffline || !status.UserMayLead {
+		t.Fatalf("stale error health = %+v, want offline user-lead warning", status)
+	}
 }
 
 func TestAPISportsSourceIngestsRepeatedProviderEventOnce(t *testing.T) {
@@ -102,6 +139,68 @@ func TestNormalizeAPISportsEventTypes(t *testing.T) {
 	}
 }
 
+func TestPollerRetriesUntilDeliveryIsPersisted(t *testing.T) {
+	events := make(chan PollDelivery, 2)
+	client := &repeatingEventsClient{events: []Event{{
+		Time:   EventTime{Elapsed: 12},
+		Team:   TeamRef{ID: 1, Name: "Arsenal"},
+		Player: PlayerRef{ID: 7, Name: "Saka"},
+		Type:   "Goal",
+	}}}
+	poller := NewPoller(client, 42, events).WithInterval(5 * time.Millisecond).WithInitialEvents(true)
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	go poller.Run(ctx)
+
+	var first PollDelivery
+	select {
+	case first = <-events:
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for first provider event")
+	}
+	first.Acknowledge(false)
+	select {
+	case second := <-events:
+		if second.Event.ID != first.Event.ID {
+			t.Fatalf("retried event id = %d, want %d", second.Event.ID, first.Event.ID)
+		}
+		second.Acknowledge(true)
+	case <-time.After(time.Second):
+		t.Fatal("timed out waiting for retried provider event")
+	}
+}
+
+func TestAPISportsSourceResumesFromPersistedCursor(t *testing.T) {
+	store := matchstate.NewStore()
+	if _, _, err := store.SetConfig("match-resume", matchstate.MatchConfig{HomeTeam: "Arsenal", AwayTeam: "Liverpool"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	historical := Event{Time: EventTime{Elapsed: 12}, Team: TeamRef{ID: 1, Name: "Arsenal"}, Player: PlayerRef{ID: 7, Name: "Saka"}, Type: "Goal", Detail: "Normal Goal"}
+	firstClient := &repeatingEventsClient{events: []Event{historical}}
+	firstManager := NewManager(context.Background(), store, firstClient, ManagerConfig{PollInterval: 5 * time.Millisecond})
+	if _, err := firstManager.Start("match-resume", SourceConfig{Type: SourceAPISports, FixtureID: 42}); err != nil {
+		t.Fatalf("first Start error: %v", err)
+	}
+	waitFor(t, time.Second, func() bool {
+		cursor, err := store.SourceCursor("match-resume", string(SourceAPISports), "42")
+		return err == nil && cursor == historical.ID()
+	})
+	firstManager.Close()
+
+	newEvent := Event{Time: EventTime{Elapsed: 30}, Team: TeamRef{ID: 2, Name: "Liverpool"}, Player: PlayerRef{ID: 9, Name: "Nunez"}, Type: "Goal", Detail: "Normal Goal"}
+	secondClient := &repeatingEventsClient{events: []Event{historical, newEvent}}
+	secondManager := NewManager(context.Background(), store, secondClient, ManagerConfig{PollInterval: 5 * time.Millisecond})
+	t.Cleanup(secondManager.Close)
+	if _, err := secondManager.Start("match-resume", SourceConfig{Type: SourceAPISports, FixtureID: 42}); err != nil {
+		t.Fatalf("second Start error: %v", err)
+	}
+	waitFor(t, time.Second, func() bool { return len(store.Events("match-resume")) == 1 })
+	events := store.Events("match-resume")
+	if events[0].PlayerName != "Nunez" {
+		t.Fatalf("resumed event = %+v", events[0])
+	}
+}
+
 func TestStopWaitsForExternalSourceWorkersToExit(t *testing.T) {
 	client := &blockingEventsClient{
 		started: make(chan struct{}),
@@ -130,6 +229,27 @@ func TestStopWaitsForExternalSourceWorkersToExit(t *testing.T) {
 	waitForSignal(t, stopped, "source stop to finish")
 	if got := manager.Status("match-stop").ActiveSource; got != SourceManual {
 		t.Fatalf("active source = %q, want manual", got)
+	}
+}
+
+func TestObservationReconcileWindowUsesManualDelayProfile(t *testing.T) {
+	manager := NewManager(context.Background(), matchstate.NewStore(), nil, ManagerConfig{})
+	defer manager.Close()
+
+	if got := manager.ObservationReconcileWindow("match-delay", time.Minute); got != 90*time.Second {
+		t.Fatalf("default manual reconcile window = %s, want 90s", got)
+	}
+	if _, err := manager.Start("match-delay", SourceConfig{Type: SourceManual, ExpectedDelay: "conservative"}); err != nil {
+		t.Fatalf("Start manual source: %v", err)
+	}
+	if got := manager.ObservationReconcileWindow("match-delay", 45*time.Second); got != 2*time.Minute {
+		t.Fatalf("conservative manual reconcile window = %s, want 2m", got)
+	}
+	if _, err := manager.Start("match-delay", SourceConfig{Type: SourceReplay}); err != nil {
+		t.Fatalf("Start replay source: %v", err)
+	}
+	if got := manager.ObservationReconcileWindow("match-delay", 45*time.Second); got != 45*time.Second {
+		t.Fatalf("replay reconcile window = %s, want base 45s", got)
 	}
 }
 

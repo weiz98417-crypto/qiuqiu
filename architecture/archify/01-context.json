@@ -1,0 +1,28 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": { "title": "球球｜系统上下文与职责边界", "locale": "zh-CN", "quality_profile": "showcase", "viewBox": [1220, 760] },
+  "components": [
+    { "id": "viewer", "type": "external", "label": "球迷 / 观众", "sublabel": "观看比赛、提问、接收回应", "pos": [40, 320], "size": [210, 86] },
+    { "id": "ingress", "type": "backend", "label": "INGRESS｜统一接入", "sublabel": "用户互动 · 比赛事件 · 导播校正", "pos": [350, 220], "size": [250, 90] },
+    { "id": "core", "type": "backend", "label": "Agent Core｜决策中心", "sublabel": "事实验证 · 人味决策 · 人格边界", "pos": [350, 360], "size": [250, 100] },
+    { "id": "delivery", "type": "frontend", "label": "Delivery｜表现出口", "sublabel": "文字 · 声音 · Live2D · 播放回执", "pos": [350, 520], "size": [250, 90] },
+    { "id": "match", "type": "external", "label": "比赛数据供应商", "sublabel": "赛程 · 比分 · 比赛事件", "pos": [900, 70], "size": [250, 86] },
+    { "id": "ai", "type": "external", "label": "ASR / LLM / TTS 供应商", "sublabel": "语音识别 · 文本生成 · 语音合成", "pos": [900, 330], "size": [250, 86] },
+    { "id": "operator", "type": "external", "label": "运营 / 导播台", "sublabel": "校正事实 · 确认 · 撤销 · 发布", "pos": [900, 590], "size": [250, 86] }
+  ],
+  "boundaries": [ { "kind": "region", "label": "球球系统边界｜接入、决策、表现", "wraps": ["ingress", "core", "delivery"], "pad": 28 } ],
+  "connections": [
+    { "id": "viewer-ingress", "from": "viewer", "to": "ingress", "label": "提问 / 观看状态", "variant": "emphasis", "fromSide": "right", "toSide": "left" },
+    { "id": "ingress-core", "from": "ingress", "to": "core", "label": "分流后的输入与上下文", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [475, 335] },
+    { "id": "core-delivery", "from": "core", "to": "delivery", "label": "Response Plan", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [475, 495] },
+    { "id": "delivery-viewer", "from": "delivery", "to": "viewer", "label": "字幕 / 声音 / 动作", "variant": "emphasis", "fromSide": "left", "toSide": "bottom", "via": [[310, 565], [310, 680], [145, 680]], "labelAt": [220, 675] },
+    { "id": "match-ingress", "from": "match", "to": "ingress", "label": "比赛事实 / 事件", "fromSide": "bottom", "toSide": "top", "via": [[1025, 180], [475, 180]], "labelAt": [760, 180] },
+    { "id": "operator-ingress", "from": "operator", "to": "ingress", "label": "人工校正 / 发布", "variant": "dashed", "fromSide": "right", "toSide": "right", "via": [[1180, 633], [1180, 200], [650, 200], [650, 265]], "labelAt": [760, 200] },
+    { "id": "core-ai", "from": "core", "to": "ai", "label": "按计划调用 AI 能力", "fromSide": "right", "toSide": "left", "via": [[700, 410], [700, 373], [850, 373]], "labelAt": [775, 373] }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "先看边界，再看细节", "items": ["外部系统提供事实或能力，球球拥有接入、决策和表现闭环", "比赛数据与运营校正先进入统一接入，再进入事实验证"] },
+    { "dot": "emerald", "title": "这张图不展开部署", "items": ["内部职责在 02 容器图和 A2 技术图中继续下钻", "箭头方向先回答谁提供信息、谁做决定、谁接收结果"] }
+  ]
+}

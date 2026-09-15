@@ -180,6 +180,9 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 		state.Match.Affect.Arousal < 0.7 && !hasRecentAction(state.Match.RecentActions, ActAsk, 4) {
 		return []CommunicationAct{ActAcknowledge, ActAsk}, []string{"stable_preference_worth_following_up"}
 	}
+	if signal.Grounding.Intent == "personal_share" {
+		return []CommunicationAct{ActReact}, []string{"user_personal_share"}
+	}
 	return []CommunicationAct{ActAcknowledge}, []string{"default_acknowledgement"}
 }
 

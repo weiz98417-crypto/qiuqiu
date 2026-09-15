@@ -7,6 +7,7 @@ import (
 	"testing"
 	"time"
 
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
 )
@@ -26,7 +27,7 @@ func TestAgentUsesRelationshipDecisionFallbackWithoutRealizer(t *testing.T) {
 	if err != nil {
 		t.Fatalf("HandleMessage: %v", err)
 	}
-	wantReply := "嗯，我在。"
+	wantReply := "行，先看着。"
 	if response.Reply != wantReply {
 		t.Fatalf("reply = %q, want relationship fallback %q", response.Reply, wantReply)
 	}
@@ -86,6 +87,17 @@ func TestAgentHandlesMutedMatchEventWithoutProducingSpeech(t *testing.T) {
 	}
 	if response.Reply != "" || response.Trace.ID == "" {
 		t.Fatalf("muted event produced output: %+v", response)
+	}
+	assertToolCalled(t, response.Trace, "trace.write_decision")
+	silenceRecorded := false
+	for _, call := range response.Trace.ToolCalls {
+		if call.Name == "response.emit_companion_reply" && call.Args["mode"] == "silence" {
+			silenceRecorded = true
+			break
+		}
+	}
+	if !silenceRecorded {
+		t.Fatalf("muted event trace omitted explicit silence: %+v", response.Trace.ToolCalls)
 	}
 	if len(tools.Traces()) != 1 {
 		t.Fatalf("trace count = %d, want one silent observation trace", len(tools.Traces()))
@@ -161,6 +173,78 @@ func TestAgentHandlesAllowedMatchEventAsOnePlannedTurn(t *testing.T) {
 	}
 	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "cheer" {
 		t.Fatalf("presentation = %+v", response.Presentation)
+	}
+}
+
+func TestAgentRefreshesCriticalFactSignalOnceWithOneFinalDecision(t *testing.T) {
+	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithDirector(
+		relationship.NewDirector(relationship.NewMemoryRepository()),
+	)
+	ledger := interaction.NewMemoryLedger()
+	agent.WithInteractionLedger(ledger)
+	base := time.Now().UTC()
+	event := matchstate.MatchEvent{
+		ID:           "goal-revision-1",
+		MatchID:      "match-1",
+		EventType:    "goal",
+		Intensity:    5,
+		FactRevision: 1,
+		FactStatus:   matchstate.FactStatusConfirmed,
+	}
+	first, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
+		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
+		Now: base,
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	event.FactRevision = 2
+	event.FactStatus = matchstate.FactStatusReconciled
+	event.EventType = "goal_cancelled"
+	second, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
+		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
+		Now: base.Add(time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if first.Trace.ID == second.Trace.ID {
+		t.Fatalf("fact revision reused trace: first=%+v second=%+v", first.Trace, second.Trace)
+	}
+	if first.Decision.ID != second.Decision.ID {
+		t.Fatalf("fact revision created a second decision: first=%+v second=%+v", first.Decision, second.Decision)
+	}
+	if second.Decision.SignalID != "match:user-1:goal-revision-1" {
+		t.Fatalf("second signal id = %q", second.Decision.SignalID)
+	}
+	if second.Decision.FactRevision != "goal-revision-1:2:reconciled" || second.Decision.RefreshCount != 1 {
+		t.Fatalf("refreshed decision = %+v", second.Decision)
+	}
+	if first.Presentation.Expression == second.Presentation.Expression || second.Presentation.Expression != "deflated" {
+		t.Fatalf("fact refresh reused stale presentation: first=%+v second=%+v", first.Presentation, second.Presentation)
+	}
+	event.FactRevision = 3
+	event.FactStatus = matchstate.FactStatusRevoked
+	third, err := agent.HandleMatchEvent(context.Background(), MatchEventRequest{
+		UserID: "user-1", Event: event, OutputAllowed: true, Critical: true,
+		Now: base.Add(2 * time.Second),
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if third.Decision.FactRevision != second.Decision.FactRevision || third.Decision.RefreshCount != 1 {
+		t.Fatalf("critical signal refreshed more than once: second=%+v third=%+v", second.Decision, third.Decision)
+	}
+	if third.Reply != "" || third.Trace.Reason != "critical_fact_refresh_limit" {
+		t.Fatalf("third revision remained deliverable: %+v", third)
+	}
+	events, err := ledger.List(context.Background(), "user-1", "match-1", 100)
+	if err != nil {
+		t.Fatal(err)
+	}
+	turns := interaction.ProjectTurns(events)
+	if len(turns) != 3 || !turns[0].Stale || turns[1].Stale || !turns[2].Stale {
+		t.Fatalf("revision staleness = %+v", turns)
 	}
 }
 

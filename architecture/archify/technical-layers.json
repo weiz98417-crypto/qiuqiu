@@ -1,0 +1,43 @@
+{
+  "schema_version": 1,
+  "diagram_type": "architecture",
+  "meta": {
+    "title": "球球｜技术架构分层（逻辑职责）",
+    "locale": "zh-CN",
+    "quality_profile": "showcase",
+    "viewBox": [1220, 760]
+  },
+  "components": [
+    { "id": "experience", "type": "frontend", "label": "Flutter / 运营入口", "sublabel": "Live2D · 字幕 · 音频 · 事实校正", "pos": [300, 70], "size": [600, 100] },
+    { "id": "realtime", "type": "backend", "label": "实时接入与执行", "sublabel": "API / WebSocket · Voice Session · Scheduler · Match Clock", "pos": [300, 225], "size": [600, 100] },
+    { "id": "fact-cognition", "type": "backend", "label": "事实认知", "sublabel": "Intent · Tools · Grounding", "pos": [300, 380], "size": [180, 100] },
+    { "id": "companionship", "type": "backend", "label": "陪伴决策", "sublabel": "人格宪法 · Relationship · Director", "pos": [510, 380], "size": [180, 100] },
+    { "id": "expression", "type": "backend", "label": "表达执行", "sublabel": "Reply Realizer · Presentation", "pos": [720, 380], "size": [180, 100] },
+    { "id": "data", "type": "database", "label": "事实与上下文", "sublabel": "Fact Ledger · PostgreSQL + Outbox · Observation · Redis", "pos": [300, 535], "size": [600, 100] },
+    { "id": "control", "type": "security", "label": "横向控制面", "sublabel": "身份 · 人格规则 · 用户主权 · 隐私 · 审计", "pos": [960, 380], "size": [220, 100] },
+    { "id": "ai", "type": "external", "label": "外部 AI 能力", "sublabel": "ASR · LLM · TTS", "pos": [20, 385], "size": [240, 90] },
+    { "id": "match", "type": "external", "label": "比赛数据源", "sublabel": "赛程 · 比分 · 比赛事件", "pos": [20, 230], "size": [240, 90] }
+  ],
+  "boundaries": [
+    { "kind": "region", "label": "应用与体验层", "wraps": ["experience"], "pad": 18 },
+    { "kind": "region", "label": "实时执行层", "wraps": ["realtime"], "pad": 18 },
+    { "kind": "region", "label": "Agent 智能层", "wraps": ["fact-cognition", "companionship", "expression"], "pad": 18 },
+    { "kind": "region", "label": "事实与数据层", "wraps": ["data"], "pad": 18 },
+    { "kind": "region", "label": "控制与可靠性面", "wraps": ["control"], "pad": 18 }
+  ],
+  "connections": [
+    { "id": "experience-realtime", "from": "experience", "to": "realtime", "label": "用户输入 / 播放控制", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [670, 198] },
+    { "id": "realtime-agent", "from": "realtime", "to": "fact-cognition", "label": "用户轮次 / 实时事件", "variant": "emphasis", "fromSide": "bottom", "toSide": "top", "labelAt": [395, 353] },
+    { "id": "cognition-companionship", "from": "fact-cognition", "to": "companionship", "variant": "emphasis" },
+    { "id": "companionship-expression", "from": "companionship", "to": "expression", "variant": "emphasis" },
+    { "id": "expression-data", "from": "expression", "to": "data", "label": "事实 / 关系 / 场景读写", "fromSide": "bottom", "toSide": "top", "labelAt": [805, 508] },
+    { "id": "control-data", "from": "control", "to": "data", "label": "隐私 / 审计", "variant": "dashed", "fromSide": "left", "toSide": "right" },
+    { "id": "agent-ai", "from": "fact-cognition", "to": "ai", "variant": "dashed", "fromSide": "left", "toSide": "right" },
+    { "id": "match-realtime", "from": "match", "to": "realtime", "variant": "dashed", "fromSide": "right", "toSide": "left" }
+  ],
+  "cards": [
+    { "dot": "orange", "title": "先看层，再看模块", "items": ["从上到下读逻辑依赖：应用 → 执行 → Agent → 数据", "层是职责分组，不是四个必须拆开的进程"] },
+    { "dot": "emerald", "title": "Agent 的三类能力", "items": ["事实认知：先确认发生了什么", "陪伴决策：结合关系、场景和人格宪法", "表达执行：按 Response Plan 生成台词和动作"] },
+    { "dot": "slate", "title": "边界与事实", "items": ["外部 AI 和比赛数据是系统依赖，不是球球内部层", "PostgreSQL + Outbox 承担事实与追溯；Redis 只是短期协调"] }
+  ]
+}
