@@ -3,6 +3,7 @@ package main
 import (
 	"context"
 	"log"
+	"sync"
 	"time"
 
 	"qiuqiu/internal/companion"
@@ -121,6 +122,95 @@ func observeReplyDelivery(ctx context.Context, agent *companion.Agent, trace com
 		State: state, Purpose: "user_reply", UsedMemoryIDs: trace.RelationshipDecision.UsedMemoryIDs, Now: now,
 	}})
 	return err
+}
+
+// voiceWaitPresentation marks a conversation reply presentation with the
+// decay_to_listening ReturnMode (ADR-0007 ownership rules): at the
+// reply-delivery completion point the voice session waits for the user's next
+// utterance, so the held body decays to the listening pose
+// (listening/listen_01) instead of the watching focus. The plan rides inside
+// the reply's own qiuqiu_reply presentation — the client applies the return
+// state when the HoldMS hold elapses — so the emission is wired by stamping
+// the plan on the way out. Deliberate modes pass through untouched
+// (decay_to_idle quiet stretches stay on the idle tier).
+func voiceWaitPresentation(plan relationship.PresentationPlan) relationship.PresentationPlan {
+	switch plan.ReturnMode {
+	case "", "watching", "decay_to_focus":
+		plan.ReturnMode = "decay_to_listening"
+	}
+	return plan
+}
+
+// presentationSink is the WS send the delivery reaction needs (satisfied by
+// wsWriter; faked in tests).
+type presentationSink interface {
+	SendJSON(msg interface{}) error
+}
+
+// interruptedReactionGuard fires the delivery reaction of ADR-0007 rule 5
+// once per interruption: scheduler user-preempts during playback mark the
+// preempted reply's delivery "interrupted" (observeReplyOutcome below), and
+// the one-shot confused/listening body goes out as a standalone presentation
+// message with the same shape as the match_reaction presentation — the reply
+// text of the preempting turn is never blocked or replaced.
+type interruptedReactionGuard struct {
+	mu      sync.Mutex
+	emitted map[string]struct{}
+}
+
+func newInterruptedReactionGuard() *interruptedReactionGuard {
+	return &interruptedReactionGuard{emitted: make(map[string]struct{})}
+}
+
+// interruptedReactionDeliveryKey namespaces the standalone presentation's
+// dedupe key (client-side dedupe only guards match_reaction sources, so the
+// once-per-interruption rule is enforced here).
+func interruptedReactionDeliveryKey(traceID string) string {
+	return "delivery-interrupted:" + traceID
+}
+
+// interruptedReactionMessage builds the standalone presentation payload —
+// the match_reaction shape ("type": "presentation" + source/deliveryKey).
+func interruptedReactionMessage(trace companion.Trace, affect relationship.AffectState) map[string]interface{} {
+	return map[string]interface{}{
+		"type":        "presentation",
+		"data":        relationship.InterruptedDeliveryPresentation(affect),
+		"deliveryKey": interruptedReactionDeliveryKey(trace.ID),
+		"source":      "delivery_interrupted",
+	}
+}
+
+// emit sends the reaction if this trace's interruption has not fired one
+// yet. Send failures are logged by wsWriter and never bubble into the
+// preempting turn.
+func (guard *interruptedReactionGuard) emit(sink presentationSink, trace companion.Trace, affect relationship.AffectState) {
+	if guard == nil || sink == nil || trace.ID == "" {
+		return
+	}
+	guard.mu.Lock()
+	defer guard.mu.Unlock()
+	if _, done := guard.emitted[trace.ID]; done {
+		return
+	}
+	guard.emitted[trace.ID] = struct{}{}
+	if err := sink.SendJSON(interruptedReactionMessage(trace, affect)); err != nil {
+		log.Printf("interrupted delivery reaction error: %v", err)
+	}
+}
+
+// observeReplyOutcome is the delivery observer's outcome path: the ordinary
+// observation runs for every state, and the interrupted outcome (scheduler
+// user-preempt during playback) additionally fires the one-shot delivery
+// reaction. Skipped/failed stay text-fallback only (no reaction) in v1.
+func observeReplyOutcome(ctx context.Context, agent *companion.Agent, sink presentationSink, guard *interruptedReactionGuard, trace companion.Trace, userID, matchID, state string, now time.Time) error {
+	if state == "interrupted" {
+		var affect relationship.AffectState
+		if trace.RelationshipDecision != nil {
+			affect = trace.RelationshipDecision.Presentation.Affect
+		}
+		guard.emit(sink, trace, affect)
+	}
+	return observeReplyDelivery(ctx, agent, trace, userID, matchID, state, now)
 }
 
 type traceRecoverySource struct{ reader companion.TraceReader }

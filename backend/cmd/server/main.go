@@ -493,6 +493,9 @@ func main() {
 		watchSession := watchSessions.Acquire(sessionUserID, matchIDStr)
 		defer func() { watchSessions.Release(watchSession.UserID, watchSession.MatchID) }()
 		deliveryTracker := newReplyDeliveryTrackerWithLedger(watchSession.Ledger())
+		// ADR-0007 delivery reaction: one-shot confused/listening per
+		// scheduler user-preempt during playback (once per interruption).
+		interruptedReactions := newInterruptedReactionGuard()
 		responseDelivery := newResponseDeliveryService(writer, companionAgent, ttsClient, deliveryTracker)
 		firstMeetingCoordinator := conversation.NewFirstMeetingCoordinator(companionAgent, responseDelivery)
 		conversationScheduler := watchSession.Scheduler()
@@ -525,6 +528,9 @@ func main() {
 		defer func() {
 			for _, pending := range deliveryTracker.Drain() {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
+				// Connection teardown, not a preempt during playback: the
+				// observation runs but no delivery reaction is emitted (the
+				// socket is closing).
 				if err := observeReplyDelivery(cleanupCtx, companionAgent, pending.Trace, pending.UserID, pending.MatchID, "interrupted", time.Now().UTC()); err != nil {
 					log.Printf("relationship interrupted delivery cleanup error: %v", err)
 				}
@@ -789,12 +795,12 @@ func main() {
 					if errors.Is(err, context.Canceled) {
 						state = "interrupted"
 						cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-						_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+						_ = observeReplyOutcome(cleanupCtx, companionAgent, writer, interruptedReactions, result.Trace, userID, matchIDStr, state, time.Now().UTC())
 						cleanupCancel()
 						return
 					}
 					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+					_ = observeReplyOutcome(cleanupCtx, companionAgent, writer, interruptedReactions, result.Trace, userID, matchIDStr, state, time.Now().UTC())
 					cleanupCancel()
 					log.Printf("companion voice reply error: %v", err)
 					if result.ASRError != "" {
@@ -804,7 +810,7 @@ func main() {
 				}
 				if replyCtx.Err() != nil {
 					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, "interrupted", time.Now().UTC())
+					_ = observeReplyOutcome(cleanupCtx, companionAgent, writer, interruptedReactions, result.Trace, userID, matchIDStr, "interrupted", time.Now().UTC())
 					cleanupCancel()
 					return
 				}
@@ -817,8 +823,12 @@ func main() {
 					cleanupCancel()
 					return
 				}
+				// presentation-mapping 3.2 (ADR-0007): the reply completes into a
+				// voice-session wait for the user, so the plan that rides with
+				// the reply decays to the listening pose instead of the
+				// watching focus.
 				_, deliveryErr := responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
-					Reply: result.Reply, Trace: result.Trace, Presentation: result.Presentation,
+					Reply: result.Reply, Trace: result.Trace, Presentation: voiceWaitPresentation(result.Presentation),
 					Source: "conversation", DeliveryKey: result.Trace.ID, TTL: 30 * time.Second,
 					AfterText: func(context.Context) error {
 						if result.ScheduleLookup == nil || replyCtx.Err() != nil {
@@ -867,7 +877,7 @@ func main() {
 						state = "interrupted"
 					}
 					cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-					_ = observeReplyDelivery(cleanupCtx, companionAgent, result.Trace, userID, matchIDStr, state, time.Now().UTC())
+					_ = observeReplyOutcome(cleanupCtx, companionAgent, writer, interruptedReactions, result.Trace, userID, matchIDStr, state, time.Now().UTC())
 					cleanupCancel()
 					if state == "failed" {
 						log.Printf("conversation response delivery error: %v", deliveryErr)

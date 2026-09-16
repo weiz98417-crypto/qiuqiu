@@ -140,10 +140,17 @@ void main() {
       returnMode: 'decay_to_focus',
     );
 
+    // All four ReturnMode values have real targets (ADR-0007): watching and
+    // decay_to_focus keep the terminal watching focus, decay_to_listening is
+    // the voice-session waiting pose, decay_to_idle defers to the tier picker.
     expect(presentationReturnState(base), ('focus', 'focus'));
     expect(
+      presentationReturnState(base.copyWith(returnMode: 'watching')),
+      ('focus', 'focus'),
+    );
+    expect(
       presentationReturnState(base.copyWith(returnMode: 'decay_to_listening')),
-      ('listening', 'listen'),
+      ('listening', 'listen_01'),
     );
     // Neutral affect decays into the calm idle tier.
     expect(

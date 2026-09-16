@@ -241,12 +241,21 @@ class CompanionPresentation {
   }
 }
 
+/// Resting body (expression, motion) a presentation decays into once its
+/// HoldMS hold elapses — one real target per ReturnMode (ADR-0007 ownership
+/// rules): `watching`/`decay_to_focus` keep the terminal watching focus,
+/// `decay_to_listening` is the voice session waiting for the user's next
+/// utterance (pairs with the phases.user_speaking listen pose), and
+/// `decay_to_idle` hands the body to the C4 idle tier picker.
 (String, String) presentationReturnState(
   CompanionPresentation presentation,
 ) {
   switch (presentation.returnMode) {
+    case 'watching':
+    case 'decay_to_focus':
+      return ('focus', 'focus');
     case 'decay_to_listening':
-      return ('listening', 'listen');
+      return ('listening', 'listen_01');
     case 'decay_to_idle':
       final tier = IdleTierPicker.tierFor(
         valence: presentation.valence ?? 0,

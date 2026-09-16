@@ -457,7 +457,7 @@ void main() {
 
     controller.returnPresentation(second);
     expect(controller.state.expression, 'listening');
-    expect(controller.state.motion, 'listen');
+    expect(controller.state.motion, 'listen_01');
     expect(controller.state.activePresentation, isNull);
   });
 

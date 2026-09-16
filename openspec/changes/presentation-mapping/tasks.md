@@ -25,6 +25,9 @@
 - [ ] 3.2 ReturnMode: backend emits all four values at the right beats (decay_to_listening on voice-session wait; decay_to_idle on quiet stretch); `presentationReturnState` maps each to its real target (no more both→focus).
 - [ ] 3.3 Delivery interrupted ⇒ one-shot confused/listening before the preempting user turn proceeds (uses scheduler preempt signal; delivery.go observer).
 - [ ] 3.4 Tests: gate/interrupt reaction (Go), return-mode mapping (Dart), scheduleIdle yielding (JS checked via node).
+- [ ] 3.5 E2E (Playwright): unknown-intent journey — send unclassifiable text, assert confused/listening reaction surfaces and the deterministic fallback reply still shows.
+- [ ] 3.6 E2E (Playwright): fulltime farewell journey — drive a match to fulltime via the demo/operator path, assert wave motion fires once and idle resumes.
+- [ ] 3.7 E2E (Playwright, fake media): phase motions — with --use-fake-device-for-media-stream, assert listening motion during VAD speech and speak during playback; idle tier asserted via the live2d state bridge.
 
 ## 4. Docs & bookkeeping
 

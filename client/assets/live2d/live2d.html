@@ -136,6 +136,14 @@ window.modelReady = false;
 var speaking = false;
 var currentMode = 'idle';
 var modeUntil = 0;
+// ADR-0007 ownership: deadline of the presentation hold armed by the last
+// qiuqiu-live2d-state apply (0 = none). While it is live the held body is
+// backend-authoritative — the idle scheduler and the speaking-off mode reset
+// skip instead of overriding it; once it elapses the phase/idle layer resumes.
+var presentationHoldUntil = 0;
+// HoldMS assumed when a qiuqiu-live2d-state apply does not state one: the
+// PresentationPlan default hold (relationship/affect.go).
+var PRESENTATION_DEFAULT_HOLD_MS = 1800;
 var idleTimer = null;
 var baseModelX = 0;
 var baseModelY = 0;
@@ -782,6 +790,10 @@ function performAction(action) {
     if (config.mode !== 'idle') scheduleIdle();
 }
 
+// ADR-0007 ownership: the idle scheduler only fills idle-phase gaps — it
+// yields while TTS audio is speaking and while a presentation hold is live
+// (modeUntil armed by armPresentationHold); after the hold elapses the
+// phase/idle layer resumes and the tick re-fills the body.
 function scheduleIdle() {
     if (idleTimer) clearTimeout(idleTimer);
     idleTimer = setTimeout(function() {
@@ -792,13 +804,35 @@ function scheduleIdle() {
     }, 8000 + Math.random() * 6000);
 }
 
+// presentation-mapping 3.1 (ADR-0007 ownership): a qiuqiu-live2d-state
+// presentation apply arms the HoldMS window on the existing modeUntil
+// deadline, so scheduleIdle and the speaking-off mode reset cannot override
+// the held body while it is live. Idle-phase applies (phases.idle = the
+// affect idle tier, the client idle layer itself) arm nothing — the idle
+// scheduler only fills when no presentation is held and the phase is idle.
+function armPresentationHold(data) {
+    var motion = data.motion ? (motionAliases[data.motion] || data.motion) : '';
+    if (currentMode === 'idle' || motion === 'idle' || motion === 'idle_01' || motion === 'idle_02' || motion === 'idle_03') return;
+    var holdMS = typeof data.holdMs === 'number' && data.holdMs >= 0
+        ? Math.min(data.holdMs, 10000)
+        : PRESENTATION_DEFAULT_HOLD_MS;
+    presentationHoldUntil = Date.now() + holdMS;
+    if (presentationHoldUntil > modeUntil) modeUntil = presentationHoldUntil;
+}
+
 function setSpeaking(v) {
     speaking = v;
     document.body.dataset.speaking = v ? 'true' : 'false';
     if (v) {
         currentMode = 'speak';
-        modeUntil = Date.now() + 3000;
+        // The speak window never shortens a live presentation hold.
+        var speakUntil = Date.now() + 3000;
+        if (speakUntil > modeUntil) modeUntil = speakUntil;
+    } else if (Date.now() < presentationHoldUntil) {
+        // A presentation hold is live: the mode reset must not cut it short.
+        scheduleIdle();
     } else {
+        presentationHoldUntil = 0;
         currentMode = 'idle';
         modeUntil = 0;
         scheduleIdle();
@@ -825,6 +859,9 @@ window.addEventListener('message', function(event) {
         if (actionMap[data.motion]) performAction(data.motion);
         else playMotion(data.motion);
     }
+    // Arm the hold before the speaking update so the mode reset below cannot
+    // erase a hold this same apply just started (ADR-0007 ownership).
+    armPresentationHold(data);
     setSpeaking(data.speaking === true);
 });
 
