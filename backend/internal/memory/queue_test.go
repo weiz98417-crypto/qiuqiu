@@ -57,7 +57,7 @@ func newBacklogTable() *backlogTable {
 	return &backlogTable{failed: make(map[int64]int)}
 }
 
-func (b *backlogTable) Put(_ context.Context, entry BacklogEntry) (int64, error) {
+func (b *backlogTable) PutBacklog(_ context.Context, entry BacklogEntry) (int64, error) {
 	b.mu.Lock()
 	defer b.mu.Unlock()
 	b.nextID++

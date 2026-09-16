@@ -132,7 +132,10 @@ func (m *Memobase) Flush(ctx context.Context, userID string) error {
 // scored by relevance to the focus, importance (fixed: profiles are synthesis,
 // not raw moments) and recency, then cut to the top-k.
 func (m *Memobase) Recall(ctx context.Context, query Query) []Recall {
-	if !m.Configured() || m.Degraded() {
+	// Degraded adapters still probe: a successful exchange clears the flag
+	// (healing), a failing one re-marks it. Fail-fast here would lock the
+	// adapter out of recovery forever.
+	if !m.Configured() {
 		return nil
 	}
 	entries, err := m.profileEntries(ctx, query.UserID)

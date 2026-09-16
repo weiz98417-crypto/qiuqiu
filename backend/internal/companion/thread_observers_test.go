@@ -179,6 +179,11 @@ func TestRecoverOpenThreadsAnswersFromLedgerAndLeavesUnanswerableOpen(t *testing
 	if recovery.Trace.Reason != "open_thread_recovery" {
 		t.Fatalf("recovery reason = %q, want open_thread_recovery", recovery.Trace.Reason)
 	}
+	// main.go marks the thread addressed only after the recovery reply lands
+	// (post-delivery); the beat itself returns the recovery for delivery.
+	if err := fake.MarkThreadAddressed(ctx, recoveries[0].ThreadID); err != nil {
+		t.Fatalf("MarkThreadAddressed: %v", err)
+	}
 	// Threads without a grounded answer stay open for a later beat.
 	open, err := fake.OpenThreads(ctx, "user-1")
 	if err != nil || len(open) != 1 || open[0].Content != "裁判的判罚依据是什么？" {

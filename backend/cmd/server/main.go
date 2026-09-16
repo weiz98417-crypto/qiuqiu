@@ -1237,7 +1237,7 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 	expireThreads := func() {
 		expireCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
-		expired, err := memoryQueue.ExpireStaleThreads(expireCtx, time.Now().UTC())
+		expired, err := memoryQueue.ExpireStaleThreads(expireCtx, time.Now().UTC(), memory.DefaultThreadTTL)
 		if err != nil {
 			if !errors.Is(err, memory.ErrNotSupported) {
 				log.Printf("memory thread expiry error: %v", err)

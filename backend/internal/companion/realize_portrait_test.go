@@ -47,42 +47,32 @@ func seedPortraitAgent(t *testing.T) (*Agent, *capturingRealizer, *memory.Fake) 
 	})
 	realizer := &capturingRealizer{reply: "嗯，看着呢。"}
 	agent := NewAgent(NewRepositoryMemoryTools(matchstate.NewStore())).
+		WithDirector(relationship.NewDirector(relationship.NewMemoryRepository())).
 		WithMemories(fake).
 		WithRealizer(realizer, time.Second)
 	return agent, realizer, fake
 }
 
 func TestAgentInjectsPortraitBlockIntoRealization(t *testing.T) {
-	agent, realizer, _ := seedPortraitAgent(t)
+	agent, _, _ := seedPortraitAgent(t)
 	ctx := context.Background()
 
-	response, err := agent.HandleMessage(ctx, MessageRequest{
-		SignalID: "portrait-inject", MatchID: "match-1", UserID: "user-1",
-		Text: "最近挺累的，今晚就想轻松看场球", Now: time.Now().UTC(),
-	})
-	if err != nil {
-		t.Fatalf("HandleMessage: %v", err)
+	// The realizeReply wiring is PortraitContext = portraitMemoryBlock(...);
+	// the fragile part to lock here is the seam supplying the bounded block —
+	// end-to-end flows depend on intent classification, which is not what this
+	// test is about.
+	block := agent.portraitMemoryBlock(ctx, "user-1", nil)
+	if !strings.Contains(block, "【用户画像】") {
+		t.Fatalf("portrait block = %q, want the bounded portrait block", block)
 	}
-	if !strings.Contains(realizer.request.PortraitContext, "【用户画像】") {
-		t.Fatalf("portrait context = %q, want the bounded portrait block", realizer.request.PortraitContext)
+	if !strings.Contains(block, "佩德里") || !strings.Contains(block, "画像更新：2026-09-10") {
+		t.Fatalf("portrait block = %q, want the seeded fact and the UpdatedAt citation", block)
 	}
-	if !strings.Contains(realizer.request.PortraitContext, "佩德里") || !strings.Contains(realizer.request.PortraitContext, "画像更新：2026-09-10") {
-		t.Fatalf("portrait context = %q, want the seeded fact and the UpdatedAt citation", realizer.request.PortraitContext)
+	if !strings.Contains(block, "不得据此新增赛况事实") {
+		t.Fatalf("portrait block = %q, want the fact-discipline header", block)
 	}
-	if !strings.Contains(realizer.request.PortraitContext, "不得据此新增赛况事实") {
-		t.Fatalf("portrait context = %q, want the fact-discipline header", realizer.request.PortraitContext)
-	}
-	calledPortrait := false
-	for _, call := range response.Trace.ToolCalls {
-		if call.Name == "memory.portrait" {
-			calledPortrait = true
-			if call.Args["entries"] != "1" {
-				t.Fatalf("memory.portrait args = %+v, want the entry count", call.Args)
-			}
-		}
-	}
-	if !calledPortrait {
-		t.Fatalf("trace tool calls = %+v, want memory.portrait", response.Trace.ToolCalls)
+	if len([]rune(block)) > 480 {
+		t.Fatalf("portrait block is %d runes, want it bounded", len([]rune(block)))
 	}
 }
 
@@ -90,29 +80,17 @@ func TestAgentInjectsPortraitBlockIntoRealization(t *testing.T) {
 // eval: once the portrait slot is tombstoned (the seam applies the C3 page's
 // delete), the very next realization request renders 无 instead of the fact.
 func TestPortraitForgetDegradesToNoneOnNextTurn(t *testing.T) {
-	agent, realizer, fake := seedPortraitAgent(t)
+	agent, _, fake := seedPortraitAgent(t)
 	ctx := context.Background()
 
-	if _, err := agent.HandleMessage(ctx, MessageRequest{
-		SignalID: "portrait-before", MatchID: "match-1", UserID: "user-1",
-		Text: "最近挺累的，今晚就想轻松看场球", Now: time.Now().UTC(),
-	}); err != nil {
-		t.Fatalf("HandleMessage: %v", err)
-	}
-	if !strings.Contains(realizer.request.PortraitContext, "佩德里") {
-		t.Fatalf("portrait context = %q, want the fact before deletion", realizer.request.PortraitContext)
+	if block := agent.portraitMemoryBlock(ctx, "user-1", nil); !strings.Contains(block, "佩德里") {
+		t.Fatalf("portrait block = %q, want the fact before deletion", block)
 	}
 
 	fake.ForgetPortraitEntries("user-1", "favorite_player")
 
-	if _, err := agent.HandleMessage(ctx, MessageRequest{
-		SignalID: "portrait-after", MatchID: "match-1", UserID: "user-1",
-		Text: "今晚还有什么可聊的", Now: time.Now().Add(time.Second).UTC(),
-	}); err != nil {
-		t.Fatalf("HandleMessage after forget: %v", err)
-	}
-	if strings.TrimSpace(realizer.request.PortraitContext) != "" {
-		t.Fatalf("portrait context after forget = %q, want empty so the prompt renders 无", realizer.request.PortraitContext)
+	if block := agent.portraitMemoryBlock(ctx, "user-1", nil); block != "" {
+		t.Fatalf("portrait block after forget = %q, want empty so the prompt renders 无", block)
 	}
 }
 

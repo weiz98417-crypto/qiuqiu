@@ -142,7 +142,10 @@ func TestRenderPortraitBlockIsBoundedAndLabelled(t *testing.T) {
 	if RenderPortraitBlock(nil, time.Time{}) != "" {
 		t.Fatal("empty profile must render an empty block")
 	}
-	if !strings.Contains(block, "画像更新：2026-09-02") {
-		t.Fatal("portrait block should cite the profile UpdatedAt when given")
+	// The zero-time render above omits the stamp by design; a timestamped
+	// render must cite it.
+	stamped := RenderPortraitBlock(entries[:1], time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC))
+	if !strings.Contains(stamped, "画像更新：2026-09-02") {
+		t.Fatalf("stamped portrait block = %q, want the UpdatedAt citation", stamped)
 	}
 }

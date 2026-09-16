@@ -59,6 +59,14 @@ func PortraitSubTopicLabel(subTopic string) string {
 func RenderPortraitBlock(entries []PortraitEntry, updatedAt time.Time) string {
 	lines := make([]string, 0, len(entries)+1)
 	total := len([]rune(portraitHeader))
+	// Reserve the UpdatedAt stamp's budget up front so entry lines can never
+	// crowd the citation out of the block.
+	stamp := ""
+	stampBudget := 0
+	if !updatedAt.IsZero() {
+		stamp = "画像更新：" + updatedAt.UTC().Format("2006-01-02")
+		stampBudget = len([]rune(stamp)) + 1
+	}
 	for _, entry := range entries {
 		if len(lines) >= maxPortraitEntries || total >= maxPortraitRunes {
 			break
@@ -68,7 +76,7 @@ func RenderPortraitBlock(entries []PortraitEntry, updatedAt time.Time) string {
 			continue
 		}
 		line := fmt.Sprintf("- %s/%s：%s", PortraitTopicLabel(entry.Topic), entry.SubTopic, content)
-		if overflow := total + len([]rune(line)); overflow > maxPortraitRunes {
+		if overflow := total + len([]rune(line)) + stampBudget; overflow > maxPortraitRunes {
 			break
 		}
 		total += len([]rune(line))
@@ -77,11 +85,8 @@ func RenderPortraitBlock(entries []PortraitEntry, updatedAt time.Time) string {
 	if len(lines) == 0 {
 		return ""
 	}
-	if !updatedAt.IsZero() {
-		stamp := "画像更新：" + updatedAt.UTC().Format("2006-01-02")
-		if overflow := total + 1 + len([]rune(stamp)); overflow <= maxPortraitRunes {
-			lines = append(lines, stamp)
-		}
+	if stamp != "" {
+		lines = append(lines, stamp)
 	}
 	return portraitHeader + strings.Join(lines, "\n")
 }
@@ -104,10 +109,12 @@ func RenderRecallBlock(recalls []Recall) string {
 			continue
 		}
 		line := fmt.Sprintf("- %s（%s）", content, recall.Source)
-		if overflow := total + len([]rune(line)); overflow > maxRecallBlockRunes {
+		// +1 accounts for the newline join so the block stays within the
+		// budget as rendered, not just as summed line lengths.
+		if overflow := total + len([]rune(line)) + 1; overflow > maxRecallBlockRunes {
 			break
 		}
-		total += len([]rune(line))
+		total += len([]rune(line)) + 1
 		builder.WriteString("\n")
 		builder.WriteString(line)
 	}

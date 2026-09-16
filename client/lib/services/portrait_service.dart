@@ -72,6 +72,8 @@ class PortraitData {
   }
 
   bool get isEmpty => entries.isEmpty;
+
+  bool get isNotEmpty => entries.isNotEmpty;
 }
 
 class PortraitException implements Exception {

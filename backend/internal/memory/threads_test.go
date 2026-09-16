@@ -105,7 +105,7 @@ func TestQueueFrontsLocalThreadStore(t *testing.T) {
 	}
 	// A sweep far in the future ages the fresh thread out through the same
 	// TTL path the idle beat uses.
-	expired, err := queue.ExpireStaleThreads(ctx, time.Now().UTC().Add(2*DefaultThreadTTL))
+	expired, err := queue.ExpireStaleThreads(ctx, time.Now().UTC().Add(2*DefaultThreadTTL), DefaultThreadTTL)
 	if err != nil {
 		t.Fatalf("Queue ExpireStaleThreads: %v", err)
 	}

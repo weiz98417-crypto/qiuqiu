@@ -77,7 +77,7 @@ func (r *PostgresRecords) RecordReflection(ctx context.Context, entry Reflection
 	return err
 }
 
-func (r *PostgresRecords) Put(ctx context.Context, entry BacklogEntry) (int64, error) {
+func (r *PostgresRecords) PutBacklog(ctx context.Context, entry BacklogEntry) (int64, error) {
 	if r == nil || r.pool == nil {
 		return 0, ErrUnavailable
 	}

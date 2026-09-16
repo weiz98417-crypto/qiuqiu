@@ -73,8 +73,10 @@ type BacklogEntry struct {
 }
 
 // BacklogStore is the local table Memobase outages drain into.
+// The method is PutBacklog (not Put) so one concrete type can implement both
+// BacklogStore and PortraitOverlayStore, whose Put has a different signature.
 type BacklogStore interface {
-	Put(ctx context.Context, entry BacklogEntry) (int64, error)
+	PutBacklog(ctx context.Context, entry BacklogEntry) (int64, error)
 	Due(ctx context.Context, limit int) ([]BacklogEntry, error)
 	MarkReplayed(ctx context.Context, id int64) error
 	// MarkFailed stores the incremented attempt count; the store flips the
@@ -445,13 +447,11 @@ func (q *Queue) syncProfileEntry(ctx context.Context, userID, entryID string, mu
 	if entryID == "" || q.adapter == nil || !q.adapter.Configured() {
 		return
 	}
-	mutator, ok := q.adapter.(ProfileEntryMutator)
-	if !ok {
-		return
-	}
 	syncCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
 	defer cancel()
-	if err := mutate(syncCtx, mutator); err != nil {
+	// The Memobase adapter is the concrete ProfileEntryMutator implementor;
+	// a type assertion here would not even compile against the concrete type.
+	if err := mutate(syncCtx, q.adapter); err != nil {
 		log.Printf("memory: sync portrait entry %q for user %q: %v", entryID, userID, err)
 	}
 }
@@ -495,11 +495,14 @@ func (q *Queue) MarkThreadAddressed(ctx context.Context, threadID string) error 
 
 // ExpireStaleThreads ages out open threads past the TTL and returns the
 // expired rows for the audit trail.
-func (q *Queue) ExpireStaleThreads(ctx context.Context, now time.Time) ([]Thread, error) {
+func (q *Queue) ExpireStaleThreads(ctx context.Context, now time.Time, ttl time.Duration) ([]Thread, error) {
 	if q == nil || q.threads == nil {
 		return nil, ErrNotSupported
 	}
-	return q.threads.ExpireStaleThreads(ctx, now, DefaultThreadTTL)
+	if ttl <= 0 {
+		ttl = DefaultThreadTTL
+	}
+	return q.threads.ExpireStaleThreads(ctx, now, ttl)
 }
 
 // Run drains the queue until the context is canceled (single goroutine).
@@ -576,7 +579,7 @@ func (q *Queue) backlogMoment(ctx context.Context, moment Moment, cause error) {
 		q.recordAudit(ctx, audit)
 		return
 	}
-	if _, err := q.backlog.Put(ctx, BacklogEntry{UserID: moment.UserID, Payload: payload}); err != nil {
+	if _, err := q.backlog.PutBacklog(ctx, BacklogEntry{UserID: moment.UserID, Payload: payload}); err != nil {
 		audit.ReasonCode = ReasonBacklogPutFailed
 		audit.Detail = err.Error()
 	}

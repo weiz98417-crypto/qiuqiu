@@ -61,7 +61,8 @@ class IdleTierPicker {
   /// Returns the idle motion to play when a re-pick is due, otherwise null.
   String? maybeRepick(DateTime now) {
     final last = _lastPick;
-    if (last != null && now.difference(last) < repickInterval) return null;
+    final first = last == null;
+    if (!first && now.difference(last) < repickInterval) return null;
     _lastPick = now;
     final valence = _valence ?? 0;
     final arousal = _arousal ?? 0.2;
@@ -70,7 +71,12 @@ class IdleTierPicker {
       final lastSwitch = _lastSwitch;
       final lockExpired =
           lastSwitch == null || now.difference(lastSwitch) >= switchLock;
-      if (lockExpired || _crossesThresholdByMargin(desired, valence, arousal)) {
+      // A fresh idle session never lands on energetic: the baseline pick is
+      // calm or deflated (starting hyped reads as a glitch), and energetic is
+      // earned after the baseline has been established.
+      final baselinePick = first && desired == IdleTier.energetic;
+      if (!baselinePick &&
+          (lockExpired || _crossesThresholdByMargin(desired, valence, arousal))) {
         _tier = desired;
         _lastSwitch = now;
       }
