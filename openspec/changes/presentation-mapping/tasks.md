@@ -7,8 +7,9 @@
 - [ ] 1.3 Give the 4 mute acts rows: ActReact quadrant-colored, ActAsk thinking/think, ActRepair sad/agree (−0.3 energy), ActAcknowledge chat/speak.
 - [ ] 1.4 Re-bind `thinking` → expression3 (provisional); add non-empty-binding contract check (never bind a non-neutral name to the empty expression file).
 - [ ] 1.5 Fix the discarded hello: plain `session_opened` path delivers the computed presentation (main.go:946 `_, err :=` site).
-- [ ] 1.6 Inventory-completeness contract test: every JSON key routed by ≥1 row or client-owned; every row resolvable in JSON + model asset.
+- [ ] 1.6 Inventory-completeness contract test: every JSON key routed by ≥1 row or client-owned; every row resolvable in JSON + model asset; **and the exact-set assertion both ways — the JSON expression/motion key sets must equal the client whitelist sets (an extra key like a motion name in the expression table is a failure)**.
 - [ ] 1.7 Update the two existing companion vocabulary tests for the new table shapes.
+- [ ] 1.8 Behavioral test (design contract-test #4): IntentUnknown turn ⇒ confused/listening one-shot reaction; ActDisagree strong cue (personal_insult_rejected) ⇒ angry/complain.
 
 ## 2. C1 · Client phase table
 

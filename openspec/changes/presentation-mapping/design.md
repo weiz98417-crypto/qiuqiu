@@ -16,9 +16,9 @@
 ```json
 {
   "expressions": {
-    "focus": 0, "idle": 0, "listening": 0, "confused": 0,
+    "focus": 0, "idle": 0, "listening": 0,
     "excited": 1, "thinking": 3, "chat": 3, "tease": 3, "happy": 3,
-    "nervous": 4, "sad": 4, "complain": 4, "surprised": 5, "angry": 6
+    "nervous": 4, "sad": 4, "confused": 5, "surprised": 5, "angry": 6
   },
   "motions": {
     "hello": {"group": "hello", "variant": 0},
@@ -67,6 +67,10 @@
   "delivery": { "interrupted": "confused/listening" }
 }
 ```
+
+Act-key vocabulary (closed set): `any` (act fires regardless of mood), `positive`/`negative`/`neutral` (affect valence classes), `mild`/`strong` (only where a policy cue defines intensity — currently ActDisagree: mild = stable_opinion_disagreement, strong = personal_insult_rejected). Review-reviewed provisional bindings pending the device naming pass: `thinking`→3, `confused`/`surprised`→5, `angry`→6 (expression5–7 contents unknown; re-binding is a one-line JSON edit).
+
+Phase motions apply **before** a reply is delivered (understanding/listening); act/event motions arrive **with** the reply and hold — the two never fire in the same instant.
 
 Notes: expression indices are provisional (thinking→3 pending the device naming pass); `variant` selects within multi-motion groups; backend continues to emit group names for single-motion groups and `celebrate` (client variant-picker already randomizes).
 
