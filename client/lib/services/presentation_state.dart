@@ -194,7 +194,7 @@ class CompanionPresentation {
     final rawExpression = presentation['expression'] as String? ?? '';
     final rawMotion = presentation['motion'] as String? ?? '';
     final expression = normalizeExpression(rawExpression);
-    final motion = _motionAliases[rawMotion] ?? rawMotion;
+    final motion = motionAliases[rawMotion] ?? rawMotion;
     final voiceStyle = presentation['voiceStyle'] as String? ?? 'natural';
     final returnMode =
         presentation['returnMode'] as String? ?? 'decay_to_focus';

@@ -33,6 +33,8 @@
 - [x] 4.3 Wire talkativeness: parse in `main.go:861-875`, map 3 tiers → planner frequency + `InitiativeMode`; delete the drift (backend now reads what the client sends).
 - [x] 4.4 Hard boundary tests: no proactive turn without citation; no out-of-session side effects; quiet tier ⇒ minimal proactive volume.
 - [x] 4.5 Evals: "隔轮补答" journey (unanswered question recovered later); 3-tier frequency tests.
+- [ ] 4.6 Follow-up (review): in-turn thread recovery marks the thread addressed before delivery lands — hand thread.ID to the delivery-success path or re-open on failure (post-match beat already does it right).
+- [ ] 4.7 Follow-up (review): runReflectionBeat post_match attributes one arbitrary match id to every active user in the reflection audit — record the per-match user set instead.
 
 ## 5. Docs & bookkeeping
 

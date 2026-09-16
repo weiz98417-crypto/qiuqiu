@@ -466,6 +466,16 @@ func (q *Queue) Threads(ctx context.Context, userID string) ([]Thread, error) {
 	return q.adapter.Threads(ctx, userID)
 }
 
+// OpenThreads satisfies ThreadStore alongside Threads: without a local store
+// the queue has nowhere to list threads from, so it degrades to
+// ErrNotSupported (the Memobase adapter cannot list threads either).
+func (q *Queue) OpenThreads(ctx context.Context, userID string) ([]Thread, error) {
+	if q == nil || q.threads == nil {
+		return nil, ErrNotSupported
+	}
+	return q.threads.OpenThreads(ctx, userID)
+}
+
 // AppendThread inserts one open-thread candidate via the local store; the
 // write is best-effort on the caller side and never blocks a turn.
 func (q *Queue) AppendThread(ctx context.Context, thread Thread) (Thread, error) {
@@ -521,7 +531,7 @@ func (q *Queue) process(ctx context.Context, item enqueueItem) {
 		if ctx.Err() != nil {
 			return
 		}
-		if err := q.adapter.insertMoment(ctx, moment); err != nil {
+		if err := q.adapter.Observe(ctx, moment); err != nil {
 			lastErr = err
 			continue
 		}
