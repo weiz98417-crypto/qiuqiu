@@ -2,19 +2,29 @@
   "id": "57-evals-golden-set",
   "title": "Evals 评测、黄金集与自动回归（事实源）",
   "source_chapter": "docs/球球全套资料/5.AI Coding工程实践/57-Evals评测、黄金集与自动回归.md",
-  "status_summary": { "implemented": 9, "partial": 0, "planned": 0, "concept": 4 },
+  "status_summary": { "implemented": 10, "partial": 0, "planned": 0, "concept": 4 },
   "claims": [
     {
-      "claim": "黄金集是 13 个版本化 JSON 用例，分三个套件：baseline 3 个、boundary 6 个、regression 4 个",
+      "claim": "黄金集是 15 个版本化 JSON 用例，分三个套件：baseline 3 个、boundary 6 个、regression 6 个",
       "status": "implemented-at",
       "anchors": [
         { "path": "evals/cases/baseline", "lines": "dir" },
         { "path": "evals/cases/boundary", "lines": "dir" },
         { "path": "evals/cases/regression", "lines": "dir" },
-        { "path": "evals/cases/boundary/correction-revokes-old-facts.json", "lines": "1-7" }
+        { "path": "evals/cases/regression/open-thread-recovery.json", "lines": "1-40" }
       ],
       "evidence": "eval",
-      "note": "baseline：goal-assist-follow-up、player-timeline-and-smalltalk、voice-asr-intent；boundary 含 ASR 同音、命令注入、未证实主张、用户主张冲突；regression 含指代吹捧无证据、导播手动主动线、润色锚点不符、供应商回退。"
+      "note": "2026-09-17 起 regression 新增 open-thread-recovery（穆西亚拉隔轮补答）与 portrait-consistency（画像注入/遗忘），总数 13→15。baseline：goal-assist-follow-up、player-timeline-and-smalltalk、voice-asr-intent；boundary 含 ASR 同音、命令注入、未证实主张、用户主张冲突；regression 另含指代吹捧无证据、导播手动主动线、润色锚点不符、供应商回退。"
+    },
+    {
+      "claim": "评测 harness 支持 agent-depth 三项扩展：afterTurn 延迟事件（按回合 id 定位跨回合注入）、portrait 种子与 forgetPortrait 步骤、memoryMustMention/memoryMustNotMention 对捕获的装配请求判定记忆注入与遗忘",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "backend/internal/evals/types.go", "lines": "52,77,98-99" },
+        { "path": "backend/internal/evals/load.go", "lines": "88,107" }
+      ],
+      "evidence": "code",
+      "note": "为 open-thread-recovery 与 portrait-consistency 两个新用例服务；runner_test 增加通过/失败极性测试。"
     },
     {
       "claim": "用例 schema 强制版本号 \"2026-07\"、suite 枚举与 id 命名规则 ^(baseline|boundary|regression)\\.[a-z0-9-]+$",

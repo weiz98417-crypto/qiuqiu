@@ -3,7 +3,7 @@ id: 57-evals-golden-set
 title: Evals 评测、黄金集与自动回归（事实源）
 source_chapter: docs/球球全套资料/5.AI Coding工程实践/57-Evals评测、黄金集与自动回归.md
 status_summary:
-  implemented: 9
+  implemented: 10
   partial: 0
   planned: 0
   concept: 4
@@ -11,11 +11,11 @@ status_summary:
 
 # Evals 评测、黄金集与自动回归（事实源）
 
-评测体系的真实形态是：13 个版本化 JSON 黄金用例、一个 Go 确定性判定器、一个 84 行的 Node 分层运行器和一条 GitHub Actions 门。旧章设想的"模型裁判、四变形、P0/P1 豁免"都没有实现，本篇只讲实现了的部分怎么咬合。
+评测体系的真实形态是：15 个版本化 JSON 黄金用例、一个 Go 确定性判定器、一个 84 行的 Node 分层运行器和一条 GitHub Actions 门。旧章设想的"模型裁判、四变形、P0/P1 豁免"都没有实现，本篇只讲实现了的部分怎么咬合。
 
 ## 系统实际怎么工作
 
-**黄金集。** `evals/cases` 下三套件共 13 个用例：baseline 3 个（进球助攻跟进、球员时间线与闲聊、语音 ASR 意图）、boundary 6 个（ASR 同音、VAR 更正撤销旧事实、非法事件拒绝、未知事实与命令注入、用户主张冲突、用户主张未证实）、regression 4 个（指代吹捧无证据、导播手动主动线、润色锚点不符、润色供应商回退）。schema 强制 `version: "2026-07"`、suite 枚举与 `^(baseline|boundary|regression)\.[a-z0-9-]+$` 的 id 规则（evals/schema/eval-case.schema.json:5-17）。断言长在用例里：`turns[].expect` 的 mustMention/mustNotMention/requiredTools/forbiddenTools 与 `final` 终态（evals/cases/boundary/correction-revokes-old-facts.json:41-55）。
+**黄金集。** `evals/cases` 下三套件共 15 个用例：baseline 3 个（进球助攻跟进、球员时间线与闲聊、语音 ASR 意图）、boundary 6 个（ASR 同音、VAR 更正撤销旧事实、非法事件拒绝、未知事实与命令注入、用户主张冲突、用户主张未证实）、regression 6 个（指代吹捧无证据、导播手动主动线、润色锚点不符、润色供应商回退，agent-depth 新增 **open-thread-recovery**——穆西亚拉进球落在两回合之间、第二回合闲聊里必须补答，与 **portrait-consistency**——画像事实自然提及、forget 后下一回合必须消失）。schema 强制 `version: "2026-07"`、suite 枚举与 `^(baseline|boundary|regression)\.[a-z0-9-]+$` 的 id 规则（evals/schema/eval-case.schema.json:5-17）。断言长在用例里：`turns[].expect` 的 mustMention/mustNotMention/requiredTools/forbiddenTools 与 `final` 终态（evals/cases/boundary/correction-revokes-old-facts.json:41-55）。agent-depth 为新用例扩展了 harness：`afterTurn` 延迟事件（types.go:52，按回合 id 定位跨回合注入）、portrait 种子与 `forgetPortrait` 步骤（types.go:77）、`memoryMustMention/memoryMustNotMention` 对捕获装配请求的判定（types.go:98-99；load.go:88,107）。
 
 **判定与记分。** Go 侧 `backend/internal/evals` 的 `gradeTextAndTrace` 逐项检查四类断言（runner.go:194-218），另有语音、主动回合、轨迹合同专用判定（runner.go:130-256）。记分卡输出通过率与 factSafetyRate/trajectoryRate/traceCompleteRate 三率（types.go:104-117，summarize 在 runner.go:303-327）；`backend/cmd/evals` 加载用例、按 -suite 过滤、运行并写 JSON 报告，任何失败 exit 1（cmd/evals/main.go:15-38）。离线运行时 LLM 由 scriptedRealizer 脚本替身代替（runner.go:340）。
 
@@ -42,8 +42,9 @@ status_summary:
 
 | # | 主张 | status | 锚点 |
 | --- | --- | --- | --- |
-| 1 | 13 个黄金用例，3/6/4 三套件 | implemented-at | evals/cases/baseline; evals/cases/boundary; evals/cases/regression; correction-revokes-old-facts.json:1-7 |
+| 1 | 15 个黄金用例，3/6/6 三套件 | implemented-at | evals/cases/baseline; evals/cases/boundary; evals/cases/regression; regression/open-thread-recovery.json; regression/portrait-consistency.json |
 | 2 | schema 强制 2026-07 版本与 id 规则 | implemented-at | evals/schema/eval-case.schema.json:5-17 |
+| 2b | harness：afterTurn/forgetPortrait/记忆断言 | implemented-at | backend/internal/evals/types.go:52,77,98-99; load.go:88,107 |
 | 3 | 旧 §3.2 用例字段与真实 schema 不同 | concept | 旧章:121-148; eval-case.schema.json:5-17; correction-revokes-old-facts.json:41-55 |
 | 4 | 四类确定性断言判定器 | implemented-at | backend/internal/evals/runner.go:194-218; backend/internal/evals/journey_runner.go:10 |
 | 5 | 模型裁判/语义判定/人工复核不存在 | concept | runner.go:340; 旧章:53,199-211 |

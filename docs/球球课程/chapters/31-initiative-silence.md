@@ -2,7 +2,7 @@
 id: 31-initiative-silence
 title: 主动发言、主动沉默与话痨控制
 source_chapter: docs/球球全套资料/4.产品设计/31-主动发言、主动沉默与话痨控制设计.md
-status_summary: { implemented: 11, partial: 1, planned: 0, concept: 2 }
+status_summary: { implemented: 12, partial: 0, planned: 0, concept: 2 }
 ---
 
 # 主动发言、主动沉默与话痨控制
@@ -11,7 +11,7 @@ status_summary: { implemented: 11, partial: 1, planned: 0, concept: 2 }
 
 ## 系统实际怎么工作
 
-**资格门只有两个条件。** 一个公开比赛事件能否触发主动发言，取决于 `proactiveGate.Allow`：比赛自动化策略的 Mode 为 active，且事件类型在策略的 EventTypes 白名单里（implemented-at backend/internal/conversation/proactive_gate.go:15-17）。main.go 在事件流上取策略、判定紧急度后过门，再把结果作为 OutputAllowed 传给 companion agent（implemented-at backend/cmd/server/main.go:568-586）。
+**资格门有四个条件。** 一个公开比赛事件能否触发主动发言，取决于 `proactiveGate.Allow`：比赛自动化策略的 Mode 为 active；事件类型在策略的 EventTypes 白名单里；**必须携带非空引用**——`open_thread:<id>`（Open Thread 台账）或 `shared_moment:<eventId>`（共同瞬间），无引用不出手（implemented-at backend/internal/conversation/proactive_gate.go:31-50）；用户话痨档位（quiet 屏蔽非关键主动，只收不放）。引用码随 trace `response.emit_companion_reply` 参数、`Decision.ReasonCodes`（`proactive_citation:<code>`）与 WS presentation 消息的 `citation` 字段三处可审计。main.go 在事件流上取策略、判定紧急度后过门，再把结果作为 OutputAllowed 传给 companion agent（implemented-at backend/cmd/server/main.go:568-586）。
 
 **事件标签覆盖。** 事件带 `proactive=quiet` 标签直接不允许；带 `proactive=manual` 标签走 AllowManual（恒真），供导播手写话术通道使用（implemented-at backend/cmd/server/main.go:571-576；proactive_gate.go:19-21）。
 
@@ -34,19 +34,20 @@ status_summary: { implemented: 11, partial: 1, planned: 0, concept: 2 }
 ## 与旧设计的差异
 
 - **三层发言预算是虚构。** 旧文档设计了「单个事件预算/时段预算/整场预算」三层配额（旧稿 §6.1-6.3）。现实中不存在任何配额计数器：话痨控制只有「距上次普通发言的冷却时间」（implemented-at backend/internal/relationship/types.go:222-226；policy.go:79-92）。时段差异、整场上限、「预算接近用尽默认沉默」均无实现（concept）。
-- **四类主动触发+单项许可是虚构。** 旧文档把主动拆成安全状态/用户请求/已许可节奏/有限回顾四类，每类要求用户单项许可（旧稿 §1.1、§2、§5）。现实没有用户主动许可的分类体系：资格门 = 操作模式 + 事件类型白名单（implemented-at backend/internal/conversation/proactive_gate.go:15-17），再加事件标签 quiet/manual 覆盖（implemented-at backend/cmd/server/main.go:571-576）。
+- **四类主动触发+单项许可是虚构。** 旧文档把主动拆成安全状态/用户请求/已许可节奏/有限回顾四类，每类要求用户单项许可（旧稿 §1.1、§2、§5）。现实没有用户主动许可的分类体系：资格门 = 操作模式 + 事件类型白名单 + 引用码 + 话痨档位（implemented-at backend/internal/conversation/proactive_gate.go:31-50），再加事件标签 quiet/manual 覆盖（implemented-at backend/cmd/server/main.go:571-576）。
 - **冷却期的范围比旧文档窄。** 旧文档要求「类别级冷却、关闭后不得换通道续打」（旧稿 §6.4）。现实冷却是全场单一时间戳，不分类别也无跨通道概念（implemented-at backend/internal/relationship/policy.go:79-85）。
 - **用户安静线索已实现且更强。** 旧文档要求「先别说」立即覆盖一切；现实安静线索不仅让策略沉默，还会撤回已起草的回复并同步压制表演层（implemented-at backend/internal/relationship/policy.go:117-119；agent.go:1057-1060；affect.go:80-87）——这一点实现比旧文档的具体机制更彻底。
-- **「话痨程度」设置是半成品。** 客户端提供安静/刚好/热闹三档（implemented-at client/lib/screens/settings_screen.dart:93-108），并随每条 user_speech 上送（implemented-at client/lib/screens/match_screen.dart:568），但后端 user_speech 处理只读 text/audio/userId/signalId/timezone（implemented-at backend/cmd/server/main.go:861-875），InitiativeMode 恒为默认 natural（implemented-at backend/internal/relationship/policy.go:17-19）——用户设置尚未接入主动性控制，partial。
+- **「话痨程度」设置已完成接线（2026-09-17）。** 审计时它还是半成品——客户端三档随 user_speech 上送但后端不读（implemented-at client/lib/screens/settings_screen.dart:93-108）。agent-depth 修复：后端解析并按用户持久化到 user_preferences 表（implemented-at backend/cmd/server/main.go:504-509, 682-705；backend/migrations/040_open_threads.sql:9-14），三档映射主动频率——quiet 屏蔽非关键主动、normal 保持 90s 基线、active 冷却 ×0.6=54s（implemented-at backend/internal/relationship/talkativeness.go:1-60）；重连经 session_opened 恢复。quiet 只收不放，L0 安全。
 - **主动回合的工程保障比旧文档细。** 旧文档没有涉及：去重 key+TTL、紧急度插队、播放超时回收、用户抢占，这些在 scheduler 里全部实现（implemented-at backend/internal/conversation/scheduler.go:186-262, 198-206）。
 
 ## 主张-锚点表
 
 | 主张 | status | 锚点 | 证据 |
 | --- | --- | --- | --- |
-| 资格门 = 操作模式 + 事件白名单 | implemented-at | proactive_gate.go:15-17；main.go:568-586 | code |
+| 资格门 = 模式 + 白名单 + 引用码 + 话痨档位 | implemented-at | proactive_gate.go:31-50；main.go:568-586 | code |
 | proactive=quiet/manual 事件标签覆盖 | implemented-at | main.go:571-576；proactive_gate.go:19-21 | code |
 | 冷却是时间戳不是配额（90s 默认） | implemented-at | types.go:222-226；policy.go:79-92；main.go:584 | code |
+| 话痨三档接入主动性控制（漂移已修复） | implemented-at | main.go:504-509, 682-705；talkativeness.go；migrations/040:9-14 | code |
 | 用户回合抢占主动回合 | implemented-at | scheduler.go:198-206；main.go:632 | code |
 | 主动去重 key+TTL、过期丢弃 | implemented-at | scheduler.go:186-197, 139-147 | code |
 | critical 主动回合插队 | implemented-at | scheduler.go:207-218；main.go:2253-2260 | code |
@@ -54,7 +55,6 @@ status_summary: { implemented: 11, partial: 1, planned: 0, concept: 2 }
 | 安静线索→ActSilence+表演降档 | implemented-at | policy.go:117-119, 204-206；affect.go:80-87 | code |
 | 沉默撤回已起草回复 | implemented-at | policy.go:354-357；agent.go:1057-1060 | code |
 | 修复行为含 reduce_initiative | implemented-at | policy.go:494-517, 398-404 | code |
-| 话痨程度设置未接入后端 | partial | settings_screen.dart:93-108；match_screen.dart:568；main.go:861-875；policy.go:17-19 | code |
 | 三层发言预算/类别级冷却 | concept | 旧稿 §6；types.go:222-226 | doc |
 | 四类主动触发+单项许可分类 | concept | 旧稿 §1.1/§2/§5；proactive_gate.go:15-21 | doc |
 | 手写主动话术逐字播出 | implemented-at | evals/cases/regression/manual-proactive-line.json；main.go:574-576 | eval |

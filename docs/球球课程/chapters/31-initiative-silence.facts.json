@@ -2,17 +2,17 @@
   "id": "31-initiative-silence",
   "title": "主动发言、主动沉默与话痨控制",
   "source_chapter": "docs/球球全套资料/4.产品设计/31-主动发言、主动沉默与话痨控制设计.md",
-  "status_summary": { "implemented": 11, "partial": 1, "planned": 0, "concept": 2 },
+  "status_summary": { "implemented": 12, "partial": 0, "planned": 0, "concept": 2 },
   "claims": [
     {
-      "claim": "主动发言资格门只有两个条件：比赛自动化模式为 active 且事件类型在白名单内；不存在旧文档描述的按用户分项许可的分类体系",
+      "claim": "主动发言资格门有四个条件：比赛自动化模式为 active、事件类型在白名单内、非空引用（open_thread:<id> 或 shared_moment:<eventId>，无引用不出手）、话痨档位（quiet 屏蔽非关键主动，只收不放）；agent-depth 起引用码随 trace/ReasonCodes/WS presentation 三处可审计",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/internal/conversation/proactive_gate.go", "lines": "15-17" },
+        { "path": "backend/internal/conversation/proactive_gate.go", "lines": "31-50" },
         { "path": "backend/cmd/server/main.go", "lines": "568-586" }
       ],
       "evidence": "code",
-      "note": "Allow 签名里另有两个被忽略的参数（critical/now），说明曾计划扩展但未实现"
+      "note": "C2 之前 Allow 曾忽略 critical/now 参数并只查模式+白名单；agent-depth 补齐引用与档位（ADR 见 openspec/changes/agent-depth）"
     },
     {
       "claim": "事件标签可覆盖资格门：事件带 proactive=quiet 标签强制沉默，带 proactive=manual 标签走 AllowManual（恒真，供导播手写话术）",
@@ -107,16 +107,16 @@
       "note": "场景测试 09/10/12 断言修复进入"
     },
     {
-      "claim": "客户端「话痨程度」（安静/刚好/热闹）只存在于 Flutter 端并随 user_speech 上送，后端不读取该字段；后端 InitiativeMode 恒为默认值 natural，用户设置尚未接入主动性控制",
-      "status": "partial",
+      "claim": "客户端「话痨程度」（安静/刚好/热闹）随 user_speech 上送，后端解析并按用户持久化（user_preferences 表），三档映射主动频率：quiet 屏蔽非关键主动、normal 保持 90s 基线、active 冷却 ×0.6；重连经 session_opened 恢复档位",
+      "status": "implemented-at",
       "anchors": [
-        { "path": "client/lib/screens/settings_screen.dart", "lines": "93-108" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "568" },
-        { "path": "backend/cmd/server/main.go", "lines": "861-875" },
-        { "path": "backend/internal/relationship/policy.go", "lines": "17-19" }
+        { "path": "backend/cmd/server/main.go", "lines": "504-509" },
+        { "path": "backend/cmd/server/main.go", "lines": "682-705" },
+        { "path": "backend/internal/relationship/talkativeness.go", "lines": "1-60" },
+        { "path": "backend/migrations/040_open_threads.sql", "lines": "9-14" }
       ],
       "evidence": "code",
-      "note": "user_speech 处理只读 text/audio/userId/signalId/timezone；全仓无任何 Go 代码引用 talkativeness"
+      "note": "agent-depth 修复了此前的漂移（2026-09-16 审计时后端确实不读该字段，main.go 只解析 text/audio/userId/signalId/timezone）；quiet 只收不放（L0 安全）"
     },
     {
       "claim": "旧文档的三层发言预算（单个事件/时段/整场）与类别级冷却期没有对应实现：现实只有单一时间冷却 + 事件级 TTL 去重，预算耗尽/时段差异/跨通道冷却均为设想",
