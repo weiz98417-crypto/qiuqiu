@@ -1,0 +1,63 @@
+{
+  "version": "2026-07",
+  "id": "regression.open-thread-recovery",
+  "suite": "regression",
+  "tags": ["open-thread", "memory", "recovered-answer", "trace"],
+  "summary": "隔轮补答：用户的问题当时没有可靠记录可答（开启 open thread），事实入账后，下一轮陪伴主动补上答案并闭环该 thread。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {"number": "10", "name": "佩德里", "position": "CM"},
+      {"number": "8", "name": "法比安", "position": "CM"},
+      {"number": "19", "name": "亚马尔", "position": "RW"}
+    ],
+    "awayPlayers": [{"number": "10", "name": "穆西亚拉", "position": "AM"}]
+  },
+  "events": [
+    {
+      "key": "musiala-goal",
+      "afterTurn": "ask-musiala",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "24:10",
+        "teamId": "away",
+        "teamName": "德国",
+        "playerName": "穆西亚拉",
+        "score": {"home": 0, "away": 1},
+        "intensity": 4,
+        "description": "穆西亚拉禁区前沿推射破门。",
+        "visibility": "public",
+        "participants": [
+          {"role": "scorer", "name": "穆西亚拉", "teamId": "away", "teamName": "德国"}
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "ask-musiala",
+      "userId": "fan-7",
+      "text": "穆西亚拉进球了吗？",
+      "expect": {
+        "intent": "player_question",
+        "mustMention": ["穆西亚拉", "没有看到"],
+        "requiredTools": ["match.get_player_timeline", "memory.append_thread"],
+        "retrievedEventKeys": []
+      }
+    },
+    {
+      "id": "celebrate",
+      "userId": "fan-7",
+      "text": "哈哈，太牛了",
+      "expect": {
+        "intent": "emotion_reaction",
+        "mustMention": ["穆西亚拉", "进球记录", "24:10"],
+        "requiredTools": ["memory.recover_thread"],
+        "retrievedEventKeys": ["musiala-goal"]
+      }
+    }
+  ],
+  "final": {"score": {"home": 0, "away": 1}, "minimumTraces": 2}
+}

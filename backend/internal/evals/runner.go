@@ -9,6 +9,7 @@ import (
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/memory"
 	"qiuqiu/internal/relationship"
 )
 
@@ -28,7 +29,7 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	result := CaseResult{ID: evalCase.ID, Suite: evalCase.Suite, Tags: evalCase.Tags, Scores: map[string]float64{}}
 	store := matchstate.NewStore()
 	tools := companion.NewStoreMemoryTools(store)
-	agent := companion.NewAgent(tools).WithDirector(relationship.NewDirector(relationship.NewMemoryRepository()))
+	agent := companion.NewAgent(tools).WithDirector(relationship.NewDirector(relationship.NewMemoryRepository())).WithMemories(memory.NewFake())
 	if evalCase.Realizer != nil {
 		agent.WithRealizer(scriptedRealizer{fixture: *evalCase.Realizer}, time.Second)
 	}
@@ -39,10 +40,10 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	}
 
 	eventIDs := map[string]string{}
-	for _, step := range evalCase.Events {
+	applyEventStep := func(step EventStep) {
 		if err := syncEvalClock(store, matchID, step.Event); err != nil {
 			result.addFailure("truth", fmt.Sprintf("event %s clock: %v", step.Key, err))
-			continue
+			return
 		}
 		var created matchstate.MatchEvent
 		var snapshot matchstate.Snapshot
@@ -56,16 +57,24 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			if err == nil {
 				result.addFailure("truth", fmt.Sprintf("event %s expected validation error", step.Key))
 			}
-			continue
+			return
 		}
 		if err != nil {
 			result.addFailure("truth", fmt.Sprintf("event %s: %v", step.Key, err))
-			continue
+			return
 		}
 		eventIDs[step.Key] = created.ID
 		if step.Proactive != nil {
 			result.Steps = append(result.Steps, gradeProactive(ctx, agent, created, snapshot, eventIDs, step.Key, *step.Proactive))
 		}
+	}
+	deferredByTurn := map[string][]EventStep{}
+	for _, step := range evalCase.Events {
+		if key := strings.TrimSpace(step.AfterTurn); key != "" {
+			deferredByTurn[key] = append(deferredByTurn[key], step)
+			continue
+		}
+		applyEventStep(step)
 	}
 
 	baseTime := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
@@ -88,6 +97,9 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			gradeTurn(&stepResult, response, turn.Expect, eventIDs)
 		}
 		result.Steps = append(result.Steps, stepResult)
+		for _, step := range deferredByTurn[turn.ID] {
+			applyEventStep(step)
+		}
 	}
 
 	if evalCase.Final.Score != nil {

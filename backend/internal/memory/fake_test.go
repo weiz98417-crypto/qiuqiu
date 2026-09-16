@@ -88,24 +88,30 @@ func TestFakePortraitSynthesizesFromFactsAndOverrideWins(t *testing.T) {
 	}
 }
 
-func TestFakeThreadsDerivePromisesUntilC2StoreLands(t *testing.T) {
+func TestFakeThreadsAreSliceBacked(t *testing.T) {
 	fake := NewFake()
 	base := time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC)
 	if err := fake.Observe(context.Background(), Moment{UserID: "user-1", Kind: MomentPromise, Content: "待会儿告诉你", Importance: 0.9, OccurredAt: base}); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	if err := fake.Observe(context.Background(), Moment{UserID: "user-1", Kind: MomentUserFact, Content: "我喜欢皇马", Importance: 0.8, OccurredAt: base}); err != nil {
-		t.Fatalf("Observe: %v", err)
-	}
+	// Moments alone no longer synthesize threads; the C2 slice-backed ledger
+	// is filled through AppendThread.
 	threads, err := fake.Threads(context.Background(), "user-1")
 	if err != nil {
 		t.Fatalf("Threads: %v", err)
 	}
-	if len(threads) != 1 || threads[0].Kind != ThreadPromise || threads[0].State != "open" {
-		t.Fatalf("threads = %+v, want the single open promise", threads)
+	if len(threads) != 0 {
+		t.Fatalf("threads = %+v, want none before an explicit append", threads)
 	}
-	if fake.Moments() == nil || len(fake.Moments()) != 2 {
-		t.Fatalf("Moments accessor = %+v, want both observations", fake.Moments())
+	appended, err := fake.AppendThread(context.Background(), Thread{UserID: "user-1", Kind: ThreadUnansweredQuestion, Content: "穆西亚拉进球了吗", CreatedAt: base})
+	if err != nil {
+		t.Fatalf("AppendThread: %v", err)
+	}
+	if appended.ID == "" || appended.State != "open" {
+		t.Fatalf("appended thread = %+v, want ledger id and open state", appended)
+	}
+	if fake.Moments() == nil || len(fake.Moments()) != 1 {
+		t.Fatalf("Moments accessor = %+v, want the observation", fake.Moments())
 	}
 }
 

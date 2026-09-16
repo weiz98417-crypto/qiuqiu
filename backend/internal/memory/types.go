@@ -69,9 +69,8 @@ type Portrait struct {
 	UpdatedAt time.Time
 }
 
-// ThreadKind mirrors the CONTEXT.md open-thread taxonomy. The local
-// open_threads table arrives in Phase C2; adapters may return
-// ErrNotSupported until then.
+// ThreadKind mirrors the CONTEXT.md open-thread taxonomy, persisted in the
+// local open_threads table (migrations/040).
 type ThreadKind string
 
 const (
@@ -81,14 +80,19 @@ const (
 	ThreadPrediction         ThreadKind = "prediction"
 )
 
-// Thread is an open loop worth a later callback.
+// Thread is an open loop worth a later callback. SourceTurn cites the
+// originating interaction (signal id or event id) and LedgerSequence cites
+// the fact ledger when the source was a recorded match event — provenance
+// discipline identical to Moment.
 type Thread struct {
-	ID        string
-	UserID    string
-	Kind      ThreadKind
-	Content   string
-	State     string
-	CreatedAt time.Time
+	ID             string
+	UserID         string
+	Kind           ThreadKind
+	Content        string
+	State          string
+	SourceTurn     string
+	LedgerSequence int64
+	CreatedAt      time.Time
 }
 
 var (

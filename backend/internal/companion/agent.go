@@ -70,6 +70,7 @@ type MessageRequest struct {
 	UserID              string
 	Text                string
 	Timezone            string
+	Talkativeness       string
 	ProgressiveSchedule bool
 	Now                 time.Time
 	Voice               *VoiceTraceMetadata
@@ -156,7 +157,11 @@ type MatchEventRequest struct {
 	Critical              bool
 	UserSpeaking          bool
 	NormalCooldownSeconds int
-	Now                   time.Time
+	Talkativeness         string
+	// CitationReason is the proactive citation code (C2), e.g.
+	// "open_thread:123" or "shared_moment:<eventId>"; carried on the trace.
+	CitationReason string
+	Now            time.Time
 }
 
 type FirstMeetingRequest struct {
@@ -572,7 +577,7 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 		if err := a.recordChosenSilence(ctx, plan, input.MatchEvent.UserID, input.MatchEvent.Event.MatchID, input.MatchEvent.Event.ID); err != nil {
 			return TurnPlan{}, err
 		}
-		a.observeMatchEventMemory(ctx, *input.MatchEvent)
+		a.observeMatchEventMemory(ctx, *input.MatchEvent, response.Decision)
 		return plan, nil
 	case TurnKindFirstMeeting:
 		if input.FirstMeeting == nil {
@@ -796,6 +801,7 @@ func (a *Agent) handleMessage(ctx context.Context, req MessageRequest) (Response
 		UserID:              req.UserID,
 		Text:                req.Text,
 		Timezone:            req.Timezone,
+		Talkativeness:       req.Talkativeness,
 		ProgressiveSchedule: req.ProgressiveSchedule,
 		Now:                 req.Now,
 		Voice:               req.Voice,
@@ -1089,6 +1095,10 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	} else {
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "reason": deterministicReason}})
 	}
+	reply = a.appendThreadRecovery(ctx, req, intent, reply, &trace)
+	// C2 writer hook: open-thread candidates ride on the same trace as the
+	// turn (memory.append_thread) so every loop the ledger opens is auditable.
+	a.observeTurnThreads(ctx, req.UserID, req.SignalID, req.Text, req.FactRefresh, intent, reply, req.Now, &trace)
 	if decision != nil {
 		decision.UsedMemoryIDs = relationshipMemoryIDsUsedByReply(reply, *decision)
 		trace.RelationshipDecision = decision
@@ -1493,7 +1503,7 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 		OccurredAt:   trace.CreatedAt,
 		ReceivedAt:   time.Now().UTC(),
 		FactRevision: strings.Join(trace.RetrievedEvent, ","),
-		User:         &relationship.UserSignal{Text: req.Text},
+		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness},
 		Grounding: relationship.GroundedContent{
 			Intent:             string(intent),
 			ReliableText:       reply,
@@ -1560,6 +1570,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		req.Critical,
 		req.UserSpeaking,
 		req.NormalCooldownSeconds,
+		req.Talkativeness,
 		req.Now,
 	)
 	if err != nil {
@@ -1578,9 +1589,13 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	}
 	reply := ""
 	if req.OutputAllowed && (decision.ID == "" || decision.Speech != nil) {
+		citation := strings.TrimSpace(req.CitationReason)
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
-			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "clock": req.Event.Clock,
+			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "clock": req.Event.Clock, "citation": citation,
 		}})
+		if citation != "" && decision.ID != "" {
+			decision.ReasonCodes = append(decision.ReasonCodes, "proactive_citation:"+citation)
+		}
 		reply = req.Event.ProactiveText
 		if strings.TrimSpace(reply) == "" {
 			reply = fallbackProactive(req.Event, req.Snapshot)
@@ -1593,6 +1608,9 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	}
 	trace.Output = reply
 	trace.LatencyMS = int(time.Since(start).Milliseconds())
+	// C2 writer hook: prediction threads open from the match event itself and
+	// stay on the event trace (memory.append_thread).
+	a.observeMatchEventThread(ctx, req, decision, &trace)
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "trace.write_decision", Args: map[string]string{
 		"matchId": req.Event.MatchID,
 		"traceId": trace.ID,
@@ -1608,7 +1626,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	}, nil
 }
 
-func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchstate.MatchEvent, outputAllowed, critical, userSpeaking bool, normalCooldownSeconds int, now time.Time) (relationship.Decision, error) {
+func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchstate.MatchEvent, outputAllowed, critical, userSpeaking bool, normalCooldownSeconds int, talkativeness string, now time.Time) (relationship.Decision, error) {
 	if a == nil || a.director == nil {
 		return relationship.Decision{}, nil
 	}
@@ -1635,6 +1653,7 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 			Critical:              critical,
 			UserSpeaking:          userSpeaking,
 			NormalCooldownSeconds: normalCooldownSeconds,
+			Talkativeness:         talkativeness,
 			Description:           ev.Description,
 			TeamName:              ev.TeamName,
 			PlayerName:            ev.PlayerName,

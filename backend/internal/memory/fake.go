@@ -4,6 +4,7 @@ import (
 	"context"
 	"fmt"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -16,6 +17,7 @@ type Fake struct {
 	mu        sync.Mutex
 	moments   []Moment
 	portraits map[string]Portrait
+	threads   []Thread
 	nextID    int
 }
 
@@ -106,33 +108,100 @@ func (f *Fake) Portrait(_ context.Context, userID string) (Portrait, error) {
 	return Portrait{Block: RenderPortraitBlock(entries), UpdatedAt: latestMomentAt(f.moments, userID)}, nil
 }
 
-// Threads derives open promises from observed moments; the durable local
-// store replaces this in Phase C2.
+// Threads lists the user's slice-backed open threads; the durable local
+// store (threads.go) is the production counterpart (Phase C2).
 func (f *Fake) Threads(_ context.Context, userID string) ([]Thread, error) {
+	return f.OpenThreads(context.Background(), userID)
+}
+
+// AppendThread inserts one open-thread candidate into the slice and fills in
+// the ledger id and timestamps (mirrors PostgresThreads.AppendThread).
+func (f *Fake) AppendThread(_ context.Context, thread Thread) (Thread, error) {
 	if f == nil {
-		return nil, ErrNotSupported
+		return Thread{}, ErrUnavailable
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
-	threads := make([]Thread, 0)
-	for _, moment := range f.moments {
-		if moment.UserID != userID {
-			continue
-		}
-		if moment.Kind != MomentPromise {
-			continue
-		}
-		f.nextID++
-		threads = append(threads, Thread{
-			ID:        fmt.Sprintf("fake-thread-%d", f.nextID),
-			UserID:    userID,
-			Kind:      ThreadPromise,
-			Content:   moment.Content,
-			State:     "open",
-			CreatedAt: moment.OccurredAt,
-		})
+	f.nextID++
+	thread.ID = strconv.Itoa(f.nextID)
+	thread.State = "open"
+	if thread.CreatedAt.IsZero() {
+		thread.CreatedAt = time.Now().UTC()
 	}
-	return threads, nil
+	f.threads = append(f.threads, thread)
+	return thread, nil
+}
+
+// OpenThreads returns the user's open threads, oldest first.
+func (f *Fake) OpenThreads(_ context.Context, userID string) ([]Thread, error) {
+	if f == nil {
+		return nil, ErrUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	open := make([]Thread, 0, 4)
+	for _, thread := range f.threads {
+		if thread.UserID == userID && thread.State == "open" {
+			open = append(open, thread)
+		}
+	}
+	return open, nil
+}
+
+// MarkThreadAddressed flips one open thread to 'addressed'; no-op when the
+// thread is unknown or already closed (mirrors the SQL guard).
+func (f *Fake) MarkThreadAddressed(_ context.Context, threadID string) error {
+	if f == nil {
+		return ErrUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for index := range f.threads {
+		if f.threads[index].ID == threadID && f.threads[index].State == "open" {
+			f.threads[index].State = "addressed"
+			return nil
+		}
+	}
+	return nil
+}
+
+// ExpireStaleThreads flips open threads older than the TTL to 'expired' and
+// returns them so callers can audit the transition.
+func (f *Fake) ExpireStaleThreads(_ context.Context, now time.Time, ttl time.Duration) ([]Thread, error) {
+	if f == nil {
+		return nil, ErrUnavailable
+	}
+	if ttl <= 0 {
+		ttl = DefaultThreadTTL
+	}
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	expired := make([]Thread, 0, 4)
+	for index := range f.threads {
+		if f.threads[index].State != "open" {
+			continue
+		}
+		if !f.threads[index].CreatedAt.Add(ttl).Before(now) {
+			continue
+		}
+		f.threads[index].State = "expired"
+		expired = append(expired, f.threads[index])
+	}
+	return expired, nil
+}
+
+// ThreadsAll returns a copy of every thread in any state (test accessor for
+// expiry/addressed assertions).
+func (f *Fake) ThreadsAll() []Thread {
+	if f == nil {
+		return nil
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	return append([]Thread(nil), f.threads...)
 }
 
 // Moments returns a copy of everything observed (test accessor).

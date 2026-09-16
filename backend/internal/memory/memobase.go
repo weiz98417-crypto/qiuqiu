@@ -190,7 +190,8 @@ func (m *Memobase) Portrait(ctx context.Context, userID string) (Portrait, error
 	return Portrait{Block: RenderPortraitBlock(entries), UpdatedAt: updatedAt}, nil
 }
 
-// Threads waits for the local open-thread store (Phase C2).
+// Threads stays unsupported on Memobase: the open-thread ledger is a local
+// table (C2), not Memobase synthesis.
 func (m *Memobase) Threads(ctx context.Context, userID string) ([]Thread, error) {
 	return nil, ErrNotSupported
 }

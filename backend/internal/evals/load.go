@@ -84,6 +84,11 @@ func (evalCase Case) Validate() error {
 		}
 		turns[turn.ID] = true
 	}
+	for _, step := range evalCase.Events {
+		if key := strings.TrimSpace(step.AfterTurn); key != "" && !turns[key] {
+			return fmt.Errorf("event %q afterTurn references unknown turn %q", step.Key, key)
+		}
+	}
 	return nil
 }
 

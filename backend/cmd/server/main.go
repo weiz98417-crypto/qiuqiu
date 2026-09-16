@@ -358,7 +358,8 @@ func main() {
 	demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter, observations: observationResetter}
 	// ADR-0006 memory seam: async observations queue into Memobase with the
 	// local audit/backlog tables; without a database the queue still runs and
-	// simply degrades to Ledger-only recall.
+	// simply degrades to Ledger-only recall. The open-thread ledger (C2) and
+	// the user talkativeness preference stay local Postgres tables.
 	memoryCtx, memoryCancel := context.WithCancel(context.Background())
 	defer memoryCancel()
 	memobaseAdapter := memory.NewMemobase(memory.MemobaseConfig{
@@ -367,13 +368,20 @@ func main() {
 		Timeout: cfg.MemobaseExtractionTimeout(),
 	})
 	var memoryQueue *memory.Queue
+	var memoryPreferenceStore *memory.PostgresRecords
 	if cfg.DatabaseURL != "" {
 		memoryRecords, err := memory.OpenRecords(context.Background(), cfg.DatabaseURL)
 		if err != nil {
 			log.Fatalf("postgres memory records: %v", err)
 		}
 		defer memoryRecords.Close()
-		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, memory.WithReflections(memoryRecords))
+		memoryThreads, err := memory.OpenThreadStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres memory threads: %v", err)
+		}
+		defer memoryThreads.Close()
+		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads))
+		memoryPreferenceStore = memoryRecords
 	} else {
 		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil)
 	}
@@ -487,6 +495,27 @@ func main() {
 		proactiveGate := conversation.NewProactiveGate()
 		var userSpeaking atomic.Bool
 		var userTurnActive atomic.Bool
+		// Talkativeness tier (C2 drift fix): the client sends the 话痨程度
+		// setting on every user_speech payload; the latest tier on this
+		// connection feeds the proactive gate (quiet restricts), the policy
+		// cooldown scale and the relationship InitiativeMode.
+		var userTalkativeness atomic.Value
+		userTalkativeness.Store(relationship.TalkativenessNormal)
+		// fetchOpenThreadCitation returns "open_thread:<id>" for the user's
+		// oldest open thread, or "" when none exists; callers then cite the
+		// match event itself as the shared moment.
+		fetchOpenThreadCitation := func(userID string) string {
+			if userID == "" || memoryQueue == nil {
+				return ""
+			}
+			threadsCtx, cancel := context.WithTimeout(connectionCtx, 2*time.Second)
+			defer cancel()
+			threads, err := memoryQueue.Threads(threadsCtx, userID)
+			if err != nil || len(threads) == 0 {
+				return ""
+			}
+			return conversation.ThreadCitation(threads[0].ID)
+		}
 		defer func() {
 			for _, pending := range deliveryTracker.Drain() {
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
@@ -523,6 +552,48 @@ func main() {
 			return len(followUps)
 		}
 
+		// scheduleRecoveredThreadTurns is the C2 post-match recovery beat: it
+		// scans the user's open threads and enqueues proactive recovery turns
+		// through the scheduler's proactive path ("上一场你问谁助攻的——是法
+		// 比安"). The thread is addressed only after the delivery landed, so
+		// failed deliveries stay open for the next beat.
+		scheduleRecoveredThreadTurns := func(userID string) {
+			if userID == "" {
+				return
+			}
+			recoveryCtx, cancel := context.WithTimeout(connectionCtx, 10*time.Second)
+			defer cancel()
+			recoveries, err := companionAgent.RecoverOpenThreads(recoveryCtx, userID, matchIDStr, time.Now().UTC())
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("open thread recovery error: %v", err)
+				}
+				return
+			}
+			for _, recovery := range recoveries {
+				recovery := recovery
+				ttl := 60 * time.Second
+				conversationScheduler.SubmitProactive("open-thread-recovery:"+recovery.ThreadID, conversation.UrgencyNormal, ttl, func(replyCtx context.Context, playback conversation.Playback) {
+					_, err := responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
+						Reply: recovery.Response.Reply, Trace: recovery.Response.Trace, Presentation: recovery.Response.Presentation,
+						Source: "open_thread_recovery", DeliveryKey: recovery.Response.Trace.ID,
+						Critical: false, TTL: ttl,
+					}, playback)
+					if err != nil {
+						if !errors.Is(err, context.Canceled) {
+							log.Printf("open thread recovery delivery error: %v", err)
+						}
+						return
+					}
+					addressCtx, addressCancel := context.WithTimeout(context.Background(), 3*time.Second)
+					defer addressCancel()
+					if err := companionAgent.AddressOpenThread(addressCtx, recovery.ThreadID); err != nil {
+						log.Printf("open thread %s address error: %v", recovery.ThreadID, err)
+					}
+				})
+			}
+		}
+
 		writer.SendJSON(map[string]interface{}{
 			"type": "match_snapshot",
 			"data": clientSnapshot(matchStore.PublicSnapshot(matchIDStr)),
@@ -535,6 +606,7 @@ func main() {
 		}
 		if userID := identity.Get(); userID != "" {
 			scheduleRecoveredObservations(userID)
+			scheduleRecoveredThreadTurns(userID)
 		}
 		go func() {
 			deliveredEventKeys := make(map[string]struct{})
@@ -562,6 +634,11 @@ func main() {
 					if len(deliveredEventOrder) > 512 {
 						delete(deliveredEventKeys, deliveredEventOrder[0])
 						deliveredEventOrder = deliveredEventOrder[1:]
+					}
+					if ev.EventType == "match_end" || ev.EventType == "fulltime" {
+						// C2 post-match beat: recover open threads for the
+						// user once the match record is complete.
+						scheduleRecoveredThreadTurns(identity.Get())
 					}
 					snapshot := matchStore.PublicSnapshot(matchIDStr)
 					userID := identity.Get()
@@ -596,7 +673,16 @@ func main() {
 						policy := matchStore.Config(matchIDStr).Automation
 						critical := proactiveUrgency(ev.EventType) == conversation.UrgencyCritical
 						now := time.Now()
-						allowed := proactiveGate.Allow(policy, ev.EventType, critical, now)
+						tier, _ := userTalkativeness.Load().(string)
+						// C2 gate: the whitelist and the director cooldown stay
+						// as preconditions; the turn additionally needs a
+						// citation — an open thread when one exists, otherwise
+						// the event itself as the shared moment.
+						citation := fetchOpenThreadCitation(userID)
+						if citation == "" {
+							citation = conversation.EventCitation(ev.ID)
+						}
+						allowed := proactiveGate.Allow(policy, ev.EventType, citation, tier, critical, now)
 						if hasEventTag(ev, "proactive=quiet") {
 							allowed = false
 						} else if hasEventTag(ev, "proactive=manual") {
@@ -610,6 +696,8 @@ func main() {
 							Critical:              critical,
 							UserSpeaking:          userSpeaking.Load() || userTurnActive.Load(),
 							NormalCooldownSeconds: policy.CooldownSeconds,
+							Talkativeness:         tier,
+							CitationReason:        citation,
 							Now:                   now,
 						})
 						if err != nil {
@@ -623,6 +711,7 @@ func main() {
 								"eventId":     ev.ID,
 								"deliveryKey": eventKey,
 								"source":      "match_reaction",
+								"citation":    citation,
 							})
 						}
 						if strings.TrimSpace(response.Reply) == "" {
@@ -651,6 +740,7 @@ func main() {
 					return
 				}
 			}
+			tier, _ := userTalkativeness.Load().(string)
 			turnGeneration := scheduleLookups.BeginTurn()
 			writer.SendJSON(map[string]interface{}{
 				"type":       "interrupt",
@@ -673,10 +763,10 @@ func main() {
 								asrProvider,
 								time.Now(),
 								signalID,
-								voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh},
+								voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier},
 							)
 						}
-						return handleVoiceSessionWithSignalIDOptions(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh})
+						return handleVoiceSessionWithSignalIDOptions(replyCtx, companionAgent, asrClient, nil, matchIDStr, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier})
 					},
 					func(observationID string) bool {
 						if err := companionAgent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
@@ -838,10 +928,20 @@ func main() {
 					watchSession = watchSessions.Bind(watchSession, userID, matchIDStr)
 					deliveryTracker.BindLedger(watchSession.Ledger())
 					conversationScheduler = watchSession.Scheduler()
+					// Restore the persisted 话痨程度 tier so the proactive
+					// behavior survives reconnects (C2 talkativeness wiring).
+					if memoryPreferenceStore != nil {
+						prefCtx, prefCancel := context.WithTimeout(connectionCtx, 2*time.Second)
+						if storedTier, err := memoryPreferenceStore.Talkativeness(prefCtx, userID); err == nil {
+							userTalkativeness.Store(storedTier)
+						}
+						prefCancel()
+					}
 					if _, err := companionAgent.ObserveSession(connectionCtx, "session:"+userID+":"+matchIDStr, userID, matchIDStr, time.Now().UTC()); err != nil {
 						log.Printf("relationship session observation error: %v", err)
 					}
 					scheduleRecoveredObservations(userID)
+					scheduleRecoveredThreadTurns(userID)
 					recoverPendingDeliveries(connectionCtx, writer, watchSession, traceReader, userID, matchIDStr)
 
 				case "session_closed":
@@ -897,6 +997,20 @@ func main() {
 					if userID == "" {
 						writer.SendJSON(map[string]interface{}{"type": "voice_status", "state": "failed", "reason": "identity required"})
 						continue
+					}
+					// C2 drift fix: the client has always sent the 话痨程度
+					// tier with every user_speech payload; parse it, keep it
+					// on the connection and persist it per user.
+					tier := relationship.NormalizeTalkativeness(str(req, "talkativeness"))
+					userTalkativeness.Store(tier)
+					if memoryPreferenceStore != nil {
+						persistCtx, persistCancel := context.WithTimeout(context.Background(), 3*time.Second)
+						go func(persistUserID, persistTier string) {
+							defer persistCancel()
+							if err := memoryPreferenceStore.RecordTalkativeness(persistCtx, persistUserID, persistTier); err != nil {
+								log.Printf("memory: record talkativeness for %q: %v", persistUserID, err)
+							}
+						}(userID, tier)
 					}
 					generatedSignalID := fmt.Sprintf("turn_%s_%d", userID, time.Now().UnixNano())
 					turnSignalID := stableSignalID(str(req, "signalId"), generatedSignalID)
@@ -1106,12 +1220,28 @@ func runObservationExpiry(ctx context.Context, coordinator observation.Coordinat
 // runReflectionBeat is the ADR-0006 reflection: after each ended match and on
 // an idle ticker it flushes pending extractions, refreshes the user portrait
 // and persists an audit record citing the ledger sequences observed since the
-// previous beat. Failures are logged; reflection never touches user replies.
+// previous beat. The same ticker expires stale open threads (C2): expired is
+// distinct from addressed, and every expiry is written to the audit table by
+// the thread store. Failures are logged; reflection never touches replies.
 func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInterval time.Duration) {
 	if memoryQueue == nil {
 		return
 	}
 	lastIdle := time.Now()
+	expireThreads := func() {
+		expireCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		expired, err := memoryQueue.ExpireStaleThreads(expireCtx, time.Now().UTC())
+		if err != nil {
+			if !errors.Is(err, memory.ErrNotSupported) {
+				log.Printf("memory thread expiry error: %v", err)
+			}
+			return
+		}
+		if len(expired) > 0 {
+			log.Printf("memory: expired %d stale open thread(s)", len(expired))
+		}
+	}
 	reflect := func(userID, matchID, trigger string) {
 		reflectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
 		defer cancel()
@@ -1119,6 +1249,7 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 			log.Printf("memory reflection (%s) error for user %q: %v", trigger, userID, err)
 		}
 	}
+	expireThreads()
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
 	for {
@@ -1126,6 +1257,7 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 		case <-ctx.Done():
 			return
 		case <-ticker.C:
+			expireThreads()
 			users := memoryQueue.ActiveUsers()
 			if len(users) == 0 {
 				continue
@@ -2227,6 +2359,7 @@ type voiceSessionOptions struct {
 	ProgressiveSchedule bool
 	Timezone            string
 	FactRefresh         string
+	Talkativeness       string
 }
 
 func completeVoiceSession(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID string, now time.Time, signalID string, result voiceSessionResult, voiceMeta *companion.VoiceTraceMetadata) (voiceSessionResult, error) {
@@ -2247,6 +2380,7 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 		UserID:              userID,
 		Text:                result.Text,
 		Timezone:            strings.TrimSpace(options.Timezone),
+		Talkativeness:       options.Talkativeness,
 		ProgressiveSchedule: options.ProgressiveSchedule,
 		Now:                 now,
 		Voice:               nonEmptyVoiceMeta(voiceMeta),

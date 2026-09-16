@@ -84,12 +84,15 @@ const MaxBacklogAttempts = 10
 
 // Queue fronts a Memobase adapter with the async write path from ADR-0006:
 // Observe never blocks a watch turn (bounded channel, drainer goroutine,
-// exponential backoff) and outages drain into the local backlog.
+// exponential backoff) and outages drain into the local backlog. The
+// open-thread ledger (C2) stays local: Threads/AppendThread delegate to the
+// ThreadStore behind WithThreads instead of Memobase.
 type Queue struct {
 	adapter     *Memobase
 	audit       AuditSink
 	reflections ReflectionSink
 	backlog     BacklogStore
+	threads     ThreadStore
 
 	items     chan enqueueItem
 	dropped   atomic.Int64
@@ -142,6 +145,16 @@ func WithReflections(sink ReflectionSink) QueueOption {
 	return func(q *Queue) {
 		if sink != nil {
 			q.reflections = sink
+		}
+	}
+}
+
+// WithThreads attaches the local open-thread store (C2). When absent,
+// Threads degrades to the adapter (ErrNotSupported on Memobase).
+func WithThreads(store ThreadStore) QueueOption {
+	return func(q *Queue) {
+		if store != nil {
+			q.threads = store
 		}
 	}
 }
@@ -262,7 +275,36 @@ func (q *Queue) Threads(ctx context.Context, userID string) ([]Thread, error) {
 	if q == nil {
 		return nil, ErrNotSupported
 	}
+	if q.threads != nil {
+		return q.threads.OpenThreads(ctx, userID)
+	}
 	return q.adapter.Threads(ctx, userID)
+}
+
+// AppendThread inserts one open-thread candidate via the local store; the
+// write is best-effort on the caller side and never blocks a turn.
+func (q *Queue) AppendThread(ctx context.Context, thread Thread) (Thread, error) {
+	if q == nil || q.threads == nil {
+		return Thread{}, ErrNotSupported
+	}
+	return q.threads.AppendThread(ctx, thread)
+}
+
+// MarkThreadAddressed closes one open thread as answered.
+func (q *Queue) MarkThreadAddressed(ctx context.Context, threadID string) error {
+	if q == nil || q.threads == nil {
+		return ErrNotSupported
+	}
+	return q.threads.MarkThreadAddressed(ctx, threadID)
+}
+
+// ExpireStaleThreads ages out open threads past the TTL and returns the
+// expired rows for the audit trail.
+func (q *Queue) ExpireStaleThreads(ctx context.Context, now time.Time) ([]Thread, error) {
+	if q == nil || q.threads == nil {
+		return nil, ErrNotSupported
+	}
+	return q.threads.ExpireStaleThreads(ctx, now, DefaultThreadTTL)
 }
 
 // Run drains the queue until the context is canceled (single goroutine).
@@ -565,7 +607,9 @@ func errorText(err error) string {
 }
 
 var (
-	_ Memories = (*Queue)(nil)
-	_ Memories = (*Memobase)(nil)
-	_ Memories = (*Fake)(nil)
+	_ Memories    = (*Queue)(nil)
+	_ Memories    = (*Memobase)(nil)
+	_ Memories    = (*Fake)(nil)
+	_ ThreadStore = (*Queue)(nil)
+	_ ThreadStore = (*Fake)(nil)
 )

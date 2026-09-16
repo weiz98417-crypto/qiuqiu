@@ -28,8 +28,12 @@ type RealizerFixture struct {
 }
 
 type EventStep struct {
-	Key         string                `json:"key"`
+	Key string `json:"key"`
+	// AfterTurn defers the event until the turn with this id has executed,
+	// so a case can express facts landing between two user turns (e.g. the
+	// C2 recovered-answer journey). Empty means the event runs up front.
 	Corrects    string                `json:"corrects,omitempty"`
+	AfterTurn   string                `json:"afterTurn,omitempty"`
 	ExpectError bool                  `json:"expectError,omitempty"`
 	Event       matchstate.MatchEvent `json:"event"`
 	Proactive   *ProactiveExpectation `json:"proactive,omitempty"`

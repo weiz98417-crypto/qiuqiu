@@ -76,10 +76,17 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 		if state.Match.Initiative.Mode == "" {
 			state.Match.Initiative.Mode = "natural"
 		}
+		// Quiet tier is L0-safe: it only restricts, never enables — a quiet
+		// user gets no proactive turn except critical match events, which
+		// policy already allowed before the tier existed.
+		if IsQuiet(signal.Match.Talkativeness) && !signal.Match.Critical {
+			return []CommunicationAct{ActSilence}, []string{"talkativeness_quiet_limits_initiative"}
+		}
 		cooldown := 90 * time.Second
 		if signal.Match.NormalCooldownSeconds > 0 {
 			cooldown = time.Duration(signal.Match.NormalCooldownSeconds) * time.Second
 		}
+		cooldown = time.Duration(ScaleCooldownForTalkativeness(int(cooldown/time.Second), signal.Match.Talkativeness)) * time.Second
 		if !signal.Match.Critical && state.Match.Initiative.LastNormalAt != nil && now.Sub(*state.Match.Initiative.LastNormalAt) < cooldown {
 			return []CommunicationAct{ActSilence}, []string{"natural_initiative_cooldown"}
 		}
@@ -96,6 +103,15 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 		return nil, nil
 	}
 	text := strings.TrimSpace(signal.User.Text)
+	// The talkativeness tier rides on every user turn; it feeds
+	// InitiativeMode so the relationship view reflects the user's choice
+	// instead of the previous permanent "natural" (the C2 drift fix).
+	if signal.User.Talkativeness != "" {
+		state.Relationship.Preferences.InitiativeMode = InitiativeModeForTalkativeness(signal.User.Talkativeness)
+		if state.Match.Initiative.Mode == "" || state.Match.Initiative.Mode == "natural" {
+			state.Match.Initiative.Mode = state.Relationship.Preferences.InitiativeMode
+		}
+	}
 	cues := mergeUserCues(signal.User.Cues, inferUserCues(text))
 	applyUserCues(&state.Relationship, cues, signal.ID, now)
 	if strings.Contains(text, "多说点") && isTacticalQuestion(text) {

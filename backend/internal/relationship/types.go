@@ -39,8 +39,9 @@ type Signal struct {
 }
 
 type UserSignal struct {
-	Text string    `json:"text"`
-	Cues []UserCue `json:"cues,omitempty"`
+	Text          string    `json:"text"`
+	Cues          []UserCue `json:"cues,omitempty"`
+	Talkativeness string    `json:"talkativeness,omitempty"`
 }
 
 type UserCueKind string
@@ -73,6 +74,7 @@ type MatchSignal struct {
 	Critical              bool   `json:"critical"`
 	UserSpeaking          bool   `json:"userSpeaking"`
 	NormalCooldownSeconds int    `json:"normalCooldownSeconds,omitempty"`
+	Talkativeness         string `json:"talkativeness,omitempty"`
 	Description           string `json:"description,omitempty"`
 	TeamName              string `json:"teamName,omitempty"`
 	PlayerName            string `json:"playerName,omitempty"`
@@ -284,6 +286,7 @@ type RelationshipView struct {
 	GreetingDelivered   bool              `json:"greetingDelivered"`
 	InitiativeMode      string            `json:"initiativeMode"`
 	AnalysisAppetite    string            `json:"analysisAppetite"`
+	PredictionBanter    bool              `json:"predictionBanter,omitempty"`
 }
 
 type RelationshipMemory struct {

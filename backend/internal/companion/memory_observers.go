@@ -21,6 +21,8 @@ const (
 
 // observeTurnMemory runs after the turn has been appended to the Interaction
 // Ledger; failures are swallowed because memory must never fail a turn.
+// (Open-thread candidates are written inside the turn handler itself so the
+// append stays on the trace — see thread_observers.go.)
 func (a *Agent) observeTurnMemory(ctx context.Context, msg MessageRequest, response Response) {
 	if a == nil || a.memories == nil {
 		return
@@ -30,7 +32,7 @@ func (a *Agent) observeTurnMemory(ctx context.Context, msg MessageRequest, respo
 	}
 }
 
-func (a *Agent) observeMatchEventMemory(ctx context.Context, req MatchEventRequest) {
+func (a *Agent) observeMatchEventMemory(ctx context.Context, req MatchEventRequest, decision relationship.Decision) {
 	if a == nil || a.memories == nil {
 		return
 	}

@@ -14,7 +14,7 @@ type Memories interface {
 	Recall(ctx context.Context, query Query) []Recall
 	// Portrait returns the synthesized user model for prompt injection.
 	Portrait(ctx context.Context, userID string) (Portrait, error)
-	// Threads exposes the open-thread ledger; ErrNotSupported is allowed
-	// until the local C2 store lands.
+	// Threads exposes the open-thread ledger (local store, C2). Adapters
+	// without a local store return ErrNotSupported.
 	Threads(ctx context.Context, userID string) ([]Thread, error)
 }

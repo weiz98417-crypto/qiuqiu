@@ -97,6 +97,7 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 				GreetingDelivered:   state.Relationship.GreetingDeliveredAt != nil,
 				InitiativeMode:      state.Relationship.Preferences.InitiativeMode,
 				AnalysisAppetite:    state.Relationship.Preferences.AnalysisAppetite,
+				PredictionBanter:    state.Relationship.Banter["prediction"].Status == "allowed",
 			},
 			Presentation:  presentationFor(state.Match.Affect, signal, actions),
 			Speech:        speechFor(signal, actions, state.Relationship, state.Match),

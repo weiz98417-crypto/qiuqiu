@@ -11,6 +11,7 @@ type AgentBoundaryRequest struct {
 	UserID              string              `json:"userId"`
 	Text                string              `json:"text"`
 	Timezone            string              `json:"timezone,omitempty"`
+	Talkativeness       string              `json:"talkativeness,omitempty"`
 	ProgressiveSchedule bool                `json:"progressiveSchedule,omitempty"`
 	Now                 time.Time           `json:"now"`
 	Voice               *VoiceTraceMetadata `json:"voice,omitempty"`
@@ -101,6 +102,20 @@ func CompanionToolSchemas() []ToolSchema {
 			MutatesMatchFacts: false,
 			Input:             map[string]string{"trace": "companion.Trace"},
 			Output:            map[string]string{"ok": "bool"},
+		},
+		{
+			Name:              "memory.recover_thread",
+			Description:       "Read the open-thread ledger and answer a previously unanswered question from recorded match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"threadId": "string", "kind": "string"},
+			Output:            map[string]string{"reply": "string"},
+		},
+		{
+			Name:              "memory.append_thread",
+			Description:       "Record an open-thread candidate (unanswered question, promise, emotional moment, prediction) without changing match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"kind": "string", "content": "string"},
+			Output:            map[string]string{"threadId": "string"},
 		},
 		{
 			Name:              "response.emit_companion_reply",
