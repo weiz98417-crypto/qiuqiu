@@ -31,3 +31,46 @@ func TestLoadCasesRejectsUnknownSuite(t *testing.T) {
 		t.Fatal("expected invalid suite to fail validation")
 	}
 }
+
+func TestPortraitSeedReachesMemoryContextAndForgetDropsIt(t *testing.T) {
+	seed := &PortraitSeed{UserID: "fan-9", Entries: []PortraitSeedEntry{{Topic: "basic_info", SubTopic: "favorite_player", Content: "佩德里"}}}
+	passing := Case{
+		Version: SchemaVersion, ID: "regression.portrait-grading-pass", Suite: "regression",
+		Config: matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"},
+		Realizer: &RealizerFixture{Reply: "嗯，一起看着呢。"},
+		Portrait: seed,
+		Turns: []TurnStep{{
+			ID: "tangential", UserID: "fan-9", Text: "最近工作好累，今晚就想轻松看场球",
+			Expect: TurnExpectation{RequiredTools: []string{"memory.portrait"}, MemoryMustMention: []string{"佩德里"}},
+		}},
+	}
+	leaked := Case{
+		Version: SchemaVersion, ID: "regression.portrait-grading-leak", Suite: "regression",
+		Config: matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"},
+		Realizer: &RealizerFixture{Reply: "嗯，一起看着呢。"},
+		Portrait: seed,
+		Turns: []TurnStep{
+			{
+				// No expectations here; the forget applies after this turn.
+				ID: "seed", UserID: "fan-9", Text: "最近工作好累",
+				ForgetPortrait: []string{"favorite_player"},
+			},
+			{
+				// The fact was forgotten, so expecting it must FAIL: this
+				// proves the grader detects a fact leaving the context.
+				ID: "after-delete", UserID: "fan-9", Text: "最近工作好累，今晚就想轻松看场球",
+				Expect: TurnExpectation{MemoryMustMention: []string{"佩德里"}},
+			},
+		},
+	}
+	report := Run(context.Background(), []Case{passing, leaked})
+	if len(report.Cases) != 2 {
+		t.Fatalf("cases = %d, want 2", len(report.Cases))
+	}
+	if !report.Cases[0].Passed {
+		t.Fatalf("seeded portrait should satisfy memoryMustMention: %+v", report.Cases[0].Failures)
+	}
+	if report.Cases[1].Passed {
+		t.Fatal("after forgetPortrait, a turn expecting the fact must fail (the grader must see it leave the context)")
+	}
+}

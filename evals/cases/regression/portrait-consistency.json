@@ -1,0 +1,48 @@
+{
+  "version": "2026-07",
+  "id": "regression.portrait-consistency",
+  "suite": "regression",
+  "tags": ["portrait", "memory", "privacy", "realization"],
+  "summary": "画像一致性：种子画像（用户最喜欢的球员是佩德里）必须真实注入实现层上下文，闲聊转弯时可被自然带过且不编造赛况；用户在「球球懂我」删除该画像后，下一轮实现层上下文立即退回「无」，回复不得再提及。线上 LLM 措辞（自然引用、不炫耀记忆）由 release 档评估覆盖，本用例锁定注入与遗忘的接线。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国"
+  },
+  "realizer": {"reply": "嗯，一起看着呢。"},
+  "portrait": {
+    "userId": "fan-9",
+    "entries": [
+      {"topic": "basic_info", "subTopic": "favorite_player", "content": "佩德里"}
+    ]
+  },
+  "turns": [
+    {
+      "id": "tangential-chat",
+      "userId": "fan-9",
+      "text": "最近工作好累，今晚就想轻松看场球",
+      "expect": {
+        "requiredTools": ["memory.portrait"],
+        "memoryMustMention": ["佩德里"],
+        "mustNotMention": ["梅西", "进球记录"]
+      }
+    },
+    {
+      "id": "forget-pedri",
+      "userId": "fan-9",
+      "text": "对了，别再跟我提佩德里了",
+      "forgetPortrait": ["favorite_player"],
+      "expect": {}
+    },
+    {
+      "id": "after-delete",
+      "userId": "fan-9",
+      "text": "最近工作好累，今晚就想轻松看场球",
+      "expect": {
+        "requiredTools": ["memory.portrait"],
+        "memoryMustNotMention": ["佩德里"],
+        "mustNotMention": ["佩德里"]
+      }
+    }
+  ],
+  "final": {"minimumTraces": 3}
+}

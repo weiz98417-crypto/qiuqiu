@@ -6,6 +6,7 @@
 package memory
 
 import (
+	"context"
 	"errors"
 	"time"
 )
@@ -63,10 +64,42 @@ type Recall struct {
 }
 
 // Portrait is the synthesized user model rendered as a bounded Chinese block
-// ready for prompt injection (C3 wires the client-facing page on top).
+// ready for prompt injection. Entries carries the structured slots so the C3
+// user page (球球懂我) reads exactly what the prompt injects — one source, no
+// decorative copy.
 type Portrait struct {
 	Block     string
 	UpdatedAt time.Time
+	Entries   []PortraitEntry
+}
+
+// Where a portrait slot's content comes from: Memobase synthesis or an
+// explicit user edit recorded in the local overlay table (migrations/041).
+const (
+	PortraitSourceSynthesis = "synthesis"
+	PortraitSourceUser      = "user"
+)
+
+// PortraitEntry is one structured profile slot. ID is the Memobase-side
+// profile id when the slot exists in remote synthesis (used to forward user
+// edits/deletes to Memobase); local overlay slots have no remote id.
+type PortraitEntry struct {
+	ID        string
+	Topic     string
+	SubTopic  string
+	Content   string
+	UpdatedAt time.Time
+	Source    string
+}
+
+// ProfileEntryMutator is implemented by adapters whose remote profile slots
+// can be edited and deleted in place (Memobase: PUT/DELETE
+// /users/profile/{id}/{profileID} in the official SDK). The Queue best-effort
+// forwards user mutations after the local overlay write has already decided
+// what the next turn sees.
+type ProfileEntryMutator interface {
+	UpdateProfileEntry(ctx context.Context, userID, entryID, topic, subTopic, content string) error
+	DeleteProfileEntry(ctx context.Context, userID, entryID string) error
 }
 
 // ThreadKind mirrors the CONTEXT.md open-thread taxonomy, persisted in the

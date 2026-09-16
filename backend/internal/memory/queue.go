@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"hash/fnv"
 	"log"
@@ -10,6 +11,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"qiuqiu/internal/privacy"
 )
 
 // Audit reason codes persisted to memory_extraction_audit for every extraction
@@ -93,6 +96,7 @@ type Queue struct {
 	reflections ReflectionSink
 	backlog     BacklogStore
 	threads     ThreadStore
+	portraits   PortraitOverlayStore
 
 	items     chan enqueueItem
 	dropped   atomic.Int64
@@ -155,6 +159,18 @@ func WithThreads(store ThreadStore) QueueOption {
 	return func(q *Queue) {
 		if store != nil {
 			q.threads = store
+		}
+	}
+}
+
+// WithPortraitOverlays attaches the local portrait override store (C3, the
+// 球球懂我 page). When absent, Portrait still works but user edits and
+// deletion tombstones have nowhere to live, so the C3 mutations report
+// ErrNotSupported.
+func WithPortraitOverlays(store PortraitOverlayStore) QueueOption {
+	return func(q *Queue) {
+		if store != nil {
+			q.portraits = store
 		}
 	}
 }
@@ -255,8 +271,8 @@ func (q *Queue) enqueue(item enqueueItem) {
 	}
 }
 
-// Recall and Portrait degrade transparently: the adapter returns nil /
-// ErrUnavailable while unreachable, and callers keep read_recent.
+// Recall degrades transparently: the adapter returns nil while unreachable,
+// and callers keep read_recent.
 func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
 	if q == nil || !q.adapter.Configured() {
 		return nil
@@ -264,11 +280,180 @@ func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
 	return q.adapter.Recall(ctx, query)
 }
 
+// Portrait is the single read path behind prompt injection: synthesis layered
+// with the user's local edits, tombstones applied. It keeps the ErrUnavailable
+// signal when neither Memobase nor any local overlay can contribute, so
+// callers skip the block.
 func (q *Queue) Portrait(ctx context.Context, userID string) (Portrait, error) {
-	if q == nil || !q.adapter.Configured() {
+	if q == nil {
 		return Portrait{}, ErrUnavailable
 	}
-	return q.adapter.Portrait(ctx, userID)
+	portrait := q.assemblePortrait(ctx, userID)
+	if portrait.Block == "" && !q.adapter.Configured() {
+		return Portrait{}, ErrUnavailable
+	}
+	return portrait, nil
+}
+
+// PortraitEntries is the user-page read of the same assembled portrait. It
+// never fails: whatever survives degradation is shown.
+func (q *Queue) PortraitEntries(ctx context.Context, userID string) ([]PortraitEntry, time.Time) {
+	portrait := q.assemblePortrait(ctx, userID)
+	return portrait.Entries, portrait.UpdatedAt
+}
+
+// assemblePortrait merges the Memobase synthesis with the local overlay
+// layer. Every failure degrades to "less portrait", never to an error: the
+// privacy tombstone hides everything, an unreachable adapter falls back to
+// overlay-only entries, an unreachable overlay store falls back to synthesis.
+func (q *Queue) assemblePortrait(ctx context.Context, userID string) Portrait {
+	if q == nil || strings.TrimSpace(userID) == "" {
+		return Portrait{}
+	}
+	if q.portraits != nil {
+		switch err := q.portraits.Check(ctx, userID); {
+		case errors.Is(err, privacy.ErrDataDeleted), errors.Is(err, privacy.ErrDeletionInProgress):
+			// Privacy lifecycle: the portrait vanishes from the very next
+			// turn, regardless of what Memobase still holds.
+			return Portrait{}
+		case err != nil:
+			log.Printf("memory: portrait privacy check for %q: %v", userID, err)
+		}
+	}
+	var entries []PortraitEntry
+	var updatedAt time.Time
+	if portrait, err := q.adapter.Portrait(ctx, userID); err == nil {
+		entries = portrait.Entries
+		updatedAt = portrait.UpdatedAt
+	}
+	if q.portraits != nil {
+		overlays, err := q.portraits.List(ctx, userID)
+		if err != nil {
+			log.Printf("memory: portrait overlays for %q: %v", userID, err)
+		} else {
+			for _, overlay := range overlays {
+				if !overlay.Deleted && overlay.UpdatedAt.After(updatedAt) {
+					updatedAt = overlay.UpdatedAt
+				}
+			}
+			entries = ResolvePortrait(entries, overlays)
+		}
+	}
+	if len(entries) == 0 {
+		return Portrait{}
+	}
+	return Portrait{
+		Block:     RenderPortraitBlock(entries, updatedAt),
+		Entries:   entries,
+		UpdatedAt: updatedAt,
+	}
+}
+
+// SetPortraitEntry records the user's edit for one profile slot and
+// best-effort forwards it to Memobase when the synthesis entry id is known.
+// The local overlay decides what the next turn sees; the remote sync only
+// helps the synthesis layer converge.
+func (q *Queue) SetPortraitEntry(ctx context.Context, userID, topic, subTopic, content, entryID string) (PortraitEntry, error) {
+	if q == nil || q.portraits == nil {
+		return PortraitEntry{}, ErrNotSupported
+	}
+	overlay, err := q.portraits.Put(ctx, userID, topic, subTopic, content)
+	if err != nil {
+		return PortraitEntry{}, err
+	}
+	q.syncProfileEntry(ctx, userID, entryID, func(ctx context.Context, mutator ProfileEntryMutator) error {
+		return mutator.UpdateProfileEntry(ctx, userID, entryID, topic, subTopic, content)
+	})
+	return PortraitEntry{
+		ID:        entryID,
+		Topic:     overlay.Topic,
+		SubTopic:  overlay.SubTopic,
+		Content:   overlay.Content,
+		UpdatedAt: overlay.UpdatedAt,
+		Source:    PortraitSourceUser,
+	}, nil
+}
+
+// ForgetPortraitEntry tombstones one profile slot. The tombstone is local and
+// permanent (re-extraction cannot resurrect it into a prompt); the Memobase
+// slot is deleted best-effort when its id is known.
+func (q *Queue) ForgetPortraitEntry(ctx context.Context, userID, topic, subTopic, entryID string) error {
+	if q == nil || q.portraits == nil {
+		return ErrNotSupported
+	}
+	if entryID == "" {
+		if portrait, err := q.adapter.Portrait(ctx, userID); err == nil {
+			for _, entry := range portrait.Entries {
+				if entry.Topic == topic && entry.SubTopic == subTopic {
+					entryID = entry.ID
+					break
+				}
+			}
+		}
+	}
+	if err := q.portraits.Delete(ctx, userID, topic, subTopic); err != nil {
+		return err
+	}
+	q.syncProfileEntry(ctx, userID, entryID, func(ctx context.Context, mutator ProfileEntryMutator) error {
+		return mutator.DeleteProfileEntry(ctx, userID, entryID)
+	})
+	return nil
+}
+
+// ForgetPortrait forgets every slot at once (whole-portrait delete). It
+// tombstones synthesis slots and user-created overlay slots alike.
+func (q *Queue) ForgetPortrait(ctx context.Context, userID string) error {
+	if q == nil || q.portraits == nil {
+		return ErrNotSupported
+	}
+	portrait, _ := q.adapter.Portrait(ctx, userID)
+	seen := make(map[string]bool, len(portrait.Entries))
+	for _, entry := range portrait.Entries {
+		key := portraitKey(entry.Topic, entry.SubTopic)
+		seen[key] = true
+		if err := q.portraits.Delete(ctx, userID, entry.Topic, entry.SubTopic); err != nil {
+			return err
+		}
+		if entry.ID != "" {
+			q.syncProfileEntry(ctx, userID, entry.ID, func(ctx context.Context, mutator ProfileEntryMutator) error {
+				return mutator.DeleteProfileEntry(ctx, userID, entry.ID)
+			})
+		}
+	}
+	overlays, err := q.portraits.List(ctx, userID)
+	if err != nil {
+		return nil
+	}
+	for _, overlay := range overlays {
+		if overlay.Deleted {
+			continue
+		}
+		if seen[portraitKey(overlay.Topic, overlay.SubTopic)] {
+			continue
+		}
+		if err := q.portraits.Delete(ctx, userID, overlay.Topic, overlay.SubTopic); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+// syncProfileEntry forwards a user mutation to Memobase through the
+// ProfileEntryMutator seam; failures are logged, never surfaced — the overlay
+// write above already fixed what the next turn sees.
+func (q *Queue) syncProfileEntry(ctx context.Context, userID, entryID string, mutate func(context.Context, ProfileEntryMutator) error) {
+	if entryID == "" || q.adapter == nil || !q.adapter.Configured() {
+		return
+	}
+	mutator, ok := q.adapter.(ProfileEntryMutator)
+	if !ok {
+		return
+	}
+	syncCtx, cancel := context.WithTimeout(ctx, 3*time.Second)
+	defer cancel()
+	if err := mutate(syncCtx, mutator); err != nil {
+		log.Printf("memory: sync portrait entry %q for user %q: %v", entryID, userID, err)
+	}
 }
 
 func (q *Queue) Threads(ctx context.Context, userID string) ([]Thread, error) {

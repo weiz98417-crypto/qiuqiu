@@ -265,6 +265,10 @@ func (s *PostgresStore) ProcessDeletion(ctx context.Context, userID string) (err
 		`DELETE FROM match_companion_states WHERE user_id = $1`,
 		`DELETE FROM interaction_decisions WHERE user_id = $1`,
 		`DELETE FROM user_sessions WHERE user_id = $1`,
+		// C3 portrait override layer (migrations/041): the local tombstones
+		// and edits die with the account; the store's CheckDeletion gate
+		// already hid them from every read while deletion was pending.
+		`DELETE FROM portrait_overlays WHERE user_id = $1`,
 	} {
 		if _, err = tx.Exec(ctx, query, userID); err != nil {
 			return err

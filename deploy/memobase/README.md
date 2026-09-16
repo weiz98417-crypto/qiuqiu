@@ -41,6 +41,23 @@ ADR-0006 的分工：本地 Interaction Ledger 保持 append-only、可重放，
 - **降级**：连接失败/5xx ⇒ 适配器进入 degraded，`Recall` 返回空，agent 回退 `read_recent`；成功调用自动恢复。`MEMOBASE_TOKEN` 为空时整个记忆层静默停用。
 - **反思节拍**：`cmd/server/main.go` 的 `runReflectionBeat`（赛后 + 空闲 ticker）触发 flush + 画像刷新，审计写 `memory_reflection_audit`，洞察引用账本序号。
 
+## 用户画像（C3 球球懂我）
+
+画像 = Memobase profile（可变综合层）+ 本地覆盖层（`portrait_overlays` 表，migrations/041）。综合方向由 config.yaml 的 `event_theme_requirement` 加各槽位 description 驱动（basic_info / preferences / interaction_patterns 三个 topic，共 16 个槽位），输出保持中文。
+
+| 接口 | 说明 |
+| --- | --- |
+| `GET /api/me/portrait` | 读合并后的画像（会话 Bearer 认证，与 `/api/me/privacy` 同一传输模式；画像按账号组织、与单场比赛无关，因此不走 WS） |
+| `PATCH /api/me/portrait` | 用户改写一个槽位 `{topic, subTopic, content, entryId?}`；先写本地覆盖层，再 best-effort 转发 Memobase `PUT /users/profile/{id}/{profileID}` |
+| `DELETE /api/me/portrait` | 忘掉一个槽位 `{topic, subTopic, entryId?}` 或整个画像（空 body `{}`）；本地写删除墓碑，再 best-effort 转发 Memobase `DELETE` |
+
+关键行为：
+
+- **删除即时生效**：墓碑落在本地表，`memory.Queue` 组装画像时先应用墓碑（提示词注入与页面读同一入口）——下一轮对话的实现层上下文立即退回「无」，不依赖 Memobase 可达性，也不受其 profile 缓存（`cache_user_profiles_ttl`）与重新提取（旧 blob 把已删事实复活）的影响。
+- **编辑分层**：本地覆盖层是对外可见的权威（含用户新建的槽位）；Memobase 只在槽位 id 已知时同步，失败仅记日志，下一轮看到的仍是用户编辑后的内容。
+- **隐私生命周期**：覆盖层的读写全部过 `privacy.CheckDeletion`；全账号删除（`/api/me/data`）会同时清掉该用户的画像覆盖行。
+- **画像纪律**：画像块以「不得据此新增赛况事实」进入实现层提示词，ForbiddenClaims 纪律不变；画像只影响语气与自然带过，绝不参与赛况断言。
+
 ## 本地验证
 
 ```bash

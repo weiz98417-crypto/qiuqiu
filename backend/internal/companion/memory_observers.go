@@ -11,12 +11,14 @@ import (
 	"qiuqiu/internal/relationship"
 )
 
-// Bounds for the memory seam: Observe is an in-memory enqueue and Recall is a
-// profile fetch — neither may eat into the turn or realize budget.
+// Bounds for the memory seam: Observe is an in-memory enqueue and Recall /
+// Portrait are profile fetches — neither may eat into the turn or realize
+// budget.
 const (
-	memoryObserveTimeout = 200 * time.Millisecond
-	memoryRecallTimeout  = 300 * time.Millisecond
-	memoryRecallLimit    = 5
+	memoryObserveTimeout  = 200 * time.Millisecond
+	memoryRecallTimeout   = 300 * time.Millisecond
+	memoryPortraitTimeout = 300 * time.Millisecond
+	memoryRecallLimit     = 5
 )
 
 // observeTurnMemory runs after the turn has been appended to the Interaction
@@ -65,6 +67,33 @@ func (a *Agent) recallMemoryBlock(ctx context.Context, userID, focus string, tra
 		}})
 	}
 	return memory.RenderRecallBlock(recalls)
+}
+
+// portraitMemoryBlock fetches the synthesized user model (ADR-0006 Portrait)
+// as a bounded block for realization context. User edits and deletion
+// tombstones (the C3 球球懂我 page) are applied inside the memory seam, so a
+// forgotten portrait degrades to "" on the very next turn and the prompt
+// renders 无.
+func (a *Agent) portraitMemoryBlock(ctx context.Context, userID string, trace *Trace) string {
+	if a == nil || a.memories == nil {
+		return ""
+	}
+	portraitCtx, cancel := context.WithTimeout(ctx, memoryPortraitTimeout)
+	defer cancel()
+	portrait, err := a.memories.Portrait(portraitCtx, userID)
+	if trace != nil {
+		args := map[string]string{"userId": userID}
+		if err != nil {
+			args["degraded"] = "true"
+		} else {
+			args["entries"] = strconv.Itoa(len(portrait.Entries))
+		}
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "memory.portrait", Args: args})
+	}
+	if err != nil {
+		return ""
+	}
+	return portrait.Block
 }
 
 // userTurnMemoryMoments derives observations from a finished turn with the

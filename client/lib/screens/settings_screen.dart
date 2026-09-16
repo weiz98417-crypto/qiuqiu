@@ -7,10 +7,15 @@ class SettingsScreen extends StatefulWidget {
   final UserProfile initialProfile;
   final Future<void> Function(UserProfile) onSave;
 
+  /// Opens the 球球懂我 page (C3); the entry hides when the caller cannot
+  /// provide the session-backed portrait service.
+  final VoidCallback? onOpenPortrait;
+
   const SettingsScreen({
     super.key,
     required this.initialProfile,
     required this.onSave,
+    this.onOpenPortrait,
   });
 
   @override
@@ -165,6 +170,18 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   onPressed: _saving ? null : _save,
                   child: Text(_saving ? '正在保存…' : '保存陪看偏好'),
                 ),
+                if (widget.onOpenPortrait != null) ...[
+                  const SizedBox(height: AppSpacing.lg),
+                  const _SectionLabel(index: '07', label: '球球懂我'),
+                  const SizedBox(height: AppSpacing.xs),
+                  ListTile(
+                    contentPadding: EdgeInsets.zero,
+                    title: const Text('看看球球眼中的你'),
+                    subtitle: const Text('球球记住的印象可以修改，也可以让它忘掉'),
+                    trailing: const Icon(Icons.chevron_right),
+                    onTap: widget.onOpenPortrait,
+                  ),
+                ],
               ],
             ),
           ),

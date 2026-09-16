@@ -358,8 +358,9 @@ func main() {
 	demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter, observations: observationResetter}
 	// ADR-0006 memory seam: async observations queue into Memobase with the
 	// local audit/backlog tables; without a database the queue still runs and
-	// simply degrades to Ledger-only recall. The open-thread ledger (C2) and
-	// the user talkativeness preference stay local Postgres tables.
+	// simply degrades to Ledger-only recall. The open-thread ledger (C2), the
+	// user talkativeness preference and the portrait override layer (C3
+	// 球球懂我) stay local Postgres tables.
 	memoryCtx, memoryCancel := context.WithCancel(context.Background())
 	defer memoryCancel()
 	memobaseAdapter := memory.NewMemobase(memory.MemobaseConfig{
@@ -380,10 +381,12 @@ func main() {
 			log.Fatalf("postgres memory threads: %v", err)
 		}
 		defer memoryThreads.Close()
-		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads))
+		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads), memory.WithPortraitOverlays(memoryRecords))
 		memoryPreferenceStore = memoryRecords
 	} else {
-		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil)
+		// No database: the C3 portrait overlay layer lives in-process so the
+		// 球球懂我 page still edits real state for the running server.
+		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays()))
 	}
 	companionAgent.WithMemories(memoryQueue)
 	go memoryQueue.Run(memoryCtx)
@@ -422,6 +425,9 @@ func main() {
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
+	// C3 球球懂我: the user-facing portrait page (read/edit/forget) on the
+	// privacy API's transport (session bearer auth, account-scoped).
+	mux.HandleFunc("/api/me/portrait", handlePortraitAPI(sessionManager, cfg, memoryQueue))
 	mux.HandleFunc("/api/matches/catalog", handleMatchCatalog(matchStore, cfg))
 	mux.HandleFunc("/api/matches/", handleMatchAPIWithRuntime(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, interactionLedger, operatorWrites))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
@@ -2604,7 +2610,7 @@ func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool 
 		w.Header().Set("Access-Control-Allow-Origin", origin)
 		w.Header().Set("Vary", "Origin")
 	}
-	w.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, POST, OPTIONS")
+	w.Header().Set("Access-Control-Allow-Methods", "DELETE, GET, OPTIONS, PATCH, POST")
 	w.Header().Set("Access-Control-Allow-Headers", "Content-Type, Authorization, Idempotency-Key")
 	return true
 }

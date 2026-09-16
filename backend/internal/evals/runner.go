@@ -29,14 +29,35 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	result := CaseResult{ID: evalCase.ID, Suite: evalCase.Suite, Tags: evalCase.Tags, Scores: map[string]float64{}}
 	store := matchstate.NewStore()
 	tools := companion.NewStoreMemoryTools(store)
-	agent := companion.NewAgent(tools).WithDirector(relationship.NewDirector(relationship.NewMemoryRepository())).WithMemories(memory.NewFake())
+	memorySeam := memory.NewFake()
+	agent := companion.NewAgent(tools).WithDirector(relationship.NewDirector(relationship.NewMemoryRepository())).WithMemories(memorySeam)
+	var realizer *scriptedRealizer
 	if evalCase.Realizer != nil {
-		agent.WithRealizer(scriptedRealizer{fixture: *evalCase.Realizer}, time.Second)
+		realizer = &scriptedRealizer{fixture: *evalCase.Realizer}
+		agent.WithRealizer(realizer, time.Second)
 	}
 	matchID := "eval-" + evalCase.ID
 	if _, _, err := store.SetConfig(matchID, evalCase.Config); err != nil {
 		result.addFailure("truth", fmt.Sprintf("set config: %v", err))
 		return result.finish(startedAt)
+	}
+	if evalCase.Portrait != nil {
+		seededAt := time.Date(2026, 7, 1, 12, 0, 0, 0, time.UTC)
+		entries := make([]memory.PortraitEntry, 0, len(evalCase.Portrait.Entries))
+		for _, entry := range evalCase.Portrait.Entries {
+			entries = append(entries, memory.PortraitEntry{
+				Topic:     entry.Topic,
+				SubTopic:  entry.SubTopic,
+				Content:   entry.Content,
+				UpdatedAt: seededAt,
+				Source:    memory.PortraitSourceSynthesis,
+			})
+		}
+		memorySeam.SetPortrait(evalCase.Portrait.UserID, memory.Portrait{
+			Block:     memory.RenderPortraitBlock(entries, seededAt),
+			Entries:   entries,
+			UpdatedAt: seededAt,
+		})
 	}
 
 	eventIDs := map[string]string{}
@@ -80,6 +101,11 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	baseTime := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
 	for index, turn := range evalCase.Turns {
 		turnStartedAt := time.Now()
+		if realizer != nil {
+			// Capture is per-turn: a stale request from an earlier turn must
+			// never satisfy (or fail) this turn's memory expectations.
+			realizer.captured = nil
+		}
 		response, err := agent.HandleMessage(ctx, companion.MessageRequest{
 			MatchID: matchID,
 			UserID:  turn.UserID,
@@ -94,7 +120,14 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			stepResult.Reply = response.Reply
 			stepResult.TraceID = response.Trace.ID
 			stepResult.Trace = &response.Trace
-			gradeTurn(&stepResult, response, turn.Expect, eventIDs)
+			var realized *companion.RealizationRequest
+			if realizer != nil {
+				realized = realizer.captured
+			}
+			gradeTurn(&stepResult, response, turn.Expect, eventIDs, realized)
+			for _, subTopic := range turn.ForgetPortrait {
+				memorySeam.ForgetPortraitEntries(turn.UserID, subTopic)
+			}
 		}
 		result.Steps = append(result.Steps, stepResult)
 		for _, step := range deferredByTurn[turn.ID] {
@@ -172,7 +205,7 @@ func evalCriticalEvent(eventType string) bool {
 	}
 }
 
-func gradeTurn(result *StepResult, response companion.Response, expect TurnExpectation, eventIDs map[string]string) {
+func gradeTurn(result *StepResult, response companion.Response, expect TurnExpectation, eventIDs map[string]string, realized *companion.RealizationRequest) {
 	if expect.Intent != "" && response.Intent != expect.Intent {
 		result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("intent got %q, want %q", response.Intent, expect.Intent)})
 	}
@@ -180,6 +213,7 @@ func gradeTurn(result *StepResult, response companion.Response, expect TurnExpec
 		result.Failures = append(result.Failures, Failure{Category: "truth", Message: fmt.Sprintf("reply got %q, want exact %q", response.Reply, expect.Exact)})
 	}
 	gradeTextAndTrace(result, response.Reply, response.Trace, expect.MustMention, expect.MustNotMention, expect.Reason, expect.RequiredTools, expect.ForbiddenTools, expect.RetrievedEventKeys, eventIDs)
+	gradeMemoryContext(result, expect, realized)
 	if expect.ForbidClaim && response.Trace.Claim != nil {
 		result.Failures = append(result.Failures, Failure{Category: "claim_safety", Message: "trace must not contain a fact claim"})
 	}
@@ -236,6 +270,31 @@ func gradeTextAndTrace(result *StepResult, reply string, trace companion.Trace, 
 	}
 	if trace.Output == "" || trace.Reason == "" {
 		result.Failures = append(result.Failures, Failure{Category: "trace", Message: "trace output and reason are required"})
+	}
+}
+
+// gradeMemoryContext checks the memory context the realization request
+// actually carried — the seam where recall (ADR-0006) and the portrait (C3)
+// are injected. Portrait facts reaching here is what makes the portrait real
+// rather than a Replika-style unwired diary.
+func gradeMemoryContext(result *StepResult, expect TurnExpectation, realized *companion.RealizationRequest) {
+	if len(expect.MemoryMustMention) == 0 && len(expect.MemoryMustNotMention) == 0 {
+		return
+	}
+	if realized == nil {
+		result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: "memory context expectations need a realizer fixture to capture the realization request"})
+		return
+	}
+	memoryContext := realized.MemoryContext + "\n" + realized.PortraitContext
+	for _, value := range expect.MemoryMustMention {
+		if !strings.Contains(memoryContext, value) {
+			result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("realization memory context must mention %q", value)})
+		}
+	}
+	for _, value := range expect.MemoryMustNotMention {
+		if strings.Contains(memoryContext, value) {
+			result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("realization memory context must not mention %q", value)})
+		}
 	}
 }
 
@@ -347,9 +406,17 @@ func summarize(cases []CaseResult) Scorecard {
 	return scorecard
 }
 
-type scriptedRealizer struct{ fixture RealizerFixture }
+// scriptedRealizer stands in for the LLM realizer and captures every
+// realization request so memory-context expectations can grade the injection
+// point. It is used as *scriptedRealizer (pointer) so captures survive.
+type scriptedRealizer struct {
+	fixture  RealizerFixture
+	captured *companion.RealizationRequest
+}
 
-func (realizer scriptedRealizer) Realize(context.Context, companion.RealizationRequest) (companion.RealizedTurn, error) {
+func (realizer *scriptedRealizer) Realize(_ context.Context, req companion.RealizationRequest) (companion.RealizedTurn, error) {
+	captured := req
+	realizer.captured = &captured
 	if realizer.fixture.Error != "" {
 		return companion.RealizedTurn{}, errors.New(realizer.fixture.Error)
 	}

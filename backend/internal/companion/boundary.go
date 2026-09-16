@@ -104,6 +104,20 @@ func CompanionToolSchemas() []ToolSchema {
 			Output:            map[string]string{"ok": "bool"},
 		},
 		{
+			Name:              "memory.recall",
+			Description:       "Read the top-k relevant long-term memories with provenance citations for natural callback.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"userId": "string", "focus": "string", "limit": "int"},
+			Output:            map[string]string{"recalls": "[]memory.Recall"},
+		},
+		{
+			Name:              "memory.portrait",
+			Description:       "Read the synthesized user portrait (bounded Chinese block) for natural callback; never a source of match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"userId": "string"},
+			Output:            map[string]string{"entries": "int"},
+		},
+		{
 			Name:              "memory.recover_thread",
 			Description:       "Read the open-thread ledger and answer a previously unanswered question from recorded match facts.",
 			MutatesMatchFacts: false,

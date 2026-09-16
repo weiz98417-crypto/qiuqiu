@@ -10,8 +10,85 @@
     "tags": {"type": "array", "items": {"type": "string"}},
     "summary": {"type": "string"},
     "config": {"type": "object", "required": ["homeTeam", "awayTeam"]},
+    "realizer": {
+      "type": "object",
+      "properties": {
+        "reply": {"type": "string"},
+        "error": {"type": "string"}
+      },
+      "additionalProperties": false
+    },
+    "portrait": {
+      "type": "object",
+      "description": "C3: synthesized portrait seeded before the turns run; the seam treats it like a Memobase profile.",
+      "required": ["userId", "entries"],
+      "properties": {
+        "userId": {"type": "string"},
+        "entries": {
+          "type": "array",
+          "minItems": 1,
+          "items": {
+            "type": "object",
+            "required": ["topic", "subTopic", "content"],
+            "properties": {
+              "topic": {"type": "string"},
+              "subTopic": {"type": "string"},
+              "content": {"type": "string"}
+            },
+            "additionalProperties": false
+          }
+        }
+      },
+      "additionalProperties": false
+    },
     "events": {"type": "array"},
-    "turns": {"type": "array"},
+    "turns": {
+      "type": "array",
+      "items": {
+        "type": "object",
+        "required": ["id", "userId", "text"],
+        "properties": {
+          "id": {"type": "string"},
+          "userId": {"type": "string"},
+          "text": {"type": "string"},
+          "voice": {"type": "object"},
+          "forgetPortrait": {
+            "type": "array",
+            "description": "C3: sub-topics removed from this user's portrait after the turn executes.",
+            "items": {"type": "string"}
+          },
+          "expect": {
+            "type": "object",
+            "properties": {
+              "intent": {"type": "string"},
+              "exact": {"type": "string"},
+              "mustMention": {"type": "array", "items": {"type": "string"}},
+              "mustNotMention": {"type": "array", "items": {"type": "string"}},
+              "reason": {"type": "string"},
+              "requiredTools": {"type": "array", "items": {"type": "string"}},
+              "forbiddenTools": {"type": "array", "items": {"type": "string"}},
+              "retrievedEventKeys": {"type": "array", "items": {"type": "string"}},
+              "claimKind": {"type": "string"},
+              "claimStatus": {"type": "string"},
+              "claimCertainty": {"type": "string"},
+              "forbidClaim": {"type": "boolean"},
+              "memoryMustMention": {
+                "type": "array",
+                "description": "Substrings required in the realization request's memory context (recall + portrait blocks).",
+                "items": {"type": "string"}
+              },
+              "memoryMustNotMention": {
+                "type": "array",
+                "description": "Substrings forbidden in the realization request's memory context (recall + portrait blocks).",
+                "items": {"type": "string"}
+              }
+            },
+            "additionalProperties": false
+          }
+        },
+        "additionalProperties": false
+      }
+    },
     "final": {"type": "object"}
   },
   "additionalProperties": false

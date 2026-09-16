@@ -116,15 +116,17 @@ func TestFakeThreadsAreSliceBacked(t *testing.T) {
 }
 
 func TestRenderPortraitBlockIsBoundedAndLabelled(t *testing.T) {
-	entries := make([]profileEntry, 0, 30)
+	entries := make([]PortraitEntry, 0, 30)
 	for index := 0; index < 30; index++ {
-		var entry profileEntry
-		entry.Content = strings.Repeat("支持皇马二十年", 12)
-		entry.Attributes.Topic = "basic_info"
-		entry.Attributes.SubTopic = "favorite_team"
-		entries = append(entries, entry)
+		entries = append(entries, PortraitEntry{
+			Topic:     "basic_info",
+			SubTopic:  "favorite_team",
+			Content:   strings.Repeat("支持皇马二十年", 12),
+			UpdatedAt: time.Date(2026, 9, 2, 12, 0, 0, 0, time.UTC),
+			Source:    PortraitSourceSynthesis,
+		})
 	}
-	block := RenderPortraitBlock(entries)
+	block := RenderPortraitBlock(entries, time.Time{})
 	if block == "" {
 		t.Fatal("portrait block should render for non-empty profiles")
 	}
@@ -137,7 +139,10 @@ func TestRenderPortraitBlockIsBoundedAndLabelled(t *testing.T) {
 	if !strings.Contains(block, "基本信息/favorite_team") {
 		t.Fatalf("portrait block = %q, want topic labelling", block)
 	}
-	if RenderPortraitBlock(nil) != "" {
+	if RenderPortraitBlock(nil, time.Time{}) != "" {
 		t.Fatal("empty profile must render an empty block")
+	}
+	if !strings.Contains(block, "画像更新：2026-09-02") {
+		t.Fatal("portrait block should cite the profile UpdatedAt when given")
 	}
 }

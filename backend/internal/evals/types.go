@@ -17,6 +17,7 @@ type Case struct {
 	Summary  string                 `json:"summary"`
 	Config   matchstate.MatchConfig `json:"config"`
 	Realizer *RealizerFixture       `json:"realizer,omitempty"`
+	Portrait *PortraitSeed          `json:"portrait,omitempty"`
 	Events   []EventStep            `json:"events,omitempty"`
 	Turns    []TurnStep             `json:"turns,omitempty"`
 	Final    FinalExpectation       `json:"final,omitempty"`
@@ -25,6 +26,21 @@ type Case struct {
 type RealizerFixture struct {
 	Reply string `json:"reply,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// PortraitSeed plants a synthesized portrait for one user before the turns
+// run (C3). The seam treats it exactly like a Memobase-synthesized profile,
+// so cases can assert the fact reaches the realization context — and stops
+// reaching it after a forget step.
+type PortraitSeed struct {
+	UserID  string              `json:"userId"`
+	Entries []PortraitSeedEntry `json:"entries"`
+}
+
+type PortraitSeedEntry struct {
+	Topic    string `json:"topic"`
+	SubTopic string `json:"subTopic"`
+	Content  string `json:"content"`
 }
 
 type EventStep struct {
@@ -55,7 +71,11 @@ type TurnStep struct {
 	UserID string                        `json:"userId"`
 	Text   string                        `json:"text"`
 	Voice  *companion.VoiceTraceMetadata `json:"voice,omitempty"`
-	Expect TurnExpectation               `json:"expect"`
+	// ForgetPortrait removes the named sub-topics from this user's portrait
+	// AFTER the turn executes (the C3 page's delete flow), so the next turn
+	// can assert the fact is gone from the realization context.
+	ForgetPortrait []string        `json:"forgetPortrait,omitempty"`
+	Expect         TurnExpectation `json:"expect"`
 }
 
 type TurnExpectation struct {
@@ -72,6 +92,11 @@ type TurnExpectation struct {
 	ClaimStatus        companion.ClaimStatus         `json:"claimStatus,omitempty"`
 	ClaimCertainty     string                        `json:"claimCertainty,omitempty"`
 	ForbidClaim        bool                          `json:"forbidClaim,omitempty"`
+	// MemoryMustMention / MemoryMustNotMention grade the memory context the
+	// realization request actually carried (recall + portrait blocks). They
+	// need a realizer fixture, which is what captures the request.
+	MemoryMustMention    []string `json:"memoryMustMention,omitempty"`
+	MemoryMustNotMention []string `json:"memoryMustNotMention,omitempty"`
 }
 
 type FinalExpectation struct {

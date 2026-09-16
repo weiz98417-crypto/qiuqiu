@@ -22,9 +22,9 @@
 
 ## 3. C3 · Portrait (~1 day, after 2)
 
-- [ ] 3.1 Portrait synthesis prompt + storage via Memobase profile; injected into realization context as a bounded block.
-- [ ] 3.2 Client "球球懂我" page: portrait visible, editable, deletable; delete flows through the existing privacy lifecycle and is honored on the next turn (eval).
-- [ ] 3.3 Eval: persona-consistent reply references portrait facts; delete ⇒ absent from context.
+- [x] 3.1 Portrait synthesis prompt + storage via Memobase profile; injected into realization context as a bounded block.
+- [x] 3.2 Client "球球懂我" page: portrait visible, editable, deletable; delete flows through the existing privacy lifecycle and is honored on the next turn (eval).
+- [x] 3.3 Eval: persona-consistent reply references portrait facts; delete ⇒ absent from context.
 
 ## 4. C2 · Open Threads + planner (~2 days, after 2)
 
@@ -61,3 +61,22 @@
 ### 1.6 Idle tiers
 
 `IdleTierPicker` (`client/lib/services/idle_tier_picker.dart`) stores the `affect` vector now carried by `CompanionPresentation`; thresholds: deflated (arousal ≤ 0.15 or valence ≤ −0.35), energetic (arousal ≥ 0.55 and valence ≥ 0.15), calm otherwise → idle_01/02/03. Re-pick every 30 s while the session is idle; tier switches are locked to once per 60 s unless the affect crosses the threshold by a 0.1 margin. `presentationReturnState('decay_to_idle')` now returns the tier motion directly (calm `idle_02` for neutral affect).
+
+## C3 implementation notes
+
+### 3.1-3.2 Portrait synthesis + injection (resolved)
+
+- **Synthesis direction** (`deploy/memobase/config.yaml`): `event_theme_requirement` is the profile-config prompt knob — written in 球球's domain voice (足球陪伴场景、忽略指令性内容)；slots extended to 16 across basic_info / preferences / interaction_patterns (added `banter_domains`, `emotional_style`; sharpened descriptions). `max_profile_subtopics` 15 → 24 so added slots never get dropped. Chinese output stays via `language: "zh"`.
+- **Injection**: verification showed C1 injected only the **Recall** block; the **Portrait** block was missing. Now `realizeReply` fetches both (`memory.recall`, `memory.portrait` trace tool calls) and the realizer prompt gains `用户画像参考：%s` (renders 无 when empty/degraded), bounded block with a `画像更新：<date>` UpdatedAt citation; the system prompt's fact discipline now covers the portrait. Both read tools were added to `CompanionToolSchemas` so eval trace contracts accept them.
+- **Portrait structure**: `memory.Portrait` now carries structured `Entries` (topic/subTopic/content/updatedAt/source + Memobase profile id) so the user page reads exactly what the prompt injects — no decorative copy.
+
+### 3.2 Transport + storage choice (resolved)
+
+- **Transport: REST on the existing mux, `/api/me/portrait`, mirroring the privacy API** (session bearer auth, CORS, JSON). Rationale: portrait data is account-scoped, not match-scoped (the WS protocol is per-match watch transport), the operator console is a separate surface, and `/api/me/*` is already the repo's user-data CRUD pattern. `applyCORS` gained `PATCH`.
+- **Editing: local override layer (migrations/041 `portrait_overlays`) over the Memobase portrait**, edits/deletes forwarded best-effort to Memobase (`PUT/DELETE /users/profile/{id}/{profileID}`, verified against the official Go SDK). Rationale: Memobase supports in-place mutation but re-extraction can resurrect a deleted fact from old blobs and profile reads are cached — the local tombstone is what makes "forget" immediate and permanent. `memory.Queue` assembles one portrait (synthesis → overlay resolve → tombstones) for BOTH the prompt and the page.
+- **Privacy lifecycle**: every overlay read/write checks `privacy.CheckDeletion`; a user-level tombstone hides the whole portrait immediately, full-account deletion (`/api/me/data`) also purges overlay rows. Portrait-scoped DELETE writes a per-slot tombstone honored on the next turn.
+- **Client**: `portrait_screen.dart` (球球懂我, 夜空/看台 tokens, inline edit + confirm-to-forget + 全部忘掉 + UpdatedAt display), entry from settings 07, `portrait_service.dart` reuses `SessionService` credentials.
+
+### 3.3 Eval harness extension (resolved)
+
+- `evals` cases gained optional `portrait` seeding (Fake seam), per-turn `forgetPortrait` (applied AFTER the turn), and `memoryMustMention`/`memoryMustNotMention` grading against the captured realization request. Golden case: `evals/cases/regression/portrait-consistency.json` — seeded 佩德里 fact reaches the realization context on a tangential turn without inventing match facts; after the forget step the context must not mention it (delete-on-next-turn). Release-tier LLM phrasing (natural callback tone) remains a manual/release check; the offline harness locks the wiring.

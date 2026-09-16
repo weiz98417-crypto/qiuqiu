@@ -17,6 +17,7 @@ import '../services/session_service.dart';
 import '../services/match_session_controller.dart';
 import '../services/match_view_data.dart';
 import '../services/match_overview_service.dart';
+import '../services/portrait_service.dart';
 import '../services/streaming_transcription.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
@@ -25,6 +26,7 @@ import '../widgets/match_actions_menu.dart';
 import '../widgets/metal_button.dart';
 import '../widgets/mobile_theme_canvas.dart';
 import '../widgets/reply_subtitle_card.dart';
+import 'portrait_screen.dart';
 import 'reply_display.dart';
 import 'settings_screen.dart';
 
@@ -928,8 +930,11 @@ class _MatchScreenState extends State<MatchScreen> {
     final saved = await Navigator.push<UserProfile>(
       context,
       MaterialPageRoute(
-        builder: (_) =>
-            SettingsScreen(initialProfile: _profile, onSave: _preferences.save),
+        builder: (_) => SettingsScreen(
+          initialProfile: _profile,
+          onSave: _preferences.save,
+          onOpenPortrait: _deviceId.isEmpty ? null : _openPortrait,
+        ),
       ),
     );
     if (saved == null || !mounted) return;
@@ -944,6 +949,24 @@ class _MatchScreenState extends State<MatchScreen> {
         _vad.stopListening();
       }
     }
+  }
+
+  /// 球球懂我 (C3): the portrait page talks to /api/me/portrait over the same
+  /// session the match transport uses, so it works with or without a live
+  /// match connection.
+  Future<void> _openPortrait() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => PortraitScreen(
+          service: PortraitService(
+            baseUrl: normalizeAPIBaseURL(_socketUrl()),
+            sessions: _sessions,
+            deviceId: _deviceId,
+          ),
+        ),
+      ),
+    );
   }
 
   String _motionForExpression(String expression) {

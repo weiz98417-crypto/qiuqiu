@@ -83,6 +83,24 @@ func (evalCase Case) Validate() error {
 			return fmt.Errorf("duplicate turn id %q", turn.ID)
 		}
 		turns[turn.ID] = true
+		for _, subTopic := range turn.ForgetPortrait {
+			if strings.TrimSpace(subTopic) == "" {
+				return fmt.Errorf("turn %q forgetPortrait entries must be non-empty", turn.ID)
+			}
+		}
+	}
+	if evalCase.Portrait != nil {
+		if strings.TrimSpace(evalCase.Portrait.UserID) == "" {
+			return fmt.Errorf("portrait userId is required")
+		}
+		if len(evalCase.Portrait.Entries) == 0 {
+			return fmt.Errorf("portrait requires at least one entry")
+		}
+		for _, entry := range evalCase.Portrait.Entries {
+			if strings.TrimSpace(entry.Topic) == "" || strings.TrimSpace(entry.SubTopic) == "" || strings.TrimSpace(entry.Content) == "" {
+				return fmt.Errorf("portrait entries need topic, subTopic, and content")
+			}
+		}
 	}
 	for _, step := range evalCase.Events {
 		if key := strings.TrimSpace(step.AfterTurn); key != "" && !turns[key] {

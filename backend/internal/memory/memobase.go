@@ -20,6 +20,8 @@ package memory
 //	insert blob  POST {base}/blobs/insert/{id}?wait_process=b   body {"blob_type":"chat","blob_data":{"messages":[...]},"fields":{...}}
 //	flush        POST {base}/users/buffer/{id}/chat?wait_process=b
 //	profile      GET  {base}/users/profile/{id}?max_token_size=n&prefer_topics=t
+//	profile PUT  {base}/users/profile/{id}/{profileID}      body {"content":"...","attributes":{"topic":"...","sub_topic":"..."}}
+//	profile DEL  {base}/users/profile/{id}/{profileID}
 //
 // Responses use the envelope {"data":...,"errmsg":"...","errno":0}; HTTP >= 400
 // or errno != 0 is an error (network.UnpackResponse). The Go SDK Profile op has
@@ -169,7 +171,8 @@ func (m *Memobase) Recall(ctx context.Context, query Query) []Recall {
 	return scored
 }
 
-// Portrait renders the Memobase profile as a bounded Chinese context block.
+// Portrait renders the Memobase profile as a bounded Chinese context block
+// plus the structured entries the C3 user page reads and edits.
 func (m *Memobase) Portrait(ctx context.Context, userID string) (Portrait, error) {
 	if !m.Configured() {
 		return Portrait{}, ErrUnavailable
@@ -177,18 +180,73 @@ func (m *Memobase) Portrait(ctx context.Context, userID string) (Portrait, error
 	if m.Degraded() {
 		return Portrait{}, ErrUnavailable
 	}
-	entries, err := m.profileEntries(ctx, userID)
+	profiles, err := m.profileEntries(ctx, userID)
 	if err != nil {
 		return Portrait{}, err
 	}
+	entries := make([]PortraitEntry, 0, len(profiles))
 	var updatedAt time.Time
-	for _, entry := range entries {
-		if stamped := entry.updatedAt(); stamped.After(updatedAt) {
+	for _, profile := range profiles {
+		content := strings.TrimSpace(profile.Content)
+		if content == "" {
+			continue
+		}
+		stamped := profile.updatedAt()
+		if stamped.After(updatedAt) {
 			updatedAt = stamped
 		}
+		entries = append(entries, PortraitEntry{
+			ID:        profile.ID,
+			Topic:     profile.Attributes.Topic,
+			SubTopic:  profile.Attributes.SubTopic,
+			Content:   content,
+			UpdatedAt: stamped,
+			Source:    PortraitSourceSynthesis,
+		})
 	}
-	return Portrait{Block: RenderPortraitBlock(entries), UpdatedAt: updatedAt}, nil
+	if len(entries) == 0 {
+		return Portrait{}, nil
+	}
+	return Portrait{Block: RenderPortraitBlock(entries, updatedAt), Entries: entries, UpdatedAt: updatedAt}, nil
 }
+
+// UpdateProfileEntry PUTs a user edit onto the remote profile slot (official
+// SDK core/user.go UpdateProfile). Requires the Memobase profile id from the
+// last portrait read; the local overlay stays the authority.
+func (m *Memobase) UpdateProfileEntry(ctx context.Context, userID, entryID, topic, subTopic, content string) error {
+	if !m.Configured() {
+		return ErrUnavailable
+	}
+	remote, err := m.ensureUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	body, err := json.Marshal(map[string]any{
+		"content":    content,
+		"attributes": map[string]string{"topic": topic, "sub_topic": subTopic},
+	})
+	if err != nil {
+		return err
+	}
+	_, err = m.call(ctx, http.MethodPut, "/users/profile/"+remote+"/"+url.PathEscape(entryID), nil, body)
+	return err
+}
+
+// DeleteProfileEntry DELETEs the remote profile slot (official SDK
+// core/user.go DeleteProfile). Requires the Memobase profile id.
+func (m *Memobase) DeleteProfileEntry(ctx context.Context, userID, entryID string) error {
+	if !m.Configured() {
+		return ErrUnavailable
+	}
+	remote, err := m.ensureUser(ctx, userID)
+	if err != nil {
+		return err
+	}
+	_, err = m.call(ctx, http.MethodDelete, "/users/profile/"+remote+"/"+url.PathEscape(entryID), nil, nil)
+	return err
+}
+
+var _ ProfileEntryMutator = (*Memobase)(nil)
 
 // Threads stays unsupported on Memobase: the open-thread ledger is a local
 // table (C2), not Memobase synthesis.
@@ -300,6 +358,7 @@ type chatMessage struct {
 // profileEntry mirrors the SDK's UserProfileData without its uuid.UUID
 // dependency (stdlib-only package).
 type profileEntry struct {
+	ID         string `json:"id"`
 	Content    string `json:"content"`
 	Attributes struct {
 		Topic    string `json:"topic"`

@@ -90,7 +90,7 @@ func (f *Fake) Portrait(_ context.Context, userID string) (Portrait, error) {
 	if portrait, ok := f.portraits[userID]; ok {
 		return portrait, nil
 	}
-	entries := make([]profileEntry, 0, 4)
+	entries := make([]PortraitEntry, 0, 4)
 	for _, moment := range f.moments {
 		if moment.UserID != userID {
 			continue
@@ -98,14 +98,19 @@ func (f *Fake) Portrait(_ context.Context, userID string) (Portrait, error) {
 		if moment.Kind != MomentUserFact && moment.Kind != MomentPromise {
 			continue
 		}
-		var entry profileEntry
-		entry.Content = moment.Content
-		entry.Attributes.Topic = "basic_info"
-		entry.Attributes.SubTopic = string(moment.Kind)
-		entry.UpdatedAt = moment.OccurredAt.UTC().Format(time.RFC3339)
-		entries = append(entries, entry)
+		entries = append(entries, PortraitEntry{
+			Topic:     "basic_info",
+			SubTopic:  string(moment.Kind),
+			Content:   moment.Content,
+			UpdatedAt: moment.OccurredAt.UTC(),
+			Source:    PortraitSourceSynthesis,
+		})
 	}
-	return Portrait{Block: RenderPortraitBlock(entries), UpdatedAt: latestMomentAt(f.moments, userID)}, nil
+	updatedAt := latestMomentAt(f.moments, userID)
+	if len(entries) == 0 {
+		return Portrait{}, nil
+	}
+	return Portrait{Block: RenderPortraitBlock(entries, updatedAt), Entries: entries, UpdatedAt: updatedAt}, nil
 }
 
 // Threads lists the user's slice-backed open threads; the durable local
@@ -221,6 +226,40 @@ func (f *Fake) SetPortrait(userID string, portrait Portrait) {
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	f.portraits[userID] = portrait
+}
+
+// ForgetPortraitEntries drops the named sub-topics from the stored portrait
+// override — the Fake counterpart of Queue.ForgetPortraitEntry for the C3
+// delete-on-next-turn tests. Unknown names are ignored.
+func (f *Fake) ForgetPortraitEntries(userID string, subTopics ...string) {
+	if f == nil {
+		return
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	portrait, ok := f.portraits[userID]
+	if !ok {
+		return
+	}
+	dropped := make(map[string]bool, len(subTopics))
+	for _, subTopic := range subTopics {
+		dropped[subTopic] = true
+	}
+	entries := make([]PortraitEntry, 0, len(portrait.Entries))
+	var updatedAt time.Time
+	for _, entry := range portrait.Entries {
+		if dropped[entry.SubTopic] {
+			continue
+		}
+		if entry.UpdatedAt.After(updatedAt) {
+			updatedAt = entry.UpdatedAt
+		}
+		entries = append(entries, entry)
+	}
+	portrait.Entries = entries
+	portrait.UpdatedAt = updatedAt
+	portrait.Block = RenderPortraitBlock(entries, updatedAt)
 	f.portraits[userID] = portrait
 }
 

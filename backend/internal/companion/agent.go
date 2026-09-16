@@ -298,7 +298,11 @@ type RealizationRequest struct {
 	// MemoryContext is the bounded provenance-cited recall block (ADR-0006);
 	// empty when the memory seam is absent or degraded.
 	MemoryContext string
-	ReliableText  string
+	// PortraitContext is the bounded synthesized user-model block (ADR-0006,
+	// C3); user edits and deletion tombstones already applied in the seam.
+	// Empty renders as 无.
+	PortraitContext string
+	ReliableText    string
 }
 
 type RealizedTurn struct {
@@ -2602,13 +2606,15 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 		FactMode:        factMode,
 	}
 	memoryContext := a.recallMemoryBlock(ctx, req.UserID, req.Text, trace)
+	portraitContext := a.portraitMemoryBlock(ctx, req.UserID, trace)
 	realized, err := a.realizer.Realize(realizeCtx, RealizationRequest{
-		UserInput:     req.Text,
-		Intent:        intent,
-		Grounding:     grounding,
-		Decision:      decision,
-		MemoryContext: memoryContext,
-		ReliableText:  reliable,
+		UserInput:       req.Text,
+		Intent:          intent,
+		Grounding:       grounding,
+		Decision:        decision,
+		MemoryContext:   memoryContext,
+		PortraitContext: portraitContext,
+		ReliableText:    reliable,
 	})
 	if err != nil || strings.TrimSpace(realized.Text) == "" {
 		if err != nil {
