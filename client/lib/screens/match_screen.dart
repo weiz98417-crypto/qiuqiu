@@ -127,6 +127,8 @@ class _MatchScreenState extends State<MatchScreen> {
       initialMatch: widget.initialMatch ?? const MatchViewData(),
     );
     _sessionController.addListener(_onSessionStateChanged);
+    // 表演映射单一源（ADR-0007）：相位行从 presentation-map.json 解析。
+    unawaited(_sessionController.ensurePresentationMapLoaded());
     _bindServices();
     unawaited(_loadMatchOverview());
     _clockTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
@@ -445,10 +447,15 @@ class _MatchScreenState extends State<MatchScreen> {
       minute: data?['minute'],
     ));
     _vibrateForMatchEvent(eventType);
-    _sessionController.receiveLegacyEventAnimation(
-      _expressionForEvent(eventType),
-      _motionForEvent(eventType),
-    );
+    if (eventType == 'match_end') {
+      // 全场结束走相位表 match_end 行（一次性 happy/wave 告别）。
+      _sessionController.applyMatchEnd();
+    } else {
+      _sessionController.receiveLegacyEventAnimation(
+        _expressionForEvent(eventType),
+        _motionForEvent(eventType),
+      );
+    }
   }
 
   void _vibrateForMatchEvent(String? eventType) {
@@ -1071,7 +1078,8 @@ class _MatchScreenState extends State<MatchScreen> {
       'penalty': 'cheer',
       'red_card': 'think',
       'yellow_card': 'think',
-      'match_end': 'idle',
+      // match_end is owned by the phase table's match_end row
+      // (MatchSessionController.applyMatchEnd), not the legacy animation map.
     };
     return motions[event] ?? 'idle';
   }

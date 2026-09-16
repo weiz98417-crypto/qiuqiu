@@ -469,11 +469,68 @@ var model = null;
 var speaking = false;
 window.modelReady = false;
 var mouth = { open: 0, form: 0, funnel: 0, stretch: 0 };
-var exprMap = {
-    idle:0, listening:0, confused:0, think:0, thinking:0, focus:2,
-    excited:1, cheer:1, chat:3, tease:3, happy:3,
-    nervous:4, sad:4, complain:4, surprised:5, surprise:5, angry:6
+// 表演映射单一源 (ADR-0007): expression/motion names resolve through
+// presentation-map.json, fetched over the same qiuqiu://asset scheme as the
+// model and the lipsync profile. Name-driven calls arriving before the map
+// loads are buffered and replayed; a name without a row keeps the current
+// body instead of snapping to the empty expression file.
+var exprMap = {};
+var motionMap = {};
+var groupVariants = {};
+var mapReady = false;
+var pendingExpression = null;
+var pendingMotion = null;
+// Legacy names kept for senders predating the presentation map — mirrors
+// CompanionPresentation.expressionAliases/motionAliases/legacyMotionNames in
+// lib/services/presentation_state.dart.
+var expressionAliases = {
+    low: 'sad', tense: 'nervous', deflated: 'sad',
+    cheer: 'excited', complain: 'nervous',
+    think: 'thinking', surprise: 'surprised'
 };
+var motionAliases = {
+    celebrate_01: 'celebrate', cheer: 'celebrate', focus: 'listen_02',
+    hold: 'listen_02', settle: 'idle_01', slump: 'idle_01', nod: 'agree',
+    listening: 'listen', confused: 'idle'
+};
+
+fetch('qiuqiu://asset/models/qiuqiu/presentation-map.json')
+    .then(function(resp) { return resp.json(); })
+    .then(applyPresentationMap)
+    .catch(function(e) {
+        console.warn('presentation-map unavailable, keeping model defaults:', e);
+        applyPresentationMap(null);
+    });
+
+function applyPresentationMap(map) {
+    var expressions = map && map.expressions ? map.expressions : {};
+    var motions = map && map.motions ? map.motions : {};
+    for (var name in expressions) exprMap[name] = expressions[name];
+    var variants = {};
+    for (var key in motions) {
+        var motion = motions[key];
+        if (!motion || !motion.group) continue;
+        var variant = motion.variant || 0;
+        motionMap[key] = [motion.group, variant];
+        if (!variants[motion.group]) variants[motion.group] = [];
+        variants[motion.group].push([motion.group, variant]);
+    }
+    for (var group in variants) {
+        variants[group].sort(function(a, b) { return a[1] - b[1]; });
+        groupVariants[group] = variants[group];
+    }
+    mapReady = true;
+    if (pendingExpression) {
+        var expression = pendingExpression;
+        pendingExpression = null;
+        setExpression(expression);
+    }
+    if (pendingMotion) {
+        var motion = pendingMotion;
+        pendingMotion = null;
+        playMotion(motion);
+    }
+}
 
 function resizeModel() {
     if (!model) return;
@@ -508,24 +565,34 @@ async function loadModel() {
 }
 
 function setExpression(name) {
-    var idx = exprMap[name] || 0;
+    if (!mapReady) {
+        pendingExpression = name;
+        return;
+    }
+    var canonical = expressionAliases[name] || name;
+    var idx = exprMap[canonical];
+    if (typeof idx !== 'number') return;
     try { if (model) model.expression(idx); } catch(e) {}
 }
 
 function playMotion(name) {
     if (!model) return;
-    var map = {
-        hello:['hello',0],
-        celebrate:['celebrate',0], celebrate_01:['celebrate',0], celebrate_02:['celebrate',1], cheer:['celebrate',0],
-        idle:['idle',0], idle_01:['idle',0], idle_02:['idle',1], idle_03:['idle',2],
-        listen:['listen',0], listen_01:['listen',0], listen_02:['listen',1], focus:['listen',1],
-        speak:['speak',0], speak_01:['speak',0], speak_02:['speak',1],
-        think:['think',0],
-        miss:['miss',0], complain:['complain',0], analysis:['analysis',0],
-        tense:['tense',0], agree:['agree',0], wave:['wave',0]
-    };
-    var m = map[name];
+    if (!mapReady) {
+        pendingMotion = name;
+        return;
+    }
+    var m = resolveMotion(name);
     if (m) try { model.motion(m[0], m[1], 3); } catch(e) {}
+}
+
+// Exact motion names play their single row; group names (`idle`, `listen`,
+// `celebrate`, …) play the group's first variant. Unknown names stay put.
+function resolveMotion(name) {
+    var canonical = motionAliases[name] || name;
+    if (motionMap[canonical]) return motionMap[canonical];
+    var variants = groupVariants[canonical];
+    if (variants && variants.length) return variants[0];
+    return motionMap.idle_01 || null;
 }
 
 function setSpeaking(v) {

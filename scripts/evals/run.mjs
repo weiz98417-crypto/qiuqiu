@@ -19,6 +19,7 @@ const evalEnvironment = tier === 'release'
 
 await runCommand('go', ['test', './...'], { cwd: backendDir, env: evalEnvironment });
 await runCommand('go', ['run', './cmd/evals', '-suite', 'all', '-out', '../artifacts/evals/offline.json'], { cwd: backendDir, env: evalEnvironment });
+await runCommand('node', [join('scripts', 'check-presentation-map.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoot, env: evalEnvironment });
 
 if (tier !== 'offline') {

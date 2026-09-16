@@ -173,7 +173,69 @@ void main() {
 
     controller.vadSpeaking(continuousEnabled: true);
     expect(controller.state.phase, MatchSessionPhase.userSpeaking);
-    expect(controller.state.expression, 'focus');
+    expect(controller.state.expression, 'listening');
+    expect(controller.state.motion, 'listen_01');
+  });
+
+  test('turn phases resolve through the presentation-map phase rows', () {
+    final controller = MatchSessionController();
+    controller.transcriptFinal('这球怎么判的？');
+    expect(controller.state.phase, MatchSessionPhase.understanding);
+    expect(controller.state.expression, 'thinking');
+    expect(controller.state.motion, 'think');
+
+    controller.dispatch(const PlaybackSessionEvent('started', traceId: 't-1'));
+    expect(controller.state.phase, MatchSessionPhase.speaking);
+    expect(controller.state.expression, 'chat');
+    expect(controller.state.motion, 'speak_01');
+  });
+
+  test('fulltime fires the one-shot happy/wave farewell once', () {
+    final controller = MatchSessionController();
+    final now = DateTime.utc(2026, 9, 8, 20);
+    Map<String, dynamic> clock(String period, int version) => {
+          'period': period,
+          'elapsedSeconds': 5400,
+          'running': false,
+          'anchorAt': now.toIso8601String(),
+          'version': version,
+        };
+    controller.dispatch(MatchClockSessionEvent(clock('second_half', 1), now));
+    expect(controller.state.match.matchEnded, isFalse);
+
+    controller.dispatch(MatchClockSessionEvent(clock('fulltime', 2), now));
+    expect(controller.state.match.matchEnded, isTrue);
+    expect(controller.state.expression, 'happy');
+    expect(controller.state.motion, 'wave');
+
+    // One-shot: later end-state updates do not replay the farewell.
+    controller.setMotion('idle');
+    controller.dispatch(MatchClockSessionEvent(clock('finished', 3), now));
+    expect(controller.state.motion, 'idle');
+  });
+
+  test('the legacy match_end event plays the phase-table farewell', () {
+    final controller = MatchSessionController();
+    controller.applyMatchEnd();
+    expect(controller.state.expression, 'happy');
+    expect(controller.state.motion, 'wave');
+  });
+
+  test('a held presentation outranks the fulltime farewell', () {
+    final controller = MatchSessionController();
+    const presentation = CompanionPresentation(
+      expression: 'excited',
+      motion: 'cheer',
+      voiceStyle: 'excited',
+      voiceEnergy: 0.8,
+      voiceSpeed: 1,
+      hold: Duration(seconds: 2),
+      returnMode: 'decay_to_focus',
+    );
+    controller.activatePresentation(presentation);
+    controller.applyMatchEnd();
+    expect(controller.state.expression, 'excited');
+    expect(controller.state.activePresentation, same(presentation));
   });
 
   test('deduplicates event projections and consumes duplicate audio safely',

@@ -1,0 +1,62 @@
+{
+  "expressions": {
+    "focus": 0,
+    "idle": 0,
+    "listening": 0,
+    "excited": 1,
+    "thinking": 3,
+    "chat": 3,
+    "tease": 3,
+    "happy": 3,
+    "nervous": 4,
+    "sad": 4,
+    "confused": 5,
+    "surprised": 5,
+    "angry": 6
+  },
+  "motions": {
+    "hello": { "group": "hello", "variant": 0 },
+    "idle_01": { "group": "idle", "variant": 0 },
+    "idle_02": { "group": "idle", "variant": 1 },
+    "idle_03": { "group": "idle", "variant": 2 },
+    "listen_01": { "group": "listen", "variant": 0 },
+    "listen_02": { "group": "listen", "variant": 1 },
+    "speak_01": { "group": "speak", "variant": 0 },
+    "speak_02": { "group": "speak", "variant": 1 },
+    "think": { "group": "think", "variant": 0 },
+    "celebrate": { "group": "celebrate", "variant": 0 },
+    "celebrate_02": { "group": "celebrate", "variant": 1 },
+    "miss": { "group": "miss", "variant": 0 },
+    "complain": { "group": "complain", "variant": 0 },
+    "analysis": { "group": "analysis", "variant": 0 },
+    "tense": { "group": "tense", "variant": 0 },
+    "agree": { "group": "agree", "variant": 0 },
+    "wave": { "group": "wave", "variant": 0 }
+  },
+  "acts": {
+    "ActReact": { "positive": "excited/celebrate", "negative": "nervous/complain", "neutral": "chat/speak" },
+    "ActAsk": { "any": "thinking/think" },
+    "ActAnalyze": { "any": "thinking/analysis" },
+    "ActRecall": { "any": "happy/agree" },
+    "ActRepair": { "any": "sad/agree", "energyDelta": -0.3 },
+    "ActDisagree": { "mild": "nervous/complain", "strong": "angry/complain" },
+    "ActTease": { "any": "tease/speak" },
+    "ActAcknowledge": { "any": "chat/speak" }
+  },
+  "events": {
+    "goal": "excited/celebrate",
+    "goal_cancelled": "surprised/complain",
+    "var_overturn": "surprised/confused",
+    "var_check": "tense/tense",
+    "shot_missed": "sad/miss"
+  },
+  "phases": {
+    "user_speaking": "listening/listen_01",
+    "understanding": "thinking/think",
+    "qiuqiu_speaking": "chat/speak_01",
+    "session_open": "happy/hello",
+    "match_end": "happy/wave",
+    "idle": "affect-idle-tier"
+  },
+  "delivery": { "interrupted": "confused/listening" }
+}

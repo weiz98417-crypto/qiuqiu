@@ -30,6 +30,13 @@ class MatchViewData {
         _ => '直播中',
       };
 
+  /// Fulltime classification (ADR-0007 phases.match_end): the game no longer
+  /// runs; the session controller plays the one-shot farewell on this edge.
+  bool get matchEnded => switch (period.trim().toLowerCase()) {
+        'finished' || 'full_time' || 'fulltime' => true,
+        _ => false,
+      };
+
   String get eventLabel => statusCarouselItems.first;
 
   List<String> get statusCarouselItems {

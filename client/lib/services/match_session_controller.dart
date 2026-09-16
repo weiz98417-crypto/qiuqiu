@@ -165,6 +165,13 @@ class MatchSessionController extends ChangeNotifier {
       Queue<ReconnectVoiceFallback>();
   bool _manualReconnectInProgress = false;
   String? _activeMatchReactionEventId;
+  bool _matchEndHandled = false;
+
+  /// presentation-map.json rows (ADR-0007): phase transitions resolve through
+  /// the single source instead of scattered hardcodes. Starts on the
+  /// synchronous fallback mirror until [ensurePresentationMapLoaded] swaps in
+  /// the parsed asset.
+  PresentationMap _presentationMap = PresentationMap.fallback;
 
   static const int maxReconnectVoiceFallbacks = 4;
 
@@ -172,6 +179,57 @@ class MatchSessionController extends ChangeNotifier {
       : _state = MatchSessionState(match: initialMatch);
 
   MatchSessionState get state => _state;
+
+  /// Loads presentation-map.json once so the phase rows below render from the
+  /// single-source table (the fallback mirror is locked to the same JSON by
+  /// the contract test, so callers may also skip this and stay consistent).
+  Future<void> ensurePresentationMapLoaded() async {
+    _presentationMap = await loadPresentationMap();
+  }
+
+  /// Controller phase -> `phases` row of presentation-map.json. Phases
+  /// without a row (the listening wait, offline/failed/reconnecting…) keep
+  /// their client defaults; idle stays owned by the C4 idle tier picker
+  /// (phases.idle = "affect-idle-tier").
+  static String? _phaseRowKey(MatchSessionPhase phase) => switch (phase) {
+        MatchSessionPhase.userSpeaking => 'user_speaking',
+        MatchSessionPhase.understanding => 'understanding',
+        MatchSessionPhase.speaking => 'qiuqiu_speaking',
+        MatchSessionPhase.welcoming => 'session_open',
+        _ => null,
+      };
+
+  /// (expression, motion) of the phase row, or null when the row is absent
+  /// (copyWith then keeps the current body).
+  (String, String)? _phasePerformance(MatchSessionPhase phase) {
+    final key = _phaseRowKey(phase);
+    return key == null ? null : _presentationMap.performanceFor(key);
+  }
+
+  /// One-shot fulltime farewell (phases.match_end → happy/wave): fires when
+  /// the match first classifies as finished — via the snapshot/clock period
+  /// edge (see _fireMatchEndOnEdge) or the legacy match_end event. A held
+  /// backend presentation outranks the farewell (ADR-0007 ownership).
+  MatchSessionState applyMatchEnd() {
+    final performance = _presentationMap.performanceFor('match_end');
+    _matchEndHandled = true;
+    if (performance == null || _state.activePresentation != null) {
+      return _state;
+    }
+    _publish(_state.copyWith(
+      expression: performance.$1,
+      motion: performance.$2,
+    ));
+    return _state;
+  }
+
+  /// Fires the fulltime farewell once, on the edge where the match period
+  /// first classifies as finished.
+  void _fireMatchEndOnEdge({required bool wasEnded}) {
+    if (!_matchEndHandled && !wasEnded && _state.match.matchEnded) {
+      applyMatchEnd();
+    }
+  }
   List<MatchSessionCommand> takeCommands() {
     final commands = List<MatchSessionCommand>.unmodifiable(_commands);
     _commands.clear();
@@ -241,6 +299,7 @@ class MatchSessionController extends ChangeNotifier {
     _reconnectVoiceFallbacks.clear();
     _manualReconnectInProgress = false;
     _activeMatchReactionEventId = null;
+    _matchEndHandled = false;
     _publish(_state.copyWith(
       presence: MatchSessionPresence.left,
       connected: false,
@@ -487,7 +546,9 @@ class MatchSessionController extends ChangeNotifier {
           _publish(_state.copyWith(match: match));
           return _state;
         }
+        final wasEnded = _state.match.matchEnded;
         _publish(_state.copyWith(match: match, matchClock: clock));
+        _fireMatchEndOnEdge(wasEnded: wasEnded);
         return _state;
       case MatchClockSessionEvent(:final clock, :final now):
         final parsed = MatchClockViewData.tryParse(clock);
@@ -496,6 +557,7 @@ class MatchSessionController extends ChangeNotifier {
                 parsed.version < _state.matchClock!.version)) {
           return _state;
         }
+        final wasEnded = _state.match.matchEnded;
         _publish(_state.copyWith(
           matchClock: parsed,
           match: _state.match.copyWith(
@@ -504,6 +566,7 @@ class MatchSessionController extends ChangeNotifier {
             hasMatchInfo: true,
           ),
         ));
+        _fireMatchEndOnEdge(wasEnded: wasEnded);
         return _state;
       case MatchEventProjectionSessionEvent(
           :final event,
@@ -533,7 +596,9 @@ class MatchSessionController extends ChangeNotifier {
           }
         }
         if (event != null && shouldProjectEvent) match = match.withEvent(event);
+        final wasEnded = _state.match.matchEnded;
         _publish(_state.copyWith(match: match, matchClock: matchClock));
+        _fireMatchEndOnEdge(wasEnded: wasEnded);
         return _state;
       case LegacyMatchSessionEvent(:final score, :final minute):
         var match = _state.match;
@@ -685,11 +750,12 @@ class MatchSessionController extends ChangeNotifier {
   MatchSessionState transcriptFinal(String text,
       {bool userStillSpeaking = false}) {
     if (userStillSpeaking) return _state;
+    final performance = _phasePerformance(MatchSessionPhase.understanding);
     _publish(_state.copyWith(
       phase: MatchSessionPhase.understanding,
       userText: text.trim().isEmpty ? '刚刚说的话' : text.trim(),
-      expression: 'thinking',
-      motion: 'think',
+      expression: performance?.$1,
+      motion: performance?.$2,
       clearNotice: true,
     ));
     return _state;
@@ -723,11 +789,14 @@ class MatchSessionController extends ChangeNotifier {
         _state.userText.trim().isEmpty || _state.userText == '正在识别…'
             ? '刚刚说的话'
             : _state.userText;
+    final performance = sent
+        ? _phasePerformance(MatchSessionPhase.understanding)
+        : null;
     _publish(_state.copyWith(
       phase: sent ? MatchSessionPhase.understanding : MatchSessionPhase.offline,
       userText: userText,
-      expression: sent ? 'thinking' : null,
-      motion: sent ? 'think' : null,
+      expression: performance?.$1,
+      motion: performance?.$2,
       notice: sent ? null : '现在还没连上，稍后再试一次。',
       clearNotice: sent,
     ));
@@ -736,11 +805,14 @@ class MatchSessionController extends ChangeNotifier {
 
   MatchSessionState textSubmitted(String text, {required bool sent}) {
     _commands.add(const CancelPresentationReturnCommand());
+    final performance = sent
+        ? _phasePerformance(MatchSessionPhase.understanding)
+        : null;
     _publish(_state.copyWith(
       userText: text,
       phase: sent ? MatchSessionPhase.understanding : MatchSessionPhase.offline,
-      expression: sent ? 'thinking' : null,
-      motion: sent ? 'think' : null,
+      expression: performance?.$1,
+      motion: performance?.$2,
       clearPresentation: sent,
       notice: sent ? null : '现在还没连上，文字没有发出去。',
       clearNotice: sent,
@@ -778,10 +850,11 @@ class MatchSessionController extends ChangeNotifier {
       _finishFirstMeetingGreeting(continuousEnabled);
     }
     _commands.add(const CancelPresentationReturnCommand());
+    final performance = _phasePerformance(MatchSessionPhase.userSpeaking);
     _publish(_state.copyWith(
       phase: MatchSessionPhase.userSpeaking,
-      expression: 'focus',
-      motion: 'focus',
+      expression: performance?.$1,
+      motion: performance?.$2,
       clearPresentation: true,
       clearTrace: true,
     ));
@@ -789,11 +862,12 @@ class MatchSessionController extends ChangeNotifier {
   }
 
   MatchSessionState vadSentenceStreamed() {
+    final performance = _phasePerformance(MatchSessionPhase.understanding);
     _publish(_state.copyWith(
       phase: MatchSessionPhase.understanding,
       userText: _state.userText.trim().isEmpty ? '正在识别…' : _state.userText,
-      expression: 'thinking',
-      motion: 'think',
+      expression: performance?.$1,
+      motion: performance?.$2,
     ));
     return _state;
   }
@@ -853,6 +927,13 @@ class MatchSessionController extends ChangeNotifier {
     if (presentation != null) {
       _commands.add(const CancelPresentationReturnCommand());
     }
+    final fallbackPerformance = presentation == null
+        ? _phasePerformance(
+            isFirstMeeting
+                ? MatchSessionPhase.welcoming
+                : MatchSessionPhase.speaking,
+          )
+        : null;
     _publish(_state.copyWith(
       subtitleFallback: false,
       replyText: text,
@@ -864,9 +945,8 @@ class MatchSessionController extends ChangeNotifier {
       awaitingFirstMeetingGreeting:
           isFirstMeeting ? true : _state.awaitingFirstMeetingGreeting,
       activePresentation: presentation,
-      expression:
-          presentation?.expression ?? (isFirstMeeting ? 'happy' : 'chat'),
-      motion: presentation?.motion ?? (isFirstMeeting ? 'hello' : 'speak'),
+      expression: presentation?.expression ?? fallbackPerformance?.$1,
+      motion: presentation?.motion ?? fallbackPerformance?.$2,
     ));
     if (isFirstMeeting) {
       _commands.add(const PersistFirstMeetingCommand());
@@ -977,12 +1057,15 @@ class MatchSessionController extends ChangeNotifier {
     }
     switch (status) {
       case 'started':
+        final performance = _state.activePresentation == null
+            ? _phasePerformance(MatchSessionPhase.speaking)
+            : null;
         _commands.add(const CancelPresentationReturnCommand());
         _publish(_state.copyWith(
           phase: MatchSessionPhase.speaking,
           activeTraceId: normalizedTraceId,
-          expression: _state.activePresentation == null ? 'chat' : null,
-          motion: _state.activePresentation == null ? 'speak' : null,
+          expression: performance?.$1,
+          motion: performance?.$2,
           clearNotice: true,
         ));
       case 'ended':
@@ -1074,11 +1157,12 @@ class MatchSessionController extends ChangeNotifier {
       if (continuousEnabled) _commands.add(const StartVadCommand());
       return _state;
     }
+    final performance = _phasePerformance(MatchSessionPhase.welcoming);
     _publish(_state.copyWith(
       awaitingFirstMeetingGreeting: true,
       phase: MatchSessionPhase.welcoming,
-      expression: 'happy',
-      motion: 'hello',
+      expression: performance?.$1,
+      motion: performance?.$2,
       replyText: '嗨，我是球球。',
       replyDetail: '第一次见面，先让我认真和你打个招呼。',
       clearNotice: true,

@@ -143,49 +143,79 @@ var baseModelScale = 1;
 var activePose = null;
 var fxLayer = new PIXI.Container();
 var fxItems = [];
-var exprMap = {
-    idle: 0,
-    listening: 0,
-    confused: 0,
-    think: 0,
-    thinking: 0,
-    excited: 1,
-    cheer: 1,
-    chat: 3,
-    tease: 3,
-    happy: 3,
-    nervous: 4,
-    sad: 4,
-    complain: 4,
-    surprised: 5,
-    surprise: 5,
-    angry: 6,
+// 表演映射单一源 (ADR-0007): expression/motion names resolve through
+// presentation-map.json, fetched from the same asset tree as the model.
+// Name-driven calls arriving before the map loads are buffered and replayed;
+// a name without a row keeps the current body instead of snapping to the
+// empty expression file.
+var exprMap = {};
+var motionMap = {};
+var groupVariants = {};
+var mapReady = false;
+var pendingExpression = null;
+var pendingMotion = null;
+// Legacy names kept for senders predating the presentation map — mirrors
+// CompanionPresentation.expressionAliases/motionAliases/legacyMotionNames in
+// lib/services/presentation_state.dart (the first four expression entries are
+// the page-internal actionMap mood names).
+var expressionAliases = {
+    low: 'sad',
+    tense: 'nervous',
+    deflated: 'sad',
+    cheer: 'excited',
+    complain: 'nervous',
+    think: 'thinking',
+    surprise: 'surprised',
 };
-var motionGroups = {
-    hello: [['hello', 0]],
-    cheer: [['celebrate', 0]],
-    celebrate: [['celebrate', 0], ['celebrate', 1]],
-    celebrate_01: [['celebrate', 0]],
-    celebrate_02: [['celebrate', 1]],
-    miss: [['miss', 0]],
-    complain: [['complain', 0]],
-    analysis: [['analysis', 0]],
-    tense: [['tense', 0]],
-    agree: [['agree', 0]],
-    wave: [['wave', 0]],
-    idle: [['idle', 0], ['idle', 1], ['idle', 2]],
-    idle_01: [['idle', 0]],
-    idle_02: [['idle', 1]],
-    idle_03: [['idle', 2]],
-    focus: [['listen', 1]],
-    listen: [['listen', 0], ['listen', 1]],
-    listen_01: [['listen', 0]],
-    listen_02: [['listen', 1]],
-    speak: [['speak', 0], ['speak', 1]],
-    speak_01: [['speak', 0]],
-    speak_02: [['speak', 1]],
-    think: [['think', 0]],
+var motionAliases = {
+    celebrate_01: 'celebrate',
+    cheer: 'celebrate',
+    focus: 'listen_02',
+    hold: 'listen_02',
+    settle: 'idle_01',
+    slump: 'idle_01',
+    nod: 'agree',
+    listening: 'listen',
+    confused: 'idle',
 };
+
+fetch('/live2d-assets/models/qiuqiu/presentation-map.json')
+    .then(function(resp) { return resp.json(); })
+    .then(applyPresentationMap)
+    .catch(function(e) {
+        console.warn('presentation-map unavailable, keeping model defaults:', e);
+        applyPresentationMap(null);
+    });
+
+function applyPresentationMap(map) {
+    var expressions = map && map.expressions ? map.expressions : {};
+    var motions = map && map.motions ? map.motions : {};
+    for (var name in expressions) exprMap[name] = expressions[name];
+    var variants = {};
+    for (var key in motions) {
+        var motion = motions[key];
+        if (!motion || !motion.group) continue;
+        var variant = motion.variant || 0;
+        motionMap[key] = [motion.group, variant];
+        if (!variants[motion.group]) variants[motion.group] = [];
+        variants[motion.group].push([motion.group, variant]);
+    }
+    for (var group in variants) {
+        variants[group].sort(function(a, b) { return a[1] - b[1]; });
+        groupVariants[group] = variants[group];
+    }
+    mapReady = true;
+    if (pendingExpression) {
+        var expression = pendingExpression;
+        pendingExpression = null;
+        setExpression(expression);
+    }
+    if (pendingMotion) {
+        var motion = pendingMotion;
+        pendingMotion = null;
+        playMotion(motion);
+    }
+}
 var actionMap = {
     hello: { mood: 'happy', motion: 'hello', mode: 'event', ms: 2200, priority: 4, pose: 'sway', effect: 'greeting' },
     cheer: { mood: 'cheer', motion: 'cheer', mode: 'event', ms: 2400, priority: 4, pose: 'jump', effect: 'goalBurst' },
@@ -210,7 +240,10 @@ var actionMap = {
     curious: { mood: 'surprised', motion: 'analysis', mode: 'event', ms: 2200, priority: 3, pose: 'tilt', effect: 'question' },
     comfort: { mood: 'sad', motion: 'agree', mode: 'event', ms: 2400, priority: 3, pose: 'soft', effect: 'heart' },
     bored: { mood: 'sad', motion: 'idle', mode: 'event', ms: 2600, priority: 2, pose: 'bored', effect: 'ellipsis' },
-    focus: { mood: 'listening', motion: 'tense', mode: 'listen', ms: 2400, priority: 3, pose: 'focus', effect: 'focus' },
+    // focus resolves through presentation-map.json (listen_02) like every
+    // surface — the old inline "tense" interception was the one-word-two-
+    // bodies bug (ADR-0007).
+    focus: { mood: 'listening', motion: 'listen_02', mode: 'listen', ms: 2400, priority: 3, pose: 'focus', effect: 'focus' },
     idle: { mood: 'idle', motion: 'idle', mode: 'idle', ms: 1200, priority: 1 },
 };
 
@@ -259,7 +292,13 @@ function pick(list) {
 }
 
 function setMood(name) {
-    var idx = exprMap[name] || 0;
+    if (!mapReady) {
+        pendingExpression = name;
+        return;
+    }
+    var canonical = expressionAliases[name] || name;
+    var idx = exprMap[canonical];
+    if (typeof idx !== 'number') return;
     try { if (model) model.expression(idx); } catch(e) {}
 }
 
@@ -272,11 +311,25 @@ function canInterrupt(priority) {
 
 function playMotionGroup(group, priority) {
     if (!model) return;
+    if (!mapReady) {
+        pendingMotion = group;
+        return;
+    }
+    var motions = resolveMotions(group);
+    if (!motions) return;
     priority = priority || 1;
     if (!canInterrupt(priority)) return;
-    var motions = motionGroups[group] || motionGroups.idle;
     var m = pick(motions);
     try { model.motion(m[0], m[1], 3); } catch(e) {}
+}
+
+// Group names (`celebrate`, `idle`, …) pick among the group's variants;
+// exact motion names play their single row. Unknown names stay put.
+function resolveMotions(name) {
+    var canonical = motionAliases[name] || name;
+    if (groupVariants[canonical]) return groupVariants[canonical];
+    if (motionMap[canonical]) return [motionMap[canonical]];
+    return groupVariants.idle || null;
 }
 
 function startPose(kind, ms) {
