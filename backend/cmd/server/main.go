@@ -943,8 +943,14 @@ func main() {
 						}
 						prefCancel()
 					}
-					if _, err := companionAgent.ObserveSession(connectionCtx, "session:"+userID+":"+matchIDStr, userID, matchIDStr, time.Now().UTC()); err != nil {
-						log.Printf("relationship session observation error: %v", err)
+					decision, observeErr := companionAgent.ObserveSession(connectionCtx, "session:"+userID+":"+matchIDStr, userID, matchIDStr, time.Now().UTC())
+					if observeErr != nil {
+						log.Printf("relationship session observation error: %v", observeErr)
+					} else {
+						// presentation-mapping 1.5: the computed hello used to
+						// be discarded here (`_, err :=`); deliver it with the
+						// same shape the first-meeting coordinator uses.
+						deliverSessionOpeningPresentation(writer, decision)
 					}
 					scheduleRecoveredObservations(userID)
 					scheduleRecoveredThreadTurns(userID)

@@ -86,6 +86,11 @@ func presentationFor(affect AffectState, signal Signal, actions []CommunicationA
 		return plan
 	}
 	if signal.Kind == SignalSessionOpened {
+		// presentation-map.json phases.session_open: the hello greeting. The
+		// client phase table owns the visual hello from C1 on; the backend
+		// still computes and emits the plan for the plain session_opened
+		// path (delivered by deliverSessionOpeningPresentation in
+		// cmd/server — the discarded-hello bug fix).
 		plan.Expression = "happy"
 		plan.Motion = "hello"
 		plan.VoiceStyle = "warm"
@@ -93,70 +98,20 @@ func presentationFor(affect AffectState, signal Signal, actions []CommunicationA
 		plan.HoldMS = 2400
 		return plan
 	}
-	if signal.Kind == SignalUserTurn && !hasAction(actions, ActSilence) {
-		plan.Expression = "chat"
-		plan.Motion = "speak"
-		plan.HoldMS = 1800
-		// Trigger: policy "explicit_analysis_request" (isTacticalQuestion) —
-		// a tactical question gets the analysis tableau instead of plain talk.
-		if hasAction(actions, ActAnalyze) {
-			plan.Expression = "thinking"
-			plan.Motion = "analysis"
+	// ADR-0007: the body routing is a table lookup (events, then acts, then
+	// the user-turn base); see presentation_table.go.
+	if row := resolvePresentationRow(affect, signal, actions); row != nil {
+		plan.Expression = row.expression
+		plan.Motion = row.motion
+		if row.energyDelta != 0 {
+			plan.VoiceEnergy = clamp(plan.VoiceEnergy+row.energyDelta, 0, 1)
 		}
-		// Triggers: policy "shared_moment_recalled(_with_permission)" and
-		// "open_thread_ready_for_recall" — nodding along with a callback.
-		if hasAction(actions, ActRecall) {
-			plan.Expression = "happy"
-			plan.Motion = "agree"
+		if signal.Kind == SignalMatchEvent {
+			if tuning, ok := presentationEventTuning[row.eventClass]; ok {
+				plan.VoiceStyle = tuning.voiceStyle
+				plan.HoldMS = tuning.holdMS
+			}
 		}
-		// Triggers: policy "stable_opinion_disagreement",
-		// "unverified_fact_requires_reserve" and "personal_insult_rejected" —
-		// pushing back on the user reads as the complaint gesture.
-		if hasAction(actions, ActDisagree) {
-			plan.Expression = "nervous"
-			plan.Motion = "complain"
-		}
-		// Triggers: policy "banter_invited_with_permission" and
-		// "playful_fact_correction_with_permission" — teasing keeps the
-		// talking body but borrows the teasing expression.
-		if hasAction(actions, ActTease) {
-			plan.Expression = "tease"
-		}
-		return plan
-	}
-	if signal.Match == nil {
-		return plan
-	}
-	switch signal.Match.EventType {
-	case "goal":
-		// Trigger: updateAffect "goal" (valence/arousal spike). Emits the
-		// first-class celebrate group now that the client whitelists it
-		// ('cheer' remains accepted as a legacy alias there).
-		plan.Expression = "excited"
-		plan.Motion = "celebrate"
-		plan.VoiceStyle = "excited"
-		plan.HoldMS = 2600
-	case "var_check":
-		// Trigger: updateAffect "var_check" (tension spike, confidence drop) —
-		// the anxious wait during the VAR review.
-		plan.Expression = "tense"
-		plan.Motion = "tense"
-		plan.VoiceStyle = "tense"
-		plan.HoldMS = 2200
-	case "goal_cancelled":
-		// Trigger: updateAffect "goal_cancelled" (valence crash on a
-		// controversial call) — deflated body plus the referee complaint.
-		plan.Expression = "deflated"
-		plan.Motion = "complain"
-		plan.VoiceStyle = "low_disappointed"
-		plan.HoldMS = 2800
-	case "shot_missed":
-		// Trigger: updateAffect "shot_missed" (mild valence dip) — the
-		// near-miss gesture instead of the neutral focus default.
-		plan.Expression = "low"
-		plan.Motion = "miss"
-		plan.VoiceStyle = "low_disappointed"
-		plan.HoldMS = 2200
 	}
 	return plan
 }

@@ -1125,6 +1125,13 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	if decision != nil {
 		presentation = decision.Presentation
 	}
+	if intent == IntentUnknown {
+		// presentation-map.json delivery.interrupted: a turn we could not
+		// parse rides a one-shot confused/listening reaction alongside the
+		// deterministic clarification — the reply text itself is never
+		// replaced.
+		presentation = relationship.InterruptedDeliveryPresentation(presentation.Affect)
+	}
 	return Response{Intent: intent, Reply: reply, Trace: trace, Presentation: presentation, ScheduleLookup: scheduleLookup}, nil
 }
 

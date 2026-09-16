@@ -23,6 +23,15 @@ var clientMotionAliases = map[string]string{
 	"settle": "idle",
 	"slump":  "idle",
 	"nod":    "agree",
+	// presentation-map.json names two listen/idle-group motions outside its
+	// motions section: delivery.interrupted says "confused/listening" and
+	// events.var_overturn says "surprised/confused". The web surface plays
+	// `listening` via an explicit motionGroups key and falls back to the
+	// idle group for unknown keys like `confused`
+	// (motionGroups[group] || motionGroups.idle); the strict whitelist
+	// absorbs both names here so mapped plans are accepted.
+	"listening": "listen",
+	"confused":  "idle",
 }
 
 var clientAllowedExpressions = map[string]bool{

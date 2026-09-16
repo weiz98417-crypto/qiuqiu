@@ -35,6 +35,7 @@ func TestPresentationForStaysInsideClientWhitelist(t *testing.T) {
 		"event_goal_cancelled":  presentationFor(AffectState{}, matchEvent("goal_cancelled"), []CommunicationAct{ActReact}),
 		"event_shot_missed":     presentationFor(AffectState{}, matchEvent("shot_missed"), []CommunicationAct{ActReact}),
 		"event_unknown":         presentationFor(AffectState{}, matchEvent("yellow_card"), []CommunicationAct{ActReact}),
+		"intent_unknown":        InterruptedDeliveryPresentation(AffectState{}),
 	}
 	for name, plan := range plans {
 		if !ClientAcceptsExpression(plan.Expression) {
@@ -94,16 +95,17 @@ func TestPresentationForEmitsNewMotionGroups(t *testing.T) {
 		wantExpression: "tense",
 		wantMotion:     "tense",
 	}, {
-		// updateAffect "goal_cancelled" — controversial call complaint.
+		// Trigger: updateAffect "goal_cancelled" — VAR-overturn startle plus
+		// the referee complaint (presentation-map.json events.goal_cancelled).
 		name:           "goal cancelled",
 		plan:           presentationFor(AffectState{}, matchEvent("goal_cancelled"), []CommunicationAct{ActReact}),
-		wantExpression: "deflated",
+		wantExpression: "surprised",
 		wantMotion:     "complain",
 	}, {
 		// updateAffect "shot_missed" — near-miss gesture.
 		name:           "shot missed",
 		plan:           presentationFor(AffectState{}, matchEvent("shot_missed"), []CommunicationAct{ActReact}),
-		wantExpression: "low",
+		wantExpression: "sad",
 		wantMotion:     "miss",
 	}}
 	for _, tc := range cases {
@@ -124,12 +126,12 @@ func TestClientAliasMirrorMatchesLegacyVocabulary(t *testing.T) {
 	if NormalizeClientExpression("low") != "sad" || NormalizeClientExpression("tense") != "nervous" || NormalizeClientExpression("deflated") != "sad" {
 		t.Fatalf("expression alias table drifted from the client")
 	}
-	for _, motion := range []string{"hold", "settle", "slump", "nod", "cheer"} {
+	for _, motion := range []string{"hold", "settle", "slump", "nod", "cheer", "listening", "confused"} {
 		if !ClientAcceptsMotion(motion) {
 			t.Errorf("legacy motion %q no longer accepted through aliases", motion)
 		}
 	}
-	if NormalizeClientMotion("hold") != "focus" || NormalizeClientMotion("settle") != "idle" || NormalizeClientMotion("slump") != "idle" || NormalizeClientMotion("nod") != "agree" {
+	if NormalizeClientMotion("hold") != "focus" || NormalizeClientMotion("settle") != "idle" || NormalizeClientMotion("slump") != "idle" || NormalizeClientMotion("nod") != "agree" || NormalizeClientMotion("listening") != "listen" || NormalizeClientMotion("confused") != "idle" {
 		t.Fatalf("motion alias table drifted from the client")
 	}
 	// Unknown names must stay rejected (strict-reject contract).

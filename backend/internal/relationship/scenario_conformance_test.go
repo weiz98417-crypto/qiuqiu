@@ -64,7 +64,7 @@ func TestHumanityScenarioConformance(t *testing.T) {
 				return applyScenario(t, director, matchScenarioSignal("s06-cancel", "goal_cancelled", now.Add(3*time.Second), true, true))
 			},
 			wantActions:    []CommunicationAct{ActReact},
-			wantExpression: "deflated",
+			wantExpression: "surprised",
 		},
 		{
 			name: "07_repeated_missed_chances",

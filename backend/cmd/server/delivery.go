@@ -162,6 +162,29 @@ func recoverPendingDeliveries(ctx context.Context, writer *wsWriter, session *co
 	}
 }
 
+// deliverSessionOpeningPresentation fixes the discarded hello
+// (presentation-mapping task 1.5): the plain session_opened path used to
+// compute the relationship presentation and throw it away (`_, err :=`). It
+// reuses the exact delivery shape the FirstMeetingCoordinator uses for its
+// qiuqiu_reply presentation — the shared websocketResponseSink DeliverReply
+// event carrying a PresentationPlan — minus the text and TTS, since a session
+// opening has no reply body.
+func deliverSessionOpeningPresentation(writer *wsWriter, decision relationship.Decision) {
+	if writer == nil || decision.Presentation.Expression == "" {
+		return
+	}
+	sink := websocketResponseSink{writer: writer}
+	if err := sink.DeliverReply(context.Background(), conversation.ReplyDelivery{
+		Text:         "",
+		TraceID:      decision.ID,
+		Source:       "session_open",
+		DeliveryKey:  decision.ID,
+		Presentation: decision.Presentation,
+	}); err != nil {
+		log.Printf("session opening presentation delivery error: %v", err)
+	}
+}
+
 func hasOpenThreadMemory(memories []relationship.RelationshipMemory) bool {
 	for _, memory := range memories {
 		if memory.Kind == relationship.MemoryKindOpenThread {

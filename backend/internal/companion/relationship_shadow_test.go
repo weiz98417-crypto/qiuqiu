@@ -220,7 +220,7 @@ func TestAgentRefreshesCriticalFactSignalOnceWithOneFinalDecision(t *testing.T) 
 	if second.Decision.FactRevision != "goal-revision-1:2:reconciled" || second.Decision.RefreshCount != 1 {
 		t.Fatalf("refreshed decision = %+v", second.Decision)
 	}
-	if first.Presentation.Expression == second.Presentation.Expression || second.Presentation.Expression != "deflated" {
+	if first.Presentation.Expression == second.Presentation.Expression || second.Presentation.Expression != "surprised" {
 		t.Fatalf("fact refresh reused stale presentation: first=%+v second=%+v", first.Presentation, second.Presentation)
 	}
 	event.FactRevision = 3

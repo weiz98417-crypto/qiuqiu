@@ -337,8 +337,8 @@ func TestAffectCarriesAcrossGoalVARAndCancellation(t *testing.T) {
 	if cancelled.Presentation.Affect.Valence >= 0 {
 		t.Fatalf("cancelled goal valence = %.2f, want negative", cancelled.Presentation.Affect.Valence)
 	}
-	if cancelled.Presentation.Expression != "deflated" {
-		t.Fatalf("cancelled expression = %q, want deflated", cancelled.Presentation.Expression)
+	if cancelled.Presentation.Expression != "surprised" {
+		t.Fatalf("cancelled expression = %q, want surprised", cancelled.Presentation.Expression)
 	}
 }
 
