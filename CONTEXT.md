@@ -82,6 +82,10 @@ _Avoid_: Intent, reply type
 A short vocal, textual, or embodied response that shows shared attention without taking over the conversation.
 _Avoid_: Filler reply
 
+**Turn Phase（表演相位）**:
+Which side of the conversation owns the moment — user speaking, QiuQiu understanding, QiuQiu speaking, or idle. Phase gestures (listening, think, speak, hello, wave) are owned by the client and are distinct from content-driven performance delivered with a reply.
+_Avoid_: Mode, state machine step
+
 **Proactive Turn（主动回合）**:
 A QiuQiu-initiated contribution justified by match context, an open thread, or a relevant shared moment.
 _Avoid_: Push notification, automated message
