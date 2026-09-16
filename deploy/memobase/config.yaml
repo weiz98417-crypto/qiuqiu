@@ -1,0 +1,61 @@
+# QiuQiu's Memobase server config (mounted at /app/config.yaml, see docker-compose.yml).
+# Any key here can be overridden with a MEMOBASE_-prefixed env var; the compose file
+# injects MEMOBASE_LLM_API_KEY / MEMOBASE_LLM_BASE_URL / MEMOBASE_BEST_LLM_MODEL from
+# the same MIMO_* credentials the backend extraction adapter uses, so the values below
+# are defaults only.
+#
+# Key references (upstream: memobase docs/site/references/local_config.mdx):
+#   language: prompt language of the extraction LLM ("zh" keeps profiles Chinese).
+#   enable_event_embedding: false removes the embedding-provider dependency for v1 —
+#   profile synthesis still works; only event similarity search is unavailable.
+
+language: "zh"
+llm_style: "openai"
+enable_event_embedding: false
+
+# Extraction buffer: flush at least every 10 minutes so a quiet watch session still
+# synthesizes; 1024 tokens keeps one flush roughly within a single extraction call.
+buffer_flush_interval: 600
+max_chat_blob_buffer_token_size: 1024
+max_profile_subtopics: 15
+max_pre_profile_token_size: 128
+
+# Profile slots for a football watch companion, slimmed from upstream
+# src/server/api/example_config/profile_for_companion/config.yaml.
+# overwrite_user_profiles replaces the built-in slots entirely — everything QiuQiu
+# renders into a Portrait block must come from these three topics.
+overwrite_user_profiles:
+  - topic: "basic_info"
+    sub_topics:
+      - name: "favorite_team"
+        description: "用户支持的俱乐部或国家队"
+      - name: "favorite_player"
+        description: "用户最喜欢的球员"
+      - name: "league_interests"
+        description: "用户关注的联赛和赛事"
+      - name: "watching_habits"
+        description: "用户看球的习惯（独自看、和朋友看、熬夜看等）"
+      - name: "timezone"
+        description: "用户所在时区"
+
+  - topic: "preferences"
+    sub_topics:
+      - name: "analysis_appetite"
+        description: "用户喜欢的战术分析深度（简短还是详细）"
+      - name: "banter_preference"
+        description: "用户是否接受调侃和毒奶玩笑"
+      - name: "reply_style"
+        description: "用户偏好的回复长度和语气"
+      - name: "topics_to_avoid"
+        description: "用户明确要求球球避开的话题"
+
+  - topic: "interaction_patterns"
+    sub_topics:
+      - name: "emotional_triggers"
+        description: "最容易牵动用户情绪的比赛时刻（绝杀、德比、争议判罚等）"
+      - name: "prediction_habits"
+        description: "用户预测比分的方式和对毒奶的反应"
+      - name: "recurring_topics"
+        description: "用户跨场次反复聊起的话题和梗"
+      - name: "feedback_history"
+        description: "用户对球球行为的反馈（话太多、分析太长等）"

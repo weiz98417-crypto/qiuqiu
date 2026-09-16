@@ -25,9 +25,13 @@ services:
       - PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS:-30}
       - PENDING_OBSERVATION_COORDINATION=${PENDING_OBSERVATION_COORDINATION:-true}
       - FACT_LEDGER_PUBLIC_READS=${FACT_LEDGER_PUBLIC_READS:-true}
+      - MEMOBASE_URL=${MEMOBASE_URL:-http://memobase:8000}
+      - MEMOBASE_TOKEN=${MEMOBASE_TOKEN:-secret}
+      - MEMOBASE_EXTRACTION_TIMEOUT_MS=${MEMOBASE_EXTRACTION_TIMEOUT_MS:-10000}
     depends_on:
       - postgres
       - redis
+      - memobase
     restart: unless-stopped
 
   postgres:
@@ -44,6 +48,58 @@ services:
     image: redis:7-alpine
     restart: unless-stopped
 
+  # Memobase: mutable memory synthesis (user portrait, event summaries) behind
+  # backend/internal/memory. ADR-0006: the Interaction Ledger stays the local,
+  # append-only fact source; Memobase never sees Match Facts writes.
+  # Extraction LLM reuses the backend adapter credentials (MIMO_*).
+  memobase:
+    image: ghcr.io/memodb-io/memobase:latest
+    environment:
+      - DATABASE_URL=postgresql://memobase:${MEMOBASE_POSTGRES_PASSWORD:-memobase}@memobase-postgres:5432/memobase
+      - REDIS_URL=redis://memobase-redis:6379/0
+      - ACCESS_TOKEN=${MEMOBASE_TOKEN:-secret}
+      - PROJECT_ID=qiuqiu
+      - MEMOBASE_LLM_API_KEY=${MIMO_API_KEY:?MIMO_API_KEY is required}
+      - MEMOBASE_LLM_BASE_URL=${MIMO_BASE_URL:-https://api.xiaomimimo.com/v1}
+      - MEMOBASE_BEST_LLM_MODEL=${MIMO_MODEL:-mimo-v2.5-pro}
+      - MEMOBASE_ENABLE_EVENT_EMBEDDING=false
+    volumes:
+      - ./deploy/memobase/config.yaml:/app/config.yaml
+    ports:
+      - "8019:8000"
+    depends_on:
+      memobase-postgres:
+        condition: service_healthy
+      memobase-redis:
+        condition: service_healthy
+    restart: unless-stopped
+
+  # Dedicated storage for Memobase only — never shared with QiuQiu's pg/redis.
+  memobase-postgres:
+    image: postgres:16-alpine
+    environment:
+      - POSTGRES_DB=memobase
+      - POSTGRES_USER=memobase
+      - POSTGRES_PASSWORD=${MEMOBASE_POSTGRES_PASSWORD:-memobase}
+    volumes:
+      - memobase_postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U memobase -d memobase"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
+  memobase-redis:
+    image: redis:7-alpine
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
+    restart: unless-stopped
+
 volumes:
   redis_data:
   postgres_data:
+  memobase_postgres_data:

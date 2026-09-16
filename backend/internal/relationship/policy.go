@@ -566,3 +566,10 @@ func hasBoundary(boundaries []UserBoundary, scope, rule string) bool {
 	}
 	return false
 }
+
+// InferUserCues exposes the policy-table cue vocabulary to consumers that must
+// classify user text with the exact same phrases (e.g. memory observation in
+// backend/internal/memory) without duplicating the marker lists.
+func InferUserCues(text string) []UserCue {
+	return inferUserCues(text)
+}

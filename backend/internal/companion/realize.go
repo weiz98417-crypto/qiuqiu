@@ -38,6 +38,7 @@ func (realizer *LLMReplyRealizer) Realize(ctx context.Context, req RealizationRe
 不要使用服务腔，不复述用户原话，不固定采用“接情绪+分析+反问”，不要每轮都提问。
 禁止恋爱化、排他化、依赖性表达，禁止编造人类生活经历，禁止提及模型、后台、导播台或内部记录。
 只在当前话题确实相关时自然带过给出的共同上下文，不炫耀记忆能力，不解释来源。
+长期记忆参考只描述用户背景，可以在相关时自然带过，不得当作赛况事实，不得据此编造比赛细节或新增事实。
 沟通动作包含 recall 且给出未完话题时，必须在台词里明确说出该话题。
 只输出最终台词，不解释规则。`),
 		},
@@ -49,6 +50,7 @@ func (realizer *LLMReplyRealizer) Realize(ctx context.Context, req RealizationRe
 关系阶段：%s
 修复类别：%s
 可自然引用：%s
+长期记忆参考：%s
 表达目标：%s
 可靠底稿：%s
 必须保留：%s
@@ -67,6 +69,7 @@ func (realizer *LLMReplyRealizer) Realize(ctx context.Context, req RealizationRe
 				req.Decision.Relationship.Stage,
 				req.Decision.Relationship.RepairCategory,
 				formatRelationshipMemories(req.Decision.Memories),
+				memoryContextOrNone(req.MemoryContext),
 				content.Goal,
 				req.ReliableText,
 				strings.Join(content.RequiredAnchors, "；"),
@@ -91,6 +94,15 @@ func (realizer *LLMReplyRealizer) Realize(ctx context.Context, req RealizationRe
 		return RealizedTurn{}, fmt.Errorf("reply realizer returned empty output")
 	}
 	return RealizedTurn{Text: text}, nil
+}
+
+// memoryContextOrNone keeps the realization prompt schema stable when the
+// memory seam is absent or degraded.
+func memoryContextOrNone(memoryContext string) string {
+	if strings.TrimSpace(memoryContext) == "" {
+		return "无"
+	}
+	return memoryContext
 }
 
 func formatRelationshipMemories(memories []relationship.RelationshipMemory) string {

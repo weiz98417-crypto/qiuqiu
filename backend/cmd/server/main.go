@@ -29,6 +29,7 @@ import (
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/memory"
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/pipeline"
@@ -355,11 +356,38 @@ func main() {
 	relationshipResetter, _ := relationshipRepository.(relationship.MatchResetter)
 	observationResetter, _ := observationCoordinator.(observation.MatchResetter)
 	demoResetter = demoStateResetter{traces: demoResetter, relationships: relationshipResetter, observations: observationResetter}
+	// ADR-0006 memory seam: async observations queue into Memobase with the
+	// local audit/backlog tables; without a database the queue still runs and
+	// simply degrades to Ledger-only recall.
+	memoryCtx, memoryCancel := context.WithCancel(context.Background())
+	defer memoryCancel()
+	memobaseAdapter := memory.NewMemobase(memory.MemobaseConfig{
+		BaseURL: cfg.MemobaseURL,
+		Token:   cfg.MemobaseToken,
+		Timeout: cfg.MemobaseExtractionTimeout(),
+	})
+	var memoryQueue *memory.Queue
+	if cfg.DatabaseURL != "" {
+		memoryRecords, err := memory.OpenRecords(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres memory records: %v", err)
+		}
+		defer memoryRecords.Close()
+		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, memory.WithReflections(memoryRecords))
+	} else {
+		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil)
+	}
+	companionAgent.WithMemories(memoryQueue)
+	go memoryQueue.Run(memoryCtx)
+	go runReflectionBeat(memoryCtx, memoryQueue, 15*time.Minute)
 	if llmClient != nil {
 		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), cfg.CompanionRealizerTimeout())
 	}
 	if registrar, ok := matchStore.(matchstate.EventObserverRegistrar); ok && observationCoordinator != nil {
 		registrar.SetEventObserver(func(event matchstate.MatchEvent) error {
+			if event.EventType == "match_end" || event.EventType == "fulltime" {
+				memoryQueue.NotifyMatchEnded(event.MatchID)
+			}
 			observationCtx, observationCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
 			defer observationCancel()
 			_, err := companionAgent.HandleObservationFactChanged(observationCtx, event, time.Now().UTC())
@@ -1070,6 +1098,51 @@ func runObservationExpiry(ctx context.Context, coordinator observation.Coordinat
 		case now := <-ticker.C:
 			if _, err := coordinator.Expire(ctx, now.UTC()); err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("observation expiry error: %v", err)
+			}
+		}
+	}
+}
+
+// runReflectionBeat is the ADR-0006 reflection: after each ended match and on
+// an idle ticker it flushes pending extractions, refreshes the user portrait
+// and persists an audit record citing the ledger sequences observed since the
+// previous beat. Failures are logged; reflection never touches user replies.
+func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInterval time.Duration) {
+	if memoryQueue == nil {
+		return
+	}
+	lastIdle := time.Now()
+	reflect := func(userID, matchID, trigger string) {
+		reflectCtx, cancel := context.WithTimeout(ctx, 30*time.Second)
+		defer cancel()
+		if _, err := memoryQueue.ReflectNow(reflectCtx, userID, matchID, trigger); err != nil && !errors.Is(err, context.Canceled) {
+			log.Printf("memory reflection (%s) error for user %q: %v", trigger, userID, err)
+		}
+	}
+	ticker := time.NewTicker(2 * time.Minute)
+	defer ticker.Stop()
+	for {
+		select {
+		case <-ctx.Done():
+			return
+		case <-ticker.C:
+			users := memoryQueue.ActiveUsers()
+			if len(users) == 0 {
+				continue
+			}
+			if ended := memoryQueue.TakeMatchEnds(); len(ended) > 0 {
+				for _, userID := range users {
+					reflect(userID, ended[0], "post_match")
+				}
+				lastIdle = time.Now()
+				continue
+			}
+			if time.Since(lastIdle) < idleInterval {
+				continue
+			}
+			lastIdle = time.Now()
+			for _, userID := range users {
+				reflect(userID, "", "idle")
 			}
 		}
 	}

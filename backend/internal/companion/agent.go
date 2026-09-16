@@ -17,6 +17,7 @@ import (
 
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/memory"
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/relationship"
 )
@@ -285,11 +286,14 @@ type ScheduleLookup struct {
 var ErrScheduleLookupExpired = errors.New("schedule lookup expired")
 
 type RealizationRequest struct {
-	UserInput    string
-	Intent       Intent
-	Grounding    relationship.GroundedContent
-	Decision     relationship.Decision
-	ReliableText string
+	UserInput string
+	Intent    Intent
+	Grounding relationship.GroundedContent
+	Decision  relationship.Decision
+	// MemoryContext is the bounded provenance-cited recall block (ADR-0006);
+	// empty when the memory seam is absent or degraded.
+	MemoryContext string
+	ReliableText  string
 }
 
 type RealizedTurn struct {
@@ -318,10 +322,20 @@ type Agent struct {
 	observationReconcileWindow func(string, string) time.Duration
 	realizeTimeout             time.Duration
 	interactions               interaction.Ledger
+	memories                   memory.Memories
 }
 
 func NewAgent(tools MemoryTools) *Agent {
 	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger()}
+}
+
+// WithMemories attaches the ADR-0006 memory seam (async observations, recall,
+// portrait). Nil keeps the agent Ledger-only.
+func (a *Agent) WithMemories(memories memory.Memories) *Agent {
+	if memories != nil {
+		a.memories = memories
+	}
+	return a
 }
 
 func (a *Agent) WithInteractionLedger(ledger interaction.Ledger) *Agent {
@@ -534,6 +548,7 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 		if err := a.recordChosenSilence(ctx, plan, input.Message.UserID, input.Message.MatchID, input.Message.SignalID); err != nil {
 			return TurnPlan{}, err
 		}
+		a.observeTurnMemory(ctx, *input.Message, response)
 		return plan, nil
 	case TurnKindMatchEvent:
 		if input.MatchEvent == nil {
@@ -557,6 +572,7 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 		if err := a.recordChosenSilence(ctx, plan, input.MatchEvent.UserID, input.MatchEvent.Event.MatchID, input.MatchEvent.Event.ID); err != nil {
 			return TurnPlan{}, err
 		}
+		a.observeMatchEventMemory(ctx, *input.MatchEvent)
 		return plan, nil
 	case TurnKindFirstMeeting:
 		if input.FirstMeeting == nil {
@@ -2566,12 +2582,14 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 		RequiredAnchors: append([]string(nil), anchors...),
 		FactMode:        factMode,
 	}
+	memoryContext := a.recallMemoryBlock(ctx, req.UserID, req.Text, trace)
 	realized, err := a.realizer.Realize(realizeCtx, RealizationRequest{
-		UserInput:    req.Text,
-		Intent:       intent,
-		Grounding:    grounding,
-		Decision:     decision,
-		ReliableText: reliable,
+		UserInput:     req.Text,
+		Intent:        intent,
+		Grounding:     grounding,
+		Decision:      decision,
+		MemoryContext: memoryContext,
+		ReliableText:  reliable,
 	})
 	if err != nil || strings.TrimSpace(realized.Text) == "" {
 		if err != nil {

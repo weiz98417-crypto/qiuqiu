@@ -32,6 +32,9 @@ type Config struct {
 	PrivacyRetentionDays           int
 	PendingObservationCoordination bool
 	FactLedgerPublicReads          bool
+	MemobaseURL                    string
+	MemobaseToken                  string
+	MemobaseExtractionTimeoutMS    int
 }
 
 func Load() *Config {
@@ -68,6 +71,9 @@ func Load() *Config {
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
 		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),
+		MemobaseURL:                    getEnv("MEMOBASE_URL", "http://localhost:8019"),
+		MemobaseToken:                  strings.TrimSpace(os.Getenv("MEMOBASE_TOKEN")),
+		MemobaseExtractionTimeoutMS:    getEnvInt("MEMOBASE_EXTRACTION_TIMEOUT_MS", 10000),
 	}
 }
 
@@ -77,6 +83,10 @@ func (c *Config) RedisEnabled() bool {
 
 func (c *Config) CompanionRealizerTimeout() time.Duration {
 	return time.Duration(c.CompanionRealizerTimeoutMS) * time.Millisecond
+}
+
+func (c *Config) MemobaseExtractionTimeout() time.Duration {
+	return time.Duration(c.MemobaseExtractionTimeoutMS) * time.Millisecond
 }
 
 func (c *Config) WSReadLimit() int64 {
