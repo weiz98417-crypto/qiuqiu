@@ -486,6 +486,17 @@ func main() {
 	})
 	registerDevelopmentPages(mux, cfg.Environment, "../client/assets/live2d")
 	webApp := http.FileServer(http.Dir(resolveWebAppDir()))
+	// ADR-0008 operations console (built from ../console/dist), hash-routed
+	// SPA: /console/ serves index.html, /console redirects to keep the slash.
+	consoleApp := http.FileServer(http.Dir(resolveConsoleDir()))
+	mux.HandleFunc("/console", func(w http.ResponseWriter, r *http.Request) {
+		if r.URL.Path == "/console" {
+			http.Redirect(w, r, "/console/", http.StatusPermanentRedirect)
+			return
+		}
+		consoleApp.ServeHTTP(w, r)
+	})
+	mux.Handle("/console/", http.StripPrefix("/console/", consoleApp))
 	mux.HandleFunc("/", func(w http.ResponseWriter, r *http.Request) {
 		if r.URL.Path == "/app.html" {
 			http.Redirect(w, r, "/", http.StatusPermanentRedirect)
@@ -2655,6 +2666,24 @@ func resolveWebAppDir() string {
 		}
 	}
 	return "../client/build/web"
+}
+
+// resolveConsoleDir locates the built operations console (ADR-0008): the
+// Vite build output at ../console/dist, overridable via QIUQIU_CONSOLE_DIR.
+func resolveConsoleDir() string {
+	candidates := []string{
+		strings.TrimSpace(os.Getenv("QIUQIU_CONSOLE_DIR")),
+		"../console/dist",
+	}
+	for _, candidate := range candidates {
+		if candidate == "" {
+			continue
+		}
+		if info, err := os.Stat(filepath.Join(candidate, "index.html")); err == nil && !info.IsDir() {
+			return candidate
+		}
+	}
+	return "../console/dist"
 }
 
 func playbackTraceStatus(state string) string {
