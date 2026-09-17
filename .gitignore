@@ -54,3 +54,4 @@ playwright-report/
 graphify-out/
 /qiuqiu-backend-*
 client/assets/live2d/*.zip
+artifacts/
