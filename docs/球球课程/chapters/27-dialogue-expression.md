@@ -21,7 +21,7 @@ status_summary: { implemented: 14, partial: 0, planned: 0, concept: 1 }
 
 **坚持主张被听见（C2）。** 坚持副词（明明/真的/确实/千真万确/就是）+进球后缀也算事实主张——「明明进了」不再落进「没接明白」（implemented-at backend/internal/companion/agent.go:2346-2367）。协调器还持有同用户同比赛的活跃观察时，回合记为 `claim_persisted_hold`，台词是「我知道你看到了……一有结果我立刻喊你」的暖性等待，事实状态不变——同一用户重复不算第二来源，观察去重照旧（implemented-at backend/internal/companion/agent.go:936-946；intent_router.go:153-156；policy.go:174-179）。黄金三连用例锁定：球进了→等待；明明进了→暖性等待；绝不「没接明白」（eval：evals/cases/boundary/router-claim-persisted-three-peat.json）。
 
-**词汇漏斗（C3）。** 每个 unknown 回合——不限疑问句——开一条 unroutable 开放线程，运营台概览新增滚动没接明白率（unknown/总回合，24h 窗口）与最新 unroutable 样本列表；补答机制从不向 unroutable 线索发言，它是词汇素材不是回访循环（implemented-at backend/internal/memory/types.go:113-121；thread_observers.go:96-103；console_api.go:343-412；console/src/pages/Overview.tsx:189-198）。
+**词汇漏斗（C3）。** 每个 unknown 回合——不限疑问句——开一条 unroutable 开放线程，运营台概览新增滚动没接明白率（unknown/总回合，24h 窗口）与最新 unroutable 样本列表；补答机制从不向 unroutable 线索发言，它是词汇素材不是回访循环（implemented-at backend/internal/memory/types.go:113-121；thread_observers.go:96-103；console_api.go:343-412；console/src/pages/Overview.tsx:189-221）。
 
 **控制层即时执行。** 「别说 / 少说 / 闭嘴 / 安静 / 别播报」被意图分类器命中为 control_command（implemented-at backend/internal/companion/agent.go:1959），处理是固定回复「收到，我会少说一点，关键变化再提醒你。」，不进 LLM（implemented-at backend/internal/companion/agent.go:1052-1053）。
 

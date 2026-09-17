@@ -57,6 +57,10 @@ func Load() *Config {
 	if sessionSigningKey == "" && !strings.EqualFold(environment, "production") {
 		sessionSigningKey = developmentSessionSigningKey()
 	}
+	// ADR-0009 intent router: the ROUTER_* env contract is owned by the
+	// router package (ROUTER_API_KEY falls back to MIMO_API_KEY; both unset
+	// keeps the layer disabled entirely — CI/evals behaviour is unchanged).
+	routerConfig := router.NewConfig(os.Getenv)
 	return &Config{
 		Port:                           getEnv("PORT", "8080"),
 		Environment:                    environment,
@@ -72,13 +76,11 @@ func Load() *Config {
 		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
 		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
 		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
-		// ADR-0009 intent router: ROUTER_API_KEY falls back to MIMO_API_KEY;
-		// both unset (CI/evals) keeps the router layer disabled entirely.
-		RouterAPIKey:     strings.TrimSpace(getEnv("ROUTER_API_KEY", os.Getenv("MIMO_API_KEY"))),
-		RouterBaseURL:    getEnv("ROUTER_BASE_URL", router.DefaultBaseURL),
-		RouterModel:      getEnv("ROUTER_MODEL", router.DefaultModel),
-		RouterTimeoutMS:  getEnvInt("ROUTER_TIMEOUT_MS", int(router.DefaultTimeout/time.Millisecond)),
-		APISportsAPIKey:  strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		RouterAPIKey:                   routerConfig.APIKey,
+		RouterBaseURL:                  routerConfig.BaseURL,
+		RouterModel:                    routerConfig.Model,
+		RouterTimeoutMS:                int(routerConfig.Timeout / time.Millisecond),
+		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
 		APISportsBaseURL:               getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),

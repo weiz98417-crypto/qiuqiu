@@ -150,7 +150,7 @@
         { "path": "backend/internal/memory/types.go", "lines": "113-121" },
         { "path": "backend/internal/companion/thread_observers.go", "lines": "96-103" },
         { "path": "backend/cmd/server/console_api.go", "lines": "343-412" },
-        { "path": "console/src/pages/Overview.tsx", "lines": "154-198" }
+        { "path": "console/src/pages/Overview.tsx", "lines": "189-221" }
       ],
       "evidence": "code",
       "note": "补答机制从不向 unroutable 线索发言——它是词汇素材，不是回访循环"

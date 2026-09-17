@@ -17,6 +17,11 @@ import (
 // turn degrades to the casual realization with the evidence funnelled (C3).
 const routerConfidenceThreshold = 0.7
 
+// reasonRelationshipPlanRealized is the trace reason realizeReply stamps on a
+// reply that passed guard validation; the router naturalization check keys
+// off it instead of a raw literal.
+const reasonRelationshipPlanRealized = "relationship_plan_realized"
+
 // TurnRouter is the routing seam the agent consumes. *router.Client is the
 // production implementation; the eval harness scripts its own so the golden
 // journeys run without a key or network.

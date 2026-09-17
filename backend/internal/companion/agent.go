@@ -1224,7 +1224,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	// deterministic clarification — the reply text itself is never replaced.
 	// A routed turn that naturalized into a validated casual reply was parsed
 	// and must not play the interrupted reaction.
-	routerNaturalized := routerReplyUsed || (routedCasual && trace.Reason == "relationship_plan_realized")
+	routerNaturalized := routerReplyUsed || (routedCasual && trace.Reason == reasonRelationshipPlanRealized)
 	if intent == IntentUnknown && !routerNaturalized {
 		presentation = relationship.InterruptedDeliveryPresentation(presentation.Affect)
 	}
@@ -2764,7 +2764,7 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
 		return reliable
 	}
-	trace.Reason = "relationship_plan_realized"
+	trace.Reason = reasonRelationshipPlanRealized
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized"}})
 	return strings.TrimSpace(realized.Text)
 }

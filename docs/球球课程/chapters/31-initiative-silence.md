@@ -37,7 +37,7 @@ status_summary: { implemented: 12, partial: 0, planned: 0, concept: 2 }
 - **四类主动触发+单项许可是虚构。** 旧文档把主动拆成安全状态/用户请求/已许可节奏/有限回顾四类，每类要求用户单项许可（旧稿 §1.1、§2、§5）。现实没有用户主动许可的分类体系：资格门 = 操作模式 + 事件类型白名单 + 引用码 + 话痨档位（implemented-at backend/internal/conversation/proactive_gate.go:31-50），再加事件标签 quiet/manual 覆盖（implemented-at backend/cmd/server/main.go:749-753）。
 - **冷却期的范围比旧文档窄。** 旧文档要求「类别级冷却、关闭后不得换通道续打」（旧稿 §6.4）。现实冷却是全场单一时间戳，不分类别也无跨通道概念（implemented-at backend/internal/relationship/policy.go:79-85）。
 - **用户安静线索已实现且更强。** 旧文档要求「先别说」立即覆盖一切；现实安静线索不仅让策略沉默，还会撤回已起草的回复并同步压制表演层（implemented-at backend/internal/relationship/policy.go:132-135；agent.go:1163-1166；affect.go:80-87）——这一点实现比旧文档的具体机制更彻底。
-- **「话痨程度」设置已完成接线（2026-09-17）。** 审计时它还是半成品——客户端三档随 user_speech 上送但后端不读（implemented-at client/lib/screens/settings_screen.dart:93-108）。agent-depth 修复：后端解析并按用户持久化到 user_preferences 表（implemented-at backend/cmd/server/main.go:1077-1091, 682-705；backend/migrations/040_open_threads.sql:9-14），三档映射主动频率——quiet 屏蔽非关键主动、normal 保持 90s 基线、active 冷却 ×0.6=54s（implemented-at backend/internal/relationship/talkativeness.go:1-60）；重连经 session_opened 恢复。quiet 只收不放，L0 安全。
+- **「话痨程度」设置已完成接线（2026-09-17）。** 审计时它还是半成品——客户端三档随 user_speech 上送但后端不读（implemented-at client/lib/screens/settings_screen.dart:93-108）。agent-depth 修复：后端解析并按用户持久化到 user_preferences 表（implemented-at backend/cmd/server/main.go:1077-1091, 997-1004；backend/migrations/040_open_threads.sql:9-14），三档映射主动频率——quiet 屏蔽非关键主动、normal 保持 90s 基线、active 冷却 ×0.6=54s（implemented-at backend/internal/relationship/talkativeness.go:1-60）；重连经 session_opened 恢复。quiet 只收不放，L0 安全。
 - **主动回合的工程保障比旧文档细。** 旧文档没有涉及：去重 key+TTL、紧急度插队、播放超时回收、用户抢占，这些在 scheduler 里全部实现（implemented-at backend/internal/conversation/scheduler.go:186-262, 198-206）。
 
 ## 主张-锚点表
@@ -52,9 +52,9 @@ status_summary: { implemented: 12, partial: 0, planned: 0, concept: 2 }
 | 主动去重 key+TTL、过期丢弃 | implemented-at | scheduler.go:186-197, 139-147 | code |
 | critical 主动回合插队 | implemented-at | scheduler.go:207-218；main.go:2528-2531 | code |
 | 播放注册/超时/打断状态机 | implemented-at | scheduler.go:70-72, 221-262 | code |
-| 安静线索→ActSilence+表演降档 | implemented-at | policy.go:132-135, 204-206；affect.go:80-87 | code |
+| 安静线索→ActSilence+表演降档 | implemented-at | policy.go:132-135, 233-235；affect.go:80-87 | code |
 | 沉默撤回已起草回复 | implemented-at | policy.go:383-386；agent.go:1163-1166 | code |
-| 修复行为含 reduce_initiative | implemented-at | policy.go:529-552, 398-404 | code |
+| 修复行为含 reduce_initiative | implemented-at | policy.go:529-552, 433-438 | code |
 | 三层发言预算/类别级冷却 | concept | 旧稿 §6；types.go:222-226 | doc |
 | 四类主动触发+单项许可分类 | concept | 旧稿 §1.1/§2/§5；proactive_gate.go:15-21 | doc |
 | 手写主动话术逐字播出 | implemented-at | evals/cases/regression/manual-proactive-line.json；main.go:751-753 | eval |

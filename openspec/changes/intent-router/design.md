@@ -26,7 +26,7 @@
 }
 ```
 
-Tool parameters: `intent` (enum of the 12 backend intents), `player`/`team`/`score` slots, `confidence` (0..1), `reply` (natural reply suggestion for non-fact intents). Prompt authored in Chinese, includes 3 few-shot rows (球进了 → fact_claim; 你在干嘛 → smalltalk; 明明进了 → fact_claim persisted) and the constraint "不得虚构比赛事实，只分类不回答".
+Tool parameters: `intent` (enum of the 12 backend intents — implementation detail: the prompt enum carries the 11 user-turn intents; `match_reaction` is proactive-only downstream, has no user-turn case, and is defensively mapped onto `emotion_reaction`), `player`/`team`/`score` slots, `confidence` (0..1), `reply` (natural reply suggestion for non-fact intents). Prompt authored in Chinese, includes 3 few-shot rows (球进了 → fact_claim; 你在干嘛 → smalltalk; 明明进了 → fact_claim persisted) and the constraint "不得虚构比赛事实，只分类不回答".
 
 ## Resolution (agent.go miss path, replacing the :1073 canned default)
 
