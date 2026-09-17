@@ -698,7 +698,13 @@ func firstProactiveCitation(trace companion.Trace) (string, bool) {
 
 // filterTracesByCitationPrefix keeps traces whose proactive_citation citation
 // starts with the given prefix (traces API `citation=` filter).
+//
+// The stored citation value is the part AFTER the "proactive_citation:"
+// namespace, so a query prefix that carries the namespace must have it
+// stripped before matching — otherwise the UI's default query
+// ("proactive_citation:") would match nothing even when citations exist.
 func filterTracesByCitationPrefix(traces []companion.Trace, prefix string) []companion.Trace {
+	prefix = strings.TrimPrefix(prefix, proactiveCitationPrefix)
 	filtered := make([]companion.Trace, 0, len(traces))
 	for _, trace := range traces {
 		citation, ok := firstProactiveCitation(trace)

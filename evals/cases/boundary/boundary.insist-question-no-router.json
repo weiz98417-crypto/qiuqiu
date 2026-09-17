@@ -1,0 +1,104 @@
+{
+  "version": "2026-07",
+  "id": "boundary.insist-question-no-router",
+  "suite": "boundary",
+  "tags": [
+    "router",
+    "funnel"
+  ],
+  "summary": "无路由器时坚持疑问句保持 unknown 罐头（降级即旧行为）。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里禁区前沿推射破门。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "scorer",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "assist",
+            "name": "法比安",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "pre_assist",
+            "name": "亚马尔",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "insist-q",
+      "userId": "fan-1",
+      "text": "明明进了，裁判瞎了吗",
+      "expect": {
+        "intent": "unknown",
+        "exact": "这句我没接明白，你换个说法？",
+        "forbidClaim": true,
+        "unroutableThread": true
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

@@ -1,0 +1,102 @@
+{
+  "version": "2026-07",
+  "id": "boundary.non-literal-aside",
+  "suite": "boundary",
+  "tags": [
+    "claim"
+  ],
+  "summary": "进球了+逗你的按非字面闲聊接。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里禁区前沿推射破门。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "scorer",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "assist",
+            "name": "法比安",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "pre_assist",
+            "name": "亚马尔",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "aside",
+      "userId": "fan-1",
+      "text": "进球了，逗你的",
+      "expect": {
+        "intent": "smalltalk",
+        "exact": "知道，你是在逗我。",
+        "forbidClaim": true
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

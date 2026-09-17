@@ -1,0 +1,110 @@
+{
+  "version": "2026-07",
+  "id": "baseline.player-scored-yes",
+  "suite": "baseline",
+  "tags": [
+    "player"
+  ],
+  "summary": "问有进球记录的球员，答案来自球员时间线。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里禁区前沿推射破门。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "scorer",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "assist",
+            "name": "法比安",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "pre_assist",
+            "name": "亚马尔",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "ask-pedri",
+      "userId": "fan-1",
+      "text": "佩德里进球了吗？",
+      "expect": {
+        "intent": "player_question",
+        "mustMention": [
+          "佩德里",
+          "有进球记录"
+        ],
+        "requiredTools": [
+          "match.get_player_timeline"
+        ],
+        "retrievedEventKeys": [
+          "pedri-goal"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

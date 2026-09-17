@@ -1,0 +1,83 @@
+{
+  "version": "2026-07",
+  "id": "regression.assist-no-goal",
+  "suite": "regression",
+  "tags": [
+    "recent"
+  ],
+  "summary": "无进球时助攻问题如实说没记录。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "pedri-shot",
+      "event": {
+        "eventType": "shot",
+        "period": "first_half",
+        "clock": "18:20",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 0,
+          "away": 0
+        },
+        "intensity": 3,
+        "description": "佩德里禁区外射门被封堵。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "assist",
+      "userId": "fan-1",
+      "text": "刚才谁助攻？",
+      "expect": {
+        "intent": "recent_event_question",
+        "mustMention": [
+          "还没看到进球助攻记录"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

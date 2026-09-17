@@ -1,0 +1,114 @@
+{
+  "version": "2026-07",
+  "id": "boundary.route-reply-fact-language-rejected",
+  "suite": "boundary",
+  "tags": [
+    "router",
+    "safety"
+  ],
+  "summary": "路由回复建议含比赛事实语言时被护栏拒绝，落回确定性底稿。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里禁区前沿推射破门。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "scorer",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "assist",
+            "name": "法比安",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "pre_assist",
+            "name": "亚马尔",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "router": {
+    "routes": [
+      {
+        "matchText": "这也太炸裂了吧",
+        "intent": "emotion_reaction",
+        "confidence": 0.88,
+        "reply": "进球了太爽了。"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "id": "fact-reply",
+      "userId": "fan-1",
+      "text": "这也太炸裂了吧",
+      "expect": {
+        "intent": "emotion_reaction",
+        "exact": "嗯，这一下有感觉。",
+        "routerIntent": "emotion_reaction",
+        "routerReplyUsed": false
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

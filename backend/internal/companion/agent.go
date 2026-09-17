@@ -2451,7 +2451,7 @@ func inferClaimedPlayer(text string, snapshot matchstate.Snapshot) string {
 		return known
 	}
 	prefix := text
-	for _, marker := range []string{"进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了"} {
+	for _, marker := range []string{"进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了", "进了"} {
 		if index := strings.Index(prefix, marker); index >= 0 {
 			prefix = prefix[:index]
 			break
@@ -2463,6 +2463,23 @@ func inferClaimedPlayer(text string, snapshot matchstate.Snapshot) string {
 	for _, lead := range []string{"刚刚", "刚才", "好像", "似乎", "可能", "应该", "大概", "听说", "我看", "我觉得", "这球", "那个球"} {
 		prefix = strings.TrimPrefix(prefix, lead)
 		prefix = strings.Trim(prefix, " \t\r\n，。！？!?：:、的")
+	}
+	// intent-router C2: insistence adverbs and bare connective particles are
+	// not player names — "确实进了"/"真的又进了" must read as a player-less
+	// insistence, or the claim would "contradict" a name like 确实进了.
+	for {
+		stripped := prefix
+		for _, filler := range insistenceAdverbs {
+			stripped = strings.TrimPrefix(strings.TrimSuffix(stripped, filler), filler)
+		}
+		for _, particle := range []string{"又", "也", "再", "才", "就", "都"} {
+			stripped = strings.TrimSuffix(strings.TrimPrefix(stripped, particle), particle)
+		}
+		stripped = strings.Trim(stripped, " \t\r\n，。！？!?：:、的")
+		if stripped == prefix {
+			break
+		}
+		prefix = stripped
 	}
 	if fields := strings.Fields(prefix); len(fields) > 0 {
 		prefix = fields[len(fields)-1]

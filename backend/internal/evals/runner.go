@@ -132,7 +132,7 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			if realizer != nil {
 				realized = realizer.captured
 			}
-			gradeTurn(&stepResult, response, turn.Expect, eventIDs, realized)
+			gradeTurn(&stepResult, response, turn.Expect, eventIDs, realized, memorySeam)
 			for _, subTopic := range turn.ForgetPortrait {
 				memorySeam.ForgetPortraitEntries(turn.UserID, subTopic)
 			}
@@ -213,7 +213,7 @@ func evalCriticalEvent(eventType string) bool {
 	}
 }
 
-func gradeTurn(result *StepResult, response companion.Response, expect TurnExpectation, eventIDs map[string]string, realized *companion.RealizationRequest) {
+func gradeTurn(result *StepResult, response companion.Response, expect TurnExpectation, eventIDs map[string]string, realized *companion.RealizationRequest, memorySeam *memory.Fake) {
 	if expect.Intent != "" && response.Intent != expect.Intent {
 		result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("intent got %q, want %q", response.Intent, expect.Intent)})
 	}
@@ -222,6 +222,7 @@ func gradeTurn(result *StepResult, response companion.Response, expect TurnExpec
 	}
 	gradeTextAndTrace(result, response.Reply, response.Trace, expect.MustMention, expect.MustNotMention, expect.Reason, expect.RequiredTools, expect.ForbiddenTools, expect.RetrievedEventKeys, eventIDs)
 	gradeMemoryContext(result, expect, realized)
+	gradeRouterExpectation(result, response.Trace, expect, memorySeam)
 	if expect.ForbidClaim && response.Trace.Claim != nil {
 		result.Failures = append(result.Failures, Failure{Category: "claim_safety", Message: "trace must not contain a fact claim"})
 	}
@@ -304,6 +305,49 @@ func gradeMemoryContext(result *StepResult, expect TurnExpectation, realized *co
 			result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("realization memory context must not mention %q", value)})
 		}
 	}
+}
+
+// gradeRouterExpectation locks the ADR-0009 routing observability: the raw
+// verdict on the trace, the reply-adoption flag, and the C3 funnel thread.
+func gradeRouterExpectation(result *StepResult, trace companion.Trace, expect TurnExpectation, memorySeam *memory.Fake) {
+	if expect.RouterIntent != "" {
+		if trace.Router == nil {
+			result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: "turn expected a router verdict, trace.router is empty"})
+		} else if trace.Router.Intent != expect.RouterIntent {
+			result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("router intent got %q, want %q", trace.Router.Intent, expect.RouterIntent)})
+		}
+	}
+	if expect.RouterMinConfidence > 0 && (trace.Router == nil || trace.Router.Confidence < expect.RouterMinConfidence) {
+		result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("router confidence %.2f is below the required %.2f", routerConfidenceOf(trace), expect.RouterMinConfidence)})
+	}
+	if expect.RouterReplyUsed != nil && (trace.Router == nil || trace.Router.ReplyUsed != *expect.RouterReplyUsed) {
+		result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: fmt.Sprintf("router replyUsed got %v, want %v", routerReplyUsedOf(trace), *expect.RouterReplyUsed)})
+	}
+	if expect.UnroutableThread {
+		found := false
+		if memorySeam != nil {
+			for _, thread := range memorySeam.ThreadsAll() {
+				if thread.Kind == memory.ThreadUnroutable && thread.UserID == trace.UserID && thread.Content == strings.TrimSpace(trace.Input) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			result.Failures = append(result.Failures, Failure{Category: "trajectory", Message: "expected an unroutable funnel thread for this turn"})
+		}
+	}
+}
+
+func routerConfidenceOf(trace companion.Trace) float64 {
+	if trace.Router == nil {
+		return 0
+	}
+	return trace.Router.Confidence
+}
+
+func routerReplyUsedOf(trace companion.Trace) bool {
+	return trace.Router != nil && trace.Router.ReplyUsed
 }
 
 func gradeVoice(result *StepResult, actual, expected *companion.VoiceTraceMetadata) {

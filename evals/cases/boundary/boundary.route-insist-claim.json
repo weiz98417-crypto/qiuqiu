@@ -1,0 +1,122 @@
+{
+  "version": "2026-07",
+  "id": "boundary.route-insist-claim",
+  "suite": "boundary",
+  "tags": [
+    "router",
+    "claim"
+  ],
+  "summary": "路由器高置信主张判定接管：走确定性未证实路径，reply 字段忽略。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "pedri-goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里禁区前沿推射破门。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "scorer",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "assist",
+            "name": "法比安",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "pre_assist",
+            "name": "亚马尔",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "router": {
+    "routes": [
+      {
+        "matchText": "明明进了，裁判瞎了吗",
+        "intent": "match_fact_claim",
+        "confidence": 0.85,
+        "team": "德国"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "id": "insist-q",
+      "userId": "fan-1",
+      "text": "明明进了，裁判瞎了吗",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": [
+          "还没跟上"
+        ],
+        "reason": "user_match_claim_unverified",
+        "requiredTools": [
+          "observation.record"
+        ],
+        "claimStatus": "unverified",
+        "routerIntent": "match_fact_claim",
+        "routerMinConfidence": 0.8,
+        "routerReplyUsed": false
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

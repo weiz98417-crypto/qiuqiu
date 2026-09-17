@@ -69,6 +69,20 @@ func CompanionToolSchemas() []ToolSchema {
 			Output:            map[string]string{"observationId": "string"},
 		},
 		{
+			Name:              "schedule.read_today",
+			Description:       "Read today's fixture list from the schedule reader; never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"scope": "string"},
+			Output:            map[string]string{"fixtures": "[]schedule.ScheduleMatch"},
+		},
+		{
+			Name:              "schedule.search",
+			Description:       "Search fixtures in a time window from the schedule reader; never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"from": "string", "to": "string", "timezone": "string"},
+			Output:            map[string]string{"fixtures": "[]schedule.ScheduleMatch"},
+		},
+		{
 			Name:              "match.search_events",
 			Description:       "Read recent active match events, optionally filtered by intent in the agent policy.",
 			MutatesMatchFacts: false,

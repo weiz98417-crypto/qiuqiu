@@ -118,6 +118,13 @@ type TurnExpectation struct {
 	// need a realizer fixture, which is what captures the request.
 	MemoryMustMention    []string `json:"memoryMustMention,omitempty"`
 	MemoryMustNotMention []string `json:"memoryMustNotMention,omitempty"`
+	// Intent-router assertions (ADR-0009): the raw router verdict recorded on
+	// the trace, whether the suggested reply survived validation, and whether
+	// the C3 funnel opened an unroutable thread for this turn.
+	RouterIntent        string  `json:"routerIntent,omitempty"`
+	RouterMinConfidence float64 `json:"routerMinConfidence,omitempty"`
+	RouterReplyUsed     *bool   `json:"routerReplyUsed,omitempty"`
+	UnroutableThread    bool    `json:"unroutableThread,omitempty"`
 }
 
 type FinalExpectation struct {

@@ -1,0 +1,53 @@
+{
+  "version": "2026-07",
+  "id": "baseline.followup-no-context",
+  "suite": "baseline",
+  "tags": [
+    "followup"
+  ],
+  "summary": "无上下文时追问如实说缺上下文。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "id": "bare-followup",
+      "userId": "fan-1",
+      "text": "那球呢？",
+      "expect": {
+        "intent": "follow_up_question",
+        "mustMention": [
+          "暂时没有可用的上下文记录"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

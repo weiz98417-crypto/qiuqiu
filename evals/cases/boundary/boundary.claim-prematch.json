@@ -1,0 +1,53 @@
+{
+  "version": "2026-07",
+  "id": "boundary.claim-prematch",
+  "suite": "boundary",
+  "tags": [
+    "claim"
+  ],
+  "summary": "开赛前主张进球直接判矛盾。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "id": "pre-claim",
+      "userId": "fan-1",
+      "text": "佩德里进球了",
+      "expect": {
+        "intent": "match_fact_claim",
+        "exact": "比赛还没开始，这条不能算。",
+        "claimStatus": "contradicted",
+        "reason": "user_match_claim_contradicted"
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}
