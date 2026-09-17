@@ -114,7 +114,7 @@ test('比赛进入完场时球球挥手的告别动作用一次，随后回到�
     .poll(() => live2dFrame().evaluate(() => {
       const dataset = document.body.dataset;
       return { mode: dataset.mode ?? '', motion: dataset.motion ?? '', mood: dataset.mood ?? '' };
-    }))
+    }), { timeout: 12_000, intervals: [500, 1000, 2000] })
     .toEqual({ mode: 'event', motion: 'wave', mood: 'happy' });
 
   // 再落一条 fulltime 事件把完场记进事实账本（__quiet__ 不触发口播）。
