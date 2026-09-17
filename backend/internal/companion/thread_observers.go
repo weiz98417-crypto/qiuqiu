@@ -94,6 +94,14 @@ func userTurnThreadCandidates(userID, signalID, text string, intent Intent, repl
 		occurred = time.Now().UTC()
 	}
 	var threads []memory.Thread
+	// intent-router C3: every unknown turn feeds the vocabulary funnel —
+	// not just questions. Same bounds/dedupe/TTL as the other candidates.
+	if intent == IntentUnknown {
+		threads = append(threads, memory.Thread{
+			UserID: userID, Kind: memory.ThreadUnroutable,
+			Content: clampThreadContent(text), SourceTurn: signalID, CreatedAt: occurred,
+		})
+	}
 	if isUnansweredQuestion(text, intent, reply) {
 		threads = append(threads, memory.Thread{
 			UserID: userID, Kind: memory.ThreadUnansweredQuestion,

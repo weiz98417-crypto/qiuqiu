@@ -193,7 +193,21 @@ type Trace struct {
 	Observation           *observation.PendingObservation `json:"observation,omitempty"`
 	ObservationResolution *observation.Resolution         `json:"observationResolution,omitempty"`
 	RelationshipDecision  *relationship.Decision          `json:"relationshipDecision,omitempty"`
+	Router                *RouterTrace                    `json:"router,omitempty"`
 	CreatedAt             time.Time                       `json:"createdAt"`
+}
+
+// RouterTrace carries the ADR-0009 routing observability for a turn: the raw
+// router verdict (intent/confidence/slots) plus whether the suggested reply
+// survived guard validation. The reason code "router:<intent>:<confidence>"
+// rides on the relationship decision's reason codes.
+type RouterTrace struct {
+	Intent     string  `json:"intent"`
+	Confidence float64 `json:"confidence"`
+	Player     string  `json:"player,omitempty"`
+	Team       string  `json:"team,omitempty"`
+	Score      string  `json:"score,omitempty"`
+	ReplyUsed  bool    `json:"replyUsed,omitempty"`
 }
 
 type VoiceTraceMetadata struct {
@@ -330,6 +344,7 @@ type Agent struct {
 	observations               observation.Coordinator
 	observationReconcileWindow func(string, string) time.Duration
 	realizeTimeout             time.Duration
+	router                     TurnRouter
 	interactions               interaction.Ledger
 	memories                   memory.Memories
 }
@@ -362,6 +377,15 @@ func (a *Agent) WithRealizer(realizer ReplyRealizer, timeout time.Duration) *Age
 	a.realizer = realizer
 	if timeout > 0 {
 		a.realizeTimeout = timeout
+	}
+	return a
+}
+
+// WithRouter attaches the ADR-0009 LLM intent router. Nil or a client whose
+// key is unset keeps the legacy keyword-miss behavior verbatim.
+func (a *Agent) WithRouter(routerClient TurnRouter) *Agent {
+	if routerClient != nil && routerClient.Enabled() {
+		a.router = routerClient
 	}
 	return a
 }
@@ -840,11 +864,49 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		trace.Schedule = &scheduleIntent
 	}
 
+	// ADR-0009: a keyword-miss turn goes to the LLM router once (single
+	// attempt, client-enforced 6s timeout). Any routing failure leaves the
+	// turn exactly where it was — the legacy keyword-miss path is also the
+	// degradation path (locked decision 6).
+	routed := a.routeKeywordMiss(ctx, req, intent, &trace)
+	routedCasual := false
+	if routed != nil {
+		switch mapped := routedTurnIntent(routed.Intent); {
+		case mapped == IntentUnknown:
+			routedCasual = true
+		case confidenceGatedIntent(mapped) && routed.Confidence < routerConfidenceThreshold:
+			// Locked decision 5: below 0.7 a fact-class route is not trusted
+			// with the deterministic fact path; the turn degrades to the C1
+			// casual realization with the evidence preserved in the funnel.
+			// A low-confidence control command is never acted on at all.
+			if mapped == IntentControlCommand {
+				routed = nil
+			} else {
+				routedCasual = true
+			}
+		default:
+			intent = mapped
+			if intent == IntentSchedule && trace.Schedule == nil {
+				scheduleIntent := ClassifyScheduleIntent(req.Text)
+				trace.Schedule = &scheduleIntent
+			}
+		}
+		trace.Intent = intent
+	}
+	// Design decision 4: the router's reply suggestion is only consumed for
+	// the chat-class intents (and the degraded-casual unknown); deterministic
+	// fact paths own their wording and ignore it.
+	routerChatReply := ""
+	if routed != nil && routerReplyEligibleIntent(intent) {
+		routerChatReply = strings.TrimSpace(routed.Reply)
+	}
+
 	var reply string
 	var requiredAnchors []string
 	var scheduleLookup *ScheduleLookup
 	allowRealize := true
 	deterministicReason := "policy"
+	claimPersisted := false
 	switch intent {
 	case IntentMatchClaim:
 		allowRealize = false
@@ -871,7 +933,15 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		}
 		trace.Reason = "user_match_claim_" + string(claim.Status)
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+		// intent-router C2: an insistence repeat of a claim this same user
+		// already raised gets the warm deterministic hold, not the generic
+		// one. Fact status is unchanged — the coordinator dedupe still owns
+		// the observation, a repeat is not a second source.
 		if claim.Status == ClaimStatusUnverified {
+			if _, persisted := a.activeMatchingObservation(ctx, req, claim); persisted {
+				claimPersisted = true
+				trace.Reason = "claim_persisted_hold"
+			}
 			a.recordObservation(ctx, req, requestTraceID, claim, &trace)
 		}
 		if claim.Kind == "score" {
@@ -904,7 +974,11 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 					reply = fmt.Sprintf("不是%s，刚才是%s的%s进了。", claim.ClaimedTeam, claim.ActualTeam, claim.ActualPlayer)
 				}
 			default:
-				reply = "我这边还没跟上这粒进球，先等一下看结果。"
+				if claimPersisted {
+					reply = claimPersistedHoldReply()
+				} else {
+					reply = "我这边还没跟上这粒进球，先等一下看结果。"
+				}
 			}
 			requiredAnchors = compactAnchors(claim.ActualPlayer, claim.ActualTeam)
 		}
@@ -1083,14 +1157,24 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
 		return Response{}, err
 	}
-	decision := a.applyDecision(ctx, req, intent, reply, requiredAnchors, recentPhraseHashes, &trace)
+	decision := a.applyDecision(ctx, req, intent, reply, requiredAnchors, recentPhraseHashes, routedCasual, claimPersisted, &trace)
+	routerReplyUsed := false
 	if allowRealize && decision != nil && decision.Speech == nil {
 		reply = ""
 		trace.Reason = "relationship_chosen_silence"
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "silence"}})
-	} else if allowRealize && decision != nil && shouldRealizeUserTurn(intent, *decision) {
+	} else if allowRealize && decision != nil && (shouldRealizeUserTurn(intent, *decision) || (intent == IntentUnknown && routerChatReply != "")) {
 		reply = reliableFallbackForDecision(req.Text, intent, reply, *decision)
-		if a.realizer != nil && decision.Speech != nil {
+		// Design decision 4: when the router already suggested a natural
+		// reply for a chat-class turn, it is realized directly through the
+		// guard validation — no second LLM call. Otherwise the normal
+		// realizer (C1 for the degraded-casual unknown) takes over.
+		if validated := validatedRouterReply(req.Text, intent, routerChatReply, reply, *decision); validated != "" {
+			reply = validated
+			routerReplyUsed = true
+			trace.Reason = "router_reply_realized"
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized", "source": "router"}})
+		} else if a.realizer != nil && decision.Speech != nil {
 			reply = a.realizeReply(ctx, req, intent, reply, requiredAnchors, *decision, &trace)
 		} else {
 			trace.Reason = "realize_fallback_unavailable"
@@ -1125,11 +1209,23 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	if decision != nil {
 		presentation = decision.Presentation
 	}
-	if intent == IntentUnknown {
-		// presentation-map.json delivery.interrupted: a turn we could not
-		// parse rides a one-shot confused/listening reaction alongside the
-		// deterministic clarification — the reply text itself is never
-		// replaced.
+	// ADR-0009 observability: the routed turn stamps the raw router verdict
+	// as a reason code ("router:<intent>:<confidence>") and marks whether the
+	// suggested reply survived validation.
+	if routed != nil && trace.Router != nil {
+		trace.Router.ReplyUsed = routerReplyUsed
+		code := fmt.Sprintf("router:%s:%s", routed.Intent, strconv.FormatFloat(routed.Confidence, 'f', 2, 64))
+		if decision != nil {
+			decision.ReasonCodes = append(decision.ReasonCodes, code)
+		}
+	}
+	// presentation-map.json delivery.interrupted: a turn we could not parse
+	// rides a one-shot confused/listening reaction alongside the
+	// deterministic clarification — the reply text itself is never replaced.
+	// A routed turn that naturalized into a validated casual reply was parsed
+	// and must not play the interrupted reaction.
+	routerNaturalized := routerReplyUsed || (routedCasual && trace.Reason == "relationship_plan_realized")
+	if intent == IntentUnknown && !routerNaturalized {
 		presentation = relationship.InterruptedDeliveryPresentation(presentation.Affect)
 	}
 	return Response{Intent: intent, Reply: reply, Trace: trace, Presentation: presentation, ScheduleLookup: scheduleLookup}, nil
@@ -1458,7 +1554,15 @@ func shouldRealizeUserTurn(intent Intent, decision relationship.Decision) bool {
 	if decision.Speech == nil {
 		return false
 	}
-	return intent == IntentSmalltalk || intent == IntentEmotionReaction || intent == IntentPersonalShare || hasCommunicationAct(decision.Actions, relationship.ActRecall) || hasCommunicationAct(decision.Actions, relationship.ActRepair) || hasCommunicationAct(decision.Actions, relationship.ActAsk)
+	if hasCommunicationAct(decision.Actions, relationship.ActRecall) || hasCommunicationAct(decision.Actions, relationship.ActRepair) || hasCommunicationAct(decision.Actions, relationship.ActAsk) {
+		return true
+	}
+	if intent == IntentUnknown {
+		// intent-router 1.3: only a routed casual unknown (policy ActChat)
+		// realizes; the legacy canned reply stays deterministic.
+		return hasCommunicationAct(decision.Actions, relationship.ActChat)
+	}
+	return intent == IntentSmalltalk || intent == IntentEmotionReaction || intent == IntentPersonalShare
 }
 
 func recalledOpenThreadTopic(memories []relationship.RelationshipMemory) string {
@@ -1488,7 +1592,7 @@ func relationshipMemoryIDsUsedByReply(reply string, decision relationship.Decisi
 	return used
 }
 
-func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, intent Intent, reply string, requiredAnchors []string, recentPhraseHashes []uint64, trace *Trace) *relationship.Decision {
+func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, intent Intent, reply string, requiredAnchors []string, recentPhraseHashes []uint64, casualChat bool, claimPersisted bool, trace *Trace) *relationship.Decision {
 	if a.director == nil || trace == nil {
 		return nil
 	}
@@ -1505,6 +1609,12 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 	} else if trace.Claim != nil || isFactIntent(intent) {
 		factMode = relationship.FactModeDeterministic
 	}
+	var userCues []relationship.UserCue
+	if claimPersisted {
+		// intent-router C2: the persisted-claim cue keeps the policy away
+		// from the fresh-unverified pushback — the hold stays warm.
+		userCues = append(userCues, relationship.UserCue{Kind: relationship.CueClaimPersisted})
+	}
 	decision, err := a.director.Apply(ctx, relationship.Signal{
 		ID:           signalID,
 		TraceID:      trace.ID,
@@ -1514,7 +1624,7 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 		OccurredAt:   trace.CreatedAt,
 		ReceivedAt:   time.Now().UTC(),
 		FactRevision: strings.Join(trace.RetrievedEvent, ","),
-		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness},
+		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness, Cues: userCues},
 		Grounding: relationship.GroundedContent{
 			Intent:             string(intent),
 			ReliableText:       reply,
@@ -1522,6 +1632,7 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 			FactMode:           factMode,
 			SourceEventIDs:     append([]string(nil), trace.RetrievedEvent...),
 			RecentPhraseHashes: append([]uint64(nil), recentPhraseHashes...),
+			CasualChat:         casualChat,
 		},
 	})
 	if err != nil {
@@ -2231,11 +2342,22 @@ func isScoreClaim(text string) bool {
 	return !containsAny(text, "吗", "么", "是不是", "多少", "几比几", "?", "？")
 }
 
+// insistenceAdverbs generalizes the C2 claim detection: a 坚持副词
+// (明明/真的/确实/千真万确/就是) plus a goal suffix counts as a claim —
+// colloquial insistence variants ("明明进了") used to fall through to
+// Unknown and the canned reply. First-person achievement and hypothetical
+// exclusions are unchanged.
+var insistenceAdverbs = []string{"明明", "真的", "确实", "千真万确", "就是"}
+
 func isEventClaim(text string) bool {
 	if isFirstPersonGoalAchievement(text) {
 		return false
 	}
-	if !containsAny(text, "进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了") {
+	claimWords := containsAny(text, "进球了", "破门了", "得分了", "进啦", "进咯", "进喽", "球进了")
+	if !claimWords && containsAny(text, insistenceAdverbs...) && containsAny(text, "进了", "破门", "得分") {
+		claimWords = true
+	}
+	if !claimWords {
 		return false
 	}
 	if isNonLiteralMatchTalk(text) {

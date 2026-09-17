@@ -252,6 +252,32 @@ func (c *PostgresCoordinator) Get(ctx context.Context, id string) (PendingObserv
 	return pending, true, nil
 }
 
+// ActiveObservations lists the user's still-active observations for one match
+// (intent-router C2: the persisted-claim warm hold reads them). Oldest first.
+func (c *PostgresCoordinator) ActiveObservations(ctx context.Context, userID, matchID string) ([]PendingObservation, error) {
+	userID = strings.TrimSpace(userID)
+	matchID = strings.TrimSpace(matchID)
+	if userID == "" || matchID == "" {
+		return nil, nil
+	}
+	rows, err := c.pool.Query(ctx, `SELECT `+observationColumns+` FROM pending_match_observations
+		WHERE user_id = $1 AND match_id = $2 AND status IN ('pending_sync','corroborating','conflict')
+		ORDER BY received_at`, userID, matchID)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	var active []PendingObservation
+	for rows.Next() {
+		pending, err := scanObservation(rows)
+		if err != nil {
+			return nil, err
+		}
+		active = append(active, pending)
+	}
+	return active, rows.Err()
+}
+
 func (c *PostgresCoordinator) PendingResolutions(ctx context.Context, userID, matchID string, now time.Time) ([]Resolution, error) {
 	userID = strings.TrimSpace(userID)
 	matchID = strings.TrimSpace(matchID)

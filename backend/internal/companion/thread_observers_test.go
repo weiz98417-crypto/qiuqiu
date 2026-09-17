@@ -23,8 +23,22 @@ func TestUserTurnThreadCandidatesDerivation(t *testing.T) {
 	if answered := userTurnThreadCandidates("user-1", "signal-2", "刚才谁助攻？", IntentRecentEvent, "刚才这球是法比安、助攻，亚马尔、参与策动。", now); len(answered) != 0 {
 		t.Fatalf("candidates = %+v, definitively answered questions must not open threads", answered)
 	}
-	if unknown := userTurnThreadCandidates("user-1", "signal-3", "帮我分析一下草皮对节奏的影响？", IntentUnknown, "这句我没接明白，你换个说法？", now); len(unknown) != 1 || unknown[0].Kind != memory.ThreadUnansweredQuestion {
-		t.Fatalf("candidates = %+v, unknown intent with a question must open a thread", unknown)
+	// intent-router C3: an unknown turn opens the unroutable funnel thread,
+	// and when it is also a question the unanswered-question loop opens too.
+	unknown := userTurnThreadCandidates("user-1", "signal-3", "帮我分析一下草皮对节奏的影响？", IntentUnknown, "这句我没接明白，你换个说法？", now)
+	if len(unknown) != 2 {
+		t.Fatalf("candidates = %+v, want the unroutable funnel plus the unanswered question", unknown)
+	}
+	if unknown[0].Kind != memory.ThreadUnroutable || unknown[0].Content != "帮我分析一下草皮对节奏的影响？" {
+		t.Fatalf("candidate = %+v, want the unroutable funnel thread with the raw text", unknown[0])
+	}
+	if unknown[1].Kind != memory.ThreadUnansweredQuestion {
+		t.Fatalf("candidate = %+v, unknown intent with a question must still open the unanswered loop", unknown[1])
+	}
+	// A non-question unknown opens only the unroutable funnel thread.
+	nonQuestion := userTurnThreadCandidates("user-1", "signal-7", "这是啥情况啊这也", IntentUnknown, "这句我没接明白，你换个说法？", now)
+	if len(nonQuestion) != 1 || nonQuestion[0].Kind != memory.ThreadUnroutable {
+		t.Fatalf("candidates = %+v, non-question unknown must open only the unroutable thread", nonQuestion)
 	}
 	if promises := userTurnThreadCandidates("user-1", "signal-4", "待会儿告诉你为什么", IntentSmalltalk, "好。", now); len(promises) != 1 || promises[0].Kind != memory.ThreadPromise {
 		t.Fatalf("candidates = %+v, want the promise thread", promises)

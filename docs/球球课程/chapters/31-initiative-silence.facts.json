@@ -9,7 +9,7 @@
       "status": "implemented-at",
       "anchors": [
         { "path": "backend/internal/conversation/proactive_gate.go", "lines": "31-50" },
-        { "path": "backend/cmd/server/main.go", "lines": "568-586" }
+        { "path": "backend/cmd/server/main.go", "lines": "738-761" }
       ],
       "evidence": "code",
       "note": "C2 之前 Allow 曾忽略 critical/now 参数并只查模式+白名单；agent-depth 补齐引用与档位（ADR 见 openspec/changes/agent-depth）"
@@ -18,7 +18,7 @@
       "claim": "事件标签可覆盖资格门：事件带 proactive=quiet 标签强制沉默，带 proactive=manual 标签走 AllowManual（恒真，供导播手写话术）",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/cmd/server/main.go", "lines": "571-576" },
+        { "path": "backend/cmd/server/main.go", "lines": "749-753" },
         { "path": "backend/internal/conversation/proactive_gate.go", "lines": "19-21" }
       ],
       "evidence": "code",
@@ -30,7 +30,7 @@
       "anchors": [
         { "path": "backend/internal/relationship/types.go", "lines": "222-226" },
         { "path": "backend/internal/relationship/policy.go", "lines": "79-92" },
-        { "path": "backend/cmd/server/main.go", "lines": "584" }
+        { "path": "backend/cmd/server/main.go", "lines": "763" }
       ],
       "evidence": "code",
       "note": "旧文档「场内/时段/整场三层预算」无对应数据结构"
@@ -40,7 +40,7 @@
       "status": "implemented-at",
       "anchors": [
         { "path": "backend/internal/conversation/scheduler.go", "lines": "198-206" },
-        { "path": "backend/cmd/server/main.go", "lines": "632" }
+        { "path": "backend/cmd/server/main.go", "lines": "815" }
       ],
       "evidence": "code",
       "note": ""
@@ -79,8 +79,8 @@
       "claim": "用户安静线索立即生效：「不想分析/缓会儿/先别说话」→ needs_silence → ActSilence（user_requested_quiet），表演层同步降为 low/idle/quiet",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/internal/relationship/policy.go", "lines": "117-119" },
-        { "path": "backend/internal/relationship/policy.go", "lines": "204-206" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "132-135" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "233-235" },
         { "path": "backend/internal/relationship/affect.go", "lines": "80-87" }
       ],
       "evidence": "code",
@@ -90,8 +90,8 @@
       "claim": "主动沉默能撤回已起草内容：策略只产出 silence 时 SpeechPlan 为 nil，agent 丢弃已生成的回复并记录 relationship_chosen_silence",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/internal/relationship/policy.go", "lines": "354-357" },
-        { "path": "backend/internal/companion/agent.go", "lines": "1057-1060" }
+        { "path": "backend/internal/relationship/policy.go", "lines": "383-386" },
+        { "path": "backend/internal/companion/agent.go", "lines": "1163-1166" }
       ],
       "evidence": "code",
       "note": "比赛事件流上 OutputAllowed=false 同样直接 ActSilence（policy.go:73-75）"
@@ -100,8 +100,8 @@
       "claim": "被纠正后降低主动：banter_boundary 与 over_analysis 两类修复的行为约束都含 reduce_initiative，修复期间表达被压缩且调侃清零",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/internal/relationship/policy.go", "lines": "494-517" },
-        { "path": "backend/internal/relationship/policy.go", "lines": "398-404" }
+        { "path": "backend/internal/relationship/policy.go", "lines": "529-552" },
+        { "path": "backend/internal/relationship/policy.go", "lines": "433-438" }
       ],
       "evidence": "code",
       "note": "场景测试 09/10/12 断言修复进入"
@@ -110,8 +110,8 @@
       "claim": "客户端「话痨程度」（安静/刚好/热闹）随 user_speech 上送，后端解析并按用户持久化（user_preferences 表），三档映射主动频率：quiet 屏蔽非关键主动、normal 保持 90s 基线、active 冷却 ×0.6；重连经 session_opened 恢复档位",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/cmd/server/main.go", "lines": "504-509" },
-        { "path": "backend/cmd/server/main.go", "lines": "682-705" },
+        { "path": "backend/cmd/server/main.go", "lines": "1077-1091" },
+        { "path": "backend/cmd/server/main.go", "lines": "997-1004" },
         { "path": "backend/internal/relationship/talkativeness.go", "lines": "1-60" },
         { "path": "backend/migrations/040_open_threads.sql", "lines": "9-14" }
       ],
@@ -143,7 +143,7 @@
       "status": "implemented-at",
       "anchors": [
         { "path": "evals/cases/regression/manual-proactive-line.json", "lines": "1-35" },
-        { "path": "backend/cmd/server/main.go", "lines": "574-576" }
+        { "path": "backend/cmd/server/main.go", "lines": "751-753" }
       ],
       "evidence": "eval",
       "note": ""

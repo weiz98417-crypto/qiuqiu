@@ -1,0 +1,25 @@
+{
+  "version": "2026-07",
+  "id": "boundary.router-error-degrades",
+  "suite": "boundary",
+  "tags": ["router", "degradation"],
+  "summary": "路由器故障（transport error）时回合原样落回关键词兜底：罐头回复 + interrupted 反应，绝不让回合报错（locked decision 6）。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "router": {
+    "routes": [
+      {"matchText": "你在干嘛", "intent": "smalltalk", "confidence": 0.9, "error": true}
+    ]
+  },
+  "turns": [
+    {
+      "id": "router-failure",
+      "userId": "fan-8",
+      "text": "你在干嘛",
+      "expect": {
+        "intent": "unknown",
+        "mustMention": ["没接明白"]
+      }
+    }
+  ],
+  "final": {"minimumTraces": 1}
+}

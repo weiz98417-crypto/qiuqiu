@@ -10,7 +10,9 @@ import (
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/relationship"
+	qiuqiuRouter "qiuqiu/internal/router"
 )
 
 func Run(ctx context.Context, cases []Case) Report {
@@ -31,10 +33,16 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	tools := companion.NewStoreMemoryTools(store)
 	memorySeam := memory.NewFake()
 	agent := companion.NewAgent(tools).WithDirector(relationship.NewDirector(relationship.NewMemoryRepository())).WithMemories(memorySeam)
+	// Production attaches the pending-observation coordinator by default;
+	// the evals mirror that so the C2 persisted-claim journeys run in-suite.
+	agent.WithObservationCoordinator(observation.NewMemoryCoordinator())
 	var realizer *scriptedRealizer
 	if evalCase.Realizer != nil {
 		realizer = &scriptedRealizer{fixture: *evalCase.Realizer}
 		agent.WithRealizer(realizer, time.Second)
+	}
+	if evalCase.Router != nil {
+		agent.WithRouter(scriptedRouter{fixture: *evalCase.Router})
 	}
 	matchID := "eval-" + evalCase.ID
 	if _, _, err := store.SetConfig(matchID, evalCase.Config); err != nil {
@@ -421,4 +429,35 @@ func (realizer *scriptedRealizer) Realize(_ context.Context, req companion.Reali
 		return companion.RealizedTurn{}, errors.New(realizer.fixture.Error)
 	}
 	return companion.RealizedTurn{Text: realizer.fixture.Reply}, nil
+}
+
+// scriptedRouter stands in for the ADR-0009 intent router: the route whose
+// matchText equals the user text answers the turn; texts without a route
+// fall through to unknown/1.0 (the casual gate never opens). A route with
+// error=true simulates a transport failure so the degradation path is
+// exercised in-suite.
+type scriptedRouter struct {
+	fixture RouterFixture
+}
+
+func (router scriptedRouter) Enabled() bool { return true }
+
+func (router scriptedRouter) Route(_ context.Context, req qiuqiuRouter.Request) (qiuqiuRouter.Result, error) {
+	for _, route := range router.fixture.Routes {
+		if route.MatchText != req.Text {
+			continue
+		}
+		if route.Error {
+			return qiuqiuRouter.Result{}, errors.New("scripted router failure")
+		}
+		return qiuqiuRouter.Result{
+			Intent:     route.Intent,
+			Player:     route.Player,
+			Team:       route.Team,
+			Score:      route.Score,
+			Confidence: route.Confidence,
+			Reply:      route.Reply,
+		}, nil
+	}
+	return qiuqiuRouter.Result{Intent: "unknown", Confidence: 1}, nil
 }

@@ -58,6 +58,10 @@ const (
 	CueBanterDenied          UserCueKind = "banter_denied"
 	CueSharedMomentRecalled  UserCueKind = "shared_moment_recalled"
 	CueContinuedDisagreement UserCueKind = "continued_disagreement"
+	// CueClaimPersisted is the intent-router C2 cue: the user is insisting on
+	// a claim the coordinator already holds — the hold stays warm instead of
+	// restarting the fresh-unverified pushback.
+	CueClaimPersisted UserCueKind = "claim_persisted"
 )
 
 type UserCue struct {
@@ -95,6 +99,11 @@ type GroundedContent struct {
 	FactMode           FactMode `json:"factMode"`
 	SourceEventIDs     []string `json:"sourceEventIds,omitempty"`
 	RecentPhraseHashes []uint64 `json:"recentPhraseHashes,omitempty"`
+	// CasualChat marks a routed unknown turn (ADR-0009 task 1.3): policy
+	// returns ActChat so the turn realizes as natural chat. Only the agent
+	// sets it, and only when the LLM router was actually consulted — an
+	// unset router key keeps the legacy deterministic behaviour.
+	CasualChat bool `json:"casualChat,omitempty"`
 }
 
 type RelationshipStage string
@@ -267,14 +276,19 @@ type CommunicationAct string
 const (
 	ActAcknowledge CommunicationAct = "ack"
 	ActAnalyze     CommunicationAct = "analyze"
-	ActAsk         CommunicationAct = "ask"
-	ActDisagree    CommunicationAct = "disagree"
-	ActOpinion     CommunicationAct = "opinion"
-	ActRecall      CommunicationAct = "recall"
-	ActReact       CommunicationAct = "react"
-	ActRepair      CommunicationAct = "repair"
-	ActSilence     CommunicationAct = "silence"
-	ActTease       CommunicationAct = "tease"
+	// ActChat is the intent-router casual-talk act (ADR-0009 task 1.3): a
+	// routed unknown turn chats naturally instead of the canned
+	// clarification. It has no presentation-table row on purpose — it rides
+	// the user-turn base row (chat/speak), which is the plain talking body.
+	ActChat     CommunicationAct = "chat"
+	ActAsk      CommunicationAct = "ask"
+	ActDisagree CommunicationAct = "disagree"
+	ActOpinion  CommunicationAct = "opinion"
+	ActRecall   CommunicationAct = "recall"
+	ActReact    CommunicationAct = "react"
+	ActRepair   CommunicationAct = "repair"
+	ActSilence  CommunicationAct = "silence"
+	ActTease    CommunicationAct = "tease"
 )
 
 type RelationshipView struct {

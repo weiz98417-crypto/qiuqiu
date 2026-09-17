@@ -68,6 +68,22 @@ export default function CitationAudit() {
     },
     { title: '用户', dataIndex: 'userId', key: 'userId', width: 130 },
     {
+      // intent-router 4.2：被路由回合的原始路由判定（意图 + 置信度）。
+      title: '路由意图',
+      key: 'routerIntent',
+      width: 170,
+      render: (_, record) =>
+        record.router ? (
+          <Space size={4} wrap>
+            <Tag color="geekblue">{record.router.intent}</Tag>
+            <Text type="secondary">{(record.router.confidence * 100).toFixed(0)}%</Text>
+            {record.router.replyUsed ? <Tag color="green">回复已采用</Tag> : null}
+          </Space>
+        ) : (
+          <Text type="secondary">—</Text>
+        ),
+    },
+    {
       title: '原因码',
       key: 'reasonCodes',
       render: (_, record) => (

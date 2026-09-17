@@ -10,6 +10,8 @@ import (
 	"strconv"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/router"
 )
 
 type Config struct {
@@ -27,6 +29,10 @@ type Config struct {
 	MiMoModel                      string
 	MiMoVoice                      string
 	CompanionRealizerTimeoutMS     int
+	RouterAPIKey                   string
+	RouterBaseURL                  string
+	RouterModel                    string
+	RouterTimeoutMS                int
 	APISportsAPIKey                string
 	APISportsBaseURL               string
 	PrivacyRetentionDays           int
@@ -66,7 +72,13 @@ func Load() *Config {
 		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
 		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
 		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
-		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		// ADR-0009 intent router: ROUTER_API_KEY falls back to MIMO_API_KEY;
+		// both unset (CI/evals) keeps the router layer disabled entirely.
+		RouterAPIKey:     strings.TrimSpace(getEnv("ROUTER_API_KEY", os.Getenv("MIMO_API_KEY"))),
+		RouterBaseURL:    getEnv("ROUTER_BASE_URL", router.DefaultBaseURL),
+		RouterModel:      getEnv("ROUTER_MODEL", router.DefaultModel),
+		RouterTimeoutMS:  getEnvInt("ROUTER_TIMEOUT_MS", int(router.DefaultTimeout/time.Millisecond)),
+		APISportsAPIKey:  strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
 		APISportsBaseURL:               getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),

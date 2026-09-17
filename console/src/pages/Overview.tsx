@@ -150,13 +150,13 @@ export default function Overview() {
           </Row>
         </Col>
 
-        {/* 五格 · 最近主动引用 */}
-        <Col span={24}>
+        {/* 五格 · 最近主动引用 + 六格 · 词汇漏斗 */}
+        <Col span={12}>
           <Card
             data-cell="proactive"
             title="最近主动引用"
             extra={<ReactRouterLink to="/console/citations">进入引用审计 →</ReactRouterLink>}
-            style={cellBorder({})}
+            style={cellBorder({ height: '100%' })}
           >
             <List
               size="small"
@@ -183,6 +183,41 @@ export default function Overview() {
                 </List.Item>
               )}
             />
+          </Card>
+        </Col>
+        <Col span={12}>
+          {/* intent-router C3 词汇漏斗：没接明白率 + top unroutable 样本 */}
+          <Card data-cell="router-funnel" title="词汇漏斗（没接明白）" style={cellBorder({ height: '100%' })}>
+            <Row gutter={16}>
+              <Col span={6}>
+                <Statistic
+                  title="没接明白率（24h）"
+                  value={((data?.router?.unknownRate ?? 0) * 100).toFixed(1)}
+                  suffix="%"
+                  loading={loading}
+                />
+                <div style={{ color: '#AAB4C0', fontSize: 12 }}>
+                  {data?.router?.unknownTurns ?? 0} / {data?.router?.totalTurns ?? 0} 回合
+                </div>
+              </Col>
+              <Col span={18}>
+                <div style={{ marginBottom: 4, color: '#AAB4C0', fontSize: 12 }}>最新没接明白样本</div>
+                <Table
+                  size="small"
+                  rowKey={(row) => `${row.userId}-${row.createdAt}-${row.content}`}
+                  columns={[
+                    { title: '用户', dataIndex: 'userId', width: 120, ellipsis: true },
+                    { title: '原话', dataIndex: 'content', ellipsis: true },
+                    { title: '时间', dataIndex: 'createdAt', width: 110, render: fmtDateTime },
+                  ]}
+                  dataSource={data?.router?.topUnroutable ?? []}
+                  loading={loading}
+                  pagination={false}
+                  scroll={{ y: 160 }}
+                  locale={{ emptyText: <Empty description="暂无 unroutable 样本" imageStyle={{ height: 40 }} /> }}
+                />
+              </Col>
+            </Row>
           </Card>
         </Col>
       </Row>

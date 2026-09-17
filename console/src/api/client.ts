@@ -99,6 +99,13 @@ export interface Overview {
   };
   threadAging: { today: number; d1to3: number; d3plus: number };
   recentProactive: { traceId: string; matchId: string; citation: string; createdAt: string }[];
+  // intent-router C3 词汇漏斗：滚动没接明白率 + 最新 unroutable 样本。
+  router?: {
+    unknownTurns: number;
+    totalTurns: number;
+    unknownRate: number;
+    topUnroutable: { userId: string; content: string; createdAt: string }[];
+  };
 }
 
 export interface ConsoleUser {
@@ -165,6 +172,15 @@ export interface TraceRow {
   reason?: string;
   reasonCodes?: string[];
   relationshipDecision?: { reasonCodes?: string[] } | null;
+  // intent-router 4.2：被路由回合携带的路由判定（意图/置信度/槽位）。
+  router?: {
+    intent: string;
+    confidence: number;
+    player?: string;
+    team?: string;
+    score?: string;
+    replyUsed?: boolean;
+  } | null;
   latencyMs?: number;
   createdAt?: string;
 }

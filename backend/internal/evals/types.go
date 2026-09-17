@@ -18,6 +18,7 @@ type Case struct {
 	Config   matchstate.MatchConfig `json:"config"`
 	Realizer *RealizerFixture       `json:"realizer,omitempty"`
 	Portrait *PortraitSeed          `json:"portrait,omitempty"`
+	Router   *RouterFixture         `json:"router,omitempty"`
 	Events   []EventStep            `json:"events,omitempty"`
 	Turns    []TurnStep             `json:"turns,omitempty"`
 	Final    FinalExpectation       `json:"final,omitempty"`
@@ -26,6 +27,26 @@ type Case struct {
 type RealizerFixture struct {
 	Reply string `json:"reply,omitempty"`
 	Error string `json:"error,omitempty"`
+}
+
+// RouterFixture scripts the ADR-0009 intent router for one case: each route
+// answers the user text it matches. Without a fixture the case runs with the
+// router disabled — identical to the no-key production/CI posture.
+type RouterFixture struct {
+	Routes []RouterRoute `json:"routes"`
+}
+
+type RouterRoute struct {
+	MatchText  string  `json:"matchText"`
+	Intent     string  `json:"intent"`
+	Confidence float64 `json:"confidence"`
+	Player     string  `json:"player,omitempty"`
+	Team       string  `json:"team,omitempty"`
+	Score      string  `json:"score,omitempty"`
+	Reply      string  `json:"reply,omitempty"`
+	// Error simulates a router failure (transport/5xx): the turn must
+	// degrade to the legacy keyword-miss behavior.
+	Error bool `json:"error,omitempty"`
 }
 
 // PortraitSeed plants a synthesized portrait for one user before the turns

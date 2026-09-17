@@ -16,6 +16,7 @@ import (
 	"encoding/json"
 	"errors"
 	"log"
+	"math"
 	"net/http"
 	"sort"
 	"strings"
@@ -335,7 +336,80 @@ func (deps consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request) {
 		"memory":          health,
 		"threadAging":     aging,
 		"recentProactive": deps.recentProactive(r.Context(), deps.catalog()),
+		"router":          deps.routerFunnel(r.Context()),
 	})
+}
+
+// consoleRouterFunnel is the intent-router C3 vocabulary funnel on the
+// operator overview: the rolling 没接明白率 (unknown turns / total user turns)
+// and the newest unroutable samples worth keyword or prompt work.
+type consoleRouterFunnel struct {
+	UnknownTurns  int                    `json:"unknownTurns"`
+	TotalTurns    int                    `json:"totalTurns"`
+	UnknownRate   float64                `json:"unknownRate"`
+	TopUnroutable []consoleUnroutableRow `json:"topUnroutable"`
+}
+
+type consoleUnroutableRow struct {
+	UserID    string `json:"userId"`
+	Content   string `json:"content"`
+	CreatedAt string `json:"createdAt"`
+}
+
+// routerFunnel scans the same rolling window recentProactive uses (20
+// matches × latest 100 traces); a read hiccup degrades to zeros, never a
+// console error.
+func (deps consoleAPI) routerFunnel(ctx context.Context) consoleRouterFunnel {
+	const (
+		maxMatches  = 20
+		perMatch    = 100
+		maxSamples  = 5
+		rollingLeft = -24 * time.Hour
+	)
+	funnel := consoleRouterFunnel{TopUnroutable: []consoleUnroutableRow{}}
+	since := time.Now().UTC().Add(rollingLeft)
+	for index, summary := range deps.catalog() {
+		if index >= maxMatches {
+			break
+		}
+		traces, err := deps.listTraces(ctx, summary.MatchID, perMatch)
+		if err != nil {
+			continue
+		}
+		for _, trace := range traces {
+			if trace.CreatedAt.Before(since) || strings.TrimSpace(trace.Input) == "" {
+				continue
+			}
+			funnel.TotalTurns++
+			if trace.Intent == companion.IntentUnknown {
+				funnel.UnknownTurns++
+			}
+		}
+	}
+	if funnel.TotalTurns > 0 {
+		funnel.UnknownRate = math.Round(float64(funnel.UnknownTurns)/float64(funnel.TotalTurns)*1000) / 1000
+	}
+	if deps.memories != nil {
+		if threads, err := deps.memories.ListThreads(ctx, "", "open"); err == nil {
+			sort.SliceStable(threads, func(left, right int) bool {
+				return threads[left].CreatedAt.After(threads[right].CreatedAt)
+			})
+			for _, thread := range threads {
+				if len(funnel.TopUnroutable) >= maxSamples {
+					break
+				}
+				if thread.Kind != memory.ThreadUnroutable {
+					continue
+				}
+				funnel.TopUnroutable = append(funnel.TopUnroutable, consoleUnroutableRow{
+					UserID:    thread.UserID,
+					Content:   thread.Content,
+					CreatedAt: thread.CreatedAt.UTC().Format(time.RFC3339),
+				})
+			}
+		}
+	}
+	return funnel
 }
 
 func (deps consoleAPI) handleMatchUsers(w http.ResponseWriter, r *http.Request, matchID string) {

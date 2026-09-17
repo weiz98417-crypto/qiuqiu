@@ -1,0 +1,26 @@
+{
+  "version": "2026-07",
+  "id": "baseline.router-casual-smalltalk",
+  "suite": "baseline",
+  "tags": ["router", "smalltalk", "casual"],
+  "summary": "关键词落空回合（你在干嘛）经 LLM 路由器转闲聊：自然回复建议经护栏校验后直接采用，不进任何事实工具，也不播 interrupted 反应。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "router": {
+    "routes": [
+      {"matchText": "你在干嘛", "intent": "smalltalk", "confidence": 0.9, "reply": "我在盯着直播呢，陪你一起看。"}
+    ]
+  },
+  "turns": [
+    {
+      "id": "what-are-you-doing",
+      "userId": "fan-9",
+      "text": "你在干嘛",
+      "expect": {
+        "intent": "smalltalk",
+        "exact": "我在盯着直播呢，陪你一起看。",
+        "forbiddenTools": ["match.search_events", "match.get_player_timeline", "match.verify_user_claim"]
+      }
+    }
+  ],
+  "final": {"minimumTraces": 1}
+}

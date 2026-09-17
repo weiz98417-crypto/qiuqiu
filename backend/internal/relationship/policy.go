@@ -171,6 +171,12 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 	if hasCue(cues, CueOpenThreadReady) {
 		return []CommunicationAct{ActRecall, ActOpinion}, []string{"open_thread_ready_for_recall"}
 	}
+	// intent-router C2: a user insisting on a claim we already hold gets the
+	// warm react — not the fresh-unverified react+disagree pushback, which
+	// would read as if we had never heard the first attempt.
+	if hasCue(cues, CueClaimPersisted) {
+		return []CommunicationAct{ActReact}, []string{"claim_persisted_hold"}
+	}
 	if signal.Grounding.FactMode == FactModeUnverified {
 		return []CommunicationAct{ActReact, ActDisagree}, []string{"unverified_fact_requires_reserve"}
 	}
@@ -198,6 +204,13 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 	}
 	if signal.Grounding.Intent == "personal_share" {
 		return []CommunicationAct{ActReact}, []string{"user_personal_share"}
+	}
+	// intent-router task 1.3: a routed unknown turn chats casually (caps
+	// 2 句/60 字, ForbiddenClaims on) instead of the canned acknowledgement.
+	// CasualChat is only set when the LLM router actually routed the turn, so
+	// the legacy deterministic behaviour is untouched without a router key.
+	if signal.Grounding.Intent == "unknown" && signal.Grounding.CasualChat {
+		return []CommunicationAct{ActChat}, []string{"unknown_routed_casual"}
 	}
 	return []CommunicationAct{ActAcknowledge}, []string{"default_acknowledgement"}
 }
@@ -410,6 +423,12 @@ func contentPolicyFor(signal Signal, actions []CommunicationAct, relationshipSta
 	if hasAction(actions, ActRepair) {
 		policy.MaxCharacters = 60
 		policy.AnalysisDepth = "none"
+	}
+	// intent-router task 1.3: the casual chat act keeps the 2-sentence cap
+	// and tightens the 80-char budget to 60; ForbiddenClaims stay on from the
+	// defaults above.
+	if hasAction(actions, ActChat) {
+		policy.MaxCharacters = 60
 	}
 	if relationshipState.Repair.Active {
 		policy.MaxSentences = 2

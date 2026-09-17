@@ -36,6 +36,7 @@ import (
 	"qiuqiu/internal/pipeline"
 	"qiuqiu/internal/privacy"
 	"qiuqiu/internal/relationship"
+	"qiuqiu/internal/router"
 	"qiuqiu/internal/tts"
 	"qiuqiu/internal/ws"
 
@@ -412,6 +413,14 @@ func main() {
 	if llmClient != nil {
 		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), cfg.CompanionRealizerTimeout())
 	}
+	// ADR-0009 intent router: keyword-miss turns route through mimo-v2.5 when
+	// a key is configured; unset (CI/evals) keeps the legacy behaviour.
+	companionAgent.WithRouter(router.NewClient(router.Config{
+		BaseURL: cfg.RouterBaseURL,
+		APIKey:  cfg.RouterAPIKey,
+		Model:   cfg.RouterModel,
+		Timeout: time.Duration(cfg.RouterTimeoutMS) * time.Millisecond,
+	}))
 	if registrar, ok := matchStore.(matchstate.EventObserverRegistrar); ok && observationCoordinator != nil {
 		registrar.SetEventObserver(func(event matchstate.MatchEvent) error {
 			if event.EventType == "match_end" || event.EventType == "fulltime" {

@@ -111,6 +111,12 @@ const (
 	ThreadPromise            ThreadKind = "promise"
 	ThreadEmotionalMoment    ThreadKind = "emotional_moment"
 	ThreadPrediction         ThreadKind = "prediction"
+	// ThreadUnroutable is the intent-router C3 funnel (ADR-0009): every
+	// unknown turn opens one, question or not, so the operator overview can
+	// see what the companion failed to understand. Recovery beats never
+	// speak into an unroutable thread — it is vocabulary material, not a
+	// callback loop.
+	ThreadUnroutable ThreadKind = "unroutable"
 )
 
 // Thread is an open loop worth a later callback. SourceTurn cites the

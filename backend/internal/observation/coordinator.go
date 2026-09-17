@@ -5,6 +5,7 @@ import (
 	"crypto/sha256"
 	"encoding/hex"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -294,6 +295,29 @@ func (c *MemoryCoordinator) Get(id string) (PendingObservation, bool) {
 		}
 	}
 	return PendingObservation{}, false
+}
+
+// ActiveObservations lists the user's still-active observations for one match
+// (intent-router C2: the persisted-claim warm hold reads them). Oldest first.
+func (c *MemoryCoordinator) ActiveObservations(ctx context.Context, userID, matchID string) ([]PendingObservation, error) {
+	if err := ctx.Err(); err != nil {
+		return nil, err
+	}
+	userID = strings.TrimSpace(userID)
+	matchID = strings.TrimSpace(matchID)
+	c.mu.Lock()
+	defer c.mu.Unlock()
+	var active []PendingObservation
+	for _, pending := range c.byScope {
+		if pending.UserID != userID || pending.MatchID != matchID || !isActiveStatus(pending.Status) {
+			continue
+		}
+		active = append(active, cloneObservation(pending))
+	}
+	sort.Slice(active, func(left, right int) bool {
+		return active[left].ReceivedAt.Before(active[right].ReceivedAt)
+	})
+	return active, nil
 }
 
 func (c *MemoryCoordinator) Expire(ctx context.Context, now time.Time) ([]Resolution, error) {

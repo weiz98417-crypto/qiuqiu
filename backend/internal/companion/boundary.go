@@ -55,6 +55,20 @@ func CompanionToolSchemas() []ToolSchema {
 			Output:            map[string]string{"snapshot": "matchstate.Snapshot"},
 		},
 		{
+			Name:              "intent.route",
+			Description:       "Classify a keyword-miss user turn with the LLM intent router (intent, slots, confidence); never writes match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"text": "string", "context": "string"},
+			Output:            map[string]string{"intent": "string", "confidence": "float64"},
+		},
+		{
+			Name:              "observation.record",
+			Description:       "Record an unverified user claim as a pending observation for source coordination; never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"claim": "companion.FactClaim"},
+			Output:            map[string]string{"observationId": "string"},
+		},
+		{
 			Name:              "match.search_events",
 			Description:       "Read recent active match events, optionally filtered by intent in the agent policy.",
 			MutatesMatchFacts: false,

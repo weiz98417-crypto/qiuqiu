@@ -1,0 +1,58 @@
+{
+  "version": "2026-07",
+  "id": "boundary.router-claim-persisted-three-peat",
+  "suite": "boundary",
+  "tags": ["router", "claim", "persistence"],
+  "summary": "黄金三连（C2）：球进了→确定性等待并记观察；明明进了→暖性坚持等待（claim_persisted_hold），绝不落回没接明白；同内容重复不新开观察。",
+  "config": {"homeTeam": "西班牙", "awayTeam": "德国"},
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:01",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "claim",
+      "userId": "fan-7",
+      "text": "球进了",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": ["还没跟上"],
+        "mustNotMention": ["我知道你看到了"],
+        "reason": "user_match_claim_unverified",
+        "claimKind": "event",
+        "claimStatus": "unverified"
+      }
+    },
+    {
+      "id": "insist",
+      "userId": "fan-7",
+      "text": "明明进了",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": ["我知道你看到了"],
+        "mustNotMention": ["没接明白"],
+        "reason": "claim_persisted_hold",
+        "claimStatus": "unverified"
+      }
+    },
+    {
+      "id": "insist-again",
+      "userId": "fan-7",
+      "text": "真的进了",
+      "expect": {
+        "intent": "match_fact_claim",
+        "mustMention": ["我知道你看到了"],
+        "mustNotMention": ["没接明白"]
+      }
+    }
+  ],
+  "final": {"score": {"home": 0, "away": 0}, "minimumTraces": 3}
+}
