@@ -39,4 +39,4 @@
 ## Sequencing
 
 1 → 2 → 3 → 4. C2 lands the table and kills the three bugs; C1 and C3 consume the same JSON. All work on `feat/agent-depth`.
-- [ ] 3.8 Follow-up (E2E finding): a presentation hold active exactly at the match-end edge permanently drops the wave farewell (applyMatchEnd consumes the edge while a hold is live) — delay the farewell until the hold elapses instead of dropping it.
+- [x] 3.8 Follow-up (E2E finding): a presentation hold active exactly at the match-end edge permanently drops the wave farewell (applyMatchEnd consumes the edge while a hold is live) — delay the farewell until the hold elapses instead of dropping it.

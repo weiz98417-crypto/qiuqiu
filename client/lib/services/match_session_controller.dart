@@ -209,13 +209,15 @@ class MatchSessionController extends ChangeNotifier {
   /// One-shot fulltime farewell (phases.match_end → happy/wave): fires when
   /// the match first classifies as finished — via the snapshot/clock period
   /// edge (see _fireMatchEndOnEdge) or the legacy match_end event. A held
-  /// backend presentation outranks the farewell (ADR-0007 ownership).
+  /// backend presentation outranks the farewell (ADR-0007 ownership): the
+  /// edge stays unconsumed and the farewell fires when the hold elapses
+  /// (task 3.8 — delayed, not dropped).
   MatchSessionState applyMatchEnd() {
     final performance = _presentationMap.performanceFor('match_end');
-    _matchEndHandled = true;
     if (performance == null || _state.activePresentation != null) {
       return _state;
     }
+    _matchEndHandled = true;
     _publish(_state.copyWith(
       expression: performance.$1,
       motion: performance.$2,
@@ -224,9 +226,10 @@ class MatchSessionController extends ChangeNotifier {
   }
 
   /// Fires the fulltime farewell once, on the edge where the match period
-  /// first classifies as finished.
+  /// first classifies as finished — retried on later updates while a held
+  /// presentation defers it.
   void _fireMatchEndOnEdge({required bool wasEnded}) {
-    if (!_matchEndHandled && !wasEnded && _state.match.matchEnded) {
+    if (!_matchEndHandled && _state.match.matchEnded) {
       applyMatchEnd();
     }
   }
