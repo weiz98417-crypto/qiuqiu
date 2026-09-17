@@ -2,66 +2,67 @@
   "id": "33-immersive-stage",
   "title": "沉浸式舞台与 Live2D 交互",
   "source_chapter": "docs/球球全套资料/4.产品设计/33-沉浸式舞台与Live2D交互设计.md",
-  "status_summary": { "implemented": 10, "partial": 1, "planned": 0, "concept": 2 },
+  "status_summary": { "implemented": 12, "partial": 1, "planned": 0, "concept": 2 },
   "claims": [
     {
       "claim": "Live2D 舞台是一个非交互背景层：渲染在 InAppWebView（native）或 iframe（web）里，外层包 IgnorePointer，web 端再把 iframe 的 pointerEvents 置为 none，所有指针事件让给上层的 Flutter 控件",
       "status": "implemented-at",
       "anchors": [
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "156-160" },
-        { "path": "client/lib/widgets/live2d_bridge_web.dart", "lines": "50-58" }
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "188-200" },
+        { "path": "client/lib/widgets/live2d_bridge_web.dart", "lines": "5-33" }
       ],
       "evidence": "code",
-      "note": "加载的 Cubism 模型也设置 autoInteract:false，角色不响应注视/点按（live2d_view.dart:340）"
+      "note": "加载的 Cubism 模型也设置 autoInteract:false，角色不响应注视/点按（live2d_view.dart:549）"
     },
     {
-      "claim": "事实与控制位于舞台之上且独立可达：顶部栏有返回/陪看设置按钮与比分头，下方状态轮播显示比赛状态，底部字幕卡可滚动显示台词；舞台无法遮挡它们",
+      "claim": "事实与控制位于舞台之上且独立可达：比分常驻（大字号模式为顶部 _HorizontalScoreBar，常规模式为左侧 _ScoreRail，含陪看设置入口），舞台内顶部行有状态轮播、连接标记与比赛操作菜单，底部字幕卡可滚动显示台词；舞台无法遮挡它们",
       "status": "implemented-at",
       "anchors": [
-        { "path": "client/lib/screens/match_screen.dart", "lines": "1185-1218" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "2326-2338" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "2372-2382" }
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2250-2304" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2401-2426" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2447-2457" }
       ],
       "evidence": "code",
-      "note": "Live2dView 是 Stack 的第一层子节点（match_screen.dart:2305-2310），事实/控制叠在其上"
+      "note": "Live2dView 是舞台 Stack 的第一层子节点（match_screen.dart:2377-2385），事实/控制叠在其上"
     },
     {
       "claim": "舞台词汇只有一条合法来源：后端 presentation 消息携带 PresentationPlan，客户端经白名单+别名表校验后生效；另有 legacy expression 消息通道，同样必须过 normalizeExpression 白名单",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/cmd/server/main.go", "lines": "591-599" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "346-358" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "363-373" },
-        { "path": "client/lib/services/presentation_state.dart", "lines": "2-51" }
+        { "path": "backend/cmd/server/main.go", "lines": "719-728" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "356-373" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "377-387" },
+        { "path": "client/lib/services/presentation_state.dart", "lines": "19-40" }
       ],
       "evidence": "code",
-      "note": "服务端只在 Expression 非空时才推送 presentation（main.go:591）"
+      "note": "服务端只在 Expression 非空时才推送 presentation（main.go:719）；qiuqiu_reply 携带的 presentation 同样过 fromReplyData 校验（match_screen.dart:415-443）"
     },
     {
-      "claim": "表情与动作到 Cubism 的映射是静态表：13 个表情映射到 7 个 expression 索引，7 个动作名映射到模型动作组（cheer→celebrate、focus→listen 组第 1 段）",
+      "claim": "表情与动作到 Cubism 的映射单一源自 presentation-map.json：13 个表情映射到 7 个 expression 文件索引（thinking→3 为暂定绑定，真机目验后一处 JSON 换绑），动作名映射到（组，变体）；web 页与内嵌页运行时 fetch 该 JSON，Dart 的 expressionIndices/motionVariants 是被契约测试锁定的同步镜像，旧的三份互不一致的内联 exprMap 已删除",
       "status": "implemented-at",
       "anchors": [
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "324-324" },
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "358-368" }
+        { "path": "client/assets/live2d/models/qiuqiu/presentation-map.json", "lines": "2-35" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "472-533" },
+        { "path": "client/lib/services/presentation_state.dart", "lines": "49-63" }
       ],
       "evidence": "code",
-      "note": "exprMap 与 presentation_state.dart 白名单一一对应；未知表情回退索引 0"
+      "note": "无名行的名字保持当前身体，不再回退索引 0（索引 0 是空参数文件，仅中性态可绑，live2d_view.dart:573-574）；三面一致性由 TestPresentationMapKeysMatchClientVocabularyExactly（presentation_table_test.go:122）与 scripts/check-presentation-map.mjs 锁定"
     },
     {
-      "claim": "说话口型不是逐音素同步：setSpeaking 切换布尔值，50ms 定时器在说话时给 ParamJawOpen 随机 0.25..1.0 幅度，停止时衰减回 0",
+      "claim": "口型由 TTS 音频驱动而非逐音素标注：wLipSync（WASM MFCC→viseme）分析平台播放器同源音频得出五参数嘴型（OpenY/JawOpen/Form/Funnel/Stretch），50ms 定时器平滑应用；分析器不可用时退化为音频包络，再退化为随机开合",
       "status": "implemented-at",
-      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "370-385" }],
+      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "330-441" }, { "path": "client/lib/widgets/live2d_view.dart", "lines": "598-637" }],
       "evidence": "code",
-      "note": "旧文档假设的『口型围绕当前回应』实为随机嘴型近似"
+      "note": "旧文档假设的『口型围绕当前回应』的真实形态是音频驱动的 viseme 近似，仍非音素级同步；web 端经 postMessage 把同份音频交给 iframe 分析（live2d_bridge_web.dart:50-67）"
     },
     {
       "claim": "加载失败诚实呈现而非表演化：native 端轮询 window.modelReady 30 次（300ms 间隔）失败后显示『重新请球球入场』重试按钮，模型错误经 onModelError 上报；web 端 8 秒超时直接放行避免卡死",
       "status": "implemented-at",
       "anchors": [
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "102-122" },
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "230-236" },
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "249-283" },
-        { "path": "client/lib/widgets/live2d_view.dart", "lines": "63-68" }
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "134-154" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "265-271" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "308-318" },
+        { "path": "client/lib/widgets/live2d_view.dart", "lines": "93-101" }
       ],
       "evidence": "code",
       "note": "失败提示是控件文案，没有『角色累了』之类拟人化失败叙述"
@@ -69,23 +70,23 @@
     {
       "claim": "模型资产经 qiuqiu://asset 自定义 scheme 从 Flutter assets 提供，扩展名映射 MIME（moc3→application/octet-stream 等），路径含 .. 直接拒绝",
       "status": "implemented-at",
-      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "185-214" }],
+      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "217-249" }],
       "evidence": "code",
-      "note": "web 端则从配置的 QIUQIU_LIVE2D_URL 或同源 /live2d.html 加载（live2d_view.dart:48-56）"
+      "note": "web 端则从配置的 QIUQIU_LIVE2D_URL 或同源 /live2d.html 加载（live2d_view.dart:80-88）；presentation-map.json 与口型 profile 走同一 scheme"
     },
     {
       "claim": "进球庆祝是独立于角色的非交互覆盖层：进球标签触发 Lottie goal-burst 动画包 IgnorePointer，一次播放不循环",
       "status": "implemented-at",
-      "anchors": [{ "path": "client/lib/screens/match_screen.dart", "lines": "2311-2325" }],
+      "anchors": [{ "path": "client/lib/screens/match_screen.dart", "lines": "2386-2400" }],
       "evidence": "code",
-      "note": "庆祝与角色动作（cheer）分属两层，互不阻塞控制"
+      "note": "庆祝与角色动作（celebrate）分属两层，互不阻塞控制"
     },
     {
       "claim": "舞台故障不阻塞核心控制：WebSocket failed 时右上角出现『重新连接』按钮，字幕开关独立于舞台生效",
       "status": "implemented-at",
       "anchors": [
-        { "path": "client/lib/screens/match_screen.dart", "lines": "2362-2371" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "2372-2382" }
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2437-2446" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "2447-2457" }
       ],
       "evidence": "code",
       "note": "字幕由 subtitlesEnabled 偏好控制，与 Live2D 加载状态无关"
@@ -95,21 +96,39 @@
       "status": "partial",
       "anchors": [
         { "path": "client/lib/services/preferences_service.dart", "lines": "76-82" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "911-915" }
+        { "path": "client/lib/screens/match_screen.dart", "lines": "949-951" }
       ],
       "evidence": "code",
       "note": "设置经 SettingsScreen 保存后 _audio.setMuted 立即生效"
     },
     {
-      "claim": "舞台只能变安静不能被任意增强：表演的强度上限由后端 PresentationPlan 决定（能量、语速、hold 均为受控字段），客户端不生成任何自发动作；唯一自发状态是 hold 到期按 returnMode 回落",
+      "claim": "表演强度上限由后端 PresentationPlan 决定，但身体所有权分窗：HoldMS 窗口内后端权威——web 渲染面的 idle 调度器与静音复位都让位（armPresentationHold）；窗口到期按 ReturnMode 回落（presentationReturnState 四值各得真实目标）；客户端此后只在相位/idle 层从映射表行取身体，不发明新动作",
       "status": "implemented-at",
       "anchors": [
-        { "path": "backend/internal/relationship/types.go", "lines": "351-360" },
-        { "path": "client/lib/services/presentation_state.dart", "lines": "118-129" },
-        { "path": "client/lib/screens/match_screen.dart", "lines": "941-949" }
+        { "path": "backend/internal/relationship/types.go", "lines": "354-363" },
+        { "path": "client/assets/live2d/live2d.html", "lines": "793-820" },
+        { "path": "client/lib/services/presentation_state.dart", "lines": "250-268" }
       ],
       "evidence": "code",
-      "note": "对应旧文档『角色可见性不等于角色主动性』原则的落地方式"
+      "note": "对应旧文档『角色可见性不等于角色主动性』的落地方式：主动性被收敛为『映射表里有的行才会上身』；decay_to_listening 在语音回合等待点由后端盖章（cmd/server/delivery.go:127-142）"
+    },
+    {
+      "claim": "回合相位驱动身体：控制器相位经 presentation-map.json phases 行解析——user_speaking→listening/listen_01、understanding→thinking/think、qiuqiu_speaking→chat/speak_01、session_open→happy/hello；fulltime 触发一次性 happy/wave 欢送（有持中表演时不抢）",
+      "status": "implemented-at",
+      "anchors": [{ "path": "client/lib/services/match_session_controller.dart", "lines": "190-224" }],
+      "evidence": "code",
+      "note": "散落的 focus/thinking 硬编码被相位表替换（ADR-0007 单一源）；普通 session_opened 路径曾把 hello 算完即弃，由 deliverSessionOpeningPresentation 修复（cmd/server/delivery.go:255-276）"
+    },
+    {
+      "claim": "闲置动作以受限形态存在：IdleTierPicker 把最近一次表演的 affect 向量映射到三档（deflated/calm/energetic），各取 idle_01/02/03，带 30 秒重选、60 秒切换锁与 0.1 滞回；JS idle 调度器只在相位为 idle 且无持中表演时补位",
+      "status": "implemented-at",
+      "anchors": [
+        { "path": "client/lib/services/idle_tier_picker.dart", "lines": "5-48" },
+        { "path": "client/lib/screens/match_screen.dart", "lines": "1006-1018" },
+        { "path": "client/assets/live2d/live2d.html", "lines": "793-806" }
+      ],
+      "evidence": "code",
+      "note": "全新 idle 会话不会直接落在 energetic（起点只能是 calm/deflated）；旧文档的『可选闲置动作』由档位调度器承接，而非点击触发"
     },
     {
       "claim": "旧文档的五层舞台结构（安全控制/事实/任务/角色/氛围）、四种可见性模式（完整/紧凑/静态/隐藏）与动作强度四级分类均无代码对应，为 concept",
@@ -119,11 +138,11 @@
       "note": "现实是三层：非交互舞台背景 / 事实与控制覆盖层 / 字幕层，无可见性模式切换"
     },
     {
-      "claim": "闲置动作、注视镜头、互动手势（点击/长按角色触发反馈）全部未实现：舞台层 IgnorePointer 且 autoInteract 关闭，不存在任何闲置动作库或触碰反馈路径",
+      "claim": "注视镜头与互动手势（点击/长按角色触发反馈）仍未实现：舞台层 IgnorePointer 且 autoInteract 关闭，不存在任何触碰反馈路径",
       "status": "concept",
-      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "156-160" }],
+      "anchors": [{ "path": "client/lib/widgets/live2d_view.dart", "lines": "188-200" }, { "path": "client/lib/widgets/live2d_view.dart", "lines": "544-552" }],
       "evidence": "code",
-      "note": "旧文档允许的『可选闲置动作』在实现里被整体省略而非受控开放"
+      "note": "证伪锚：闲置动作已被 idle 档位调度器以受限形态实现（见 idle 档位主张），但凝视/触碰反馈在实现里仍被整体省略而非受控开放"
     }
   ]
 }
