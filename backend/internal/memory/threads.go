@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"errors"
+	"fmt"
 	"log"
 	"strconv"
 	"strings"
@@ -42,6 +43,14 @@ type ThreadStore interface {
 	// ExpireStaleThreads flips open threads older than the TTL to 'expired'
 	// and returns them so the caller can audit the transition.
 	ExpireStaleThreads(ctx context.Context, now time.Time, ttl time.Duration) ([]Thread, error)
+	// ListThreads is the console's cross-user read (ADR-0008): userID or
+	// state may be empty to widen the filter, oldest first.
+	ListThreads(ctx context.Context, userID, state string) ([]Thread, error)
+	// Thread resolves one thread in any state.
+	Thread(ctx context.Context, threadID string) (Thread, bool)
+	// ExpireThread flips one open thread to 'expired' (console expire
+	// action) and returns the updated row.
+	ExpireThread(ctx context.Context, threadID string) (Thread, error)
 }
 
 // PostgresThreads persists the open_threads table from
@@ -196,6 +205,121 @@ func (t *PostgresThreads) ExpireStaleThreads(ctx context.Context, now time.Time,
 		t.recordLifecycle(ctx, thread, ReasonThreadExpired)
 	}
 	return expired, nil
+}
+
+// ListThreads is the console's cross-user thread read (ADR-0008): userID or
+// state may be empty to widen the filter ("all users" / "all states"),
+// oldest first. A targeted single-user query honors the privacy lifecycle.
+func (t *PostgresThreads) ListThreads(ctx context.Context, userID, state string) ([]Thread, error) {
+	if t == nil || t.pool == nil {
+		return nil, ErrUnavailable
+	}
+	query := `
+		SELECT id, user_id, kind, content, state, source_turn, ledger_sequence, created_at
+		FROM open_threads
+		WHERE TRUE`
+	var args []any
+	if strings.TrimSpace(userID) != "" {
+		if err := privacy.CheckDeletion(ctx, t.pool, userID); err != nil {
+			return nil, err
+		}
+		args = append(args, userID)
+		query += fmt.Sprintf(` AND user_id = $%d`, len(args))
+	}
+	if strings.TrimSpace(state) != "" {
+		args = append(args, state)
+		query += fmt.Sprintf(` AND state = $%d`, len(args))
+	}
+	query += ` ORDER BY id`
+	rows, err := t.pool.Query(ctx, query, args...)
+	if err != nil {
+		return nil, err
+	}
+	defer rows.Close()
+	threads := make([]Thread, 0, 8)
+	for rows.Next() {
+		thread, err := scanThread(rows)
+		if err != nil {
+			return nil, err
+		}
+		threads = append(threads, thread)
+	}
+	return threads, rows.Err()
+}
+
+// Thread resolves one thread in any state.
+func (t *PostgresThreads) Thread(ctx context.Context, threadID string) (Thread, bool) {
+	if t == nil || t.pool == nil {
+		return Thread{}, false
+	}
+	id, err := parseThreadID(threadID)
+	if err != nil {
+		return Thread{}, false
+	}
+	rows, err := t.pool.Query(ctx, `
+		SELECT id, user_id, kind, content, state, source_turn, ledger_sequence, created_at
+		FROM open_threads
+		WHERE id = $1
+	`, id)
+	if err != nil {
+		return Thread{}, false
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Thread{}, false
+	}
+	thread, err := scanThread(rows)
+	if err != nil {
+		return Thread{}, false
+	}
+	return thread, true
+}
+
+// ExpireThread flips one open thread to 'expired' on behalf of an operator
+// (console expire action) and returns the updated row; unknown or already
+// closed threads report ErrNotFound.
+func (t *PostgresThreads) ExpireThread(ctx context.Context, threadID string) (Thread, error) {
+	if t == nil || t.pool == nil {
+		return Thread{}, ErrUnavailable
+	}
+	id, err := parseThreadID(threadID)
+	if err != nil {
+		return Thread{}, err
+	}
+	rows, err := t.pool.Query(ctx, `
+		UPDATE open_threads
+		SET state = 'expired', updated_at = now()
+		WHERE id = $1 AND state = 'open'
+		RETURNING id, user_id, kind, content, state, source_turn, ledger_sequence, created_at
+	`, id)
+	if err != nil {
+		return Thread{}, err
+	}
+	defer rows.Close()
+	if !rows.Next() {
+		return Thread{}, ErrNotFound
+	}
+	thread, err := scanThread(rows)
+	if err != nil {
+		return Thread{}, err
+	}
+	if err := rows.Err(); err != nil {
+		return Thread{}, err
+	}
+	t.recordLifecycle(ctx, thread, ReasonThreadExpired)
+	return thread, nil
+}
+
+func scanThread(rows pgx.Rows) (Thread, error) {
+	var thread Thread
+	var id int64
+	var kind string
+	if err := rows.Scan(&id, &thread.UserID, &kind, &thread.Content, &thread.State, &thread.SourceTurn, &thread.LedgerSequence, &thread.CreatedAt); err != nil {
+		return Thread{}, err
+	}
+	thread.ID = formatThreadID(id)
+	thread.Kind = ThreadKind(kind)
+	return thread, nil
 }
 
 // recordLifecycle keeps every thread state transition visible in the

@@ -147,19 +147,76 @@ type presentationSink interface {
 	SendJSON(msg interface{}) error
 }
 
+// deliveryInterruption is one surfaced interrupted-reaction record for the
+// console (ADR-0008: delivery interruptions are operator-visible).
+type deliveryInterruption struct {
+	TraceID string    `json:"traceId"`
+	MatchID string    `json:"matchId"`
+	At      time.Time `json:"at"`
+}
+
+// interruptionRing is the process-wide record of the last delivery
+// interruptions (C3 delivery reaction, surfaced by
+// GET /api/console/delivery-interruptions). Per-connection guards all feed
+// the shared ring below.
+type interruptionRing struct {
+	mu    sync.Mutex
+	items []deliveryInterruption
+}
+
+// interruptionRingCapacity bounds the ring (ADR-0008: last 20).
+const interruptionRingCapacity = 20
+
+// sharedInterruptions collects every interrupted-reaction emission across
+// connections so the console route can surface them in one place.
+var sharedInterruptions = newInterruptionRing()
+
+func newInterruptionRing() *interruptionRing {
+	return &interruptionRing{}
+}
+
+// Record appends one interruption, dropping the oldest beyond the capacity.
+func (r *interruptionRing) Record(traceID, matchID string, at time.Time) {
+	if r == nil || traceID == "" {
+		return
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	r.items = append(r.items, deliveryInterruption{TraceID: traceID, MatchID: matchID, At: at})
+	if len(r.items) > interruptionRingCapacity {
+		r.items = r.items[len(r.items)-interruptionRingCapacity:]
+	}
+}
+
+// Recent returns the ring, newest first.
+func (r *interruptionRing) Recent() []deliveryInterruption {
+	if r == nil {
+		return nil
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	recent := make([]deliveryInterruption, 0, len(r.items))
+	for index := len(r.items) - 1; index >= 0; index-- {
+		recent = append(recent, r.items[index])
+	}
+	return recent
+}
+
 // interruptedReactionGuard fires the delivery reaction of ADR-0007 rule 5
 // once per interruption: scheduler user-preempts during playback mark the
 // preempted reply's delivery "interrupted" (observeReplyOutcome below), and
 // the one-shot confused/listening body goes out as a standalone presentation
 // message with the same shape as the match_reaction presentation — the reply
-// text of the preempting turn is never blocked or replaced.
+// text of the preempting turn is never blocked or replaced. Every emission is
+// also recorded into the console's interruption ring (ADR-0008).
 type interruptedReactionGuard struct {
 	mu      sync.Mutex
 	emitted map[string]struct{}
+	ring    *interruptionRing
 }
 
 func newInterruptedReactionGuard() *interruptedReactionGuard {
-	return &interruptedReactionGuard{emitted: make(map[string]struct{})}
+	return &interruptedReactionGuard{emitted: make(map[string]struct{}), ring: sharedInterruptions}
 }
 
 // interruptedReactionDeliveryKey namespaces the standalone presentation's
@@ -182,7 +239,7 @@ func interruptedReactionMessage(trace companion.Trace, affect relationship.Affec
 
 // emit sends the reaction if this trace's interruption has not fired one
 // yet. Send failures are logged by wsWriter and never bubble into the
-// preempting turn.
+// preempting turn. The emission is recorded into the console ring.
 func (guard *interruptedReactionGuard) emit(sink presentationSink, trace companion.Trace, affect relationship.AffectState) {
 	if guard == nil || sink == nil || trace.ID == "" {
 		return
@@ -196,6 +253,7 @@ func (guard *interruptedReactionGuard) emit(sink presentationSink, trace compani
 	if err := sink.SendJSON(interruptedReactionMessage(trace, affect)); err != nil {
 		log.Printf("interrupted delivery reaction error: %v", err)
 	}
+	guard.ring.Record(trace.ID, trace.MatchID, time.Now().UTC())
 }
 
 // observeReplyOutcome is the delivery observer's outcome path: the ordinary

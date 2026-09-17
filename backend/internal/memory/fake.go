@@ -198,6 +198,59 @@ func (f *Fake) ExpireStaleThreads(_ context.Context, now time.Time, ttl time.Dur
 	return expired, nil
 }
 
+// ListThreads returns every matching thread in any state (console read):
+// userID or state may be empty to widen the filter, oldest first.
+func (f *Fake) ListThreads(_ context.Context, userID, state string) ([]Thread, error) {
+	if f == nil {
+		return nil, ErrUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	matched := make([]Thread, 0, len(f.threads))
+	for _, thread := range f.threads {
+		if userID != "" && thread.UserID != userID {
+			continue
+		}
+		if state != "" && thread.State != state {
+			continue
+		}
+		matched = append(matched, thread)
+	}
+	return matched, nil
+}
+
+// Thread resolves one thread in any state.
+func (f *Fake) Thread(_ context.Context, threadID string) (Thread, bool) {
+	if f == nil {
+		return Thread{}, false
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for _, thread := range f.threads {
+		if thread.ID == threadID {
+			return thread, true
+		}
+	}
+	return Thread{}, false
+}
+
+// ExpireThread flips one open thread to 'expired' and returns the updated
+// row; unknown or already closed threads report ErrNotFound (mirrors SQL).
+func (f *Fake) ExpireThread(_ context.Context, threadID string) (Thread, error) {
+	if f == nil {
+		return Thread{}, ErrUnavailable
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	for index := range f.threads {
+		if f.threads[index].ID == threadID && f.threads[index].State == "open" {
+			f.threads[index].State = "expired"
+			return f.threads[index], nil
+		}
+	}
+	return Thread{}, ErrNotFound
+}
+
 // ThreadsAll returns a copy of every thread in any state (test accessor for
 // expiry/addressed assertions).
 func (f *Fake) ThreadsAll() []Thread {

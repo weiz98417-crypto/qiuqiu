@@ -109,6 +109,13 @@ type Queue struct {
 	pendingMu      sync.Mutex
 	citations      map[string][]int64
 	recentMatchEnds map[string]time.Time
+
+	// Console health (ADR-0008 overview memory cell): a bounded tail of the
+	// extraction decisions recorded by this process plus a live count of the
+	// moments currently waiting in the Memobase outage backlog.
+	healthMu       sync.Mutex
+	auditTail      []AuditRow
+	backlogPending atomic.Int64
 }
 
 type enqueueItem struct {
@@ -582,6 +589,9 @@ func (q *Queue) backlogMoment(ctx context.Context, moment Moment, cause error) {
 	if _, err := q.backlog.PutBacklog(ctx, BacklogEntry{UserID: moment.UserID, Payload: payload}); err != nil {
 		audit.ReasonCode = ReasonBacklogPutFailed
 		audit.Detail = err.Error()
+	} else {
+		// Live backlog depth for Health(): the row now waits for Memobase.
+		q.backlogPending.Add(1)
 	}
 	q.recordAudit(ctx, audit)
 }
@@ -608,6 +618,8 @@ func (q *Queue) drainBacklog(ctx context.Context) {
 		}
 		if err := q.backlog.MarkReplayed(ctx, entry.ID); err != nil {
 			log.Printf("memory: mark backlog %d replayed: %v", entry.ID, err)
+		} else {
+			q.backlogPending.Add(-1)
 		}
 		kind, importance, sequence := decodeMomentFields(entry.Payload)
 		q.recordAudit(ctx, ExtractionAudit{
@@ -630,13 +642,36 @@ func (q *Queue) failBacklog(ctx context.Context, entry BacklogEntry, cause error
 }
 
 func (q *Queue) recordAudit(ctx context.Context, entry ExtractionAudit) {
-	if q == nil || q.audit == nil {
+	if q == nil {
+		return
+	}
+	q.rememberAuditTail(entry)
+	if q.audit == nil {
 		return
 	}
 	auditCtx, cancel := context.WithTimeout(ctx, 2*time.Second)
 	defer cancel()
 	if err := q.audit.RecordExtraction(auditCtx, entry); err != nil {
 		log.Printf("memory: record extraction audit: %v", err)
+	}
+}
+
+// rememberAuditTail keeps the last healthAuditTail decisions in-process so
+// Health() can expose the audit tail read-only (ADR-0008), with or without a
+// database-backed audit sink.
+func (q *Queue) rememberAuditTail(entry ExtractionAudit) {
+	q.healthMu.Lock()
+	defer q.healthMu.Unlock()
+	q.auditTail = append(q.auditTail, AuditRow{
+		MomentID:   entry.MomentID,
+		UserID:     entry.UserID,
+		Kind:       entry.Kind,
+		ReasonCode: entry.ReasonCode,
+		Detail:     entry.Detail,
+		CreatedAt:  entry.CreatedAt,
+	})
+	if len(q.auditTail) > healthAuditTail {
+		q.auditTail = q.auditTail[len(q.auditTail)-healthAuditTail:]
 	}
 }
 

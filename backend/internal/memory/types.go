@@ -135,4 +135,6 @@ var (
 	// ErrUnavailable marks a degraded adapter (unconfigured, unreachable, or
 	// recently failing); callers fall back to read_recent instead of failing.
 	ErrUnavailable = errors.New("memory: adapter unavailable")
+	// ErrNotFound marks a requested row (thread id) that does not exist.
+	ErrNotFound = errors.New("memory: row not found")
 )

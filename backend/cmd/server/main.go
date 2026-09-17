@@ -31,6 +31,7 @@ import (
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/observation"
+	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/pipeline"
 	"qiuqiu/internal/privacy"
@@ -284,6 +285,23 @@ func main() {
 		operatorWrites = postgresOperatorWrites
 	}
 	defer operatorWrites.Close()
+	// ADR-0008 operator identity: personal tokens live in the operators table
+	// (migration 042) with an in-process store when no database exists.
+	// Bootstrap seeds the first director from QIUQIU_BOOTSTRAP_OPERATOR
+	// ("name:token") when the table is empty; revocation = row deletion.
+	var operatorStore operatorauth.Directory = operatorauth.NewMemoryStore()
+	if cfg.DatabaseURL != "" {
+		postgresOperators, err := operatorauth.OpenPostgresStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres operator store: %v", err)
+		}
+		defer postgresOperators.Close()
+		operatorStore = postgresOperators
+	}
+	if err := operatorauth.Bootstrap(context.Background(), operatorStore, os.Getenv("QIUQIU_BOOTSTRAP_OPERATOR"), log.Printf); err != nil {
+		log.Printf("operator bootstrap skipped: %v", err)
+	}
+	authz := newOperatorAuthz(cfg, operatorStore)
 	var sportsClient datasource.EventsClient
 	if cfg.APISportsAPIKey != "" {
 		sportsClient = datasource.NewClient(cfg.APISportsAPIKey).WithBaseURL(cfg.APISportsBaseURL)
@@ -429,7 +447,22 @@ func main() {
 	// privacy API's transport (session bearer auth, account-scoped).
 	mux.HandleFunc("/api/me/portrait", handlePortraitAPI(sessionManager, cfg, memoryQueue))
 	mux.HandleFunc("/api/matches/catalog", handleMatchCatalog(matchStore, cfg))
-	mux.HandleFunc("/api/matches/", handleMatchAPIWithRuntime(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, interactionLedger, operatorWrites))
+	mux.HandleFunc("/api/matches/", handleMatchAPIWithOperatorAuth(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, interactionLedger, authz, operatorWrites))
+	// ADR-0008 operations console API: the three-tier IA data surface
+	// (overview → match → user) behind operator auth + scopes.
+	mux.HandleFunc("/api/console/", handleConsoleAPI(consoleAPI{
+		cfg:           cfg,
+		authz:         authz,
+		matches:       matchStore,
+		traces:        traceReader,
+		ledger:        interactionLedger,
+		sessions:      watchSessions,
+		memories:      memoryQueue,
+		operators:     operatorStore,
+		preferences:   memoryPreferenceStore,
+		writes:        operatorWrites,
+		interruptions: sharedInterruptions,
+	}))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")
@@ -1528,6 +1561,12 @@ func getInteractionTrace(ctx context.Context, ledger interaction.Ledger, matchID
 }
 
 func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+	// Legacy-only authorizer: without an operators directory this behaves
+	// exactly as before ADR-0008 (shared APP_TOKEN / dev bypass = director).
+	return handleMatchAPIWithOperatorAuth(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, directorDrafts, interactionLedger, operatorAuthz{cfg: cfg}, writeServices...)
+}
+
+func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, authz operatorAuthz, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	operatorWrites := selectedOperatorWriteService(writeServices)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !applyCORS(w, r, cfg) {
@@ -1549,8 +1588,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 		resource := parts[1]
 		switch {
 		case r.Method == http.MethodGet && resource == "interaction" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
 				return
 			}
 			if interactionLedger == nil {
@@ -1601,8 +1639,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				"journey":         interaction.ProjectJourney(projectionEvents), "audit": evals.AuditInteractions(projectionEvents),
 			})
 		case r.Method == http.MethodPost && resource == "start" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			var matchConfig matchstate.MatchConfig
@@ -1642,8 +1679,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodPost && resource == "reset" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			if !isDemoMatchID(matchID) {
@@ -1669,8 +1705,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodGet && resource == "sources" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
 				return
 			}
 			if sources == nil {
@@ -1679,8 +1714,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"status": sources.Status(matchID)})
 		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "start":
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			if sources == nil {
@@ -1701,8 +1735,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": status})
 			})
 		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "stop":
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			if sources == nil {
@@ -1713,8 +1746,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": sources.Stop(matchID)})
 			})
 		case r.Method == http.MethodPost && resource == "takeover" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			if sources == nil {
@@ -1735,14 +1767,12 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodGet && resource == "automation" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{"policy": store.Config(matchID).Automation})
 		case r.Method == http.MethodPost && resource == "automation" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			var policy matchstate.AutomationPolicy
@@ -1765,7 +1795,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return
 			}
 			snapshot := store.PublicSnapshot(matchID)
-			if !validAPIToken(r, cfg) {
+			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
+			if !operatorView {
 				snapshot = clientSnapshot(snapshot)
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -1773,8 +1804,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodPatch && resource == "clock" && len(parts) == 2:
-			if _, authorized := operatorClaims(r, cfg); !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !authorized {
 				return
 			}
 			clockStore, ok := store.(matchstate.ClockRepository)
@@ -1804,9 +1834,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 4 && parts[2] == "voice" && parts[3] == "publish":
-			operator, authorized := operatorClaims(r, cfg)
+			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite)
 			if !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			if directorDrafts == nil {
@@ -1877,8 +1906,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{"event": created, "snapshot": snapshot})
 			})
 		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 3 && parts[2] == "voice":
-			if _, authorized := operatorClaims(r, cfg); !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !authorized {
 				return
 			}
 			if directorDrafts == nil {
@@ -1913,9 +1941,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return operatorwrite.JSONResponse(http.StatusOK, result)
 			})
 		case r.Method == http.MethodPost && resource == "facts" && len(parts) == 4:
-			operator, authorized := operatorClaims(r, cfg)
+			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorFactConfirm)
 			if !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			action := parts[3]
@@ -1960,9 +1987,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
 			})
 		case r.Method == http.MethodPost && resource == "conflicts" && len(parts) == 4 && parts[3] == "resolve":
-			operator, authorized := operatorClaims(r, cfg)
+			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorFactConfirm)
 			if !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			conflictStore, supported := store.(matchstate.FactConflictRepository)
@@ -2051,8 +2077,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodGet && resource == "facts" && len(parts) == 4 && parts[3] == "revisions":
-			if _, authorized := operatorClaims(r, cfg); !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, authorized := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !authorized {
 				return
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
@@ -2061,7 +2086,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 		case r.Method == http.MethodGet && resource == "config" && len(parts) == 2:
 			matchConfig := store.Config(matchID)
 			snapshot := store.PublicSnapshot(matchID)
-			if !validAPIToken(r, cfg) {
+			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
+			if !operatorView {
 				matchConfig.Integrity = matchstate.MatchIntegrity{}
 				snapshot = clientSnapshot(snapshot)
 			}
@@ -2070,8 +2096,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodPost && resource == "config" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
 				return
 			}
 			var config matchstate.MatchConfig
@@ -2096,9 +2121,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodPost && resource == "lifecycle" && len(parts) == 2:
-			operator, authorized := operatorClaims(r, cfg)
+			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite)
 			if !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			var request struct {
@@ -2128,7 +2152,7 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 			})
 		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
 			events := store.PublicEvents(matchID)
-			operatorView := validAPIToken(r, cfg)
+			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
 			if operatorView {
 				events = operatorAuditEvents(store.Events(matchID), events)
 			}
@@ -2148,15 +2172,15 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 			writeJSON(w, http.StatusOK, response)
 		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
 			snapshot := store.PublicSnapshot(matchID)
-			if !validAPIToken(r, cfg) {
+			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
+			if !operatorView {
 				snapshot = clientSnapshot(snapshot)
 			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"snapshot": snapshot,
 			})
 		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 2:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
 				return
 			}
 			limit := 50
@@ -2176,12 +2200,16 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				http.Error(w, err.Error(), http.StatusInternalServerError)
 				return
 			}
+			// ADR-0008 citation audit: `citation=<prefix>` keeps only traces
+			// whose reason codes cite a proactive_citation with that prefix.
+			if prefix := strings.TrimSpace(r.URL.Query().Get("citation")); prefix != "" {
+				traces = filterTracesByCitationPrefix(traces, prefix)
+			}
 			writeJSON(w, http.StatusOK, map[string]interface{}{
 				"traces": traces,
 			})
 		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 3:
-			if !validAPIToken(r, cfg) {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
+			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
 				return
 			}
 			var trace companion.Trace
@@ -2203,9 +2231,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				"trace": trace,
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 2:
-			operator, authorized := operatorClaims(r, cfg)
+			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite)
 			if !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			var ev matchstate.MatchEvent
@@ -2253,9 +2280,8 @@ func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companio
 				})
 			})
 		case r.Method == http.MethodPost && resource == "events" && len(parts) == 4 && parts[3] == "correct":
-			operator, authorized := operatorClaims(r, cfg)
+			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorFactCorrect)
 			if !authorized {
-				http.Error(w, "unauthorized", http.StatusUnauthorized)
 				return
 			}
 			var ev matchstate.MatchEvent
@@ -2579,41 +2605,6 @@ func nonEmptyVoiceMeta(meta *companion.VoiceTraceMetadata) *companion.VoiceTrace
 		return nil
 	}
 	return meta
-}
-
-func validAPIToken(r *http.Request, cfg *config.Config) bool {
-	_, ok := operatorClaims(r, cfg)
-	return ok
-}
-
-func operatorClaims(r *http.Request, cfg *config.Config) (auth.Claims, bool) {
-	if cfg == nil {
-		return auth.Claims{}, false
-	}
-	if cfg.AppToken == "" && !strings.EqualFold(cfg.Environment, "production") {
-		return auth.Claims{
-			Subject: "operator:development",
-			Scopes: []string{
-				auth.ScopeOperatorMatchWrite,
-				auth.ScopeOperatorFactConfirm,
-				auth.ScopeOperatorFactCorrect,
-				auth.ScopeOperatorTraceRead,
-			},
-		}, true
-	}
-	token := auth.BearerToken(r.Header.Get("Authorization"))
-	if !cfg.OperatorTokenMatches(token) {
-		return auth.Claims{}, false
-	}
-	return auth.Claims{
-		Subject: "operator:default",
-		Scopes: []string{
-			auth.ScopeOperatorMatchWrite,
-			auth.ScopeOperatorFactConfirm,
-			auth.ScopeOperatorFactCorrect,
-			auth.ScopeOperatorTraceRead,
-		},
-	}, true
 }
 
 func applyCORS(w http.ResponseWriter, r *http.Request, cfg *config.Config) bool {

@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"sort"
 	"sync"
 	"time"
 
@@ -220,6 +221,50 @@ func (r *WatchSessionRegistry) Release(userID, matchID string) {
 			session.Interrupt()
 		}
 	}
+}
+
+// OnlineUser is one registry-known "user × match" session for console
+// aggregation (ADR-0008): Online reports whether a connection is currently
+// attached; detached sessions keep their user visible with Online=false.
+type OnlineUser struct {
+	UserID string
+	Online bool
+}
+
+// ConsoleSnapshot returns read-only aggregates for the operations console:
+// how many sessions are currently attached (online), and per match which
+// users have registry sessions and whether each is attached. Users come back
+// ordered by ID per match.
+func (r *WatchSessionRegistry) ConsoleSnapshot() (onlineSessions int, usersByMatch map[string][]OnlineUser) {
+	if r == nil {
+		return 0, map[string][]OnlineUser{}
+	}
+	r.mu.Lock()
+	sessions := make([]*WatchSession, 0, len(r.sessions))
+	for _, session := range r.sessions {
+		sessions = append(sessions, session)
+	}
+	r.mu.Unlock()
+	usersByMatch = make(map[string][]OnlineUser)
+	for _, session := range sessions {
+		session.mu.Lock()
+		userID, matchID, attached := session.UserID, session.MatchID, session.attached > 0
+		session.mu.Unlock()
+		if userID == "" || matchID == "" {
+			continue
+		}
+		usersByMatch[matchID] = append(usersByMatch[matchID], OnlineUser{UserID: userID, Online: attached})
+		if attached {
+			onlineSessions++
+		}
+	}
+	for matchID := range usersByMatch {
+		users := usersByMatch[matchID]
+		sort.Slice(users, func(left, right int) bool {
+			return users[left].UserID < users[right].UserID
+		})
+	}
+	return onlineSessions, usersByMatch
 }
 
 func NewDeliveryLedgerRegistry() *DeliveryLedgerRegistry {
