@@ -96,6 +96,10 @@ _Avoid_: Filler reply
 Which side of the conversation owns the moment — user speaking, QiuQiu understanding, QiuQiu speaking, or idle. Phase gestures (listening, think, speak, hello, wave) are owned by the client and are distinct from content-driven performance delivered with a reply.
 _Avoid_: Mode, state machine step
 
+**Intent Router（意图路由器）**:
+The semantic layer that classifies what a user turn means when keywords miss — an LLM function call returning intent, slots and confidence. It routes to deterministic paths (facts, control) or realization (chat); it never invents Match Facts.
+_Avoid_: NLU, 分类器关键词表
+
 **Proactive Turn（主动回合）**:
 A QiuQiu-initiated contribution justified by match context, an open thread, or a relevant shared moment.
 _Avoid_: Push notification, automated message
