@@ -46,6 +46,16 @@ _Avoid_: Bad reply, low rating
 A change in subsequent behavior that addresses a rupture. An apology without changed behavior is not a repair.
 _Avoid_: Apology response
 
+## Operations
+
+**Operator（运营员）**:
+A named member of the operations team authenticated by a personal token; every console write is attributed to one by name, and a role (director or auditor) maps to route scopes. Revocation is row deletion and takes effect immediately.
+_Avoid_: Admin, shared token, 账号
+
+**Intervention Level（干预级别）**:
+The graded scope of human takeover — single-ability pause (proactive only), match takeover, or route scope. A quieter level never enables a capability that a louder one restricts.
+_Avoid_: 五级暂停, 全局开关
+
 ## Memory
 
 **Shared Moment（共同瞬间）**:
