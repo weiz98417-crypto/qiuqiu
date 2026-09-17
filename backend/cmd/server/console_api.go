@@ -11,6 +11,9 @@ package main
 
 import (
 	"context"
+	"crypto/rand"
+	"encoding/hex"
+	"encoding/json"
 	"errors"
 	"log"
 	"net/http"
@@ -147,10 +150,131 @@ func handleConsoleAPI(deps consoleAPI) http.HandlerFunc {
 			deps.handleDeletePortrait(w, r, parts[1])
 		case r.Method == http.MethodGet && path == "delivery-interruptions":
 			deps.handleDeliveryInterruptions(w, r)
+		case r.Method == http.MethodGet && path == "operators":
+			deps.handleListOperators(w, r)
+		case r.Method == http.MethodPost && path == "operators":
+			deps.handleCreateOperator(w, r)
+		case r.Method == http.MethodGet && path == "whoami":
+			deps.handleWhoami(w, r)
+		case r.Method == http.MethodDelete && len(parts) == 2 && parts[0] == "operators":
+			deps.handleDeleteOperator(w, r, parts[1])
 		default:
 			http.NotFound(w, r)
 		}
 	}
+}
+
+// Operators management (ADR-0008): director-only. The plaintext token is
+// returned exactly once at creation; the store keeps only its SHA-256 hash.
+// A store without persistent management (no DATABASE_URL) answers 501 — the
+// console keeps operating on the legacy APP_TOKEN mode instead.
+
+// handleListOperators lists every operator row (director only).
+func (deps consoleAPI) handleListOperators(w http.ResponseWriter, r *http.Request) {
+	if _, ok := deps.authz.authorize(w, r, matchWriteScope); !ok {
+		return
+	}
+	lister, ok := deps.operators.(interface {
+		List(ctx context.Context) ([]operatorauth.Operator, error)
+	})
+	if !ok {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "operators management requires a persistent operator store (DATABASE_URL)"})
+		return
+	}
+	operators, err := lister.List(r.Context())
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"operators": operators})
+}
+
+// handleCreateOperator mints a personal token for a new operator. The token
+// is returned exactly once; only its SHA-256 hash is stored.
+func (deps consoleAPI) handleCreateOperator(w http.ResponseWriter, r *http.Request) {
+	claims, ok := deps.authz.authorize(w, r, matchWriteScope)
+	if !ok {
+		return
+	}
+	var request struct {
+		Name string            `json:"name"`
+		Role operatorauth.Role `json:"role"`
+	}
+	if err := json.NewDecoder(r.Body).Decode(&request); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	token := newOperatorToken()
+	operator, err := deps.operators.Seed(r.Context(), request.Name, token, request.Role)
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, operatorauth.ErrDuplicateName) || errors.Is(err, operatorauth.ErrUnknownRole) || errors.Is(err, operatorauth.ErrNameRequired) {
+			status = http.StatusBadRequest
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.create", request.Name)
+	writeJSON(w, http.StatusOK, map[string]any{"operator": operator, "token": token})
+}
+
+// handleDeleteOperator revokes an operator (row deletion, immediate).
+func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Request, name string) {
+	claims, ok := deps.authz.authorize(w, r, matchWriteScope)
+	if !ok {
+		return
+	}
+	revoker, ok := deps.operators.(interface {
+		Delete(ctx context.Context, name string) (bool, error)
+	})
+	if !ok {
+		if boolRevoker, ok2 := deps.operators.(interface {
+			Delete(ctx context.Context, name string) bool
+		}); ok2 {
+			deleted := boolRevoker.Delete(r.Context(), name)
+			if !deleted {
+				http.Error(w, "operator not found", http.StatusNotFound)
+				return
+			}
+			_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.revoke", name)
+			writeJSON(w, http.StatusOK, map[string]any{})
+			return
+		}
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "operators management requires a persistent operator store (DATABASE_URL)"})
+		return
+	}
+	deleted, err := revoker.Delete(r.Context(), name)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	if !deleted {
+		http.Error(w, "operator not found", http.StatusNotFound)
+		return
+	}
+	_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.revoke", name)
+	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// handleWhoami reports the authenticated operator identity (name, role via
+// subject, scopes) — the console header uses it after token load.
+func (deps consoleAPI) handleWhoami(w http.ResponseWriter, r *http.Request) {
+	claims, ok := deps.authz.claims(r)
+	if !ok {
+		http.Error(w, "unauthorized", http.StatusUnauthorized)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"name": operatorName(claims), "subject": claims.Subject, "scopes": claims.Scopes})
+}
+
+func newOperatorToken() string {
+	buf := make([]byte, 24)
+	if _, err := rand.Read(buf); err != nil {
+		// crypto/rand failure is unrecoverable; an empty token would be a
+		// security hole, so fail loudly instead.
+		panic(err)
+	}
+	return hex.EncodeToString(buf)
 }
 
 func (deps consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request) {

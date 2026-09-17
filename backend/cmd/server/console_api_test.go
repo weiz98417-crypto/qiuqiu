@@ -658,3 +658,76 @@ func TestConsoleTracesCitationFilter(t *testing.T) {
 		t.Fatalf("no-match filter = %+v, want empty", all.Traces)
 	}
 }
+
+func TestConsoleOperatorsManagement(t *testing.T) {
+	h := newConsoleHarness(t)
+	h.seedOperators(t)
+
+	// Auditor cannot manage operators.
+	rec := doConsoleRequest(t, consoleRequest{method: http.MethodPost, path: "/api/console/operators", body: `{"name":"新人","role":"director"}`, token: consoleAuditorToken, handler: h.console})
+	if rec.Code != http.StatusForbidden {
+		t.Fatalf("auditor create = %d, want 403", rec.Code)
+	}
+
+	// Director creates an operator; the plaintext token is returned exactly once.
+	rec = doConsoleRequest(t, consoleRequest{method: http.MethodPost, path: "/api/console/operators", body: `{"name":"新人","role":"auditor"}`, token: consoleDirectorToken, handler: h.console})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("create = %d %s, want 200", rec.Code, rec.Body.String())
+	}
+	var created struct {
+		Operator operatorauth.Operator `json:"operator"`
+		Token    string                `json:"token"`
+	}
+	if err := json.Unmarshal(rec.Body.Bytes(), &created); err != nil {
+		t.Fatalf("decode create: %v", err)
+	}
+	if created.Token == "" || created.Operator.Name != "新人" || created.Operator.Role != operatorauth.RoleAuditor {
+		t.Fatalf("created = %+v token=%q, want operator 新人/auditor with a token", created.Operator, created.Token)
+	}
+	if _, ok := h.operators.Lookup(context.Background(), created.Token); !ok {
+		t.Fatal("created token does not authenticate")
+	}
+
+	// Duplicate name fails with 400.
+	rec = doConsoleRequest(t, consoleRequest{method: http.MethodPost, path: "/api/console/operators", body: `{"name":"新人","role":"auditor"}`, token: consoleDirectorToken, handler: h.console})
+	if rec.Code != http.StatusBadRequest {
+		t.Fatalf("duplicate create = %d, want 400", rec.Code)
+	}
+
+	// List contains every operator and never the plaintext token.
+	rec = doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/operators", token: consoleDirectorToken, handler: h.console})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("list = %d", rec.Code)
+	}
+	if strings.Contains(rec.Body.String(), created.Token) {
+		t.Fatal("list leaks the plaintext token")
+	}
+
+	// The created token authenticates reads (auditor scope) ...
+	rec = doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/overview", token: created.Token, handler: h.console})
+	if rec.Code == http.StatusUnauthorized || rec.Code == http.StatusForbidden {
+		t.Fatalf("created auditor overview = %d, want 200", rec.Code)
+	}
+
+	// Director revokes; the token fails immediately and the audit trail
+	// carries both actions attributed to the director.
+	rec = doConsoleRequest(t, consoleRequest{method: http.MethodDelete, path: "/api/console/operators/" + created.Operator.Name, token: consoleDirectorToken, handler: h.console})
+	if rec.Code != http.StatusOK {
+		t.Fatalf("revoke = %d", rec.Code)
+	}
+	if _, ok := h.operators.Lookup(context.Background(), created.Token); ok {
+		t.Fatal("revoked token still authenticates")
+	}
+	audit, err := h.operators.RecentAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("RecentAudit: %v", err)
+	}
+	joined := make([]string, 0, len(audit))
+	for _, entry := range audit {
+		joined = append(joined, entry.OperatorName+":"+entry.Action)
+	}
+	joinedAll := strings.Join(joined, ",")
+	if !strings.Contains(joinedAll, consoleDirectorName+":operator.create") || !strings.Contains(joinedAll, consoleDirectorName+":operator.revoke") {
+		t.Fatalf("audit = %v, want director-attributed create and revoke", joined)
+	}
+}

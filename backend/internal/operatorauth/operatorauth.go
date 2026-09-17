@@ -12,6 +12,7 @@ import (
 	"encoding/hex"
 	"errors"
 	"fmt"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -185,6 +186,24 @@ func (m *MemoryStore) Count(_ context.Context) int64 {
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	return int64(len(m.byToken))
+}
+
+// List returns every operator row (the console Operators page), sorted by
+// name. Rows never carry the plaintext token.
+func (m *MemoryStore) List(_ context.Context) ([]Operator, error) {
+	if m == nil {
+		return nil, ErrAuditNotStored
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	operators := make([]Operator, 0, len(m.byName))
+	for _, hash := range m.byName {
+		if operator, ok := m.byToken[hash]; ok {
+			operators = append(operators, operator)
+		}
+	}
+	sort.Slice(operators, func(i, j int) bool { return operators[i].Name < operators[j].Name })
+	return operators, nil
 }
 
 func (m *MemoryStore) AppendAudit(_ context.Context, operatorName, action, object string) error {
