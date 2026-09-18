@@ -247,6 +247,51 @@ func TestMePasswordChangeFlow(t *testing.T) {
 	}
 }
 
+func TestExpiredAccessTokenRecoveredViaRefresh(t *testing.T) {
+	// 1.6 显式场景：过期的访问令牌被 401 拒绝，但刷新令牌仍能换出可用的新对。
+	harness := newAuthHarness(t)
+	seedPasswordOperator(t, harness, "阿琴", "director-pass-01", time.Now().UTC())
+
+	expired := mustSignExpired(t, "阿琴")
+	whoami := func(bearer string) int {
+		request := httptest.NewRequest(http.MethodGet, "/api/console/whoami", nil)
+		request.Header.Set("Authorization", "Bearer "+bearer)
+		recorder := httptest.NewRecorder()
+		harness.console(recorder, request)
+		return recorder.Code
+	}
+	if code := whoami(expired); code != http.StatusUnauthorized {
+		t.Fatalf("expired access token whoami status = %d, want 401", code)
+	}
+
+	login := decodeBody(t, harness.login(t, "阿琴", "director-pass-01"))
+	refreshToken := login["refreshToken"].(string)
+	recorder := postJSON(t, harness.console, "/api/console/auth/refresh",
+		`{"refreshToken":`+jsonString(refreshToken)+`}`)
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("refresh status = %d: %s", recorder.Code, recorder.Body.String())
+	}
+	newAccess := decodeBody(t, recorder)["accessToken"].(string)
+	if code := whoami(newAccess); code != http.StatusOK {
+		t.Fatalf("new access token whoami status = %d, want 200", code)
+	}
+}
+
+// mustSignExpired 签发一个已过期的访问令牌（绕过 SignJWT 的默认过期）。
+func mustSignExpired(t *testing.T, sub string) string {
+	t.Helper()
+	token, err := consoleauth.SignJWT(consoleauth.Claims{
+		Sub:    sub,
+		Role:   "director",
+		Scopes: []string{"trace_read", "operator_match_write", "fact_confirm", "fact_correct"},
+		Exp:    time.Now().Add(-time.Minute).Unix(),
+	}, authTestSecret, 0)
+	if err != nil {
+		t.Fatalf("SignJWT error: %v", err)
+	}
+	return token
+}
+
 func TestCreateOperatorIssuesTemporaryPassword(t *testing.T) {
 	harness := newAuthHarness(t)
 	seedPasswordOperator(t, harness, "阿琴", "director-pass-01", time.Now().UTC())

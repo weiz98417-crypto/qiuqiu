@@ -249,7 +249,7 @@ func (s *PostgresStore) PutRefresh(ctx context.Context, operatorName, tokenHash,
 }
 
 // ConsumeRefresh resolves a refresh hash to its operator and deletes the row
-// (rotation = single use). Missing/revoked/expired rows fail.
+// (rotation = single use). Missing/expired rows fail.
 func (s *PostgresStore) ConsumeRefresh(ctx context.Context, tokenHash string) (string, bool) {
 	if s == nil || s.pool == nil {
 		return "", false
@@ -257,7 +257,7 @@ func (s *PostgresStore) ConsumeRefresh(ctx context.Context, tokenHash string) (s
 	var operatorName string
 	err := s.pool.QueryRow(ctx, `
 		DELETE FROM refresh_tokens
-		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+		WHERE token_hash = $1 AND expires_at > now()
 		RETURNING (SELECT name FROM operators WHERE id = operator_id)
 	`, tokenHash).Scan(&operatorName)
 	if err != nil {

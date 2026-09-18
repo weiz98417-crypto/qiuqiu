@@ -70,9 +70,18 @@ func (a operatorAuthz) claims(r *http.Request) (auth.Claims, bool) {
 		// personal-token lookup (which fails → 401).
 		if consoleauth.LooksLikeJWT(bearer) && a.jwtSecret != "" {
 			if jwtClaims, err := consoleauth.VerifyJWT(bearer, a.jwtSecret); err == nil {
+				scopes := jwtClaims.Scopes
+				// ADR-0010 locked decision 1, server-side enforcement: a JWT
+				// minted against a director-issued temp password (first login
+				// pending) carries no scopes — every scoped route 403s until
+				// the password is changed. me/password reads the claims
+				// without a scope check, so the change itself stays possible.
+				if !jwtClaims.PasswordSet {
+					scopes = nil
+				}
 				return auth.Claims{
 					Subject: "operator:" + jwtClaims.Sub,
-					Scopes:  jwtClaims.Scopes,
+					Scopes:  scopes,
 				}, true
 			}
 		}

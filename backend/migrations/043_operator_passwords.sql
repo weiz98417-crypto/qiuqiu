@@ -5,9 +5,9 @@
 -- implementation validated against RFC 6070 vectors). password_set_at NULL =
 -- director-issued temp password, first login forces a change. refresh_tokens
 -- stores only SHA-256 hashes of 30-day refresh tokens — multi-device,
--- per-device revocation is a row deletion; rotation deletes the old row
--- (single-use). Revoking an operator cascades so no refresh row outlives
--- its identity.
+-- per-device revocation is a row deletion (revoke = DELETE, per proposal);
+-- rotation deletes the old row (single-use). Revoking an operator cascades
+-- so no refresh row outlives its identity.
 
 ALTER TABLE operators ADD COLUMN IF NOT EXISTS password_hash TEXT;
 ALTER TABLE operators ADD COLUMN IF NOT EXISTS password_set_at TIMESTAMPTZ;
@@ -18,8 +18,7 @@ CREATE TABLE IF NOT EXISTS refresh_tokens (
   token_hash TEXT NOT NULL UNIQUE,
   device TEXT NOT NULL DEFAULT '',
   created_at TIMESTAMPTZ NOT NULL DEFAULT now(),
-  expires_at TIMESTAMPTZ NOT NULL,
-  revoked_at TIMESTAMPTZ
+  expires_at TIMESTAMPTZ NOT NULL
 );
 
 CREATE INDEX IF NOT EXISTS idx_refresh_tokens_operator

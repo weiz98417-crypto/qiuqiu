@@ -41,8 +41,9 @@ func (deps consoleAPI) handleLogin(w http.ResponseWriter, r *http.Request) {
 	request.Username = strings.TrimSpace(request.Username)
 	credentials, err := passwords.Credentials(r.Context(), request.Username)
 	if err != nil || !consoleauth.VerifyPassword(request.Password, credentials.PasswordHash) {
-		// Failed attempts are audited; v1 has no lockout (locked decision 5).
-		_ = deps.operators.AppendAudit(r.Context(), request.Username, "auth.login_failed", request.Username)
+		// Failed attempts are audited (attempted name kept in the object
+		// field for forensics); v1 has no lockout (locked decision 4).
+		_ = deps.operators.AppendAudit(r.Context(), "-", "auth.login_failed", request.Username)
 		http.Error(w, "invalid username or password", http.StatusUnauthorized)
 		return
 	}
@@ -146,7 +147,7 @@ func (deps consoleAPI) handleMePassword(w http.ResponseWriter, r *http.Request) 
 		http.Error(w, "old password is incorrect", http.StatusUnauthorized)
 		return
 	}
-	if len(request.NewPassword) < 10 {
+	if len([]rune(request.NewPassword)) < 10 {
 		http.Error(w, consoleauth.ErrPasswordTooShort.Error(), http.StatusBadRequest)
 		return
 	}
@@ -268,7 +269,7 @@ func (deps consoleAPI) issueTemporaryPassword(w http.ResponseWriter, r *http.Req
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return "", false
 	}
-	// Zero setAt = first login forces a change (locked decision 5).
+	// Zero setAt = first login forces a change (locked decision 1).
 	if err := passwords.SetPasswordCredentials(r.Context(), operator.Name, hash, time.Time{}); err != nil {
 		http.Error(w, err.Error(), http.StatusInternalServerError)
 		return "", false

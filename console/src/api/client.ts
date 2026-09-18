@@ -76,7 +76,10 @@ export function sessionOperator(): SessionOperator | null {
   const parts = token.split('.');
   if (parts.length !== 3) return null;
   try {
-    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    // base64url → 字节 → UTF-8 文本：atob 给出的是 Latin-1 串，中文载荷
+    // 必须经 TextDecoder 解码。
+    const bytes = Uint8Array.from(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
+    const payload = JSON.parse(new TextDecoder().decode(bytes));
     if (typeof payload.sub === 'string' && payload.sub) {
       return { name: payload.sub, role: typeof payload.role === 'string' ? payload.role : '' };
     }
@@ -140,12 +143,15 @@ async function doRefreshSession(): Promise<boolean> {
 }
 
 // changeSelfPassword 自助改密：旧密码必填，新密码最短 10 字符
-//（PATCH /api/console/me/password，ADR-0010）。
+//（PATCH /api/console/me/password，ADR-0010）。改密成功后立即用刷新令牌
+// 换发新访问令牌——首登场景下旧令牌是不带 scope 的强制改密令牌，不换发
+// 会被服务端 403。
 export async function changeSelfPassword(oldPassword: string, newPassword: string): Promise<void> {
   await api('/api/console/me/password', {
     method: 'PATCH',
     body: { oldPassword, newPassword },
   });
+  await refreshSession();
 }
 
 // logout 吊销当前设备的刷新令牌并清空本地会话。

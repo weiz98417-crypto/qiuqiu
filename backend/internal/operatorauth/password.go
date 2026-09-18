@@ -140,22 +140,6 @@ func (m *MemoryStore) RevokeRefresh(_ context.Context, tokenHash string) bool {
 	return true
 }
 
-// RevokeAllRefresh deletes every refresh row of one operator (disable
-// hygiene). Not part of the interface — stores that expose it wire it where
-// needed.
-func (m *MemoryStore) RevokeAllRefresh(_ context.Context, operatorName string) {
-	if m == nil {
-		return
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	for tokenHash, row := range m.refresh {
-		if row.operatorName == operatorName {
-			delete(m.refresh, tokenHash)
-		}
-	}
-}
-
 var (
 	_ PasswordAccounts = (*MemoryStore)(nil)
 	_ RefreshTokens    = (*MemoryStore)(nil)

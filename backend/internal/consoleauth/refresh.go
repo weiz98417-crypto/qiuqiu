@@ -8,7 +8,7 @@ import (
 	"time"
 )
 
-// RefreshTokenTTL is the 30-day refresh lifetime (locked decision 3).
+// RefreshTokenTTL is the 30-day refresh lifetime (locked decision 2).
 const RefreshTokenTTL = 30 * 24 * time.Hour
 
 // NewRefreshToken mints a 30-day refresh token: 32 random bytes, base64url.

@@ -2,7 +2,7 @@ import { useState } from 'react';
 import { Breadcrumb, Button, Layout, Menu, Space, Typography, theme as antdTheme } from 'antd';
 import { Outlet, Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
 import { ReactRouterLink } from './ReactRouterLink';
-import { clearToken, logout } from '../api/client';
+import { clearToken, logout, sessionOperator } from '../api/client';
 import { useOperator } from '../api/operator';
 import PasswordChangeModal from './PasswordChangeModal';
 
@@ -85,9 +85,10 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
         >
           <Breadcrumb items={crumbs} />
           <Space size="middle">
-            {/* GET /api/console/whoami 的姓名（JWT 与机令牌同一 Claims）；whoami 未就绪时回退默认称谓。 */}
+            {/* ADR-0010 task 2.2：姓名优先取访问令牌的 JWT claims；机令牌
+                会话或 claims 未就绪时回退 GET /api/console/whoami。 */}
             <Text type="secondary" data-testid="operator-name">
-              {operator?.name ?? '运营员'}
+              {sessionOperator()?.name ?? operator?.name ?? '运营员'}
             </Text>
             <Button size="small" onClick={() => setPasswordModalOpen(true)}>
               修改密码
