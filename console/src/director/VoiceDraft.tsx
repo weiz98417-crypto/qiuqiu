@@ -1,4 +1,4 @@
-import { useRef, useState } from 'react';
+import { useEffect, useRef, useState } from 'react';
 import { Alert, App as AntApp, Button, Card, Input, Select, Space, Typography } from 'antd';
 import type { VoiceConflict } from './event-model';
 import { applyVoiceConflict, applyVoiceDraft } from './event-model';
@@ -12,7 +12,7 @@ interface VoiceDraftProps {
   draft: Draft;
   clock: { period: string; elapsedSeconds: number; capturedClockVersion: number };
   busy: boolean;
-  onDraftApplied: (draft: Draft, conflicts: VoiceConflict[]) => void;
+  onDraftApplied: (draft: Draft) => void;
   onPublished: (snapshot?: { score?: { home: number; away: number } }) => void;
 }
 
@@ -21,6 +21,7 @@ interface AudioRecording {
   context: AudioContext;
   sampleRate: number;
   deviceName: string;
+  stream: MediaStream;
 }
 
 // 语音录入流（ADR-0011 task 3.1）：getUserMedia 采集 → 16k WAV →
@@ -39,6 +40,14 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
   const [publishing, setPublishing] = useState(false);
   const recordingRef = useRef<AudioRecording | null>(null);
   const draftBeforeVoiceRef = useRef<Draft | null>(null);
+
+  useEffect(() => () => {
+    const current = recordingRef.current;
+    if (current) {
+      current.stream.getTracks().forEach((track) => track.stop());
+      void current.context.close().catch(() => {});
+    }
+  }, []);
 
   const refreshDevices = async () => {
     if (!navigator.mediaDevices?.enumerateDevices) return;
@@ -62,7 +71,13 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
         } as MediaTrackConstraints,
       };
       const stream = await navigator.mediaDevices.getUserMedia(constraints);
-      const context = new AudioContext();
+      let context: AudioContext;
+      try {
+        context = new AudioContext();
+      } catch (contextError) {
+        stream.getTracks().forEach((track) => track.stop());
+        throw contextError;
+      }
       const sourceNode = context.createMediaStreamSource(stream);
       const processor = context.createScriptProcessor(4096, 1, 1);
       const chunks: Float32Array[] = [];
@@ -72,7 +87,7 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
       sourceNode.connect(processor);
       processor.connect(context.destination);
       const deviceName = inputsLabel(stream, deviceId) || '默认麦克风';
-      recordingRef.current = { chunks, context, sampleRate: context.sampleRate, deviceName };
+      recordingRef.current = { chunks, context, sampleRate: context.sampleRate, deviceName, stream };
       setRecording(true);
       setStatus(`录音中（${deviceName}）… 说完后再点一次停止`);
     } catch (err) {
@@ -93,6 +108,7 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
     setStatus('正在转写语音');
     setTranscribing(true);
     try {
+      current.stream.getTracks().forEach((track) => track.stop());
       await current.context.close();
       const metrics = audioMetrics(current.chunks, current.sampleRate);
       if (metrics.durationSeconds < 0.4 || metrics.rms < 0.002) {
@@ -118,12 +134,15 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
       const structured = (result.draft && typeof result.draft === 'object' ? result.draft : {}) as Partial<Draft>;
       const applied = applyVoiceDraft(draft, {
         ...structured,
+        occurredPeriod: clock.period,
+        occurredSeconds: clock.elapsedSeconds,
+        capturedClockVersion: clock.capturedClockVersion,
         source: 'operator_voice',
         transcript: transcriptText,
         description: (structured.description as string) || transcriptText,
       } as Partial<Draft>);
       draftBeforeVoiceRef.current = draft;
-      onDraftApplied(applied.draft, applied.conflicts);
+      onDraftApplied(applied.draft);
       setConflicts(applied.conflicts || []);
       const nextWarnings = [...(result.warnings || [])];
       if (!containsChineseText(transcriptText)) {
@@ -143,15 +162,17 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
 
   const undoVoice = () => {
     if (draftBeforeVoiceRef.current) {
-      onDraftApplied(draftBeforeVoiceRef.current, []);
+      onDraftApplied(draftBeforeVoiceRef.current);
       setTranscript('');
       setConflicts([]);
       setStatus('已撤回本次语音');
     }
   };
 
-  const resolveConflict = (conflict: VoiceConflict) => {
-    onDraftApplied(applyVoiceConflict(draft, conflict), conflicts.filter((item) => item !== conflict));
+  const resolveConflict = (conflict: VoiceConflict, keepCurrent = false) => {
+    let next = draft;
+    if (!keepCurrent) next = applyVoiceConflict(draft, conflict);
+    onDraftApplied(next);
     setConflicts((current) => current.filter((item) => item !== conflict));
   };
 
@@ -237,9 +258,14 @@ export default function VoiceDraft({ matchId, draft, clock, busy, onDraftApplied
                 <Text type="secondary">
                   当前 {String(conflict.current ?? '空')} → 语音识别 {String(conflict.incoming ?? '')}
                 </Text>
-                <Button size="small" onClick={() => resolveConflict(conflict)}>
-                  采用语音识别结果
-                </Button>
+                <Space size={4}>
+                  <Button size="small" type="primary" onClick={() => resolveConflict(conflict)}>
+                    采用语音识别结果
+                  </Button>
+                  <Button size="small" onClick={() => resolveConflict(conflict, true)}>
+                    保留当前值
+                  </Button>
+                </Space>
               </Space>
             }
           />

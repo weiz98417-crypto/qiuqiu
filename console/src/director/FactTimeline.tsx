@@ -126,6 +126,11 @@ export default function FactTimeline({
                           确认
                         </Button>
                       ) : null}
+                      {event.factStatus === 'conflict' ? (
+                        <Button size="small" disabled={busy} onClick={() => onFactTransition(event, 'reconcile')}>
+                          选为事实
+                        </Button>
+                      ) : null}
                       {['provisional', 'confirmed', 'conflict', 'reconciled'].includes(event.factStatus || '') ? (
                         <Button size="small" danger disabled={busy} onClick={() => onFactTransition(event, 'revoke')}>
                           撤销

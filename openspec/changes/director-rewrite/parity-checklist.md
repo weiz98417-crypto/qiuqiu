@@ -13,7 +13,7 @@
 | 行为按钮按组展示、点击写草稿（draft-only） | `BehaviorBar.tsx` | 组序与老页面一致；按钮绝不直接发布 |
 | 草稿卡：事件时间 / 强度 / 事实状态（候选/确认） / 推荐动作 / 球球处理 auto-quiet-manual / 事件描述 | `DraftCard.tsx` | 球球处理切换即时渲染人工话术输入框 |
 | 比分更正：目标比分 + 更正原因 + 不得与当前比分相同 | `DraftCard.tsx` | 发布走 `POST /events/:id/correct`；评分规则与老页面一致 |
-| 模板（45 条描述模板，按当前行为过滤）+ 发送预览 | `DraftCard.tsx` | 模板表逐条移植 |
+| 模板（老 48 条中的 46 条；penalty_awarded/match_end 两类无事件定义不可选，见未搬清单）+ 发送预览 | `DraftCard.tsx` | 模板表逐条移植 |
 | 暂存为候选（provisional）/ 确认并发送 | `DraftCard.tsx` | 线上事实状态 provisional / confirmed，幂等键写入 |
 | 语音录入：麦克风选择 → 采集 → 16k WAV → `drafts/voice` → 转写 → 结构化草稿 + 冲突卡 → `drafts/voice/publish` | `VoiceDraft.tsx` | 采集/重采样/WAV 编码/音量指标逐函数移植；撤回本次语音保留 |
 | 事实时间线：时钟 / 队伍 / 描述 / 参与人 / 上报 vs 生效比分 / 更正原因 / 状态徽标 | `FactTimeline.tsx`（antd Timeline） | 「球球主动说：」行按事实状态着色 |
@@ -32,6 +32,9 @@
 | 监控视图（sources/automation/monitor/traces 四视图） | 未搬——已在 React console 各页落地（数据源与人工接管、自动化策略、引用审计/轨迹） | 无需搬运 |
 | 语音设备偏好持久化（记住上次麦克风） | 已实现设备列表与 USB 优先，偏好持久化未做 | 小改动，待签核后补 |
 | VAR/进球取消的 revisionOf 下拉选择原事实 | 部分对齐：校验已强制 revisionOf，但原事实下拉选择器未做 UI（当前经「拉回更正」自然携带） | 待导演确认交互 |
+| conflict 态事实的「选为事实」（facts/:id/reconcile） | 已补：时间线 conflict 行给「选为事实」按钮 | — |
+| 语音冲突卡「保留当前值」按钮 | 已补：冲突卡双按钮（采用识别结果 / 保留当前值） | — |
+| 语音采集时刻时钟并入草稿（voiceCapture 三字段） | 已补：applyVoiceDraft 并入 occurredPeriod/Seconds/clockVersion | — |
 
 ## 签核
 

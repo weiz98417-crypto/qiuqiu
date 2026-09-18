@@ -19,46 +19,6 @@ export interface MatchClockState {
   version: number;
 }
 
-export function parsePlayers(text: string): RosterPlayer[] {
-  return text
-    .split('\n')
-    .map((line) => {
-      const parts = line.trim().split(/\s+/).filter(Boolean);
-      if (!parts.length) return null;
-      const hasNumber = /^\d{1,3}$/.test(parts[0]);
-      const lineupToken = String(parts.at(-1) || '').toLowerCase();
-      const lineup = ['替补', 'bench'].includes(lineupToken)
-        ? 'bench'
-        : ['首发', 'starter'].includes(lineupToken)
-          ? 'starter'
-          : '';
-      const core = lineup ? parts.slice(0, -1) : parts;
-      const nameParts = hasNumber ? core.slice(1, -1) : core.slice(0, -1);
-      return {
-        number: hasNumber ? parts[0] : '',
-        name: nameParts.join(' ') || (hasNumber ? parts[1] : parts[0]) || '',
-        position: core.length > 1 ? core[core.length - 1] : '',
-        lineup,
-      };
-    })
-    .filter((p): p is RosterPlayer => Boolean(p && p.name));
-}
-
-export function playersToText(players: RosterPlayer[] = []): string {
-  return players
-    .map((p) => [p.number, p.name, p.position, p.lineup === 'bench' ? '替补' : '首发'].filter(Boolean).join(' '))
-    .join('\n');
-}
-
-export function eventLabelText(eventType: string): string {
-  const extra: Record<string, string> = {
-    match_end: '完场',
-    penalty_awarded: '点球判罚',
-    kickoff: '开球',
-  };
-  return extra[eventType] ?? '';
-}
-
 export async function loadConfig(matchId: string): Promise<Record<string, unknown>> {
   return api(`/api/matches/${encodeURIComponent(matchId)}/config`);
 }

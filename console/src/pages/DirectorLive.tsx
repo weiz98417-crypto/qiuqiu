@@ -65,6 +65,13 @@ export default function DirectorLive() {
   const [correctingId, setCorrectingId] = useState('');
   const [busy, setBusy] = useState(false);
 
+  const [, setClockTick] = useState(0);
+  useEffect(() => {
+    if (!clock.running) return undefined;
+    const timer = setInterval(() => setClockTick((value) => value + 1), 1000);
+    return () => clearInterval(timer);
+  }, [clock.running]);
+
   const currentClockElapsed = useCallback(() => {
     if (!clock.running || !clock.anchorAt) return clock.elapsedSeconds;
     const anchored = Date.parse(clock.anchorAt);
@@ -234,9 +241,21 @@ export default function DirectorLive() {
         value: { home: Number(form.scoreHome), away: Number(form.scoreAway) },
       });
     }
-    if (form.mainPlayer) {
-      const firstRole = working.eventType ? undefined : undefined;
-      void firstRole;
+    // 老页面 captureDraftFromForm 语义：表单手输的事件时间与主参与人
+    // 必须落回草稿，否则提交时静默丢失。
+    const clockMatch = /^([0-9]{1,2}):([0-9]{1,2})$/.exec(form.occurredClock.trim());
+    if (clockMatch) {
+      const seconds = Number(clockMatch[1]) * 60 + Number(clockMatch[2]);
+      working = updateDraft(working, { type: 'set_field', field: 'occurredSeconds', value: seconds });
+    }
+    if (form.mainPlayer.trim() && !working.primaryParticipant?.name
+        && !working.participants.some((item) => item.name)) {
+      working = updateDraft(working, {
+        type: 'select_player',
+        name: form.mainPlayer.trim(),
+        teamId: working.teamId || side,
+        teamName: working.teamId === 'away' ? awayTeam : homeTeam,
+      });
     }
     setBusy(true);
     try {
@@ -307,7 +326,15 @@ export default function DirectorLive() {
   const resolve = async (conflict: DirectorConflict, chosenFactId: string) => {
     setBusy(true);
     try {
-      await resolveConflict(matchId, conflict.id, { chosenFactId, reason: '导演裁决采用该事实' });
+      // 老页面请求形状：selectedFactIds 数组（保留已采用 + 新选候选），
+      // chosenFactId 为本次裁决的候选。
+      const kept = (conflict.members || [])
+        .filter((member) => member.role === 'accepted' && member.factId !== chosenFactId)
+        .map((member) => member.factId);
+      await resolveConflict(matchId, conflict.id, {
+        selectedFactIds: [...kept, chosenFactId],
+        reason: '导演裁决采用该事实',
+      });
       messageApi.success('事实选择已生效');
       await refreshTimeline();
     } catch (err) {
