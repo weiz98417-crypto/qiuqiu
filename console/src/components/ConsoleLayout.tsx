@@ -1,8 +1,10 @@
+import { useState } from 'react';
 import { Breadcrumb, Button, Layout, Menu, Space, Typography, theme as antdTheme } from 'antd';
 import { Outlet, Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
 import { ReactRouterLink } from './ReactRouterLink';
-import { clearToken } from '../api/client';
+import { clearToken, logout } from '../api/client';
 import { useOperator } from '../api/operator';
+import PasswordChangeModal from './PasswordChangeModal';
 
 const { Header, Sider, Content } = Layout;
 const { Text } = Typography;
@@ -19,6 +21,8 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
   const navigate = useNavigate();
   const { token: antToken } = antdTheme.useToken();
   const { operator } = useOperator();
+  // ADR-0010 task 2.3：自助改密入口（首登强制改密走登录页的 forced 弹窗）。
+  const [passwordModalOpen, setPasswordModalOpen] = useState(false);
 
   const selectedKey =
     NAV_ITEMS.find(
@@ -81,16 +85,21 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
         >
           <Breadcrumb items={crumbs} />
           <Space size="middle">
-            {/* GET /api/console/whoami 的姓名；whoami 未就绪时回退默认称谓。 */}
+            {/* GET /api/console/whoami 的姓名（JWT 与机令牌同一 Claims）；whoami 未就绪时回退默认称谓。 */}
             <Text type="secondary" data-testid="operator-name">
               {operator?.name ?? '运营员'}
             </Text>
+            <Button size="small" onClick={() => setPasswordModalOpen(true)}>
+              修改密码
+            </Button>
             <Button
               size="small"
-              onClick={() => {
+              onClick={async () => {
+                // ADR-0010 task 2.2：吊销当前设备刷新令牌后回登录页。
+                await logout();
                 clearToken();
                 onLogout();
-                navigate('/console', { replace: true });
+                navigate('/console/login', { replace: true });
               }}
             >
               退出
@@ -101,6 +110,11 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
           <Outlet />
         </Content>
       </Layout>
+      <PasswordChangeModal
+        open={passwordModalOpen}
+        onClose={() => setPasswordModalOpen(false)}
+        onChanged={() => setPasswordModalOpen(false)}
+      />
     </Layout>
   );
 }

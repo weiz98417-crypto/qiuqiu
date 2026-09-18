@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"strings"
+	"time"
 
 	"github.com/jackc/pgx/v5"
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -182,3 +183,99 @@ func (s *PostgresStore) RecentAudit(ctx context.Context, limit int) ([]AuditEntr
 }
 
 var _ Directory = (*PostgresStore)(nil)
+
+// SetPasswordCredentials stores (or replaces) one operator's PBKDF2 encoded
+// hash (migrations/043). setAt zero keeps the first-login force-change flag.
+func (s *PostgresStore) SetPasswordCredentials(ctx context.Context, name, passwordHash string, setAt time.Time) error {
+	if s == nil || s.pool == nil {
+		return ErrAuditNotStored
+	}
+	tag, err := s.pool.Exec(ctx, `
+		UPDATE operators SET password_hash = $2, password_set_at = $3
+		WHERE name = $1
+	`, strings.TrimSpace(name), passwordHash, setAt)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNameRequired
+	}
+	return nil
+}
+
+func (s *PostgresStore) Credentials(ctx context.Context, name string) (Credentials, error) {
+	if s == nil || s.pool == nil {
+		return Credentials{}, ErrAuditNotStored
+	}
+	var stored Credentials
+	err := s.pool.QueryRow(ctx, `
+		SELECT password_hash, password_set_at
+		FROM operators
+		WHERE name = $1
+	`, strings.TrimSpace(name)).Scan(&stored.PasswordHash, &stored.PasswordSetAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Credentials{}, ErrNoCredentials
+	}
+	if err != nil {
+		return Credentials{}, err
+	}
+	if stored.PasswordHash == "" {
+		return Credentials{}, ErrNoCredentials
+	}
+	return stored, nil
+}
+
+func (s *PostgresStore) HasPasswordAccounts(ctx context.Context) bool {
+	if s == nil || s.pool == nil {
+		return false
+	}
+	var count int64
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM operators WHERE password_hash IS NOT NULL`).Scan(&count); err != nil {
+		return false
+	}
+	return count > 0
+}
+
+// PutRefresh stores one refresh-token hash row (migrations/043).
+func (s *PostgresStore) PutRefresh(ctx context.Context, operatorName, tokenHash, device string, expiresAt time.Time) error {
+	if s == nil || s.pool == nil {
+		return ErrAuditNotStored
+	}
+	_, err := s.pool.Exec(ctx, `
+		INSERT INTO refresh_tokens (operator_id, token_hash, device, expires_at)
+		SELECT id, $2, $3, $4 FROM operators WHERE name = $1
+	`, strings.TrimSpace(operatorName), tokenHash, device, expiresAt)
+	return err
+}
+
+// ConsumeRefresh resolves a refresh hash to its operator and deletes the row
+// (rotation = single use). Missing/revoked/expired rows fail.
+func (s *PostgresStore) ConsumeRefresh(ctx context.Context, tokenHash string) (string, bool) {
+	if s == nil || s.pool == nil {
+		return "", false
+	}
+	var operatorName string
+	err := s.pool.QueryRow(ctx, `
+		DELETE FROM refresh_tokens
+		WHERE token_hash = $1 AND revoked_at IS NULL AND expires_at > now()
+		RETURNING (SELECT name FROM operators WHERE id = operator_id)
+	`, tokenHash).Scan(&operatorName)
+	if err != nil {
+		return "", false
+	}
+	return operatorName, true
+}
+
+// RevokeRefresh deletes one refresh row (logout).
+func (s *PostgresStore) RevokeRefresh(ctx context.Context, tokenHash string) bool {
+	if s == nil || s.pool == nil {
+		return false
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM refresh_tokens WHERE token_hash = $1`, tokenHash)
+	return err == nil && tag.RowsAffected() > 0
+}
+
+var (
+	_ PasswordAccounts = (*PostgresStore)(nil)
+	_ RefreshTokens    = (*PostgresStore)(nil)
+)

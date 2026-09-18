@@ -107,6 +107,9 @@ type MemoryStore struct {
 	nextID     int64
 	audit      []AuditEntry
 	auditLimit int
+	// ADR-0010 password + refresh state (password.go).
+	credentials map[string]memoryCredentials
+	refresh     map[string]memoryRefresh
 }
 
 func NewMemoryStore() *MemoryStore {
@@ -162,6 +165,12 @@ func (m *MemoryStore) Delete(_ context.Context, name string) bool {
 	}
 	delete(m.byName, name)
 	delete(m.byToken, hash)
+	delete(m.credentials, name)
+	for tokenHash, row := range m.refresh {
+		if row.operatorName == name {
+			delete(m.refresh, tokenHash)
+		}
+	}
 	return true
 }
 

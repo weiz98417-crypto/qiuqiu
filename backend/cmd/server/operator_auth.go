@@ -30,6 +30,7 @@ import (
 
 	"qiuqiu/internal/auth"
 	"qiuqiu/internal/config"
+	"qiuqiu/internal/consoleauth"
 	"qiuqiu/internal/operatorauth"
 )
 
@@ -38,21 +39,45 @@ import (
 type operatorAuthz struct {
 	cfg       *config.Config
 	operators operatorauth.Directory
+	// ADR-0010: HS256 secret for the human JWT channel; empty disables JWT
+	// resolution (machine channel and legacy keep working).
+	jwtSecret string
 }
 
 func newOperatorAuthz(cfg *config.Config, operators operatorauth.Directory) operatorAuthz {
 	return operatorAuthz{cfg: cfg, operators: operators}
 }
 
-// claims resolves the request's operator identity: personal token lookup when
-// operator rows exist, otherwise the legacy APP_TOKEN/dev bypass.
+// withJWTSecret enables JWT resolution on the authorizer (fluent, so the
+// existing two-argument constructor call sites stay put).
+func (a operatorAuthz) withJWTSecret(secret string) operatorAuthz {
+	a.jwtSecret = secret
+	return a
+}
+
+// claims resolves the request's operator identity, in priority order:
+// JWT (human channel, ADR-0010) → personal token (machine channel) → the
+// legacy APP_TOKEN/dev bypass. All three produce the same Claims shape, so
+// per-route scope enforcement is untouched.
 func (a operatorAuthz) claims(r *http.Request) (auth.Claims, bool) {
 	if a.cfg == nil {
 		return auth.Claims{}, false
 	}
+	bearer := auth.BearerToken(r.Header.Get("Authorization"))
 	if a.operators != nil && a.operators.Count(r.Context()) > 0 {
+		// ADR-0010: a bearer that looks like a JWT verifies against the
+		// human channel first; a failed verification falls through to the
+		// personal-token lookup (which fails → 401).
+		if consoleauth.LooksLikeJWT(bearer) && a.jwtSecret != "" {
+			if jwtClaims, err := consoleauth.VerifyJWT(bearer, a.jwtSecret); err == nil {
+				return auth.Claims{
+					Subject: "operator:" + jwtClaims.Sub,
+					Scopes:  jwtClaims.Scopes,
+				}, true
+			}
+		}
 		// ADR-0008 operators mode: only the table lookup applies.
-		operator, ok := a.operators.Lookup(r.Context(), auth.BearerToken(r.Header.Get("Authorization")))
+		operator, ok := a.operators.Lookup(r.Context(), bearer)
 		if !ok {
 			return auth.Claims{}, false
 		}

@@ -29,6 +29,8 @@ export async function startEvalBackend({ environment = {} } = {}) {
       APP_ENV: 'development',
       AUTH_MODE: 'dual',
       SESSION_SIGNING_KEY: 'eval-session-signing-key-0123456789',
+      // ADR-0010: console JWT login (human channel) is exercised in E2E.
+      QIUQIU_JWT_SECRET: 'eval-jwt-secret-0123456789abcdef0123456789abcdef',
       PORT: String(port),
       APP_TOKEN: 'qiuqiu-dev-token',
       DATABASE_URL: '',

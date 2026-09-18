@@ -59,6 +59,8 @@ type consoleAPI struct {
 	preferences   talkativenessReader
 	writes        *operatorwrite.Service
 	interruptions *interruptionRing
+	// ADR-0010 human channel: the HS256 signing secret (QIUQIU_JWT_SECRET).
+	jwtSecret string
 }
 
 // Response shapes — the React console is built against exactly these.
@@ -159,6 +161,16 @@ func handleConsoleAPI(deps consoleAPI) http.HandlerFunc {
 			deps.handleWhoami(w, r)
 		case r.Method == http.MethodDelete && len(parts) == 2 && parts[0] == "operators":
 			deps.handleDeleteOperator(w, r, parts[1])
+		// ADR-0010 human auth channel: login/refresh/logout + self-service
+		// password change. Login is unauthenticated (it IS the auth step).
+		case r.Method == http.MethodPost && path == "auth/login":
+			deps.handleLogin(w, r)
+		case r.Method == http.MethodPost && path == "auth/refresh":
+			deps.handleRefresh(w, r)
+		case r.Method == http.MethodPost && path == "auth/logout":
+			deps.handleLogout(w, r)
+		case r.Method == http.MethodPatch && path == "me/password":
+			deps.handleMePassword(w, r)
 		default:
 			http.NotFound(w, r)
 		}
@@ -216,7 +228,13 @@ func (deps consoleAPI) handleCreateOperator(w http.ResponseWriter, r *http.Reque
 		return
 	}
 	_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.create", request.Name)
-	writeJSON(w, http.StatusOK, map[string]any{"operator": operator, "token": token})
+	response := map[string]any{"operator": operator, "token": token}
+	// ADR-0010 lifecycle: a director-issued temp password rides along (shown
+	// once); first login forces a change. Token-only stores skip this.
+	if temporary, ok := deps.issueTemporaryPassword(w, r, operator); ok {
+		response["temporaryPassword"] = temporary
+	}
+	writeJSON(w, http.StatusOK, response)
 }
 
 // handleDeleteOperator revokes an operator (row deletion, immediate).

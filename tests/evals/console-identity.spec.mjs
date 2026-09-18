@@ -99,7 +99,9 @@ test('令牌录入一次即持久化，随后概览五格渲染', async ({ page 
   await page.addInitScript(() => localStorage.removeItem('qiuqiu.console.token'));
   await gotoConsole(page);
 
-  await expect(page.getByTestId('token-gate')).toBeVisible();
+  // ADR-0010 task 2.4：机令牌粘贴保留在登录页的「高级」页签内。
+  await expect(page.getByTestId('login-page')).toBeVisible();
+  await page.getByText('高级：使用运营员个人令牌').click();
   await page.getByLabel('运营员令牌').fill(specToken);
   await page.getByRole('button', { name: '保存并验证' }).click();
 
@@ -121,9 +123,9 @@ test('令牌录入一次即持久化，随后概览五格渲染', async ({ page 
   await expect(page.locator('.ant-card').filter({ hasText: '跨比赛最近主动引用' })).toBeVisible();
   await expect(page).toHaveURL(new RegExp('#/console/citations'));
 
-  // 退出登录：令牌清除并回到录入页。
+  // 退出登录：令牌清除并回到登录页。
   await page.getByRole('button', { name: '退出' }).click();
-  await expect(page.getByTestId('token-gate')).toBeVisible();
+  await expect(page.getByTestId('login-page')).toBeVisible();
   await expect.poll(() => page.evaluate(() => localStorage.getItem('qiuqiu.console.token'))).toBeNull();
 });
 
@@ -131,11 +133,12 @@ test('错误令牌不落库并保留录入入口', async ({ page }) => {
   await page.addInitScript(() => localStorage.removeItem('qiuqiu.console.token'));
   await gotoConsole(page);
 
+  await page.getByText('高级：使用运营员个人令牌').click();
   await page.getByLabel('运营员令牌').fill('definitely-wrong-token');
   await page.getByRole('button', { name: '保存并验证' }).click();
 
   await expect(page.getByTestId('token-error')).toContainText('运营员令牌不正确');
-  await expect(page.getByTestId('token-gate')).toBeVisible();
+  await expect(page.getByTestId('login-page')).toBeVisible();
   await expect.poll(() => page.evaluate(() => localStorage.getItem('qiuqiu.console.token'))).toBeNull();
 });
 
@@ -145,8 +148,8 @@ test('失效令牌在 401 后被清除并回到录入页', async ({ page }) => {
   });
   await gotoConsole(page);
 
-  await expect(page.getByTestId('token-gate')).toBeVisible();
-  await expect(page.getByTestId('token-error')).toContainText('令牌无效或已被吊销');
+  await expect(page.getByTestId('login-page')).toBeVisible();
+  await expect(page.getByTestId('login-error')).toContainText('令牌无效或已被吊销');
   await expect.poll(() => page.evaluate(() => localStorage.getItem('qiuqiu.console.token'))).toBeNull();
 });
 

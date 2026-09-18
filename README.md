@@ -72,6 +72,7 @@ cp backend/.env.example .env
 # 编辑 .env 填入:
 #   - APP_TOKEN: 随机生成的导播台运营口令（生产环境必填）
 #   - SESSION_SIGNING_KEY: 至少 32 位的用户会话签名密钥（生产环境必填）
+#   - QIUQIU_JWT_SECRET: 至少 32 位的运营台登录签名密钥（存在任何密码账号时必需，ADR-0010）
 #   - ALLOWED_ORIGINS: 用户端和企业控制台的 HTTPS 来源
 #   - POSTGRES_PASSWORD: 独立的数据库强密码
 #   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
@@ -102,6 +103,15 @@ flutter run \
 ```
 
 客户端启动时会向后端申请短期匿名会话，服务端把用户身份绑定在会话令牌上，客户端不再编译服务端口令。由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
+
+### 运营管理台登录（ADR-0010）
+
+运营管理台（`/console/`）的登录流程：
+
+1. **建号**：第一位导演可用 `QIUQIU_BOOTSTRAP_OPERATOR=name:token` 引导，或由现有 director 在「运营员」页创建账号。创建响应会一次性返回**个人令牌**（机器通道，供脚本/评测）与**临时密码**（人类通道）。
+2. **登录**：浏览器访问 `/console/`，用用户名 + 临时密码登录；首登强制改密（新密码 ≥10 位），之后 `POST /api/console/auth/login` 签发 15 分钟访问令牌（HS256 JWT）+ 30 天刷新令牌（刷新令牌单次轮换、按设备吊销）。
+3. **双通道**：个人令牌保持原样作为机器通道（evals/脚本用 `Authorization: Bearer <token>`），JWT 是人的通道，两路产出同一 Claims、同一套 scope 管控。
+4. **配置**：只要存在任何密码账号，`QIUQIU_JWT_SECRET` 必须配置（32 位以上随机串），否则登录会拒绝并提示；迁移 043 由迁移执行器自动应用。
 
 ## 对话管道
 

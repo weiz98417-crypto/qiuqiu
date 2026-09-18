@@ -316,8 +316,17 @@ test('用户页画像/话题台账/交互历史渲染，交互历史有真实回
   await expect(page.locator('.ant-card').filter({ hasText: '话题台账' })).toBeVisible();
   const history = page.locator('.ant-card').filter({ hasText: '交互历史' });
   await expect(history).toBeVisible();
+  // 表格分页每页 10 行，只对首页必然存在的最早回合断言；你在干嘛 的
+  // 真实数据改由交互 API 侧核验。
   await expect(history).toContainText('刚才谁助攻？');
-  await expect(history).toContainText('你在干嘛');
+  const interaction = await fetch(
+    `${backendURL}/api/matches/${matchId}/interaction?userId=${fan}&limit=50`,
+    { headers: { Authorization: `Bearer ${specToken}` } },
+  ).then((r) => r.json());
+  const inputs = (interaction.events || []).map((e) => e.inputText || '').join('|');
+  if (!inputs.includes('你在干嘛')) {
+    throw new Error(`interaction history missing 你在干嘛: ${inputs.slice(0, 200)}`);
+  }
 
   await expect(page.locator('.ant-alert-error')).toHaveCount(0);
 });

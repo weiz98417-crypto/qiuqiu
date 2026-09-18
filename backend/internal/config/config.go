@@ -41,6 +41,9 @@ type Config struct {
 	MemobaseURL                    string
 	MemobaseToken                  string
 	MemobaseExtractionTimeoutMS    int
+	// ADR-0010: HS256 secret for the console human auth channel. Required
+	// once any operator password account exists (enforced at login).
+	JWTSecret string
 }
 
 func Load() *Config {
@@ -88,6 +91,7 @@ func Load() *Config {
 		MemobaseURL:                    getEnv("MEMOBASE_URL", "http://localhost:8019"),
 		MemobaseToken:                  strings.TrimSpace(os.Getenv("MEMOBASE_TOKEN")),
 		MemobaseExtractionTimeoutMS:    getEnvInt("MEMOBASE_EXTRACTION_TIMEOUT_MS", 10000),
+		JWTSecret:                      strings.TrimSpace(os.Getenv("QIUQIU_JWT_SECRET")),
 	}
 }
 

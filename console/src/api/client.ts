@@ -27,6 +27,144 @@ export function clearToken(): void {
   localStorage.removeItem(TOKEN_STORAGE_KEY);
 }
 
+// ---- ADR-0010 人类通道会话：访问令牌只存内存，刷新令牌存 localStorage ----
+
+export const REFRESH_STORAGE_KEY = 'qiuqiu.console.refresh';
+
+let accessToken = '';
+
+export function getAccessToken(): string {
+  return accessToken;
+}
+
+export function setAccessToken(token: string): void {
+  accessToken = token;
+}
+
+export function clearAccessToken(): void {
+  accessToken = '';
+}
+
+export function getRefreshToken(): string {
+  return localStorage.getItem(REFRESH_STORAGE_KEY) ?? '';
+}
+
+export function setRefreshToken(token: string): void {
+  localStorage.setItem(REFRESH_STORAGE_KEY, token);
+}
+
+export function clearRefreshToken(): void {
+  localStorage.removeItem(REFRESH_STORAGE_KEY);
+}
+
+export interface LoginResponse {
+  accessToken: string;
+  refreshToken: string;
+  passwordChangeRequired: boolean;
+  operator: { name: string; role: string; scopes: string[] };
+}
+
+export interface SessionOperator {
+  name: string;
+  role: string;
+}
+
+// sessionOperator 解码访问令牌载荷（仅用于头部显示，不做授权判断）。
+export function sessionOperator(): SessionOperator | null {
+  const token = accessToken;
+  if (!token) return null;
+  const parts = token.split('.');
+  if (parts.length !== 3) return null;
+  try {
+    const payload = JSON.parse(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')));
+    if (typeof payload.sub === 'string' && payload.sub) {
+      return { name: payload.sub, role: typeof payload.role === 'string' ? payload.role : '' };
+    }
+  } catch {
+    // 非法载荷按未登录处理。
+  }
+  return null;
+}
+
+// login 用用户名+密码换取访问/刷新令牌对（ADR-0010 登录流）。
+export async function login(username: string, password: string): Promise<LoginResponse> {
+  const response = await fetch('/api/console/auth/login', {
+    method: 'POST',
+    headers: { 'Content-Type': 'application/json' },
+    body: JSON.stringify({ username, password }),
+  });
+  if (!response.ok) {
+    throw new ApiError(response.status, await response.text().catch(() => response.statusText));
+  }
+  const body = (await response.json()) as LoginResponse;
+  accessToken = body.accessToken;
+  setRefreshToken(body.refreshToken);
+  return body;
+}
+
+let refreshInFlight: Promise<boolean> | null = null;
+
+// refreshSession 用刷新令牌换新令牌对（轮换：旧刷新令牌一次性作废）。
+// 单飞并发：页面重载时多个请求同时 401，只发一次刷新——轮换令牌是一次性
+// 的，第二个并发刷新会拿着已被轮换的旧令牌失败并把整个会话清掉。
+export function refreshSession(): Promise<boolean> {
+  if (!refreshInFlight) {
+    refreshInFlight = doRefreshSession().finally(() => {
+      refreshInFlight = null;
+    });
+  }
+  return refreshInFlight;
+}
+
+async function doRefreshSession(): Promise<boolean> {
+  const refreshToken = getRefreshToken();
+  if (!refreshToken) return false;
+  try {
+    const response = await fetch('/api/console/auth/refresh', {
+      method: 'POST',
+      headers: { 'Content-Type': 'application/json' },
+      body: JSON.stringify({ refreshToken }),
+    });
+    if (!response.ok) {
+      clearRefreshToken();
+      clearAccessToken();
+      return false;
+    }
+    const body = (await response.json()) as LoginResponse;
+    accessToken = body.accessToken;
+    setRefreshToken(body.refreshToken);
+    return true;
+  } catch {
+    return false;
+  }
+}
+
+// changeSelfPassword 自助改密：旧密码必填，新密码最短 10 字符
+//（PATCH /api/console/me/password，ADR-0010）。
+export async function changeSelfPassword(oldPassword: string, newPassword: string): Promise<void> {
+  await api('/api/console/me/password', {
+    method: 'PATCH',
+    body: { oldPassword, newPassword },
+  });
+}
+
+// logout 吊销当前设备的刷新令牌并清空本地会话。
+export async function logout(): Promise<void> {
+  const refreshToken = getRefreshToken();
+  try {
+    if (refreshToken) {
+      await fetch('/api/console/auth/logout', {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({ refreshToken }),
+      });
+    }
+  } finally {
+    clearAccessToken();
+    clearRefreshToken();
+  }
+}
+
 // 401 时派发该事件，AppShell 监听后切回令牌页。
 export const AUTH_INVALID_EVENT = 'qiuqiu:console-auth-invalid';
 
@@ -41,11 +179,14 @@ export interface RequestOptions {
   body?: unknown;
   // 401 不触发全局令牌页（用于令牌校验本身）。
   skipAuthRedirect?: boolean;
+  // 内部标记：刷新重试后不再二次刷新。
+  retriedAfterRefresh?: boolean;
 }
 
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const headers: Record<string, string> = {};
-  const token = getToken();
+  // ADR-0010：访问令牌（人类通道）优先，机令牌（evals/脚本通道）兜底。
+  const token = getAccessToken() || getToken();
   if (token) headers.Authorization = `Bearer ${token}`;
   if (options.body !== undefined) headers['Content-Type'] = 'application/json';
   // 写操作携带幂等键（与 operator-control 惯用法一致）。
@@ -60,6 +201,14 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
   });
 
   if (response.status === 401 && !options.skipAuthRedirect) {
+    // 有刷新令牌时先尝试无感续期，成功则原请求重放一次。
+    if (!options.retriedAfterRefresh && (getRefreshToken() || accessToken)) {
+      const refreshed = await refreshSession();
+      if (refreshed) {
+        return api<T>(path, { ...options, retriedAfterRefresh: true });
+      }
+    }
+    clearAccessToken();
     notifyAuthInvalid('expired');
     throw new ApiError(401, '令牌无效或已过期');
   }

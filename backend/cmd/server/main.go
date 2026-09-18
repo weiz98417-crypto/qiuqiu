@@ -302,7 +302,15 @@ func main() {
 	if err := operatorauth.Bootstrap(context.Background(), operatorStore, os.Getenv("QIUQIU_BOOTSTRAP_OPERATOR"), log.Printf); err != nil {
 		log.Printf("operator bootstrap skipped: %v", err)
 	}
-	authz := newOperatorAuthz(cfg, operatorStore)
+	authz := newOperatorAuthz(cfg, operatorStore).withJWTSecret(cfg.JWTSecret)
+	// ADR-0010: the JWT secret is required once any password account exists.
+	// Startup only warns (legacy token-only deployments are valid); the login
+	// route enforces it per request.
+	if passwordChecker, ok := operatorStore.(operatorauth.PasswordAccounts); ok {
+		if passwordChecker.HasPasswordAccounts(context.Background()) && strings.TrimSpace(cfg.JWTSecret) == "" {
+			log.Printf("WARNING: operator password accounts exist but QIUQIU_JWT_SECRET is not set — console login will refuse until it is configured")
+		}
+	}
 	var sportsClient datasource.EventsClient
 	if cfg.APISportsAPIKey != "" {
 		sportsClient = datasource.NewClient(cfg.APISportsAPIKey).WithBaseURL(cfg.APISportsBaseURL)
@@ -471,6 +479,7 @@ func main() {
 		preferences:   memoryPreferenceStore,
 		writes:        operatorWrites,
 		interruptions: sharedInterruptions,
+		jwtSecret:     cfg.JWTSecret,
 	}))
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
