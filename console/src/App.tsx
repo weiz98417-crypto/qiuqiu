@@ -17,6 +17,7 @@ import UserPage from './pages/User';
 import Threads from './pages/Threads';
 import Operators from './pages/Operators';
 import CitationAudit from './pages/CitationAudit';
+import DirectorLive from './pages/DirectorLive';
 
 export default function App() {
   // 登录态三种来源：内存访问令牌（刷新后丢失）、刷新令牌（localStorage，
@@ -54,6 +55,7 @@ export default function App() {
               <Route path="/console" element={<Overview />} />
               <Route path="/console/match/:matchId" element={<MatchPage />} />
               <Route path="/console/match/:matchId/user/:userId" element={<UserPage />} />
+              <Route path="/console/match/:matchId/director" element={<DirectorLive />} />
               <Route path="/console/threads" element={<Threads />} />
               <Route path="/console/operators" element={<Operators />} />
               <Route path="/console/citations" element={<CitationAudit />} />

@@ -23,6 +23,9 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
   const { operator } = useOperator();
   // ADR-0010 task 2.3：自助改密入口（首登强制改密走登录页的 forced 弹窗）。
   const [passwordModalOpen, setPasswordModalOpen] = useState(false);
+  // 新版导演页默认接 test 比赛老页面同款默认；在比赛层浏览时跟随当前比赛。
+  const pathParts = location.pathname.split('/').filter(Boolean);
+  const liveMatchId = pathParts[1] === 'match' ? pathParts[2] ?? '' : 'test';
 
   const selectedKey =
     NAV_ITEMS.find(
@@ -61,10 +64,15 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
             })),
             { type: 'divider' as const },
             {
+              // ADR-0011：新版实战导演页（coexistence 阶段，老页面并存）。
+              key: 'director',
+              label: <ReactRouterLink to={`/console/match/${liveMatchId ?? ''}/director`}>新版实战导演</ReactRouterLink>,
+            },
+            {
               key: 'live',
               label: (
                 <a href="/operator.html#live" target="_blank" rel="noreferrer">
-                  实战导演台
+                  实战导演台（旧版）
                 </a>
               ),
             },
