@@ -161,4 +161,26 @@ test('401 且无刷新令牌：不重试，抛 401（全局令牌页接管）', 
   assert.equal(fetchImpl.calls.length, 1);
 });
 
+test('401 续期重放：原请求复用同一把幂等键', async () => {
+  // 预置刷新令牌 → 401 → 无感续期成功 → 原请求重放一次。
+  storage.set('qiuqiu.console.refresh', 'refresh-token-stub');
+  const fetchImpl = scriptedFetch([
+    jsonResponse(401, { error: 'access expired' }),
+    jsonResponse(200, { accessToken: 'header.payload.sig', refreshToken: 'rotated', operator: { name: '阿琴', role: 'director', scopes: [] } }),
+    jsonResponse(200, { event: { id: 'e-replayed' } }),
+  ]);
+  globalThis.fetch = fetchImpl;
+  const result = await api('/api/matches/test/events', { method: 'POST', body: { eventType: 'goal' } });
+  assert.equal(result.event.id, 'e-replayed');
+  assert.equal(fetchImpl.calls.length, 3);
+  const [, refresh, replay] = fetchImpl.calls;
+  assert.equal(refresh.path, '/api/console/auth/refresh');
+  // 关键断言：重放请求携带与原始请求相同的幂等键。
+  assert.equal(
+    replay.headers['Idempotency-Key'],
+    fetchImpl.calls[0].headers['Idempotency-Key'],
+  );
+  storage.delete('qiuqiu.console.refresh');
+});
+
 console.log(`console transport checks: done`);
