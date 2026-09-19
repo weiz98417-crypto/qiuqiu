@@ -21,7 +21,6 @@ import (
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/observation"
-	"qiuqiu/internal/pipeline"
 )
 
 func TestInteractionAPIIsScopedToRequestedMatch(t *testing.T) {
@@ -36,7 +35,7 @@ func TestInteractionAPIIsScopedToRequestedMatch(t *testing.T) {
 			t.Fatalf("append interaction event: %v", err)
 		}
 	}
-	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager(), nil, nil, ledger)
+	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, nil, ledger)
 
 	response := doJSON(t, handler, http.MethodGet, "/api/matches/match-1/interaction?token=eval-token&userId=user-1", nil)
 	if response.Code != http.StatusOK {
@@ -67,7 +66,7 @@ func TestInteractionAPIPaginatesWithoutDroppingOrRepeatingEvents(t *testing.T) {
 			t.Fatalf("append page event: %v", err)
 		}
 	}
-	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager(), nil, nil, ledger)
+	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, nil, ledger)
 
 	firstResponse := doJSON(t, handler, http.MethodGet, "/api/matches/match-page/interaction?token=eval-token&userId=user-page&limit=2", nil)
 	var first struct {
@@ -127,7 +126,7 @@ func TestMatchLifecycleAPIRequiresOperatorAndPersistsTransition(t *testing.T) {
 		t.Fatal(err)
 	}
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, companion.NewStoreMemoryTools(store), store, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, companion.NewStoreMemoryTools(store), store, cfg, nil)
 	unauthorized := doJSON(t, handler, http.MethodPost, "/api/matches/lifecycle-api/lifecycle", map[string]string{"lifecycle": "live"})
 	if unauthorized.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthorized status=%d", unauthorized.Code)
@@ -159,8 +158,7 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	promptMgr := pipeline.NewPromptManager()
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, promptMgr)
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	configResp := doJSON(t, handler, http.MethodPost, "/api/matches/api-eval/config?token=eval-token", matchstate.MatchConfig{
 		HomeTeam: "Spain",
@@ -240,7 +238,7 @@ func TestEvalMatchAPIConfigQuietManualAndAutoFallback(t *testing.T) {
 func TestMatchAPIConfigDoesNotShrinkConfiguredRoster(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
-	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil)
 	fullConfig := matchstate.MatchConfig{
 		HomeTeam:    "Spain",
 		AwayTeam:    "Germany",
@@ -280,7 +278,7 @@ func TestMatchAPIAcceptsPrimaryAndSecondaryOperatorTokens(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "primary-token", SecondaryAppToken: "secondary-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	for _, token := range []string{"primary-token", "secondary-token"} {
 		response := doJSON(t, handler, http.MethodGet, "/api/matches/operator-auth/facts/example/revisions?token="+token, nil)
@@ -297,7 +295,7 @@ func TestMatchAPIAcceptsPrimaryAndSecondaryOperatorTokens(t *testing.T) {
 func TestAutoGoalProactiveTextAnchorsConfirmedScorerAndScore(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
-	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil)
 
 	response := doJSON(t, handler, http.MethodPost, "/api/matches/goal-proactive/events?token=eval-token", matchstate.MatchEvent{
 		EventType:    "goal",
@@ -328,7 +326,7 @@ func TestPublicMatchAPIHidesProvisionalFactsFromUsers(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	created := doJSON(t, handler, http.MethodPost, "/api/matches/public-api/events?token=eval-token", matchstate.MatchEvent{
 		Source:      "api-sports",
@@ -407,7 +405,7 @@ func TestMatchFactRetractedMessageCarriesFactIdentity(t *testing.T) {
 func TestMatchClockAPIKeepsEventTimeIndependentAndRejectsStaleWrites(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
-	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil)
 
 	initial := doJSON(t, handler, http.MethodGet, "/api/matches/clock-api/clock", nil)
 	if initial.Code != http.StatusOK {
@@ -471,7 +469,7 @@ func TestDirectorVoiceDraftAPITranscribesThenPublishesConfirmedFact(t *testing.T
 		Team: "德国", EventType: "substitution", Description: "德国换人，菲尔克鲁格换下哈弗茨。",
 		Participants: []directordraft.ExtractedParticipant{{Role: "sub_on", Name: "菲尔克鲁格"}, {Role: "sub_off", Name: "哈弗茨"}},
 	}})
-	handler := handleMatchAPIWithDirectorDraft(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager(), nil, drafts)
+	handler := handleMatchAPIWithDirectorDraft(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, drafts)
 
 	response := doJSON(t, handler, http.MethodPost, "/api/matches/voice-draft-api/drafts/voice?token=eval-token", directordraft.Request{
 		Text: "德国换人，菲尔克鲁格换下哈弗茨",
@@ -524,7 +522,7 @@ func TestVoicePublishGoalUsesCapturedTimeAndUpdatesScore(t *testing.T) {
 func TestOperatorWritesRequireAndReplayIdempotencyKey(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
-	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil)
 	payload := []byte(`{"eventType":"shot","period":"first_half","clock":"10:00","score":{"home":0,"away":0},"description":"shot"}`)
 
 	missing := httptest.NewRequest(http.MethodPost, "/api/matches/idempotent/events", bytes.NewReader(payload))
@@ -566,7 +564,7 @@ func TestManualMatchAPIEventsDefaultToConfirmedFacts(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	created := doJSON(t, handler, http.MethodPost, "/api/matches/manual-default/events?token=eval-token", matchstate.MatchEvent{
 		Source:      "operator",
@@ -599,7 +597,7 @@ func TestFactConfirmationAndRevocationAreOperatorBound(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	created := doJSON(t, handler, http.MethodPost, "/api/matches/fact-api/events?token=eval-token", matchstate.MatchEvent{
 		Source:      "api-sports",
@@ -643,7 +641,7 @@ func TestFactConfirmationAndRevocationAreOperatorBound(t *testing.T) {
 func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
-	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil)
 	matchID := "formal-conflict-api"
 	forgedReported := matchstate.Score{Home: 7, Away: 6}
 	forgedEffective := matchstate.Score{Home: 9, Away: 8}
@@ -774,7 +772,7 @@ func TestFactConflictResolutionIsOperatorBoundAndExplicit(t *testing.T) {
 func TestFactConflictResolutionAcceptsCompatibleFactSelection(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
-	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil)
 	matchID := "compatible-conflict-selection-api"
 
 	firstResponse := doJSON(t, handler, http.MethodPost, "/api/matches/"+matchID+"/events?token=eval-token", matchstate.MatchEvent{
@@ -828,7 +826,7 @@ func TestEvalMatchAPIBoundariesAndCorrection(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	unauth := doJSON(t, handler, http.MethodPost, "/api/matches/api-boundary/events", matchstate.MatchEvent{
 		EventType:   "goal",
@@ -895,7 +893,7 @@ func TestSourceControlAPIReportsAndSwitchesSources(t *testing.T) {
 	cfg := &config.Config{AppToken: "eval-token"}
 	sources := datasource.NewManager(context.Background(), store, nil, datasource.ManagerConfig{})
 	t.Cleanup(sources.Close)
-	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, pipeline.NewPromptManager(), sources)
+	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, sources)
 
 	statusResp := doJSON(t, handler, http.MethodGet, "/api/matches/source-api/sources?token=eval-token", nil)
 	if statusResp.Code != http.StatusOK {
@@ -938,7 +936,7 @@ func TestAutomationAPIRequiresAuthAndPersistsPolicy(t *testing.T) {
 	store := matchstate.NewStore()
 	traces := companion.NewStoreMemoryTools(store)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 	path := "/api/matches/automation-api/automation"
 
 	unauthorized := doJSON(t, handler, http.MethodGet, path, nil)
@@ -984,7 +982,7 @@ func TestManualTakeoverSwitchesSourceAndPausesAutomation(t *testing.T) {
 	cfg := &config.Config{AppToken: "eval-token"}
 	sources := datasource.NewManager(context.Background(), store, nil, datasource.ManagerConfig{})
 	t.Cleanup(sources.Close)
-	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, pipeline.NewPromptManager(), sources)
+	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, sources)
 	matchID := "manual-takeover"
 
 	if _, err := sources.Start(matchID, datasource.SourceConfig{Type: datasource.SourceReplay}); err != nil {
@@ -1015,7 +1013,7 @@ func TestEvalTraceAPIListDetailAndAuth(t *testing.T) {
 	traces := companion.NewStoreMemoryTools(store)
 	agent := companion.NewAgent(traces)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, traces, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, traces, cfg, nil)
 
 	matchID := "trace-eval"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Spain", AwayTeam: "Germany"}); err != nil {
@@ -1092,7 +1090,7 @@ func TestEvalTraceAPIProjectsInteractionLedgerInsteadOfLegacyTraceStore(t *testi
 	ledger := interaction.NewMemoryLedger()
 	agent := companion.NewAgent(traces).WithInteractionLedger(ledger)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPIWithRuntime(store, traces, traces, cfg, nil, pipeline.NewPromptManager(), nil, nil, ledger)
+	handler := handleMatchAPIWithRuntime(store, traces, traces, cfg, nil, nil, nil, ledger)
 
 	matchID := "trace-ledger-eval"
 	reply, err := agent.HandleMessage(contextless(), companion.MessageRequest{
@@ -1164,7 +1162,7 @@ func TestDemoResetEndpointIsTokenGuardedAndLimitedToDemoMatches(t *testing.T) {
 	traces := companion.NewStoreMemoryTools(store)
 	observations := observation.NewMemoryCoordinator()
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil)
 
 	if _, _, err := store.SetConfig("test", matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
 		t.Fatalf("SetConfig error: %v", err)
@@ -1245,7 +1243,7 @@ func TestStartMatchEndpointResetsRunningStateForAnAuthorizedOperator(t *testing.
 	traces := companion.NewStoreMemoryTools(store)
 	observations := observation.NewMemoryCoordinator()
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil)
 
 	const matchID = "real-match"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Old Home", AwayTeam: "Old Away"}); err != nil {
@@ -1295,7 +1293,7 @@ func TestStartMatchEndpointRejectsIncompleteLineupsWithoutResettingRunningState(
 	traces := companion.NewStoreMemoryTools(store)
 	observations := observation.NewMemoryCoordinator()
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil, pipeline.NewPromptManager())
+	handler := handleMatchAPI(store, traces, demoStateResetter{traces: traces, observations: observations}, cfg, nil)
 
 	const matchID = "real-match"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "Old Home", AwayTeam: "Old Away"}); err != nil {

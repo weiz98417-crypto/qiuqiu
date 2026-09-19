@@ -1720,7 +1720,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		}
 		reply = req.Event.ProactiveText
 		if strings.TrimSpace(reply) == "" {
-			reply = fallbackProactive(req.Event, req.Snapshot)
+			reply = FallbackProactiveText(req.Event)
 		}
 	} else if trace.Reason != "critical_fact_refresh_limit" {
 		trace.Reason = "relationship_match_observed_silent"
@@ -3082,22 +3082,6 @@ func containsString(values []string, want string) bool {
 	return false
 }
 
-func fallbackProactive(ev matchstate.MatchEvent, snapshot matchstate.Snapshot) string {
-	switch ev.EventType {
-	case "goal":
-		if ev.PlayerName != "" {
-			return fmt.Sprintf("%s进了！现在%s %d-%d %s。", ev.PlayerName, snapshot.HomeTeam, snapshot.Score.Home, snapshot.Score.Away, snapshot.AwayTeam)
-		}
-		return fmt.Sprintf("进球了！现在%s %d-%d %s。", snapshot.HomeTeam, snapshot.Score.Home, snapshot.Score.Away, snapshot.AwayTeam)
-	case "penalty", "var_check", "big_chance":
-		return "这一下很关键，我们先看裁判和双方球员怎么反应。"
-	default:
-		if ev.Description != "" {
-			return ev.Description
-		}
-		return "场上有新变化，我先陪你盯着。"
-	}
-}
 
 func participantNames(participants []matchstate.Participant, role string) []string {
 	var names []string

@@ -5,16 +5,11 @@ import { useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { ConsoleThread, InteractionEventRow, PortraitEntry } from '../api/client';
 import { useOperator } from '../api/operator';
-import { fmtTime, threadKindLabels, threadStateLabels } from '../api/format';
+import { fmtTime, threadKindLabels, threadStateTag } from '../api/format';
 import { useAsync } from '../api/useAsync';
 
 const { Text, Paragraph } = Typography;
 
-const STATE_TAG: Record<string, { color: string }> = {
-  open: { color: 'gold' },
-  addressed: { color: 'green' },
-  expired: { color: 'red' },
-};
 
 const KIND_LABELS: Record<string, string> = {
   user_message: '用户发言',
@@ -106,7 +101,7 @@ export default function UserPage() {
       key: 'state',
       width: 90,
       render: (state: string) => (
-        <Tag color={STATE_TAG[state]?.color ?? 'default'}>{threadStateLabels[state] ?? state}</Tag>
+        <Tag color={threadStateTag(state).color}>{threadStateTag(state).label}</Tag>
       ),
     },
     { title: '台账序号', dataIndex: 'ledgerSequence', key: 'ledgerSequence', width: 90, align: 'right' },

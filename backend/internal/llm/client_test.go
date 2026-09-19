@@ -41,7 +41,7 @@ func TestEvalBearerHeaderForNonMiMoProviders(t *testing.T) {
 	defer server.Close()
 
 	client := NewClient(server.URL, "deepseek-key", "deepseek-v4-flash")
-	if _, err := client.Generate(context.Background(), "hi"); err != nil {
+	if _, err := client.Generate(context.Background(), "你是测试助手。", "hi"); err != nil {
 		t.Fatalf("Generate error: %v", err)
 	}
 	if !sawBearer {

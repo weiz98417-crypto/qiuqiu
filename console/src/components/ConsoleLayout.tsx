@@ -1,8 +1,7 @@
 import { useState } from 'react';
 import { Breadcrumb, Button, Layout, Menu, Space, Typography, theme as antdTheme } from 'antd';
-import { Outlet, Link as RouterLink, useLocation, useNavigate } from 'react-router-dom';
-import { ReactRouterLink } from './ReactRouterLink';
-import { clearToken, logout, sessionOperator } from '../api/client';
+import { Outlet, Link as RouterLink, useLocation } from 'react-router-dom';
+import { clearToken, logout } from '../api/client';
 import { useOperator } from '../api/operator';
 import PasswordChangeModal from './PasswordChangeModal';
 
@@ -18,7 +17,6 @@ const NAV_ITEMS = [
 
 function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
   const location = useLocation();
-  const navigate = useNavigate();
   const { token: antToken } = antdTheme.useToken();
   const { operator } = useOperator();
   // ADR-0010 task 2.3：自助改密入口（首登强制改密走登录页的 forced 弹窗）。
@@ -60,13 +58,13 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
           items={[
             ...NAV_ITEMS.map((item) => ({
               key: item.key,
-              label: <ReactRouterLink to={item.key}>{item.label}</ReactRouterLink>,
+              label: <RouterLink to={item.key}>{item.label}</RouterLink>,
             })),
             { type: 'divider' as const },
             {
               // ADR-0011：新版实战导演页（coexistence 阶段，老页面并存）。
               key: 'director',
-              label: <ReactRouterLink to={`/console/match/${liveMatchId ?? ''}/director`}>新版实战导演</ReactRouterLink>,
+              label: <RouterLink to={`/console/match/${liveMatchId ?? ''}/director`}>新版实战导演</RouterLink>,
             },
             {
               key: 'live',
@@ -93,10 +91,10 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
         >
           <Breadcrumb items={crumbs} />
           <Space size="middle">
-            {/* ADR-0010 task 2.2：姓名优先取访问令牌的 JWT claims；机令牌
-                会话或 claims 未就绪时回退 GET /api/console/whoami。 */}
+            {/* ADR-0010 task 2.2：姓名由 OperatorProvider 单源提供（JWT claims
+                即时上屏，whoami 校准）；机令牌会话由 whoami 填充。 */}
             <Text type="secondary" data-testid="operator-name">
-              {sessionOperator()?.name ?? operator?.name ?? '运营员'}
+              {operator?.name ?? '运营员'}
             </Text>
             <Button size="small" onClick={() => setPasswordModalOpen(true)}>
               修改密码
@@ -104,11 +102,10 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
             <Button
               size="small"
               onClick={async () => {
-                // ADR-0010 task 2.2：吊销当前设备刷新令牌后回登录页。
+                // ADR-0010 task 2.2：吊销当前设备刷新令牌；onLogout 切回登录页。
                 await logout();
                 clearToken();
                 onLogout();
-                navigate('/console/login', { replace: true });
               }}
             >
               退出

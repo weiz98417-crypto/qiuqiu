@@ -22,19 +22,13 @@ import { consoleApi } from '../api/client';
 import type { AutomationPolicy, SourceStatus } from '../api/client';
 import { useOperator } from '../api/operator';
 import { useAsync } from '../api/useAsync';
+import { automationEventOptions } from '../director/event-vocabulary';
 
 const { Text } = Typography;
 
-// 自动化事件范围（与 operator.html automationEventOptions、
-// matchstate.DefaultAutomationPolicy 同一清单）。
-const AUTOMATION_EVENT_OPTIONS: [string, string][] = [
-  ['kickoff', '开球'], ['goal', '进球'], ['shot', '射门'], ['big_chance', '绝佳机会'],
-  ['save', '扑救'], ['miss', '错失'], ['foul', '犯规'], ['yellow_card', '黄牌'],
-  ['red_card', '红牌'], ['var_check', 'VAR检查'], ['var_result', 'VAR结果'],
-  ['goal_cancelled', '进球取消'], ['penalty', '点球'], ['penalty_awarded', '点球判定'],
-  ['substitution', '换人'], ['injury', '伤停'], ['tactical_shift', '战术变化'],
-  ['pressure', '持续压迫'], ['halftime', '中场'], ['fulltime', '完场'], ['match_end', '比赛结束'],
-];
+// 自动化事件范围（后端 matchstate 默认策略清单的控制台侧镜像，标签单源）。
+const AUTOMATION_EVENT_OPTIONS = automationEventOptions;
+
 
 const ACTIVE_SOURCE_LABELS: Record<string, { label: string; color: string }> = {
   'api-sports': { label: '实时数据', color: 'green' },

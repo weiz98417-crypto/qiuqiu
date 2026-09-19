@@ -1,29 +1,18 @@
 import { useState } from 'react';
-import { Alert, Button, Card, Col, Drawer, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { Link } from 'react-router-dom';
 import { useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { ConsoleUser, DirectorEventRow, TraceRow } from '../api/client';
-import { fmtDateTime, fmtTime, reasonCodeLabel, talkativenessLabel } from '../api/format';
+import { fmtTime, reasonCodeLabel, talkativenessLabel } from '../api/format';
+import { matchesCitation, traceReasonCodes, WhyDrawer } from '../api/traceEvidence';
 import { useAsync } from '../api/useAsync';
-import { ReactRouterLink } from '../components/ReactRouterLink';
 import MatchSettings from '../components/MatchSettings';
 
 const { Text } = Typography;
 
 type TraceLike = TraceRow;
-
-function traceReasonCodes(trace: TraceLike): string[] {
-  if (trace.reasonCodes?.length) return trace.reasonCodes;
-  return trace.relationshipDecision?.reasonCodes ?? [];
-}
-
-// citation 前缀在 reasonCodes 上做前缀匹配（与后端 citation= 过滤一致）。
-function matchesCitation(trace: TraceLike, prefix: string): boolean {
-  if (!prefix) return true;
-  const haystack = [trace.reason ?? '', ...traceReasonCodes(trace)];
-  return haystack.some((code) => code.startsWith(prefix));
-}
 
 export default function MatchPage() {
   const { matchId = '' } = useParams<{ matchId: string }>();
@@ -50,9 +39,9 @@ export default function MatchPage() {
       dataIndex: 'userId',
       key: 'userId',
       render: (userId: string) => (
-        <ReactRouterLink to={`/console/match/${matchId}/user/${userId}`}>
+        <Link to={`/console/match/${matchId}/user/${userId}`}>
           <code>{userId}</code>
-        </ReactRouterLink>
+        </Link>
       ),
     },
     {
@@ -83,7 +72,7 @@ export default function MatchPage() {
       key: 'actions',
       width: 90,
       render: (_, record) => (
-        <ReactRouterLink to={`/console/match/${matchId}/user/${record.userId}`}>查看用户</ReactRouterLink>
+        <Link to={`/console/match/${matchId}/user/${record.userId}`}>查看用户</Link>
       ),
     },
   ];
@@ -218,50 +207,7 @@ export default function MatchPage() {
         </Col>
       </Row>
 
-      <Drawer
-        title="为什么说话"
-        open={Boolean(drawerTrace)}
-        onClose={() => setDrawerTrace(null)}
-        width={480}
-      >
-        {drawerTrace ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <div>
-              <Text type="secondary">Trace</Text>
-              <div>
-                <code>{drawerTrace.id}</code>
-              </div>
-            </div>
-            <div>
-              <Text type="secondary">原因码</Text>
-              <div>
-                <Space size={4} wrap>
-                  {traceReasonCodes(drawerTrace).map((code) => (
-                    <Tag key={code} color="orange">
-                      {reasonCodeLabel(code)}
-                    </Tag>
-                  ))}
-                  {!traceReasonCodes(drawerTrace).length ? (
-                    <Text type="secondary">{drawerTrace.reason || '—'}</Text>
-                  ) : null}
-                </Space>
-              </div>
-            </div>
-            <div>
-              <Text type="secondary">用户输入</Text>
-              <div>{drawerTrace.input || '（主动回合，无用户输入）'}</div>
-            </div>
-            <div>
-              <Text type="secondary">球球输出</Text>
-              <div>{drawerTrace.output || '—'}</div>
-            </div>
-            <div>
-              <Text type="secondary">时间</Text>
-              <div>{fmtDateTime(drawerTrace.createdAt)}</div>
-            </div>
-          </Space>
-        ) : null}
-      </Drawer>
+      <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
     </div>
   );
 }

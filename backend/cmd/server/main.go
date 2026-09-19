@@ -33,7 +33,6 @@ import (
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
-	"qiuqiu/internal/pipeline"
 	"qiuqiu/internal/privacy"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/router"
@@ -184,10 +183,6 @@ func main() {
 		log.Fatal(err)
 	}
 	privacy.SetRetentionDays(cfg.PrivacyRetentionDays)
-
-	// Prompt manager
-	promptMgr := pipeline.NewPromptManager()
-	promptMgr.LoadSystem(readFile("prompts/v1.0/system.txt"))
 
 	// AI clients
 	llmClient := newTextLLMClient(cfg)
@@ -464,7 +459,7 @@ func main() {
 	// privacy API's transport (session bearer auth, account-scoped).
 	mux.HandleFunc("/api/me/portrait", handlePortraitAPI(sessionManager, cfg, memoryQueue))
 	mux.HandleFunc("/api/matches/catalog", handleMatchCatalog(matchStore, cfg))
-	mux.HandleFunc("/api/matches/", handleMatchAPIWithOperatorAuth(matchStore, traceReader, demoResetter, cfg, llmClient, promptMgr, sourceManager, directorDrafts, interactionLedger, authz, operatorWrites))
+	mux.HandleFunc("/api/matches/", handleMatchAPIWithOperatorAuth(matchStore, traceReader, demoResetter, cfg, llmClient, sourceManager, directorDrafts, interactionLedger, authz, operatorWrites))
 	// ADR-0008 operations console API: the three-tier IA data surface
 	// (overview → match → user) behind operator auth + scopes.
 	mux.HandleFunc("/api/console/", handleConsoleAPI(consoleAPI{
@@ -1401,8 +1396,8 @@ func operatorAuditEvents(events, publicEvents []matchstate.MatchEvent) []matchst
 	return events
 }
 
-func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager) http.HandlerFunc {
-	return handleMatchAPIWithSources(store, traceReader, demoResetter, cfg, llmClient, promptMgr, nil)
+func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client) http.HandlerFunc {
+	return handleMatchAPIWithSources(store, traceReader, demoResetter, cfg, llmClient, nil)
 }
 
 func handleMatchCatalog(store matchstate.Repository, cfg *config.Config) http.HandlerFunc {
@@ -1433,8 +1428,8 @@ func handleMatchCatalog(store matchstate.Repository, cfg *config.Config) http.Ha
 	}
 }
 
-func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, writeServices ...*operatorwrite.Service) http.HandlerFunc {
-	return handleMatchAPIWithDirectorDraft(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, nil, writeServices...)
+func handleMatchAPIWithSources(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, sources *datasource.Manager, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+	return handleMatchAPIWithDirectorDraft(store, traceReader, demoResetter, cfg, llmClient, sources, nil, writeServices...)
 }
 
 func validateNewMatchConfig(config matchstate.MatchConfig) error {
@@ -1480,8 +1475,8 @@ func mergeMatchConfigRoster(existing, incoming matchstate.MatchConfig) (matchsta
 	return incoming, nil
 }
 
-func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, writeServices ...*operatorwrite.Service) http.HandlerFunc {
-	return handleMatchAPIWithRuntime(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, directorDrafts, nil, writeServices...)
+func handleMatchAPIWithDirectorDraft(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, sources *datasource.Manager, directorDrafts *directordraft.Service, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+	return handleMatchAPIWithRuntime(store, traceReader, demoResetter, cfg, llmClient, sources, directorDrafts, nil, writeServices...)
 }
 
 func projectInteractionTraces(ctx context.Context, ledger interaction.Ledger, matchID string) ([]companion.Trace, error) {
@@ -1589,13 +1584,13 @@ func getInteractionTrace(ctx context.Context, ledger interaction.Ledger, matchID
 	return companion.Trace{}, companion.ErrTraceNotFound
 }
 
-func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+func handleMatchAPIWithRuntime(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	// Legacy-only authorizer: without an operators directory this behaves
 	// exactly as before ADR-0008 (shared APP_TOKEN / dev bypass = director).
-	return handleMatchAPIWithOperatorAuth(store, traceReader, demoResetter, cfg, llmClient, promptMgr, sources, directorDrafts, interactionLedger, operatorAuthz{cfg: cfg}, writeServices...)
+	return handleMatchAPIWithOperatorAuth(store, traceReader, demoResetter, cfg, llmClient, sources, directorDrafts, interactionLedger, operatorAuthz{cfg: cfg}, writeServices...)
 }
 
-func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, promptMgr *pipeline.PromptManager, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, authz operatorAuthz, writeServices ...*operatorwrite.Service) http.HandlerFunc {
+func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, authz operatorAuthz, writeServices ...*operatorwrite.Service) http.HandlerFunc {
 	operatorWrites := selectedOperatorWriteService(writeServices)
 	return func(w http.ResponseWriter, r *http.Request) {
 		if !applyCORS(w, r, cfg) {
@@ -2743,93 +2738,11 @@ func terminalPlaybackState(state string) bool {
 	}
 }
 
-func generateProactiveText(ctx context.Context, llmClient *llm.Client, promptMgr *pipeline.PromptManager, ev matchstate.MatchEvent, snapshot matchstate.Snapshot) string {
-	if llmClient == nil || promptMgr == nil {
-		return fallbackProactiveText(ev)
-	}
-	genCtx, cancel := context.WithTimeout(ctx, 6*time.Second)
-	defer cancel()
-	messages := pipeline.BuildProactiveEventMessages(promptMgr.System(), ev, snapshot)
-	result, err := llmClient.GenerateWithMessages(genCtx, messages, 0.8)
-	if err != nil {
-		log.Printf("proactive event reply error: %v", err)
-		return fallbackProactiveText(ev)
-	}
-	return strings.TrimSpace(result.Text)
-}
-
 func newTextLLMClient(cfg *config.Config) *llm.Client {
 	if cfg == nil || strings.TrimSpace(cfg.MiMoAPIKey) == "" {
 		return nil
 	}
 	return llm.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)
-}
-
-func fallbackProactiveText(ev matchstate.MatchEvent) string {
-	switch ev.EventType {
-	case "goal":
-		if scorer := goalScorerName(ev); scorer != "" {
-			if ev.Score.Home > 0 || ev.Score.Away > 0 {
-				return fmt.Sprintf("%s进了！比分来到%d比%d。", scorer, ev.Score.Home, ev.Score.Away)
-			}
-			return scorer + "进了！"
-		}
-		return "进了！这一下气氛直接被点起来了。"
-	case "red_card":
-		return "红牌来了，比赛走势一下子变得很微妙。"
-	case "penalty":
-		return "点球时刻来了，先深呼吸，这球太关键了。"
-	case "var_check":
-		return "VAR 介入了，这几秒真的很折磨人。"
-	case "big_chance", "pressure":
-		return "这波很危险，我们盯紧一点。"
-	case "miss":
-		return "哎呀，就差一点点，这球太可惜了。"
-	case "substitution":
-		subOn, subOff := substitutionNames(ev)
-		teamName := strings.TrimSpace(ev.TeamName)
-		if teamName == "" {
-			teamName = "这边"
-		}
-		switch {
-		case subOn != "" && subOff != "":
-			return fmt.Sprintf("%s换人，%s上场，%s下场。", teamName, subOn, subOff)
-		case subOn != "":
-			return fmt.Sprintf("%s换人，%s上场。", teamName, subOn)
-		case subOff != "":
-			return fmt.Sprintf("%s换人，%s下场。", teamName, subOff)
-		}
-		return teamName + "正在调整人员。"
-	default:
-		if ev.Description != "" {
-			return ev.Description
-		}
-		return "场上有新情况，我们一起看下去。"
-	}
-}
-
-func substitutionNames(event matchstate.MatchEvent) (subOn, subOff string) {
-	for _, participant := range event.Participants {
-		switch participant.Role {
-		case "sub_on":
-			subOn = strings.TrimSpace(participant.Name)
-		case "sub_off":
-			subOff = strings.TrimSpace(participant.Name)
-		}
-	}
-	return subOn, subOff
-}
-
-func goalScorerName(event matchstate.MatchEvent) string {
-	if player := strings.TrimSpace(event.PlayerName); player != "" {
-		return player
-	}
-	for _, participant := range event.Participants {
-		if participant.Role == "scorer" && strings.TrimSpace(participant.Name) != "" {
-			return strings.TrimSpace(participant.Name)
-		}
-	}
-	return ""
 }
 
 func eventFromVoiceDraft(result directordraft.Result, currentScore matchstate.Score) (matchstate.MatchEvent, error) {
@@ -2931,7 +2844,7 @@ func markProactiveMode(event *matchstate.MatchEvent) {
 		return
 	}
 	if strings.TrimSpace(event.ProactiveText) == "" {
-		event.ProactiveText = fallbackProactiveText(*event)
+		event.ProactiveText = companion.FallbackProactiveText(*event)
 		event.Tags = append(event.Tags, "proactive=auto")
 		return
 	}
@@ -2965,14 +2878,6 @@ func hasEventTag(event matchstate.MatchEvent, tag string) bool {
 		}
 	}
 	return false
-}
-
-func readFile(path string) string {
-	data, err := os.ReadFile(path)
-	if err != nil {
-		return ""
-	}
-	return string(data)
 }
 
 func str(m map[string]interface{}, key string) string {

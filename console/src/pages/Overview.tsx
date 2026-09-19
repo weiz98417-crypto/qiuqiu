@@ -1,11 +1,11 @@
 import { useMemo } from 'react';
 import { Alert, Badge, Button, Card, Col, Empty, List, Row, Statistic, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { Link } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { AuditRow, ConsoleMatch, Overview as OverviewData } from '../api/client';
 import { fmtDateTime, fmtTime } from '../api/format';
 import { useAsync } from '../api/useAsync';
-import { ReactRouterLink } from '../components/ReactRouterLink';
 
 const MATCH_STATE_LABELS: Record<string, { label: string; color: string }> = {
   live: { label: '直播中', color: 'processing' },
@@ -20,9 +20,9 @@ const matchColumns: ColumnsType<ConsoleMatch> = [
     dataIndex: 'matchId',
     key: 'matchId',
     render: (matchId: string) => (
-      <ReactRouterLink to={`/console/match/${matchId}`}>
+      <Link to={`/console/match/${matchId}`}>
         <code>{matchId}</code>
-      </ReactRouterLink>
+      </Link>
     ),
   },
   {
@@ -93,7 +93,7 @@ export default function Overview() {
               <Card data-cell="sessions" title="在线会话" style={cellBorder({ height: '100%' })}>
                 <Statistic value={data?.onlineSessions ?? 0} suffix="个会话在线" loading={loading} />
                 <div style={{ marginTop: 8 }}>
-                  <ReactRouterLink to="/console/threads">查看话题台账 →</ReactRouterLink>
+                  <Link to="/console/threads">查看话题台账 →</Link>
                 </div>
               </Card>
             </Col>
@@ -155,7 +155,7 @@ export default function Overview() {
           <Card
             data-cell="proactive"
             title="最近主动引用"
-            extra={<ReactRouterLink to="/console/citations">进入引用审计 →</ReactRouterLink>}
+            extra={<Link to="/console/citations">进入引用审计 →</Link>}
             style={cellBorder({ height: '100%' })}
           >
             <List
@@ -166,9 +166,9 @@ export default function Overview() {
               renderItem={(item) => (
                 <List.Item
                   actions={[
-                    <ReactRouterLink key="match" to={`/console/match/${item.matchId}`}>
+                    <Link key="match" to={`/console/match/${item.matchId}`}>
                       比赛 {item.matchId}
-                    </ReactRouterLink>,
+                    </Link>,
                   ]}
                 >
                   <List.Item.Meta

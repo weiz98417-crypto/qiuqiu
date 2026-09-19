@@ -90,6 +90,19 @@ type Directory interface {
 	RecentAudit(ctx context.Context, limit int) ([]AuditEntry, error)
 }
 
+// OperatorLister is the optional capability of stores that can list every
+// operator row (the console Operators page). Memory (dev) and Postgres both
+// provide it; a token-only custom store may not.
+type OperatorLister interface {
+	List(ctx context.Context) ([]Operator, error)
+}
+
+// OperatorRevoker is the optional capability of stores that can revoke an
+// operator by row deletion; the bool reports whether the row existed.
+type OperatorRevoker interface {
+	Delete(ctx context.Context, name string) (bool, error)
+}
+
 var (
 	ErrNameRequired   = errors.New("operator name is required")
 	ErrTokenRequired  = errors.New("operator token is required")
@@ -153,15 +166,15 @@ func (m *MemoryStore) Seed(_ context.Context, name, token string, role Role) (Op
 
 // Delete revokes an operator: the row is removed, so Lookup fails on the
 // next request (immediate revocation).
-func (m *MemoryStore) Delete(_ context.Context, name string) bool {
+func (m *MemoryStore) Delete(_ context.Context, name string) (bool, error) {
 	if m == nil {
-		return false
+		return false, nil
 	}
 	m.mu.Lock()
 	defer m.mu.Unlock()
 	hash, exists := m.byName[name]
 	if !exists {
-		return false
+		return false, nil
 	}
 	delete(m.byName, name)
 	delete(m.byToken, hash)
@@ -171,7 +184,7 @@ func (m *MemoryStore) Delete(_ context.Context, name string) bool {
 			delete(m.refresh, tokenHash)
 		}
 	}
-	return true
+	return true, nil
 }
 
 func (m *MemoryStore) Lookup(_ context.Context, token string) (Operator, bool) {

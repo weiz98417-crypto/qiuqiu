@@ -33,12 +33,8 @@ export const REFRESH_STORAGE_KEY = 'qiuqiu.console.refresh';
 
 let accessToken = '';
 
-export function getAccessToken(): string {
+function getAccessToken(): string {
   return accessToken;
-}
-
-export function setAccessToken(token: string): void {
-  accessToken = token;
 }
 
 export function clearAccessToken(): void {
@@ -67,9 +63,10 @@ export interface LoginResponse {
 export interface SessionOperator {
   name: string;
   role: string;
+  scopes: string[];
 }
 
-// sessionOperator 解码访问令牌载荷（仅用于头部显示，不做授权判断）。
+// sessionOperator 解码访问令牌载荷（仅用于头部展示与身份预热，不做授权判断）。
 export function sessionOperator(): SessionOperator | null {
   const token = accessToken;
   if (!token) return null;
@@ -81,7 +78,13 @@ export function sessionOperator(): SessionOperator | null {
     const bytes = Uint8Array.from(atob(parts[1].replace(/-/g, '+').replace(/_/g, '/')), (c) => c.charCodeAt(0));
     const payload = JSON.parse(new TextDecoder().decode(bytes));
     if (typeof payload.sub === 'string' && payload.sub) {
-      return { name: payload.sub, role: typeof payload.role === 'string' ? payload.role : '' };
+      return {
+        name: payload.sub,
+        role: typeof payload.role === 'string' ? payload.role : '',
+        scopes: Array.isArray(payload.scopes)
+          ? payload.scopes.filter((s: unknown): s is string => typeof s === 'string')
+          : [],
+      };
     }
   } catch {
     // 非法载荷按未登录处理。
@@ -386,7 +389,6 @@ export interface WhoAmI {
 
 // 后端 scope 常量（backend/internal/auth/session.go）。
 export const SCOPE_MATCH_WRITE = 'operator:match:write';
-export const SCOPE_TRACE_READ = 'operator:trace:read';
 
 export interface TraceRow {
   id: string;

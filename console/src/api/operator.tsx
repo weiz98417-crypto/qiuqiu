@@ -1,10 +1,11 @@
 import { createContext, useContext, useEffect, useState } from 'react';
 import type { ReactNode } from 'react';
-import { consoleApi, SCOPE_MATCH_WRITE } from './client';
+import { consoleApi, SCOPE_MATCH_WRITE, sessionOperator } from './client';
 import type { WhoAmI } from './client';
 
-// 当前运营员身份上下文：进入控制台后调一次 whoami，
-// 头部展示姓名，写操作 UI 按 scopes 门控（auditor 只读）。
+// 当前运营员身份上下文：身份单源 —— JWT 会话先解 claims 即时上屏（姓名
+// 与 scopes 预热），whoami 随后校准（机令牌会话由此获得身份）；组件不自行
+// 解码令牌，写操作 UI 按 scopes 门控（auditor 只读）。
 
 interface OperatorContextValue {
   operator: WhoAmI | null;
@@ -19,7 +20,10 @@ const OperatorContext = createContext<OperatorContextValue>({
 });
 
 export function OperatorProvider({ children }: { children: ReactNode }) {
-  const [operator, setOperator] = useState<WhoAmI | null>(null);
+  const [operator, setOperator] = useState<WhoAmI | null>(() => {
+    const claims = sessionOperator();
+    return claims ? { name: claims.name, subject: claims.name, scopes: claims.scopes } : null;
+  });
   const [loading, setLoading] = useState(true);
 
   useEffect(() => {

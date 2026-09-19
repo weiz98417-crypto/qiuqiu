@@ -29,6 +29,12 @@ export const threadStateLabels: Record<string, string> = {
   expired: '过期',
 };
 
+// 话题状态标签配色（话题台账 / 用户页共用）。
+export function threadStateTag(state: string): { color: string; label: string } {
+  const colors: Record<string, string> = { open: 'gold', addressed: 'green', expired: 'red' };
+  return { color: colors[state] ?? 'default', label: threadStateLabels[state] ?? state };
+}
+
 export function reasonCodeLabel(code: string): string {
   if (code.startsWith('proactive_citation:')) {
     return `主动引用 · ${code.slice('proactive_citation:'.length)}`;

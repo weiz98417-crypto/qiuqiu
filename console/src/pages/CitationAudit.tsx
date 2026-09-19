@@ -1,26 +1,16 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, Button, Card, Col, Drawer, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
+import { Link } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { TraceRow } from '../api/client';
 import { fmtDateTime, fmtTime, reasonCodeLabel } from '../api/format';
+import { matchesCitation, traceReasonCodes, WhyDrawer } from '../api/traceEvidence';
 import { useAsync } from '../api/useAsync';
-import { ReactRouterLink } from '../components/ReactRouterLink';
 
 const { Text } = Typography;
 
 type TraceLike = TraceRow;
-
-function traceReasonCodes(trace: TraceLike): string[] {
-  if (trace.reasonCodes?.length) return trace.reasonCodes;
-  return trace.relationshipDecision?.reasonCodes ?? [];
-}
-
-function matchesCitation(trace: TraceLike, prefix: string): boolean {
-  if (!prefix) return true;
-  const haystack = [trace.reason ?? '', ...traceReasonCodes(trace)];
-  return haystack.some((code) => code.startsWith(prefix));
-}
 
 export default function CitationAudit() {
   // 跨比赛最近主动引用（来自概览聚合，cross-match limit 10）。
@@ -64,7 +54,7 @@ export default function CitationAudit() {
       key: 'matchId',
       width: 150,
       render: (matchId: string) =>
-        matchId ? <ReactRouterLink to={`/console/match/${matchId}`}>{matchId}</ReactRouterLink> : '—',
+        matchId ? <Link to={`/console/match/${matchId}`}>{matchId}</Link> : '—',
     },
     { title: '用户', dataIndex: 'userId', key: 'userId', width: 130 },
     {
@@ -132,7 +122,7 @@ export default function CitationAudit() {
                 title: '比赛',
                 dataIndex: 'matchId',
                 render: (matchId: string) => (
-                  <ReactRouterLink to={`/console/match/${matchId}`}>{matchId}</ReactRouterLink>
+                  <Link to={`/console/match/${matchId}`}>{matchId}</Link>
                 ),
               },
               {
@@ -190,40 +180,7 @@ export default function CitationAudit() {
         </Card>
       </Col>
 
-      <Drawer
-        title="为什么说话"
-        open={Boolean(drawerTrace)}
-        onClose={() => setDrawerTrace(null)}
-        width={480}
-      >
-        {drawerTrace ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <div>
-              <Text type="secondary">原因码</Text>
-              <div>
-                <Space size={4} wrap>
-                  {traceReasonCodes(drawerTrace).map((code) => (
-                    <Tag key={code} color="orange">
-                      {reasonCodeLabel(code)}
-                    </Tag>
-                  ))}
-                  {!traceReasonCodes(drawerTrace).length ? (
-                    <Text type="secondary">{drawerTrace.reason || '—'}</Text>
-                  ) : null}
-                </Space>
-              </div>
-            </div>
-            <div>
-              <Text type="secondary">用户输入</Text>
-              <div>{drawerTrace.input || '（主动回合，无用户输入）'}</div>
-            </div>
-            <div>
-              <Text type="secondary">球球输出</Text>
-              <div>{drawerTrace.output || '—'}</div>
-            </div>
-          </Space>
-        ) : null}
-      </Drawer>
+      <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
     </Row>
   );
 }

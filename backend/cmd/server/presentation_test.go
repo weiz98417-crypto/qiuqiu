@@ -5,6 +5,7 @@ import (
 	"strings"
 	"testing"
 
+	"qiuqiu/internal/companion"
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
@@ -53,7 +54,7 @@ func TestQiuqiuReplyDataCarriesDirectorPresentation(t *testing.T) {
 }
 
 func TestSubstitutionFallbackNamesPlayersWithoutInventingTactics(t *testing.T) {
-	text := fallbackProactiveText(matchstate.MatchEvent{
+	text := companion.FallbackProactiveText(matchstate.MatchEvent{
 		EventType: "substitution",
 		TeamName:  "Spain",
 		Participants: []matchstate.Participant{

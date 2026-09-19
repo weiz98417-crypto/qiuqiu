@@ -83,15 +83,6 @@ type GenerateResult struct {
 	Tokens   int
 }
 
-var systemPrompt = `你是"球球"，一个陪用户看足球比赛的AI语音助手。你像一个朋友一样聊天，不是专业解说员。每次回复不超过2句话。用自然口语表达。`
-
-var TestEvents = []string{
-	"进球了！主队前锋在第78分钟破门，比分变成2-1。请用1-2句话表达你的反应。",
-	"客队球员吃到黄牌，第35分钟。请简短反应。",
-	"上半场结束，比分0-0。双方都还没有进球。请简短总结上半场。",
-	"射门！主队射正了，但被守门员扑出。第60分钟。请简短反应。",
-	"比赛开始！对阵双方是皇家马德里对巴塞罗那。请表达期待。",
-}
 
 // StreamChunk is a token from streaming LLM output.
 type StreamChunk struct {
@@ -187,11 +178,11 @@ func (c *Client) GenerateWithMessagesLimit(ctx context.Context, messages []Messa
 	return c.doChat(ctx, req)
 }
 
-func (c *Client) Generate(ctx context.Context, prompt string) (*GenerateResult, error) {
+func (c *Client) Generate(ctx context.Context, system, prompt string) (*GenerateResult, error) {
 	req := ChatRequest{
 		Model: c.model,
 		Messages: []Message{
-			{Role: "system", Content: systemPrompt},
+			{Role: "system", Content: system},
 			{Role: "user", Content: prompt},
 		},
 		MaxTokens:   80,

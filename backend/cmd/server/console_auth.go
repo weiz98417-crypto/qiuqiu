@@ -7,7 +7,6 @@ package main
 // single-use (the old row is deleted when consumed).
 
 import (
-	"context"
 	"crypto/rand"
 	"encoding/json"
 	"net/http"
@@ -169,9 +168,7 @@ func (deps consoleAPI) handleMePassword(w http.ResponseWriter, r *http.Request) 
 // in the store.
 func (deps consoleAPI) issueAuthPair(w http.ResponseWriter, r *http.Request, operatorName string, credentials operatorauth.Credentials, device string) (map[string]any, error) {
 	var operator operatorauth.Operator
-	if listed, ok := deps.operators.(interface {
-		List(ctx context.Context) ([]operatorauth.Operator, error)
-	}); ok {
+	if listed, ok := deps.operators.(operatorauth.OperatorLister); ok {
 		if rows, err := listed.List(r.Context()); err == nil {
 			for _, row := range rows {
 				if row.Name == operatorName {

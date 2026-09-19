@@ -31,7 +31,6 @@ import (
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
-	"qiuqiu/internal/privacy"
 )
 
 // Scope mapping for console routes (ADR-0008): reads → TraceRead, writes →
@@ -187,9 +186,7 @@ func (deps consoleAPI) handleListOperators(w http.ResponseWriter, r *http.Reques
 	if _, ok := deps.authz.authorize(w, r, matchWriteScope); !ok {
 		return
 	}
-	lister, ok := deps.operators.(interface {
-		List(ctx context.Context) ([]operatorauth.Operator, error)
-	})
+	lister, ok := deps.operators.(operatorauth.OperatorLister)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "operators management requires a persistent operator store (DATABASE_URL)"})
 		return
@@ -243,22 +240,8 @@ func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Reque
 	if !ok {
 		return
 	}
-	revoker, ok := deps.operators.(interface {
-		Delete(ctx context.Context, name string) (bool, error)
-	})
+	revoker, ok := deps.operators.(operatorauth.OperatorRevoker)
 	if !ok {
-		if boolRevoker, ok2 := deps.operators.(interface {
-			Delete(ctx context.Context, name string) bool
-		}); ok2 {
-			deleted := boolRevoker.Delete(r.Context(), name)
-			if !deleted {
-				http.Error(w, "operator not found", http.StatusNotFound)
-				return
-			}
-			_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.revoke", name)
-			writeJSON(w, http.StatusOK, map[string]any{})
-			return
-		}
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "operators management requires a persistent operator store (DATABASE_URL)"})
 		return
 	}
@@ -591,18 +574,7 @@ func (deps consoleAPI) handleDeletePortrait(w http.ResponseWriter, r *http.Reque
 		object += " slot " + topic + "/" + subTopic
 	}
 	if err != nil {
-		switch {
-		case errors.Is(err, privacy.ErrDataDeleted):
-			http.Error(w, "用户数据已删除", http.StatusGone)
-		case errors.Is(err, privacy.ErrDeletionInProgress):
-			http.Error(w, "用户数据删除进行中", http.StatusConflict)
-		case errors.Is(err, memory.ErrUnavailable):
-			http.Error(w, "画像存储暂不可用", http.StatusServiceUnavailable)
-		case errors.Is(err, memory.ErrNotSupported):
-			http.Error(w, "画像存储未启用", http.StatusNotImplemented)
-		default:
-			http.Error(w, "画像删除失败", http.StatusInternalServerError)
-		}
+		writePortraitMutationError(w, err, "画像删除失败")
 		return
 	}
 	if deps.operators != nil {

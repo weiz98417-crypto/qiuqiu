@@ -113,7 +113,7 @@ func handlePortraitEdit(w http.ResponseWriter, r *http.Request, memories *memory
 	writeCtx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
 	defer cancel()
 	if _, err := memories.SetPortraitEntry(writeCtx, userID, topic, subTopic, content, strings.TrimSpace(request.EntryID)); err != nil {
-		writePortraitMutationError(w, err)
+		writePortraitMutationError(w, err, "画像更新失败")
 		return
 	}
 	entries, updatedAt := memories.PortraitEntries(r.Context(), userID)
@@ -148,7 +148,7 @@ func handlePortraitForget(w http.ResponseWriter, r *http.Request, memories *memo
 		err = memories.ForgetPortraitEntry(writeCtx, userID, topic, subTopic, entryID)
 	}
 	if err != nil {
-		writePortraitMutationError(w, err)
+		writePortraitMutationError(w, err, "画像更新失败")
 		return
 	}
 	entries, updatedAt := memories.PortraitEntries(r.Context(), userID)
@@ -175,7 +175,7 @@ func writePortrait(w http.ResponseWriter, entries []memory.PortraitEntry, update
 	writeJSON(w, http.StatusOK, response)
 }
 
-func writePortraitMutationError(w http.ResponseWriter, err error) {
+func writePortraitMutationError(w http.ResponseWriter, err error, defaultMessage string) {
 	switch {
 	case errors.Is(err, privacy.ErrDataDeleted):
 		http.Error(w, "用户数据已删除", http.StatusGone)
@@ -186,6 +186,6 @@ func writePortraitMutationError(w http.ResponseWriter, err error) {
 	case errors.Is(err, memory.ErrNotSupported):
 		http.Error(w, "画像存储未启用", http.StatusNotImplemented)
 	default:
-		http.Error(w, "画像更新失败", http.StatusInternalServerError)
+		http.Error(w, defaultMessage, http.StatusInternalServerError)
 	}
 }

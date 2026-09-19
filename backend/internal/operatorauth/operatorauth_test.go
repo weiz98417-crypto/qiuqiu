@@ -78,8 +78,8 @@ func TestRevocationIsImmediate(t *testing.T) {
 	if _, ok := store.Lookup(ctx, "op-token-2"); !ok {
 		t.Fatal("lookup before revocation failed")
 	}
-	if !store.Delete(ctx, "阿伦") {
-		t.Fatal("delete reported no row")
+	if deleted, err := store.Delete(ctx, "阿伦"); err != nil || !deleted {
+		t.Fatalf("delete reported no row (err=%v)", err)
 	}
 	if _, ok := store.Lookup(ctx, "op-token-2"); ok {
 		t.Fatal("lookup succeeded after revocation; row deletion must fail the next request immediately")

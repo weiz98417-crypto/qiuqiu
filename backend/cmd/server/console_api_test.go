@@ -23,7 +23,6 @@ import (
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
-	"qiuqiu/internal/pipeline"
 	"qiuqiu/internal/relationship"
 )
 
@@ -71,7 +70,7 @@ func newConsoleHarness(t *testing.T) *consoleHarness {
 		writes: writes, interruptions: harness.ring,
 	})
 	harness.matchAPI = handleMatchAPIWithOperatorAuth(harness.store, harness.traces, harness.traces, harness.cfg, nil,
-		pipeline.NewPromptManager(), nil, nil, nil, authz, writes)
+		nil, nil, nil, authz, writes)
 	return harness
 }
 

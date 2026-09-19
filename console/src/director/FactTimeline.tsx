@@ -1,18 +1,10 @@
 import { useState } from 'react';
 import { Alert, Button, Card, Empty, Space, Tag, Timeline, Typography } from 'antd';
 import type { DirectorConflict, DirectorEventRow } from './api';
+import { eventLabel } from './event-vocabulary';
 
 const { Text } = Typography;
 
-const EVENT_LABELS: Record<string, string> = {
-  match_end: '完场',
-  penalty_awarded: '点球判罚',
-  kickoff: '开球',
-};
-
-function eventLabel(eventType: string): string {
-  return EVENT_LABELS[eventType] ?? eventType;
-}
 
 function factStatusBadge(factStatus?: string, confirmed?: boolean): { color: string; text: string } {
   switch (factStatus) {
