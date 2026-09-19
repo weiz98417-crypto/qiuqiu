@@ -16,11 +16,11 @@ const (
 	ReasonMatchedLatestEvent     = "matched latest confirmed match event"
 
 	// 赛程查询路径。
-	ReasonScheduleUnavailable        = "schedule_unavailable"
-	ReasonScheduleLookupAck          = "schedule_lookup_acknowledgement"
-	ReasonScheduleLookupCtxUpdated   = "schedule_lookup_context_updated"
-	ReasonScheduleLookupUnavail      = "schedule_lookup_unavailable"
-	ReasonScheduleLookupResult       = "schedule_lookup_result"
+	ReasonScheduleUnavailable      = "schedule_unavailable"
+	ReasonScheduleLookupAck        = "schedule_lookup_acknowledgement"
+	ReasonScheduleLookupCtxUpdated = "schedule_lookup_context_updated"
+	ReasonScheduleLookupUnavail    = "schedule_lookup_unavailable"
+	ReasonScheduleLookupResult     = "schedule_lookup_result"
 
 	// 主动回合路径。
 	ReasonRelationshipMatchReaction = "relationship_match_reaction"

@@ -58,10 +58,10 @@ func TestMatchEventMemoryMomentCitesFactLedgerSequence(t *testing.T) {
 	req := MatchEventRequest{
 		UserID: "user-1",
 		Event: matchstate.MatchEvent{
-			ID:              "goal-1",
-			EventType:       "goal",
-			TeamName:        "皇马",
-			Description:     "维尼修斯破门",
+			ID:               "goal-1",
+			EventType:        "goal",
+			TeamName:         "皇马",
+			Description:      "维尼修斯破门",
 			RecordedSequence: 42,
 		},
 		Snapshot: matchstate.Snapshot{HomeTeam: "皇马", AwayTeam: "巴萨"},
@@ -88,7 +88,7 @@ func TestMatchEventMemoryMomentCitesFactLedgerSequence(t *testing.T) {
 func TestAgentPlanSurvivesMemoryFailure(t *testing.T) {
 	agent := NewAgent(NewRepositoryMemoryTools(matchstate.NewStore())).WithMemories(failingMemories{})
 	plan, err := agent.Plan(context.Background(), TurnInput{
-		Kind: TurnKindUser,
+		Kind:    TurnKindUser,
 		Message: &MessageRequest{SignalID: "signal-mem-down", MatchID: "match-1", UserID: "user-1", Text: "在吗", Now: time.Now().UTC()},
 	})
 	if err != nil {
@@ -103,7 +103,7 @@ func TestAgentPlanEnqueuesTurnMoments(t *testing.T) {
 	fake := memory.NewFake()
 	agent := NewAgent(NewRepositoryMemoryTools(matchstate.NewStore())).WithMemories(fake)
 	if _, err := agent.Plan(context.Background(), TurnInput{
-		Kind: TurnKindUser,
+		Kind:    TurnKindUser,
 		Message: &MessageRequest{SignalID: "signal-mem", MatchID: "match-1", UserID: "user-1", Text: "我喜欢皇马，待会儿告诉你为什么", Now: time.Now().UTC()},
 	}); err != nil {
 		t.Fatalf("Plan: %v", err)

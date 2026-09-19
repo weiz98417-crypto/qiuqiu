@@ -157,6 +157,29 @@ type routeResponsePayload struct {
 // RouteTurnToolName is the single function the router model must call.
 const RouteTurnToolName = "route_turn"
 
+// routableIntents is the intent vocabulary the router schema offers — the
+// single source both the tool schema and the vocabulary lock test read.
+// match_reaction is proactive-only and deliberately absent from user turns.
+var routableIntents = []string{
+	"smalltalk",
+	"schedule_question",
+	"match_status_question",
+	"recent_event_question",
+	"follow_up_question",
+	"player_question",
+	"match_fact_claim",
+	"emotion_reaction",
+	"personal_share",
+	"control_command",
+	"unknown",
+}
+
+// RoutableIntents exposes the router intent vocabulary (the companion
+// package's vocabulary lock test reads it to keep routedTurnIntent 1:1).
+func RoutableIntents() []string {
+	return append([]string(nil), routableIntents...)
+}
+
 // routeTurnParameters is the tool schema: the 12 backend intents (the router
 // prompt documents 坚持主张 as match_fact_claim), slots, confidence and the
 // reply suggestion used only for non-fact intents.
@@ -165,20 +188,8 @@ func routeTurnParameters() map[string]any {
 		"type": "object",
 		"properties": map[string]any{
 			"intent": map[string]any{
-				"type": "string",
-				"enum": []string{
-					"smalltalk",
-					"schedule_question",
-					"match_status_question",
-					"recent_event_question",
-					"follow_up_question",
-					"player_question",
-					"match_fact_claim",
-					"emotion_reaction",
-					"personal_share",
-					"control_command",
-					"unknown",
-				},
+				"type":        "string",
+				"enum":        routableIntents,
 				"description": "用户这回合的意图，必须从这个枚举里选",
 			},
 			"player":     map[string]any{"type": "string", "description": "提到的球员名，没有则空串"},

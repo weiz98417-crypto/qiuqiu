@@ -88,7 +88,7 @@ func TestTurnPipelineAppendsThreadsWithTraceAudit(t *testing.T) {
 	fake := memory.NewFake()
 	agent := NewAgent(NewRepositoryMemoryTools(matchstate.NewStore())).WithMemories(fake)
 	plan, err := agent.Plan(ctx, TurnInput{
-		Kind: TurnKindUser,
+		Kind:    TurnKindUser,
 		Message: &MessageRequest{SignalID: "signal-thread", MatchID: "match-1", UserID: "user-1", Text: "穆西亚拉进球了吗？", Now: time.Now().UTC()},
 	})
 	if err != nil {
@@ -122,7 +122,7 @@ func TestInTurnRecoveryClosesUnansweredQuestion(t *testing.T) {
 	if _, _, err := store.Create(matchID, matchstate.MatchEvent{
 		EventType: "goal", Period: "first_half", Clock: "24:10", TeamID: "away", TeamName: "德国",
 		PlayerName: "穆西亚拉", Score: matchstate.Score{Home: 0, Away: 1},
-		Description: "穆西亚拉禁区前沿推射破门。",
+		Description:  "穆西亚拉禁区前沿推射破门。",
 		Participants: []matchstate.Participant{{Role: "scorer", Name: "穆西亚拉", TeamName: "德国"}},
 	}); err != nil {
 		t.Fatalf("Create goal: %v", err)

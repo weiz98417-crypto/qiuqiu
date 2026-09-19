@@ -13,10 +13,10 @@ import (
 // rejects the plan and the body stays frozen.
 func TestCompanionPresentationsStayInsideClientWhitelist(t *testing.T) {
 	plans := map[string]relationship.PresentationPlan{
-		"observation_confirmed":    observationPresentation(observation.StatusConfirmed),
-		"observation_contradicted": observationPresentation(observation.StatusContradicted),
+		"observation_confirmed":     observationPresentation(observation.StatusConfirmed),
+		"observation_contradicted":  observationPresentation(observation.StatusContradicted),
 		"observation_corroborating": observationPresentation(observation.StatusCorroborating),
-		"schedule_lookup":          scheduleLookupPresentation(),
+		"schedule_lookup":           scheduleLookupPresentation(),
 	}
 	for name, plan := range plans {
 		if !relationship.ClientAcceptsExpression(plan.Expression) {
