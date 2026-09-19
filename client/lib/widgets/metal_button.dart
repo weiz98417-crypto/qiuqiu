@@ -41,30 +41,22 @@ class _MetalButtonState extends State<MetalButton> {
           child: InkWell(
             onTap: enabled ? widget.onPressed : null,
             onHighlightChanged: (value) => setState(() => _pressed = value),
-            borderRadius: BorderRadius.circular(12),
+            borderRadius: BorderRadius.circular(8),
             child: Ink(
               height: widget.compact ? 44 : 52,
               padding: EdgeInsets.symmetric(
                 horizontal: widget.compact ? 14 : 18,
               ),
+              // DESIGN.md：不使用渐变按钮；小控件圆角 8px。
               decoration: BoxDecoration(
-                gradient: LinearGradient(
-                  begin: Alignment.topCenter,
-                  end: Alignment.bottomCenter,
-                  colors: enabled
-                      ? const [
-                          Color(0xFF5CA9FF),
-                          AppColors.championBlue,
-                          AppColors.championBlueDeep,
-                        ]
-                      : const [Color(0xFF526174), Color(0xFF2B3544)],
-                ),
+                color:
+                    enabled ? AppColors.championBlue : const Color(0xFF526174),
                 border: Border.all(
                   color: enabled
                       ? AppColors.skyBlue.withValues(alpha: 0.9)
                       : AppColors.muted.withValues(alpha: 0.35),
                 ),
-                borderRadius: BorderRadius.circular(12),
+                borderRadius: BorderRadius.circular(8),
                 boxShadow: [
                   BoxShadow(
                     color: AppColors.night.withValues(alpha: 0.45),

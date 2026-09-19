@@ -67,15 +67,16 @@ qiuqiu/
 ### Docker 部署
 
 ```bash
-# 1. 配置环境变量
-cp backend/.env.example .env
-# 编辑 .env 填入:
-#   - APP_TOKEN: 随机生成的导播台运营口令（生产环境必填）
-#   - SESSION_SIGNING_KEY: 至少 32 位的用户会话签名密钥（生产环境必填）
-#   - QIUQIU_JWT_SECRET: 至少 32 位的运营台登录签名密钥（存在任何密码账号时必需，ADR-0010）
+# 1. 配置环境变量（仓库根的 compose 模板，docker-compose.yml 变量全集）
+cp .env.example .env
+# 编辑 .env 至少填入:
+#   - APP_TOKEN: 机器通道口令（供评测/脚本以 Bearer 调用；人用控制台走用户名 + 密码 JWT 登录，不使用它）
+#   - SESSION_SIGNING_KEY: 至少 32 位的用户会话签名密钥
 #   - ALLOWED_ORIGINS: 用户端和企业控制台的 HTTPS 来源
 #   - POSTGRES_PASSWORD: 独立的数据库强密码
 #   - MIMO_API_KEY: 对话、语音识别与语音合成统一密钥
+#   - MEMOBASE_POSTGRES_PASSWORD: Memobase 专用数据库强密码
+#   - QIUQIU_JWT_SECRET: 至少 32 位的运营台登录签名密钥（存在任何密码账号时必需，ADR-0010）
 #   - PENDING_OBSERVATION_COORDINATION: 直播延迟事实协调开关（默认 true）
 #   - FACT_LEDGER_PUBLIC_READS: 事实账本公共读路径开关（默认 true；设为 false 回退旧投影）
 
@@ -102,7 +103,7 @@ flutter run \
   --dart-define=QIUQIU_WS_URL=ws://10.0.2.2:8080/ws/match/test
 ```
 
-客户端启动时会向后端申请短期匿名会话，服务端把用户身份绑定在会话令牌上，客户端不再编译服务端口令。由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。企业控制台若启用口令，通过浏览器本地存储键 `qiuqiu.operator.token` 保存，不再把口令放进 URL。
+客户端启动时会向后端申请短期匿名会话，服务端把用户身份绑定在会话令牌上，客户端不再编译服务端口令。由后端提供 Web 页面时，客户端默认使用当前域名的同源 WebSocket；只有 Flutter 开发服务或前后端分开部署时，才需要覆盖 `QIUQIU_WS_URL`（正式构建缺失该配置会显式报错，不会静默连向开发兜底地址）。浏览器若拦截首次主动语音，字幕和动作仍会立即出现，第一次触碰页面会继续播放待播语音。运营管理台用用户名 + 密码登录（JWT，见下节）；`APP_TOKEN` 个人令牌只作为机器通道供评测/脚本使用，不进入浏览器。
 
 ### 运营管理台登录（ADR-0010）
 

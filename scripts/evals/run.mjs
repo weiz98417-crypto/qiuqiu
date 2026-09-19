@@ -24,6 +24,8 @@ await runCommand('node', [join('scripts', 'check-director-event-model.mjs')], { 
 await runCommand('node', [join('scripts', 'check-console-transport.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'check-director-draft-form.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'check-live2d-idle-yield.mjs')], { cwd: repoRoot, env: evalEnvironment });
+await runCommand('node', [join('scripts', 'lint-migrations.mjs')], { cwd: repoRoot, env: evalEnvironment });
+await runCommand('node', ['--test', 'tests/unit/*.test.mjs'], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoot, env: evalEnvironment });
 
 if (tier !== 'offline') {
