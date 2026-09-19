@@ -168,3 +168,35 @@ test('暂存为候选走 pending 事实状态，时间线给确认/撤销动作'
   await expect(page.getByTestId(`timeline-${shot.id}`)).toContainText('候选', { timeout: 10000 });
   await expect(page.getByTestId(`timeline-${shot.id}`)).toContainText('确认');
 });
+
+test('时钟 409 版本冲突后自动重读恢复，后续操作继续可用', async ({ page }) => {
+  // 自包含播种：reset → 阵容 → 时钟 set（v1）。
+  await api(`/api/matches/${matchId}/reset`, { method: 'POST', body: {} });
+  await api(`/api/matches/${matchId}/config`, {
+    method: 'POST',
+    body: { homeTeam: '西班牙', awayTeam: '德国', homePlayers: [{ number: '10', name: '佩德里', position: 'CM' }], awayPlayers: [] },
+  });
+  await api(`/api/matches/${matchId}/clock`, {
+    method: 'PATCH',
+    body: { action: 'set', period: 'first_half', elapsedSeconds: 735 },
+  });
+
+  await gotoDirector(page);
+
+  // 另一端（绕过页面）把时钟 +10：服务端 v2，页面还停在 v1。
+  await api(`/api/matches/${matchId}/clock`, {
+    method: 'PATCH',
+    body: { action: 'adjust', expectedVersion: 1, deltaSeconds: 10 },
+  });
+
+  // 页面点 +10秒 → expectedVersion=1 → 409 → 自动重读 + toast。
+  await page.getByRole('button', { name: '+10秒' }).click();
+  await expect(page.getByText('时钟已被另一端校准，已自动同步')).toBeVisible({ timeout: 10000 });
+
+  // 恢复后页面的下一次时钟操作直接成功（v2 的 +10 → 服务端 v3、755 秒）。
+  await page.getByRole('button', { name: '+10秒' }).click();
+  await page.waitForLoadState('networkidle');
+  const clock = await api(`/api/matches/${matchId}/clock`);
+  expect(clock.clock.version).toBe(3);
+  expect(clock.clock.elapsedSeconds).toBe(755);
+});

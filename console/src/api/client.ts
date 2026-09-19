@@ -228,11 +228,13 @@ async function apiError(response: Response): Promise<ApiError> {
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
   const method = options.method ?? 'GET';
   const bodyJson = options.body !== undefined ? JSON.stringify(options.body) : undefined;
-  if (method === 'GET') return executeRequest<T>(path, method, bodyJson, options);
+  if (method === 'GET') return executeRequest<T>(path, method, bodyJson, options, '');
+  // 写请求按 method:path:body 去重并发（双击只发一次，共享同一结果）；
+  // 幂等键在这里生成一次——续期重放与 5xx 重试都复用它。
   const inflightKey = `${method}:${path}:${bodyJson ?? '{}'}`;
   const existing = inflightWrites.get(inflightKey);
   if (existing) return existing as Promise<T>;
-  const request = executeRequest<T>(path, method, bodyJson, options);
+  const request = executeRequest<T>(path, method, bodyJson, options, newIdempotencyKey());
   inflightWrites.set(inflightKey, request);
   try {
     return await request;
@@ -246,12 +248,14 @@ async function executeRequest<T>(
   method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
   bodyJson: string | undefined,
   options: RequestOptions,
+  idempotencyKey: string,
 ): Promise<T> {
-  // 幂等键一次逻辑请求一把：5xx 重试与续期重放复用同一把键，服务端的
-  // 幂等去重才能把同一次提交认成一条事件。
-  const idempotencyKey = newIdempotencyKey();
+  // 幂等键由 api() 按一次逻辑请求生成（idempotencyKey 参数传入）：5xx 重试
+  // 与续期重放复用同一把键，服务端的幂等去重才能把同一次提交认成一条事件。
   let lastError: Error | null = null;
-  for (let attempt = 0; attempt < 2; attempt += 1) {
+  // GET 不重试（与迁移前行为一致）；写请求 5xx 重试一次。
+  const attempts = method === 'GET' ? 1 : 2;
+  for (let attempt = 0; attempt < attempts; attempt += 1) {
     const headers: Record<string, string> = {};
     // ADR-0010：访问令牌（人类通道）优先，机令牌（evals/脚本通道）兜底。
     const token = getAccessToken() || getToken();
@@ -264,7 +268,7 @@ async function executeRequest<T>(
       response = await fetch(path, { method, headers, body: bodyJson });
     } catch (error) {
       lastError = error instanceof Error ? error : new Error(String(error));
-      if (attempt > 0) throw lastError;
+      if (attempt > 0 || attempts === 1) throw lastError;
       await delay(WRITE_RETRY_DELAY_MS);
       continue;
     }
@@ -274,7 +278,7 @@ async function executeRequest<T>(
       if (!options.retriedAfterRefresh && (getRefreshToken() || getAccessToken())) {
         const refreshed = await refreshSession();
         if (refreshed) {
-          return executeRequest<T>(path, method, bodyJson, { ...options, retriedAfterRefresh: true });
+          return executeRequest<T>(path, method, bodyJson, { ...options, retriedAfterRefresh: true }, idempotencyKey);
         }
       }
       clearAccessToken();
@@ -626,4 +630,14 @@ export const consoleApi = {
       `/api/matches/${encodeURIComponent(matchId)}/takeover`,
       { method: 'POST', body: {} },
     ),
+  // ---- 赛前配置（旧页 #setup 迁移，parity-checklist 29）----
+  saveMatchConfig: (matchId: string, config: Record<string, unknown>) =>
+    api<Record<string, unknown>>(`/api/matches/${encodeURIComponent(matchId)}/config`, {
+      method: 'POST',
+      body: config,
+    }),
+  startMatch: (matchId: string) =>
+    api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/start`, { method: 'POST', body: {} }),
+  resetMatch: (matchId: string) =>
+    api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/reset`, { method: 'POST', body: {} }),
 };

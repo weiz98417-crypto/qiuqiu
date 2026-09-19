@@ -1,6 +1,7 @@
 import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, App as AntApp, Button, Card, Col, Input, Row, Segmented, Select, Space, Tag, Typography } from 'antd';
 import { useParams } from 'react-router-dom';
+import { ApiError } from '../api/client';
 import BehaviorBar from '../director/BehaviorBar';
 import DraftCard from '../director/DraftCard';
 import FactTimeline from '../director/FactTimeline';
@@ -180,20 +181,37 @@ export default function DirectorLive() {
     setForm((current) => ({ ...current, mainPlayer: player.name }));
   };
 
+  // 服务端时钟归一化（响应形状见 match-clock golden）。
+  const applyClockState = useCallback((raw: {
+    period?: string; elapsedSeconds?: number; running?: boolean; anchorAt?: string | null; version?: number;
+  }) => {
+    setClock({
+      period: raw.period || 'pre_match',
+      elapsedSeconds: Number(raw.elapsedSeconds || 0),
+      running: Boolean(raw.running),
+      anchorAt: raw.anchorAt ?? null,
+      version: Number(raw.version || 0),
+    });
+  }, []);
+
   const clockAction = async (action: string, fields: Record<string, unknown> = {}) => {
     setBusy(true);
     try {
       const data = await patchClock(matchId, { action, expectedVersion: Number(clock.version || 0), ...fields });
-      if (data.clock) {
-        setClock({
-          period: data.clock.period || 'pre_match',
-          elapsedSeconds: Number(data.clock.elapsedSeconds || 0),
-          running: Boolean(data.clock.running),
-          anchorAt: data.clock.anchorAt ?? null,
-          version: Number(data.clock.version || 0),
-        });
-      }
+      if (data.clock) applyClockState(data.clock);
     } catch (err) {
+      // 409 版本冲突 = 另一端已校准时钟（双轨并存期的常态）：自动重读恢复，
+      // 不让一次冲突变成连环失效（旧页语义，parity-checklist 22）。
+      if (err instanceof ApiError && err.status === 409) {
+        try {
+          const fresh = await loadClock(matchId);
+          if (fresh.clock) applyClockState(fresh.clock);
+          messageApi.warning('时钟已被另一端校准，已自动同步');
+        } catch (reloadErr) {
+          messageApi.error(reloadErr instanceof Error ? reloadErr.message : String(reloadErr));
+        }
+        return;
+      }
       messageApi.error(err instanceof Error ? err.message : String(err));
     } finally {
       setBusy(false);
