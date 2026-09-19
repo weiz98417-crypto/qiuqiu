@@ -7,8 +7,6 @@ import '../services/session_service.dart';
 import 'match_catalog_screen.dart';
 import 'match_screen.dart';
 
-bool shouldAutoEnterMatch(MatchCatalogItem _) => false;
-
 class MatchEntryScreen extends StatefulWidget {
   static const _configuredSocketUrl = String.fromEnvironment('QIUQIU_WS_URL');
   final MatchCatalogService? catalogService;
@@ -66,9 +64,9 @@ class _MatchEntryScreenState extends State<MatchEntryScreen> {
             builder: (_) => MatchScreen(
               matchId: match.matchId,
               onExit: () => Navigator.of(context).pop(),
-              // Every catalog selection opens the match data view first. The
-              // user must explicitly enter companion mode from that overview.
-              autoEnter: shouldAutoEnterMatch(match),
+              // 每次目录点选都只打开比赛数据视图；进入陪看必须是用户的
+              // 显式动作（原 shouldAutoEnterMatch 恒 false 死标志已内联）。
+              autoEnter: false,
               initialMatch: MatchViewData(
                 homeTeam: match.homeTeam,
                 awayTeam: match.awayTeam,

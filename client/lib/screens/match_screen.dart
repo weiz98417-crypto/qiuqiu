@@ -1,7 +1,7 @@
 import 'dart:async';
 import 'dart:convert';
 import 'dart:typed_data';
-import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
+import 'package:flutter/foundation.dart' show debugPrint, kIsWeb, kReleaseMode;
 import 'package:flutter/material.dart';
 import 'package:lottie/lottie.dart';
 import 'package:vibration/vibration.dart';
@@ -66,6 +66,7 @@ class _MatchScreenState extends State<MatchScreen> {
   final List<StreamSubscription<dynamic>> _subscriptions = [];
   final IdleTierPicker _idlePicker = IdleTierPicker();
   late final Future<void> _profileLoad;
+  late final MatchConnectionConfig _connectionConfig;
   MatchOverviewData _overview = const MatchOverviewData();
   bool _overviewLoading = true;
   String? _overviewError;
@@ -85,6 +86,7 @@ class _MatchScreenState extends State<MatchScreen> {
   Timer? _idleTicker;
   Timer? _clockTicker;
   String _deviceId = '';
+  SocketStatus _lastSocketStatus = SocketStatus.connecting;
 
   bool get _continuousEnabled => _profile.continuousConversation;
   bool get _insideMatch =>
@@ -124,6 +126,15 @@ class _MatchScreenState extends State<MatchScreen> {
   @override
   void initState() {
     super.initState();
+    // release 构建缺失显式配置时不得静默使用 dev 兜底（'test' 比赛 /
+    // 模拟器回环地址）——解析结果缺失则整个页面进入错误空态。
+    _connectionConfig = resolveMatchConnectionConfig(
+      requestedMatchId: widget.matchId,
+      configuredSocketUrl: _configuredSocketUrl,
+      isWeb: kIsWeb,
+      pageUri: kIsWeb ? Uri.base : null,
+      releaseMode: kReleaseMode,
+    );
     _sessionController = MatchSessionController(
       initialMatch: widget.initialMatch ?? const MatchViewData(),
     );
@@ -131,7 +142,11 @@ class _MatchScreenState extends State<MatchScreen> {
     // 表演映射单一源（ADR-0007）：相位行从 presentation-map.json 解析。
     unawaited(_sessionController.ensurePresentationMapLoaded());
     _bindServices();
-    unawaited(_loadMatchOverview());
+    if (!_connectionConfig.isMissing) {
+      unawaited(_loadMatchOverview());
+      _profileLoad = _initialize();
+      unawaited(_profileLoad);
+    }
     _clockTicker = Timer.periodic(const Duration(milliseconds: 250), (_) {
       if (!mounted) return;
       _sessionController.tickClock(DateTime.now().toUtc());
@@ -139,8 +154,6 @@ class _MatchScreenState extends State<MatchScreen> {
     _idleTicker = Timer.periodic(const Duration(seconds: 30), (_) {
       _repickIdleMotion();
     });
-    _profileLoad = _initialize();
-    unawaited(_profileLoad);
   }
 
   void _bindServices() {
@@ -172,53 +185,13 @@ class _MatchScreenState extends State<MatchScreen> {
   String get _selectedAudioInputId =>
       _sessionController.state.selectedAudioInputId;
 
-  String _socketUrl() {
-    final requestedMatchId = widget.matchId?.trim();
-    if (_configuredSocketUrl.isNotEmpty) {
-      final configured = Uri.parse(_configuredSocketUrl);
-      if (requestedMatchId == null || requestedMatchId.isEmpty) {
-        return _configuredSocketUrl;
-      }
-      return configured
-          .replace(path: '/ws/match/${Uri.encodeComponent(requestedMatchId)}')
-          .toString();
-    }
-    if (kIsWeb) {
-      final page = Uri.base;
-      final matchId = requestedMatchId == null || requestedMatchId.isEmpty
-          ? (page.queryParameters['matchId']?.trim().isNotEmpty == true
-              ? page.queryParameters['matchId']!.trim()
-              : 'test')
-          : requestedMatchId;
-      return Uri(
-        scheme: page.scheme == 'https' ? 'wss' : 'ws',
-        userInfo: page.userInfo,
-        host: page.host,
-        port: page.hasPort ? page.port : null,
-        path: '/ws/match/${Uri.encodeComponent(matchId)}',
-      ).toString();
-    }
-    final matchId = requestedMatchId == null || requestedMatchId.isEmpty
-        ? 'test'
-        : requestedMatchId;
-    return 'ws://10.0.2.2:8080/ws/match/${Uri.encodeComponent(matchId)}';
-  }
-
-  String _overviewMatchId() {
-    final requested = widget.matchId?.trim();
-    if (requested != null && requested.isNotEmpty) return requested;
-    if (kIsWeb) {
-      final fromPage = Uri.base.queryParameters['matchId']?.trim();
-      if (fromPage != null && fromPage.isNotEmpty) return fromPage;
-    }
-    return 'test';
-  }
+  String _socketUrl() => _connectionConfig.socketUrl;
 
   Future<void> _loadMatchOverview() async {
     try {
       final overview = await _overviewService.fetch(
         baseUrl: normalizeAPIBaseURL(_socketUrl()),
-        matchId: _overviewMatchId(),
+        matchId: _connectionConfig.matchId,
       );
       if (!mounted) return;
       setState(() {
@@ -344,7 +317,16 @@ class _MatchScreenState extends State<MatchScreen> {
       if (widget.autoEnter && !_insideMatch) {
         unawaited(_enterMatch());
       }
+      // 重连后补一次概览拉取（幂等 GET、非轮询）：WS 快照仍是实时比分
+      // 的主通道，这里只把断线期间错过的状态再同步一次。
+      if (shouldRefetchMatchOverview(
+        status: status,
+        previousStatus: _lastSocketStatus,
+      )) {
+        unawaited(_loadMatchOverview());
+      }
     }
+    _lastSocketStatus = status;
   }
 
   void _handleSocketMessage(Map<String, dynamic> message) {
@@ -1118,6 +1100,13 @@ class _MatchScreenState extends State<MatchScreen> {
 
   @override
   Widget build(BuildContext context) {
+    if (_connectionConfig.isMissing) {
+      // release 构建缺配置：如实报错，绝不静默加入 dev 兜底地址上的比赛。
+      return Scaffold(
+        backgroundColor: AppColors.night,
+        body: MissingMatchConfigView(detail: _connectionConfig.missingReason!),
+      );
+    }
     return PopScope<void>(
       canPop: _allowPop,
       onPopInvokedWithResult: (didPop, _) {
@@ -1712,6 +1701,159 @@ bool shouldShowReplyText({
   required bool playbackFallback,
 }) {
   return subtitlesEnabled || playbackFallback;
+}
+
+/// 连接建立（首连或断线重连）时是否补一次比赛概览拉取。
+///
+/// 只在从非 connected 进入 connected 的边沿触发：幂等 GET、非轮询——
+/// WS 快照仍是实时比分的主通道，这里只补齐断线期间错过的一次性状态；
+/// 重复的 connected 事件不重复拉取。
+bool shouldRefetchMatchOverview({
+  required SocketStatus status,
+  required SocketStatus previousStatus,
+}) {
+  return status == SocketStatus.connected &&
+      previousStatus != SocketStatus.connected;
+}
+
+/// 比赛连接配置解析结果（[resolveMatchConnectionConfig]）。
+class MatchConnectionConfig {
+  const MatchConnectionConfig({required this.socketUrl, required this.matchId})
+      : missingReason = null;
+
+  /// release 构建缺失显式配置：UI 进入错误空态，不得据此发起连接。
+  const MatchConnectionConfig.missing(this.missingReason)
+      : socketUrl = '',
+        matchId = '';
+
+  final String socketUrl;
+  final String matchId;
+  final String? missingReason;
+
+  bool get isMissing => missingReason != null;
+}
+
+/// 解析比赛连接配置（matchId 与 WS 地址）。
+///
+/// 优先级：显式传入的 matchId > web 页面参数 > dart-define 地址内嵌的比赛
+/// 路径 > dev 兜底（'test' 比赛 + ws://10.0.2.2:8080）。dev 兜底仅 debug
+/// 构建允许：release 构建缺失配置时返回 [MatchConnectionConfig.missing]，
+/// 由 UI 进入明确的错误空态，绝不静默加入死主机。
+MatchConnectionConfig resolveMatchConnectionConfig({
+  String? requestedMatchId,
+  String configuredSocketUrl = '',
+  bool isWeb = false,
+  Uri? pageUri,
+  required bool releaseMode,
+}) {
+  final explicitMatchId = requestedMatchId?.trim();
+  final hasExplicitMatchId =
+      explicitMatchId != null && explicitMatchId.isNotEmpty;
+  final pageMatchId =
+      isWeb ? pageUri?.queryParameters['matchId']?.trim() : null;
+  final configured = configuredSocketUrl.trim();
+
+  // 非 web 且无任何地址来源：release 直接报缺地址，绝不落到模拟器
+  // 回环（ws://10.0.2.2:8080）兜底去加入死主机上的比赛。
+  if (configured.isEmpty && !isWeb && releaseMode) {
+    return const MatchConnectionConfig.missing('缺少服务地址配置（QIUQIU_WS_URL）');
+  }
+
+  String? resolveMatchId() {
+    if (hasExplicitMatchId) return explicitMatchId;
+    if (pageMatchId != null && pageMatchId.isNotEmpty) return pageMatchId;
+    if (configured.isNotEmpty) {
+      // dart-define 的完整地址自带比赛路径时无需独立 matchId。
+      const marker = '/ws/match/';
+      final path = Uri.tryParse(configured)?.path ?? '';
+      if (path.startsWith(marker)) {
+        final embedded = Uri.decodeComponent(path.substring(marker.length));
+        final trimmed = embedded.trim();
+        if (trimmed.isNotEmpty) return trimmed;
+      }
+    }
+    return releaseMode ? null : 'test';
+  }
+
+  final matchId = resolveMatchId();
+  if (matchId == null) {
+    return const MatchConnectionConfig.missing('缺少比赛 ID 配置（matchId）');
+  }
+
+  if (configured.isNotEmpty) {
+    final socketUrl = hasExplicitMatchId
+        ? Uri.parse(configured)
+            .replace(path: '/ws/match/${Uri.encodeComponent(matchId)}')
+            .toString()
+        : configured;
+    return MatchConnectionConfig(socketUrl: socketUrl, matchId: matchId);
+  }
+  if (isWeb && pageUri != null) {
+    return MatchConnectionConfig(
+      socketUrl: Uri(
+        scheme: pageUri.scheme == 'https' ? 'wss' : 'ws',
+        userInfo: pageUri.userInfo,
+        host: pageUri.host,
+        port: pageUri.hasPort ? pageUri.port : null,
+        path: '/ws/match/${Uri.encodeComponent(matchId)}',
+      ).toString(),
+      matchId: matchId,
+    );
+  }
+  if (releaseMode) {
+    return const MatchConnectionConfig.missing('缺少服务地址配置（QIUQIU_WS_URL）');
+  }
+  return MatchConnectionConfig(
+    socketUrl: 'ws://10.0.2.2:8080/ws/match/${Uri.encodeComponent(matchId)}',
+    matchId: matchId,
+  );
+}
+
+/// release 构建缺失比赛配置（matchId / QIUQIU_WS_URL）时的错误空态：
+/// 如实告知缺什么、怎么补，不静默连向 dev 兜底地址。
+class MissingMatchConfigView extends StatelessWidget {
+  final String detail;
+
+  const MissingMatchConfigView({super.key, required this.detail});
+
+  @override
+  Widget build(BuildContext context) {
+    return ColoredBox(
+      color: AppColors.night,
+      child: SafeArea(
+        child: Padding(
+          padding: const EdgeInsets.all(AppSpacing.lg),
+          child: Column(
+            mainAxisAlignment: MainAxisAlignment.center,
+            children: [
+              const Icon(
+                Icons.wifi_off_rounded,
+                color: AppColors.orange,
+                size: 48,
+              ),
+              const SizedBox(height: AppSpacing.md),
+              Text(
+                '缺少比赛连接配置',
+                style: Theme.of(context)
+                    .textTheme
+                    .titleLarge
+                    ?.copyWith(color: AppColors.ink),
+              ),
+              const SizedBox(height: AppSpacing.sm),
+              Text(
+                '$detail。正式构建需要用 --dart-define 指定 QIUQIU_WS_URL'
+                '（可含比赛 ID），请检查打包配置。',
+                textAlign: TextAlign.center,
+                style: Theme.of(context).textTheme.bodyMedium?.copyWith(
+                      color: AppColors.ink.withValues(alpha: 0.72),
+                    ),
+              ),
+            ],
+          ),
+        ),
+      ),
+    );
+  }
 }
 
 Map<String, dynamic>? _map(dynamic value) {
