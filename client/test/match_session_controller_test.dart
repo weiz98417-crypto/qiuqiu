@@ -61,7 +61,7 @@ void main() {
   test('voice fallback returns to listening with explicit notice', () {
     final controller = MatchSessionController();
     controller.beginSpeaking('trace-2');
-    controller.voiceStatus('tts_fallback');
+    controller.handleVoiceStatus('tts_fallback', continuousEnabled: true);
     expect(controller.state.phase, MatchSessionPhase.listening);
     expect(controller.state.notice, isNotEmpty);
   });

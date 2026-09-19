@@ -10,6 +10,9 @@ class MatchViewData {
   final String period;
   final String clock;
   final List<String> recentEventLabels;
+  /// 最新进球事件的稳定 ID（ADR-0007：进球爆屏按事件边沿触发一次，
+  /// 不按展示标签字符串判断，也不随重建重放）。
+  final String latestGoalEventId;
   final bool hasMatchInfo;
 
   const MatchViewData({
@@ -21,6 +24,7 @@ class MatchViewData {
     this.period = '',
     this.clock = '',
     this.recentEventLabels = const [],
+    this.latestGoalEventId = '',
     this.hasMatchInfo = false,
   });
 
@@ -91,6 +95,13 @@ class MatchViewData {
             .take(4)
             .toList(growable: false)
         : const <String>[];
+    final latestGoal = events is List
+        ? events
+            .map(_map)
+            .where((event) => event?['eventType'] == 'goal')
+            .map((event) => event?['id']?.toString() ?? '')
+            .firstWhere((id) => id.isNotEmpty, orElse: () => '')
+        : '';
     return copyWith(
       homeTeam: snapshot['homeTeam'] as String?,
       awayTeam: snapshot['awayTeam'] as String?,
@@ -100,6 +111,7 @@ class MatchViewData {
       clock: matchClock?.displayAt((now ?? DateTime.now()).toUtc()) ??
           snapshot['clock'] as String?,
       recentEventLabels: eventLabels,
+      latestGoalEventId: latestGoal,
       hasMatchInfo: true,
     );
   }
@@ -111,10 +123,15 @@ class MatchViewData {
       eventLabel,
       ...recentEventLabels.where((item) => item != eventLabel),
     ].take(4).toList(growable: false);
+    final eventType = event['eventType'] as String? ?? '';
+    final goalId = eventType == 'goal'
+        ? (event['id']?.toString() ?? 'goal:${event['clock'] ?? ''}')
+        : latestGoalEventId;
     return copyWith(
       homeScore: _integer(score?['home']),
       awayScore: _integer(score?['away']),
       recentEventLabels: eventLabels,
+      latestGoalEventId: goalId,
       hasMatchInfo: true,
     );
   }
@@ -137,6 +154,7 @@ class MatchViewData {
     String? period,
     String? clock,
     List<String>? recentEventLabels,
+    String? latestGoalEventId,
     bool? hasMatchInfo,
   }) {
     return MatchViewData(
@@ -148,6 +166,7 @@ class MatchViewData {
       period: period?.trim().isNotEmpty == true ? period! : this.period,
       clock: clock?.trim().isNotEmpty == true ? clock! : this.clock,
       recentEventLabels: recentEventLabels ?? this.recentEventLabels,
+      latestGoalEventId: latestGoalEventId ?? this.latestGoalEventId,
       hasMatchInfo: hasMatchInfo ?? this.hasMatchInfo,
     );
   }

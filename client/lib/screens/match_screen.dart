@@ -374,17 +374,6 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'event':
         _handleLegacyEvent(message);
         break;
-      case 'expression':
-        final expression = CompanionPresentation.normalizeExpression(
-          message['state'] as String?,
-        );
-        if (expression == null) break;
-        _sessionController.receiveLegacyExpression(
-          expression,
-          _motionForExpression(expression),
-        );
-        _runSessionCommands();
-        break;
       case 'voice_audio':
         _sessionController.queueAudioMetadata(
             PendingAudio(
@@ -416,19 +405,33 @@ class _MatchScreenState extends State<MatchScreen> {
     final eventType = message['event'] as String? ?? '';
     final data = _map(message['data']);
     if (eventType == 'qiuqiu_reply') {
-      final reply = data?['text'] as String?;
-      if (reply == null || reply.trim().isEmpty) return;
+      final reply = data?['text'] as String? ?? '';
       final source = data?['source']?.toString();
       final eventId = data?['eventId']?.toString();
       final traceId = data?['traceId'] as String?;
       final presentation = CompanionPresentation.fromReplyData(data);
+      final trimmed = reply.trim();
+      if (trimmed.isEmpty && presentation == null) return;
       if (presentation != null) {
         _idlePicker.updateAffect(
           valence: presentation.valence,
           arousal: presentation.arousal,
         );
       }
-      final parts = splitReplyForDisplay(reply.trim());
+      if (trimmed.isEmpty) {
+        // 会话开场 hello（后端 delivery.go 的 Text:"" + presentation）：
+        // 只上表演并走保持期，不进对话流。
+        _sessionController.receivePresentation(
+          // 上方已保证二者不同时为空，此处非空。
+          presentation: presentation!,
+          source: source,
+          eventId: eventId,
+          deliveryKey: data?['deliveryKey']?.toString(),
+        );
+        _runSessionCommands();
+        return;
+      }
+      final parts = splitReplyForDisplay(trimmed);
       _sessionController.receiveReply(
         text: parts.$1,
         detail: parts.$2,
@@ -450,11 +453,6 @@ class _MatchScreenState extends State<MatchScreen> {
     if (eventType == 'match_end') {
       // 全场结束走相位表 match_end 行（一次性 happy/wave 告别）。
       _sessionController.applyMatchEnd();
-    } else {
-      _sessionController.receiveLegacyEventAnimation(
-        _expressionForEvent(eventType),
-        _motionForEvent(eventType),
-      );
     }
   }
 
@@ -976,23 +974,6 @@ class _MatchScreenState extends State<MatchScreen> {
     );
   }
 
-  String _motionForExpression(String expression) {
-    const motions = {
-      'idle': 'idle',
-      'listening': 'listen',
-      'focus': 'focus',
-      'thinking': 'think',
-      'excited': 'cheer',
-      'happy': 'cheer',
-      'surprised': 'think',
-      'nervous': 'listen',
-      'confused': 'think',
-      'tease': 'idle',
-      'chat': 'speak',
-    };
-    return motions[expression] ?? 'idle';
-  }
-
   void _schedulePresentationReturn() {
     final presentation = _activePresentation;
     if (presentation == null) return;
@@ -1069,25 +1050,6 @@ class _MatchScreenState extends State<MatchScreen> {
         }
       }
     }
-  }
-
-  String _motionForEvent(String event) {
-    const motions = {
-      'goal': 'cheer',
-      'match_start': 'hello',
-      'penalty': 'cheer',
-      'red_card': 'think',
-      'yellow_card': 'think',
-      // match_end is owned by the phase table's match_end row
-      // (MatchSessionController.applyMatchEnd), not the legacy animation map.
-    };
-    return motions[event] ?? 'idle';
-  }
-
-  String _expressionForEvent(String event) {
-    if (event == 'goal' || event == 'penalty') return 'excited';
-    if (event == 'red_card' || event == 'yellow_card') return 'surprised';
-    return 'idle';
   }
 
   @override
@@ -2383,21 +2345,12 @@ class _CharacterStage extends StatelessWidget {
               isSpeaking: isSpeaking,
               motion: motion,
             ),
-            if (match.recentEventLabels.any((label) => label.contains('进球')))
-              Positioned.fill(
-                child: IgnorePointer(
-                  child: Center(
-                    child: SizedBox(
-                      width: 180,
-                      height: 180,
-                      child: Lottie.asset(
-                        'assets/animations/goal-burst.json',
-                        repeat: false,
-                      ),
-                    ),
-                  ),
-                ),
+            // 进球爆屏：按事件 ID 边沿触发（每个新进球播一次，重建不重放）。
+            Positioned.fill(
+              child: IgnorePointer(
+                child: _GoalBurstOverlay(latestGoalEventId: match.latestGoalEventId),
               ),
+            ),
             Positioned(
               top: AppSpacing.md,
               left: AppSpacing.md,
@@ -3142,4 +3095,55 @@ int? _integer(dynamic value) {
   if (value is int) return value;
   if (value is num) return value.toInt();
   return int.tryParse(value?.toString() ?? '');
+}
+
+/// 进球爆屏（ADR-0007 归属修正）：进球是比赛事件可视化，按事件 ID 边沿
+/// 触发——每个新进球只播一次，widget 重建不重放；不再按展示标签字符串
+/// 判断内容。
+class _GoalBurstOverlay extends StatefulWidget {
+  final String latestGoalEventId;
+
+  const _GoalBurstOverlay({required this.latestGoalEventId});
+
+  @override
+  State<_GoalBurstOverlay> createState() => _GoalBurstOverlayState();
+}
+
+class _GoalBurstOverlayState extends State<_GoalBurstOverlay> {
+  bool _visible = false;
+  Timer? _hideTimer;
+
+  @override
+  void didUpdateWidget(covariant _GoalBurstOverlay oldWidget) {
+    super.didUpdateWidget(oldWidget);
+    final next = widget.latestGoalEventId;
+    if (next.isNotEmpty && next != oldWidget.latestGoalEventId) {
+      _hideTimer?.cancel();
+      setState(() => _visible = true);
+      _hideTimer = Timer(const Duration(milliseconds: 2200), () {
+        if (mounted) setState(() => _visible = false);
+      });
+    }
+  }
+
+  @override
+  void dispose() {
+    _hideTimer?.cancel();
+    super.dispose();
+  }
+
+  @override
+  Widget build(BuildContext context) {
+    if (!_visible) return const SizedBox.shrink();
+    return Center(
+      child: SizedBox(
+        width: 180,
+        height: 180,
+        child: Lottie.asset(
+          'assets/animations/goal-burst.json',
+          repeat: false,
+        ),
+      ),
+    );
+  }
 }

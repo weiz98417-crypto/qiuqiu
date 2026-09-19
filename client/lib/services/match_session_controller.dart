@@ -695,22 +695,6 @@ class MatchSessionController extends ChangeNotifier {
     return _state;
   }
 
-  MatchSessionState voiceStatus(String status) {
-    switch (status) {
-      case 'tts_fallback':
-        _publish(_state.copyWith(
-          phase: MatchSessionPhase.listening,
-          notice: '声音暂时没出来，回答已显示在字幕里。',
-        ));
-      case 'failed':
-        _publish(_state.copyWith(
-          phase: MatchSessionPhase.failed,
-          notice: '这句没听清，再说一次就好。',
-        ));
-    }
-    return _state;
-  }
-
   MatchSessionState markFirstMeetingCompleted() {
     _publish(_state.copyWith(firstMeetingCompleted: true));
     return _state;
@@ -987,22 +971,6 @@ class MatchSessionController extends ChangeNotifier {
     ));
     _commands.add(const SchedulePresentationReturnCommand());
     return true;
-  }
-
-  MatchSessionState receiveLegacyExpression(String expression, String motion) {
-    _commands.add(const CancelPresentationReturnCommand());
-    _publish(_state.copyWith(
-      clearPresentation: true,
-      expression: expression,
-      motion: motion,
-    ));
-    return _state;
-  }
-
-  MatchSessionState receiveLegacyEventAnimation(
-      String expression, String motion) {
-    _publish(_state.copyWith(expression: expression, motion: motion));
-    return _state;
   }
 
   void queueAudioMetadata(PendingAudio metadata, {String? source}) {
