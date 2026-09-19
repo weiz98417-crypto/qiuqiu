@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"qiuqiu/internal/openaicompat"
 	"qiuqiu/internal/resilience"
 )
 
@@ -82,7 +83,6 @@ type GenerateResult struct {
 	Duration time.Duration
 	Tokens   int
 }
-
 
 // StreamChunk is a token from streaming LLM output.
 type StreamChunk struct {
@@ -236,10 +236,7 @@ func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, 
 	}, nil
 }
 
+// setAuthHeaders 委托共享传输层的平台鉴权约定（单源实现）。
 func (c *Client) setAuthHeaders(req *http.Request) {
-	if strings.Contains(c.baseURL, "xiaomimimo.com") || strings.HasPrefix(c.model, "mimo-") {
-		req.Header.Set("api-key", c.apiKey)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	openaicompat.SetAuthHeaders(req, openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model})
 }

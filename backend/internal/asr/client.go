@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"qiuqiu/internal/openaicompat"
 	"qiuqiu/internal/resilience"
 )
 
@@ -111,7 +112,7 @@ func (c *Client) Transcribe(ctx context.Context, audio []byte, hints []string) (
 	}
 	body, _ := json.Marshal(payload)
 	req, _ := http.NewRequestWithContext(ctx, "POST", strings.TrimRight(c.baseURL, "/")+"/chat/completions", bytes.NewReader(body))
-	req.Header.Set("api-key", c.apiKey)
+	openaicompat.SetAuthHeaders(req, openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model})
 	req.Header.Set("Content-Type", "application/json")
 	req.Header.Set("Accept", "application/json")
 

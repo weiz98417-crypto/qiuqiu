@@ -6,15 +6,15 @@
 package router
 
 import (
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strconv"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/openaicompat"
 )
 
 // Default settings per design.md locked decision 1: the MiMo platform with
@@ -265,25 +265,14 @@ func (c *Client) Route(ctx context.Context, req Request) (Result, error) {
 	if err != nil {
 		return Result{}, fmt.Errorf("router encode: %w", err)
 	}
-	httpReq, err := http.NewRequestWithContext(ctx, http.MethodPost, c.baseURL+"/chat/completions", bytes.NewReader(body))
-	if err != nil {
-		return Result{}, fmt.Errorf("router request: %w", err)
-	}
-	c.setAuthHeaders(httpReq)
-	httpReq.Header.Set("Content-Type", "application/json")
-
+	// 单次调用（ADR-0009）：传输层零重试，6s 超时由 ctx 承载。
 	startedAt := time.Now()
-	resp, err := c.httpClient.Do(httpReq)
+	respBody, err := openaicompat.Post(ctx, c.httpClient, c.endpoint(), "/chat/completions", body, 1<<20)
 	if err != nil {
 		return Result{}, fmt.Errorf("router call: %w", err)
 	}
-	defer resp.Body.Close()
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return Result{}, fmt.Errorf("router status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
-	}
 	var parsed routeResponsePayload
-	if err := json.NewDecoder(resp.Body).Decode(&parsed); err != nil {
+	if err := json.Unmarshal(respBody, &parsed); err != nil {
 		return Result{}, fmt.Errorf("router decode: %w", err)
 	}
 	if len(parsed.Choices) == 0 {
@@ -320,12 +309,10 @@ func parseRouteResult(arguments string) (Result, error) {
 	return result, nil
 }
 
-// setAuthHeaders mirrors the MiMo platform convention already used by the
-// realizer client: api-key for the platform, Bearer elsewhere.
+func (c *Client) endpoint() openaicompat.Endpoint {
+	return openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model}
+}
+
 func (c *Client) setAuthHeaders(req *http.Request) {
-	if strings.Contains(c.baseURL, "xiaomimimo.com") || strings.HasPrefix(c.model, "mimo-") {
-		req.Header.Set("api-key", c.apiKey)
-		return
-	}
-	req.Header.Set("Authorization", "Bearer "+c.apiKey)
+	openaicompat.SetAuthHeaders(req, c.endpoint())
 }
