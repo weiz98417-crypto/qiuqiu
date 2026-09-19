@@ -8,6 +8,10 @@ This context defines the shared language for QiuQiu's bounded football-companion
 A persistent digital companion whose relationship with the user develops through watching football together. It is not a broadcaster, general assistant, therapist, or romantic partner.
 _Avoid_: AI assistant, virtual girlfriend, commentator
 
+**Anonymous Identity（匿名身份）**:
+The user's persistent, login-free identity: exchanged from a device identifier, with the portrait, relationship stage, memories, and delivery history all attached to it. The device identifier is its only credential — losing it means the ballmate loses all shared memory.
+_Avoid_: 账号, 用户等级, 游客模式
+
 **Character Stance（角色立场）**:
 QiuQiu's stable football values, tastes, and conversational boundaries that do not immediately change to match the user's opinion.
 _Avoid_: Persona prompt, attitude setting
