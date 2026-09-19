@@ -1,10 +1,23 @@
 import { expect, test } from '@playwright/test';
 import { openTextMode } from './support/open-text-mode.mjs';
+import { startConsoleStaticServer } from './support/console-server.mjs';
 
 const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
 const matchId = 'test';
 
+let consoleServer;
+let consoleBaseURL;
+
 test.describe.configure({ timeout: 60_000 });
+
+test.beforeAll(async () => {
+  consoleServer = await startConsoleStaticServer({ backendURL: process.env.QIUQIU_BASE_URL || 'http://127.0.0.1:18080' });
+  consoleBaseURL = consoleServer.baseURL;
+});
+
+test.afterAll(async () => {
+  await consoleServer?.close();
+});
 
 test('用户领先现场时，导播确认与撤销只跟进对应用户', async ({ browser, page, request }) => {
   await apiPost(request, `/api/matches/${matchId}/reset`, {});
@@ -49,16 +62,21 @@ test('用户领先现场时，导播确认与撤销只跟进对应用户', async
   expect(pendingTrace.observation).toMatchObject({ status: 'pending_sync', userId: expect.any(String) });
 
   const operator = await page.context().newPage();
-  await operator.goto(`/operator.html?token=${encodeURIComponent(token)}#live`);
-  await operator.locator('#homeChips .player-chip').filter({ hasText: '佩德里' }).click();
-  await operator.locator('#behaviorGroups .behavior-button[data-event-type="goal"]').click();
-  await operator.locator('#occurredClock').fill('08:20');
-  await operator.locator('#description').fill('佩德里禁区前沿推射破门。');
-  await operator.locator('#confirmation').selectOption('confirmed');
-  await operator.locator('#mode').selectOption('quiet');
-  await operator.locator('#draftSubmit').click();
-  await expect(operator.locator('#toast')).toContainText('已确认并发送：进球');
-  await expect(operator.locator('#timeline')).toContainText('佩德里禁区前沿推射破门');
+  // 实时运营面收敛到新导播台（ADR-0013）：机令牌经 localStorage 进新台。
+  await operator.addInitScript((value) => {
+    localStorage.setItem('qiuqiu.console.token', value);
+  }, token);
+  await operator.goto(`/console/#/console/match/${matchId}/director`);
+  await expect(operator.getByTestId('director-scorebar')).toBeVisible();
+  await operator.getByTestId('behavior-goal').click();
+  await operator.getByTestId('roster-佩德里').click();
+  await operator.getByLabel('事件时间').fill('08:20');
+  await operator.getByLabel('事件描述').fill('佩德里禁区前沿推射破门。');
+  await operator.getByTestId('draft-mode-select').click();
+  await operator.keyboard.press('ArrowDown');
+  await operator.keyboard.press('Enter');
+  await operator.getByTestId('draft-submit').click();
+  await expect(operator.getByTestId('director-timeline')).toContainText('佩德里禁区前沿推射破门', { timeout: 10000 });
 
   await expect(page.getByText(/跟上了.*佩德里进的/).last()).toBeVisible({ timeout: 30_000 });
   expect(await latestSocketReply(otherPage, 'observation_resolution')).toBe('');

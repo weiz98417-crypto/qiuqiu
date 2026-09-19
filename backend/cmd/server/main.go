@@ -489,10 +489,9 @@ func main() {
 		noCache(w)
 		http.ServeFile(w, r, "../client/assets/live2d/live2d.html")
 	})
-	mux.HandleFunc("/operator.html", func(w http.ResponseWriter, r *http.Request) {
-		noCache(w)
-		http.ServeFile(w, r, "../client/assets/live2d/operator.html")
-	})
+	// operator.html 已退役（ADR-0013）：实时运营面收敛到 /console 新导播台，
+	// 旧页与其服务端点一并删除；/api/matches/* 冻结形状由迁移后的 28 条
+	// operator-control evals 继续守护。
 	registerDevelopmentPages(mux, cfg.Environment, "../client/assets/live2d")
 	webApp := http.FileServer(http.Dir(resolveWebAppDir()))
 	// ADR-0008 operations console (built from ../console/dist), hash-routed

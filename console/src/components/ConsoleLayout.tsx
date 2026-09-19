@@ -62,17 +62,9 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
             })),
             { type: 'divider' as const },
             {
-              // ADR-0011：新版实战导演页（coexistence 阶段，老页面并存）。
+              // 实战导演页（ADR-0013：operator.html 已退役，此处是唯一实时运营面）。
               key: 'director',
-              label: <RouterLink to={`/console/match/${liveMatchId ?? ''}/director`}>新版实战导演</RouterLink>,
-            },
-            {
-              key: 'live',
-              label: (
-                <a href="/operator.html#live" target="_blank" rel="noreferrer">
-                  实战导演台（旧版）
-                </a>
-              ),
+              label: <RouterLink to={`/console/match/${liveMatchId ?? ''}/director`}>实战导演</RouterLink>,
             },
           ]}
         />
