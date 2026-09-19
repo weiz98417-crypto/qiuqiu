@@ -1,37 +1,23 @@
-import { useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
+import { Alert, Button, Card, Col, Empty, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { Link } from 'react-router-dom';
-import { useParams } from 'react-router-dom';
+import { Link, useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
-import type { ConsoleUser, DirectorEventRow, TraceRow } from '../api/client';
-import { fmtTime, reasonCodeLabel, talkativenessLabel } from '../api/format';
-import { matchesCitation, traceReasonCodes, WhyDrawer } from '../api/traceEvidence';
+import type { ConsoleUser, DirectorEventRow } from '../api/client';
+import { fmtTime, talkativenessLabel } from '../api/format';
 import { useAsync } from '../api/useAsync';
 import MatchSettings from '../components/MatchSettings';
 
 const { Text } = Typography;
 
-type TraceLike = TraceRow;
-
 export default function MatchPage() {
   const { matchId = '' } = useParams<{ matchId: string }>();
-  const [citationFilter, setCitationFilter] = useState('proactive_citation:');
-  const [appliedCitation, setAppliedCitation] = useState('proactive_citation:');
-  const [drawerTrace, setDrawerTrace] = useState<TraceLike | null>(null);
 
-  // 比赛层三路数据：事件流、审计轨迹、用户网格。
+  // 比赛层两路数据：事件流、用户网格。轨迹深查收敛到引用审计页（#c8）。
   const events = useAsync<{ events: DirectorEventRow[] }>(
     () => consoleApi.matchEvents(matchId),
     [matchId],
   );
   const users = useAsync<{ users: ConsoleUser[] }>(() => consoleApi.matchUsers(matchId), [matchId]);
-  const traces = useAsync<{ traces: TraceLike[] }>(
-    () => consoleApi.traces(matchId, appliedCitation, 100),
-    [matchId, appliedCitation],
-  );
-
-  const traceRows = (traces.data?.traces ?? []).filter((trace) => matchesCitation(trace, appliedCitation));
 
   const userColumns: ColumnsType<ConsoleUser> = [
     {
@@ -77,39 +63,6 @@ export default function MatchPage() {
     },
   ];
 
-  const traceColumns: ColumnsType<TraceLike> = [
-    { title: 'Trace', dataIndex: 'id', key: 'id', render: (id: string) => <code style={{ fontSize: 12 }}>{id}</code> },
-    { title: '用户', dataIndex: 'userId', key: 'userId', width: 140 },
-    {
-      title: '原因码',
-      key: 'reasonCodes',
-      render: (_, record) => (
-        <Space size={4} wrap>
-          {traceReasonCodes(record).length ? (
-            traceReasonCodes(record).map((code) => (
-              <Tag key={code} color={code.startsWith('proactive_citation:') ? 'orange' : 'default'}>
-                {reasonCodeLabel(code)}
-              </Tag>
-            ))
-          ) : (
-            <Text type="secondary">{record.reason || '—'}</Text>
-          )}
-        </Space>
-      ),
-    },
-    { title: '时间', dataIndex: 'createdAt', key: 'createdAt', width: 110, render: fmtTime },
-    {
-      title: '操作',
-      key: 'why',
-      width: 110,
-      render: (_, record) => (
-        <Button type="link" size="small" onClick={() => setDrawerTrace(record)}>
-          为什么说话
-        </Button>
-      ),
-    },
-  ];
-
   return (
     <div>
       <Row gutter={[16, 16]}>
@@ -117,7 +70,7 @@ export default function MatchPage() {
           <Card
             title={`比赛 · ${matchId}`}
             extra={
-              <Button size="small" onClick={() => { void events.reload(); void users.reload(); void traces.reload(); }}>
+              <Button size="small" onClick={() => { void events.reload(); void users.reload(); }}>
                 刷新
               </Button>
             }
@@ -158,36 +111,14 @@ export default function MatchPage() {
         </Col>
 
         <Col span={12}>
-          <Card title="引用审计（按引用前缀过滤）">
-            <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
-              <Input
-                aria-label="引用前缀"
-                value={citationFilter}
-                onChange={(event) => setCitationFilter(event.target.value)}
-                placeholder="proactive_citation:"
-                onPressEnter={() => setAppliedCitation(citationFilter)}
-              />
-              <Button type="primary" onClick={() => setAppliedCitation(citationFilter)}>
-                过滤
+          <Card
+            title="用户网格"
+            extra={
+              <Button size="small" onClick={() => void users.reload()}>
+                刷新
               </Button>
-            </Space.Compact>
-            {traces.error ? <Alert type="error" showIcon message={traces.error} /> : null}
-            <Table<TraceLike>
-              size="small"
-              rowKey="id"
-              columns={traceColumns}
-              dataSource={traceRows}
-              loading={traces.loading}
-              pagination={{ pageSize: 8, hideOnSinglePage: true }}
-              locale={{
-                emptyText: <Empty description="没有匹配该引用前缀的回合" imageStyle={{ height: 40 }} />,
-              }}
-            />
-          </Card>
-        </Col>
-
-        <Col span={12}>
-          <Card title="用户网格">
+            }
+          >
             {users.error ? <Alert type="error" showIcon message={users.error} /> : null}
             <Table<ConsoleUser>
               size="small"
@@ -201,13 +132,28 @@ export default function MatchPage() {
           </Card>
         </Col>
 
-        {/* 设置：自动化播报策略 + 数据源与人工接管（legacy #automation/#sources 迁移）。 */}
+        <Col span={12}>
+          <Card title="审计轨迹">
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Text type="secondary">
+                轨迹深查（按引用前缀过滤、「为什么说话」详情）收敛在引用审计页，本页留入口。
+              </Text>
+              <Space wrap>
+                <Link to={`/console/citations?matchId=${encodeURIComponent(matchId)}`}>
+                  <Button size="small" type="primary">
+                    去引用审计查本场轨迹
+                  </Button>
+                </Link>
+              </Space>
+            </Space>
+          </Card>
+        </Col>
+
+        {/* 设置：赛前配置 + 自动化播报策略 + 数据源与人工接管。 */}
         <Col span={24}>
           <MatchSettings matchId={matchId} />
         </Col>
       </Row>
-
-      <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
     </div>
   );
 }

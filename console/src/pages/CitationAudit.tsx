@@ -1,7 +1,7 @@
 import { useCallback, useMemo, useState } from 'react';
 import { Alert, Button, Card, Col, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
-import { Link } from 'react-router-dom';
+import { Link, useSearchParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { TraceRow } from '../api/client';
 import { fmtDateTime, fmtTime, reasonCodeLabel } from '../api/format';
@@ -16,9 +16,13 @@ export default function CitationAudit() {
   // 跨比赛最近主动引用（来自概览聚合，cross-match limit 10）。
   const overview = useAsync(() => consoleApi.overview(), []);
 
+  // URL 预填：比赛页「去引用审计」入口带 matchId 进来。
+  const [searchParams] = useSearchParams();
+  const urlMatchId = searchParams.get('matchId') ?? '';
+
   // 按引用前缀深查某场比赛的轨迹（backend citation= 过滤）。
-  const [matchIdInput, setMatchIdInput] = useState('');
-  const [appliedMatchId, setAppliedMatchId] = useState('');
+  const [matchIdInput, setMatchIdInput] = useState(urlMatchId);
+  const [appliedMatchId, setAppliedMatchId] = useState(urlMatchId);
   const [citationInput, setCitationInput] = useState('proactive_citation:');
   const [appliedCitation, setAppliedCitation] = useState('proactive_citation:');
   const [drawerTrace, setDrawerTrace] = useState<TraceLike | null>(null);
