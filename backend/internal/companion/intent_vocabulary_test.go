@@ -52,4 +52,30 @@ func TestIntentVocabularyLockedAcrossRouterSeam(t *testing.T) {
 			t.Fatal("router schema must not offer the proactive-only match_reaction intent")
 		}
 	}
+
+	// 第三向：companion Intent 枚举全集必须被上表覆盖——新增 Intent 常量
+	// 而不接入路由映射表时在此即红。IntentMatchReaction 例外：主动回合
+	// 专属（HandleMatchEvent），不在用户回合映射值集，只断言其别名落点。
+	for _, intent := range []Intent{
+		IntentSmalltalk, IntentSchedule, IntentMatchStatus, IntentRecentEvent,
+		IntentFollowUp, IntentPlayerQuestion, IntentEmotionReaction,
+		IntentPersonalShare, IntentControlCommand, IntentMatchClaim, IntentUnknown,
+	} {
+		if _, ok := intentInExpected(expected, intent); !ok {
+			t.Fatalf("Intent %q is not covered by the routedTurnIntent lock table (vocabulary drift)", intent)
+		}
+	}
+	if routedTurnIntent("match_reaction") != IntentEmotionReaction {
+		t.Fatalf("proactive-only match_reaction must alias onto the emotion path")
+	}
+}
+
+// intentInExpected 报告 intent 是否出现在期望映射的值集里。
+func intentInExpected(expected map[string]Intent, intent Intent) (string, bool) {
+	for raw, want := range expected {
+		if want == intent {
+			return raw, true
+		}
+	}
+	return "", false
 }

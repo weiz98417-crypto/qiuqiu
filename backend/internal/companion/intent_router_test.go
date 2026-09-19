@@ -2,6 +2,7 @@ package companion
 
 import (
 	"context"
+	"errors"
 	"encoding/json"
 	"net/http"
 	"net/http/httptest"
@@ -17,6 +18,8 @@ import (
 
 // stubRouterServer answers the router client with per-text scripted route_turn
 // arguments; texts without a script route to unknown/1.0 with no reply.
+// 仅 TestRouterClientEnvelope（client 信封锁）使用；agent 级测试一律用
+// scriptedRouter fake（turn_router_fake_test.go）。
 func stubRouterServer(t *testing.T, scripts map[string]string) *router.Client {
 	t.Helper()
 	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
@@ -46,14 +49,6 @@ func stubRouterServer(t *testing.T, scripts map[string]string) *router.Client {
 	return router.NewClient(router.Config{BaseURL: server.URL, APIKey: "stub", Model: "mimo-v2.5", Timeout: 2 * time.Second})
 }
 
-func failingRouterServer(t *testing.T) *router.Client {
-	t.Helper()
-	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		http.Error(w, `{"error":"boom"}`, http.StatusBadGateway)
-	}))
-	t.Cleanup(server.Close)
-	return router.NewClient(router.Config{BaseURL: server.URL, APIKey: "stub", Model: "mimo-v2.5", Timeout: 2 * time.Second})
-}
 
 func quoteJSONForRouter(value string) string {
 	data, _ := json.Marshal(value)
@@ -73,10 +68,9 @@ func newRoutedAgent(t *testing.T, turnRouter TurnRouter) (*Agent, *matchstate.St
 // router's natural reply is realized directly — no fact tools, no fact
 // tokens, no interrupted (confused) reaction.
 func TestGoldenJourneyRoutedSmalltalkRealizesRouterReply(t *testing.T) {
-	routerClient := stubRouterServer(t, map[string]string{
-		"你在干嘛": `{"intent":"smalltalk","confidence":0.9,"reply":"我在盯着直播呢，陪你一起看。"}`,
-	})
-	agent, _ := newRoutedAgent(t, routerClient)
+	agent, _ := newRoutedAgent(t, &scriptedRouter{scripts: map[string]router.Result{
+		"你在干嘛": {Intent: "smalltalk", Confidence: 0.9, Reply: "我在盯着直播呢，陪你一起看。"},
+	}})
 
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
 		SignalID: "golden-smalltalk-1",
@@ -219,10 +213,9 @@ func TestIsEventClaimColloquialVariants(t *testing.T) {
 // Task 1.4: a routed chat suggestion cannot realize when the user text
 // carries match-fact language — the deterministic backstop wins.
 func TestFactLanguageBackstopForcesDeterministicOnRoutedTurns(t *testing.T) {
-	routerClient := stubRouterServer(t, map[string]string{
-		"var你在干嘛": `{"intent":"smalltalk","confidence":0.9,"reply":"我在看var回放呢，主裁还没定。"}`,
-	})
-	agent, _ := newRoutedAgent(t, routerClient)
+	agent, _ := newRoutedAgent(t, &scriptedRouter{scripts: map[string]router.Result{
+		"var你在干嘛": {Intent: "smalltalk", Confidence: 0.9, Reply: "我在看var回放呢，主裁还没定。"},
+	}})
 
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
 		SignalID: "backstop-1",
@@ -245,7 +238,7 @@ func TestFactLanguageBackstopForcesDeterministicOnRoutedTurns(t *testing.T) {
 // Task 1.5: a router failure degrades to the legacy canned reply plus the
 // one-shot interrupted (confused/listening) reaction — never a console error.
 func TestRouterErrorDegradesToLegacyCanned(t *testing.T) {
-	agent, _ := newRoutedAgent(t, failingRouterServer(t))
+	agent, _ := newRoutedAgent(t, &scriptedRouter{fail: errors.New("router upstream 502")})
 
 	response, err := agent.HandleMessage(context.Background(), MessageRequest{
 		SignalID: "degrade-1",
@@ -271,10 +264,9 @@ func TestRouterErrorDegradesToLegacyCanned(t *testing.T) {
 // realization with the router reply — the deterministic fact path is not
 // taken, and the C3 funnel thread opens.
 func TestLowConfidenceFactRouteDegradesToCasual(t *testing.T) {
-	routerClient := stubRouterServer(t, map[string]string{
-		"咋回事这是": `{"intent":"match_fact_claim","confidence":0.4,"reply":"哈哈，这句我先收下了。"}`,
-	})
-	agent, _ := newRoutedAgent(t, routerClient)
+	agent, _ := newRoutedAgent(t, &scriptedRouter{scripts: map[string]router.Result{
+		"咋回事这是": {Intent: "match_fact_claim", Confidence: 0.4, Reply: "哈哈，这句我先收下了。"},
+	}})
 	seam := memory.NewFake()
 	agent.WithMemories(seam)
 
@@ -313,10 +305,9 @@ func TestLowConfidenceFactRouteDegradesToCasual(t *testing.T) {
 // deterministic claim path and ignores the router's reply field (locked
 // decision 4).
 func TestHighConfidenceRoutedClaimIgnoresRouterReply(t *testing.T) {
-	routerClient := stubRouterServer(t, map[string]string{
-		"明明进了，裁判瞎了吗": `{"intent":"match_fact_claim","confidence":0.85,"team":"德国","reply":"裁判是瞎了。"}`,
-	})
-	agent, store := newRoutedAgent(t, routerClient)
+	agent, store := newRoutedAgent(t, &scriptedRouter{scripts: map[string]router.Result{
+		"明明进了，裁判瞎了吗": {Intent: "match_fact_claim", Confidence: 0.85, Team: "德国", Reply: "裁判是瞎了。"},
+	}})
 	agent.WithObservationCoordinator(observation.NewMemoryCoordinator())
 	matchID := "routed-claim"
 	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {

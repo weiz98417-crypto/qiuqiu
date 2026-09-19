@@ -6,7 +6,6 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
-	"io"
 	"net/http"
 	"strings"
 	"time"
@@ -198,27 +197,22 @@ func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, 
 	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("llm unavailable: %w", err)
 	}
-	body, _ := json.Marshal(req)
-	httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
-	c.setAuthHeaders(httpReq)
-	httpReq.Header.Set("Content-Type", "application/json")
-
-	start := time.Now()
-	resp, err := c.httpClient.Do(httpReq)
+	body, err := json.Marshal(req)
 	if err != nil {
 		c.breaker.Failure(time.Now().UTC())
-		return nil, fmt.Errorf("llm request: %w", err)
+		return nil, fmt.Errorf("llm encode: %w", err)
 	}
-	defer resp.Body.Close()
 
-	if resp.StatusCode < 200 || resp.StatusCode >= 300 {
+	start := time.Now()
+	// HTTP 执行走共享传输层；熔断语义（Allow/Failure/Success）留在本 client。
+	respBody, err := openaicompat.Post(ctx, c.httpClient, c.endpoint(), "/chat/completions", body, 1<<20)
+	if err != nil {
 		c.breaker.Failure(time.Now().UTC())
-		data, _ := io.ReadAll(io.LimitReader(resp.Body, 4096))
-		return nil, fmt.Errorf("llm status %d: %s", resp.StatusCode, strings.TrimSpace(string(data)))
+		return nil, fmt.Errorf("llm call: %w", err)
 	}
 
 	var chatResp ChatResponse
-	if err := json.NewDecoder(resp.Body).Decode(&chatResp); err != nil {
+	if err := json.Unmarshal(respBody, &chatResp); err != nil {
 		c.breaker.Failure(time.Now().UTC())
 		return nil, fmt.Errorf("llm decode: %w", err)
 	}
@@ -234,6 +228,10 @@ func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, 
 		Duration: time.Since(start),
 		Tokens:   chatResp.Usage.TotalTokens,
 	}, nil
+}
+
+func (c *Client) endpoint() openaicompat.Endpoint {
+	return openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model}
 }
 
 // setAuthHeaders 委托共享传输层的平台鉴权约定（单源实现）。
