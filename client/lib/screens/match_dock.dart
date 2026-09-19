@@ -2,8 +2,6 @@ import 'package:flutter/material.dart';
 import 'package:flutter_animate/flutter_animate.dart';
 
 import '../services/match_session_controller.dart';
-import '../services/websocket_service.dart';
-import '../widgets/connection_mark.dart';
 import '../theme/app_theme.dart';
 class ConversationDock extends StatelessWidget {
   final MatchSessionPhase phase;

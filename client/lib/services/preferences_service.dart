@@ -2,6 +2,8 @@ import 'dart:math';
 
 import 'package:shared_preferences/shared_preferences.dart';
 
+import 'session_service.dart';
+
 /// Local user preferences (no server-side account).
 class PreferencesService {
   static const _keyNickname = 'nickname';
@@ -13,13 +15,68 @@ class PreferencesService {
   static const _keyFirstMeetingCompleted = 'first_meeting_completed';
   static const _keyAnonymousUserId = 'anonymous_user_id';
 
+  final SessionSecretStore _secretStorage;
+
+  PreferencesService({SessionSecretStore? secretStorage})
+      : _secretStorage = secretStorage ?? FlutterSessionSecretStore();
+
+  /// 匿名身份的唯一凭据（CONTEXT.md「匿名身份」），读写收敛在这对函数里：
+  /// 读 = secure storage 优先 → SharedPreferences 回退；首次读取时把既有
+  /// SharedPreferences 值迁移进 secure storage。迁移语义：绝不能因换存储
+  /// 生成新 UUID——迁移永远先于生成。
   Future<String> loadOrCreateAnonymousUserId() async {
     final prefs = await SharedPreferences.getInstance();
-    final existing = prefs.getString(_keyAnonymousUserId)?.trim() ?? '';
-    if (existing.isNotEmpty) return existing;
+    String? secureValue;
+    try {
+      secureValue = await _secretStorage.read(_keyAnonymousUserId);
+    } catch (_) {
+      secureValue = null; // secure 完全不可用：保持 SharedPreferences 语义
+    }
+    final secure = secureValue?.trim() ?? '';
+    if (secure.isNotEmpty) {
+      // 双写维护：把 prefs 兜底副本对齐到 secure 权威值，避免 secure 日后
+      // 不可用时回退到一份陈旧身份。
+      if (prefs.getString(_keyAnonymousUserId) != secure) {
+        await prefs.setString(_keyAnonymousUserId, secure);
+      }
+      return secure;
+    }
+
+    final legacy = prefs.getString(_keyAnonymousUserId)?.trim() ?? '';
+    if (legacy.isNotEmpty) {
+      await _storeAnonymousUserId(legacy, prefs);
+      return legacy;
+    }
     final generated = _newAnonymousUserId();
-    await prefs.setString(_keyAnonymousUserId, generated);
+    await _storeAnonymousUserId(generated, prefs);
     return generated;
+  }
+
+  /// 双写：secure 为主、SharedPreferences 保留一份兜底；secure 不可用时
+  /// prefs 的这份副本仍是唯一凭据，行为与旧实现一致。
+  Future<void> _storeAnonymousUserId(
+    String value,
+    SharedPreferences prefs,
+  ) async {
+    try {
+      await _secretStorage.write(_keyAnonymousUserId, value);
+    } catch (_) {
+      // secure 不可用：prefs 兜底写入照常进行。
+    }
+    await prefs.setString(_keyAnonymousUserId, value);
+  }
+
+  /// 后端 409 ErrIdentityUnavailable（隐私删除/映射过期）时如实清除本地
+  /// 身份：两份存储都清空，之后 loadOrCreateAnonymousUserId 生成全新
+  /// UUID——删除就是删除，不假装找回旧身份。
+  Future<void> resetAnonymousIdentity() async {
+    final prefs = await SharedPreferences.getInstance();
+    try {
+      await _secretStorage.delete(_keyAnonymousUserId);
+    } catch (_) {
+      // secure 不可用时也要保证 prefs 一侧被清空。
+    }
+    await prefs.remove(_keyAnonymousUserId);
   }
 
   Future<UserProfile> load() async {

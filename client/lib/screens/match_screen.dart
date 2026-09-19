@@ -3,7 +3,6 @@ import 'dart:convert';
 import 'dart:typed_data';
 import 'package:flutter/foundation.dart' show debugPrint, kIsWeb;
 import 'package:flutter/material.dart';
-import 'package:flutter_animate/flutter_animate.dart';
 import 'package:lottie/lottie.dart';
 import 'package:vibration/vibration.dart';
 
@@ -23,7 +22,6 @@ import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
 import '../widgets/match_actions_menu.dart';
-import '../widgets/metal_button.dart';
 import '../widgets/mobile_theme_canvas.dart';
 import '../widgets/reply_subtitle_card.dart';
 import 'match_dock.dart';
@@ -258,9 +256,49 @@ class _MatchScreenState extends State<MatchScreen> {
         _userId = session.userId;
       });
       _socket.connect(_socketUrl(), token: session.accessToken);
+    } on SessionException catch (error) {
+      if (error.statusCode != 409) {
+        if (!mounted) return;
+        _sessionController.initializationFailed();
+        return;
+      }
+      // 后端 409 ErrIdentityUnavailable：隐私删除/映射过期——如实重置后
+      // 以全新匿名身份开始一次（不重试旧身份、不降级）。
+      final token = await _restartAsNewIdentity();
+      if (!mounted) return;
+      if (token == null) {
+        _sessionController.initializationFailed();
+        return;
+      }
+      _socket.connect(_socketUrl(), token: token);
     } catch (_) {
       if (!mounted) return;
       _sessionController.initializationFailed();
+    }
+  }
+
+  /// 409 ErrIdentityUnavailable（隐私删除/映射过期）：清除本地 deviceId，
+  /// 生成全新匿名身份后重建一次会话；再次失败则交回初始化失败路径。
+  Future<String?> _restartAsNewIdentity() async {
+    await _preferences.resetAnonymousIdentity();
+    final freshDeviceId = await _preferences.loadOrCreateAnonymousUserId();
+    if (!mounted) return null;
+    setState(() {
+      _deviceId = freshDeviceId;
+    });
+    try {
+      final session = await _sessions.ensureSession(
+        baseUrl: normalizeAPIBaseURL(_socketUrl()),
+        deviceId: freshDeviceId,
+      );
+      if (mounted) {
+        setState(() {
+          _userId = session.userId;
+        });
+      }
+      return session.accessToken;
+    } catch (_) {
+      return null;
     }
   }
 
@@ -277,6 +315,9 @@ class _MatchScreenState extends State<MatchScreen> {
         });
       }
       return session.accessToken;
+    } on SessionException catch (error) {
+      if (error.statusCode != 409) return null;
+      return _restartAsNewIdentity();
     } catch (_) {
       return null;
     }

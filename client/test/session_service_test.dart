@@ -162,6 +162,53 @@ void main() {
     expect(credentials.userId, 'usr_new');
     expect(credentials.accessToken, 'new_access');
   });
+
+  test('401 rebuild keeps asking for the same deviceId', () async {
+    SharedPreferences.setMockInitialValues({
+      'session_user_id': 'usr_old',
+      'session_id': 'ses_old',
+      'session_expires_at': DateTime.now()
+          .toUtc()
+          .add(const Duration(minutes: 15))
+          .toIso8601String(),
+    });
+    final bodies = <Map<String, dynamic>>[];
+    final client = MockClient((request) async {
+      bodies.add(jsonDecode(request.body) as Map<String, dynamic>);
+      if (request.url.path == '/api/sessions/refresh') {
+        return http.Response('unauthorized', 401);
+      }
+      return http.Response(
+        jsonEncode({
+          'userId': 'usr_rebuilt',
+          'sessionId': 'ses_rebuilt',
+          'accessToken': 'rebuilt_access',
+          'refreshToken': 'rebuilt_refresh',
+          'expiresAt': DateTime.now()
+              .toUtc()
+              .add(const Duration(minutes: 15))
+              .toIso8601String(),
+        }),
+        201,
+      );
+    });
+    final credentials = await SessionService(
+      client: client,
+      secretStorage: MemorySessionSecretStore({
+        'session_access_token': 'old_access',
+        'session_refresh_token': 'old_refresh',
+      }),
+    ).ensureSession(baseUrl: 'https://qiuqiu.example', deviceId: 'anon_same');
+
+    // 401 后清令牌重建：匿名请求必须继续携带同一 deviceId，
+    // 后端 anonymous_device_identities 才能归还同一个 usr_。
+    expect(bodies, hasLength(2));
+    expect(bodies[0], {'refreshToken': 'old_refresh'});
+    expect(bodies[1], {'deviceId': 'anon_same'});
+    expect(credentials.userId, 'usr_rebuilt');
+    final prefs = await SharedPreferences.getInstance();
+    expect(prefs.getString('anonymous_user_id'), isNull);
+  });
 }
 
 class MemorySessionSecretStore implements SessionSecretStore {
