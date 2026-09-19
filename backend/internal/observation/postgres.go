@@ -75,32 +75,28 @@ func (c *PostgresCoordinator) Record(ctx context.Context, input Input) (PendingO
 	if err != nil {
 		return PendingObservation{}, err
 	}
-	for _, pending := range existing {
-		if pending.SignalID == input.SignalID || sameActiveObservation(pending, input) {
-			if err := tx.Commit(ctx); err != nil {
-				return PendingObservation{}, err
-			}
-			return pending, nil
+	// Shared Record rules (dedupe / 5-active cap) — the same pure reducer the
+	// memory coordinator runs, so the two stores cannot drift; SQL layout
+	// stays untouched.
+	decision := applyRecordRules(existing, input)
+	if decision.Existing != nil {
+		if err := tx.Commit(ctx); err != nil {
+			return PendingObservation{}, err
 		}
+		return *decision.Existing, nil
 	}
-	active := make([]PendingObservation, 0, len(existing))
-	for _, pending := range existing {
-		if isActiveStatus(pending.Status) {
-			active = append(active, pending)
-		}
-	}
-	if len(active) >= 5 {
-		oldest := active[0]
+	if decision.Supersede != nil {
+		superseded := *decision.Supersede
 		resolvedAt := input.ReceivedAt
-		oldest.Status = StatusSuperseded
-		oldest.ResolvedAt = &resolvedAt
-		oldest.ResolutionReason = "pending observation limit exceeded"
-		if err := updateObservation(ctx, tx, oldest); err != nil {
+		superseded.Status = StatusSuperseded
+		superseded.ResolvedAt = &resolvedAt
+		superseded.ResolutionReason = "pending observation limit exceeded"
+		if err := updateObservation(ctx, tx, superseded); err != nil {
 			return PendingObservation{}, err
 		}
 	}
 	followUpWindow, reconcileWindow := windowsForInput(input)
-	scope := input.UserID + "\x00" + input.MatchID + "\x00" + input.SignalID
+	scope := observationScope(input.UserID, input.MatchID, input.SignalID)
 	pending := PendingObservation{
 		ID: observationID(scope), SignalID: input.SignalID, TraceID: strings.TrimSpace(input.TraceID),
 		UserID: input.UserID, MatchID: input.MatchID, Kind: strings.TrimSpace(input.Kind),

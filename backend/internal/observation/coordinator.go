@@ -117,38 +117,28 @@ func (c *MemoryCoordinator) Record(ctx context.Context, input Input) (PendingObs
 	if input.ReceivedAt.IsZero() {
 		input.ReceivedAt = time.Now().UTC()
 	}
-	scope := input.UserID + "\x00" + input.MatchID + "\x00" + input.SignalID
 	c.mu.Lock()
 	defer c.mu.Unlock()
-	if existing, ok := c.byScope[scope]; ok {
-		return cloneObservation(existing), nil
-	}
+	scoped := make([]PendingObservation, 0, len(c.byScope))
 	for _, existing := range c.byScope {
-		if sameActiveObservation(existing, input) {
-			return cloneObservation(existing), nil
+		if existing.UserID == input.UserID && existing.MatchID == input.MatchID {
+			scoped = append(scoped, existing)
 		}
 	}
-	activeCount := 0
-	oldestScope := ""
-	var oldest PendingObservation
-	for candidateScope, existing := range c.byScope {
-		if existing.UserID != input.UserID || existing.MatchID != input.MatchID || !isActiveStatus(existing.Status) {
-			continue
-		}
-		activeCount++
-		if oldestScope == "" || existing.ReceivedAt.Before(oldest.ReceivedAt) {
-			oldestScope = candidateScope
-			oldest = existing
-		}
+	decision := applyRecordRules(scoped, input)
+	if decision.Existing != nil {
+		return cloneObservation(*decision.Existing), nil
 	}
-	if activeCount >= 5 && oldestScope != "" {
+	if decision.Supersede != nil {
+		superseded := *decision.Supersede
 		resolvedAt := input.ReceivedAt.UTC()
-		oldest.Status = StatusSuperseded
-		oldest.ResolvedAt = &resolvedAt
-		oldest.ResolutionReason = "pending observation limit exceeded"
-		c.byScope[oldestScope] = oldest
+		superseded.Status = StatusSuperseded
+		superseded.ResolvedAt = &resolvedAt
+		superseded.ResolutionReason = "pending observation limit exceeded"
+		c.byScope[observationScope(superseded.UserID, superseded.MatchID, superseded.SignalID)] = superseded
 	}
 	followUpWindow, reconcileWindow := windowsForInput(input)
+	scope := observationScope(input.UserID, input.MatchID, input.SignalID)
 	observation := PendingObservation{
 		ID:               observationID(scope),
 		SignalID:         input.SignalID,
@@ -578,6 +568,60 @@ func applyFact(pending PendingObservation, event matchstate.MatchEvent, eventAt 
 func observationID(scope string) string {
 	sum := sha256.Sum256([]byte(scope))
 	return "obs_" + hex.EncodeToString(sum[:12])
+}
+
+// observationScope is the dedupe key both stores share: the user, match and
+// signal id that identify one observation slot.
+func observationScope(userID, matchID, signalID string) string {
+	return userID + "\x00" + matchID + "\x00" + signalID
+}
+
+// maxActiveObservations caps how many active observations one user may hold
+// per match; recording one more supersedes the oldest active row.
+const maxActiveObservations = 5
+
+// recordDecision is what the shared Record rules decided for one incoming
+// observation: either it duplicates an existing row, or it is new and may
+// require the oldest active row to be superseded first.
+type recordDecision struct {
+	// Existing is the duplicate to return unchanged (nil when the input is
+	// a new observation). Both dedupe rules surface it here.
+	Existing *PendingObservation
+	// Supersede is the oldest active observation to flip to superseded
+	// before the new row is stored (nil when under the cap).
+	Supersede *PendingObservation
+}
+
+// applyRecordRules is the pure Record-rule reducer shared by both coordinator
+// stores (打磨轮 #4: one rule set, two stores — neither can drift):
+// dedupe by exact signal id, dedupe by identical active claim inside the
+// reconcile window, and the 5-active cap that supersedes the oldest row.
+// observations are the rows already visible for input's user+match scope, in
+// any order; input is the trimmed Record input with ReceivedAt defaulted.
+// No IO and no store dependency — the adapters keep all SQL/row layout.
+func applyRecordRules(observations []PendingObservation, input Input) recordDecision {
+	for i := range observations {
+		pending := observations[i]
+		if pending.SignalID == input.SignalID || sameActiveObservation(pending, input) {
+			return recordDecision{Existing: &pending}
+		}
+	}
+	active := make([]PendingObservation, 0, len(observations))
+	for _, pending := range observations {
+		if isActiveStatus(pending.Status) {
+			active = append(active, pending)
+		}
+	}
+	if len(active) < maxActiveObservations {
+		return recordDecision{}
+	}
+	oldest := active[0]
+	for _, pending := range active[1:] {
+		if pending.ReceivedAt.Before(oldest.ReceivedAt) {
+			oldest = pending
+		}
+	}
+	return recordDecision{Supersede: &oldest}
 }
 
 func cloneObservation(value PendingObservation) PendingObservation {

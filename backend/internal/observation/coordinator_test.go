@@ -2,6 +2,7 @@ package observation
 
 import (
 	"context"
+	"fmt"
 	"strings"
 	"testing"
 	"time"
@@ -378,5 +379,115 @@ func TestSixthPendingObservationSupersedesOldest(t *testing.T) {
 	superseded, ok := coordinator.Get(first.ID)
 	if !ok || superseded.Status != StatusSuperseded || superseded.ResolutionReason != "pending observation limit exceeded" {
 		t.Fatalf("oldest observation = %+v, want superseded", superseded)
+	}
+}
+
+// TestApplyRecordRulesTableDriven pins the shared Record-rule reducer both
+// coordinator stores run: dedupe by signal id, dedupe by identical active
+// claim inside the reconcile window, and the 5-active cap.
+func TestApplyRecordRulesTableDriven(t *testing.T) {
+	now := time.Date(2026, 7, 17, 12, 0, 0, 0, time.UTC)
+	row := func(signal string, receivedAt time.Time, status Status, player string) PendingObservation {
+		return PendingObservation{
+			ID:             observationID(observationScope("user-1", "match-1", signal)),
+			SignalID:       signal,
+			UserID:         "user-1",
+			MatchID:        "match-1",
+			Kind:           "event",
+			EventType:      "goal",
+			ClaimedPlayer:  player,
+			Status:         status,
+			ReceivedAt:     receivedAt,
+			ReconcileUntil: receivedAt.Add(2 * time.Minute),
+		}
+	}
+	claim := func(signal string, at time.Time) Input {
+		return Input{
+			SignalID: signal, UserID: "user-1", MatchID: "match-1",
+			Kind: "event", EventType: "goal", ClaimedPlayer: "萨拉赫", ReceivedAt: at,
+		}
+	}
+	claimPlayer := func(signal string, at time.Time, player string) Input {
+		input := claim(signal, at)
+		input.ClaimedPlayer = player
+		return input
+	}
+	fiveActive := make([]PendingObservation, 0, 5)
+	for i := 1; i <= 5; i++ {
+		player := string(rune('A' + i - 1))
+		fiveActive = append(fiveActive, row(fmt.Sprintf("turn-%d", i), now.Add(time.Duration(i-1)*time.Second), StatusPendingSync, player))
+	}
+	fourActiveOneExpired := []PendingObservation{
+		row("turn-1", now, StatusExpired, "A"),
+		row("turn-2", now.Add(time.Second), StatusPendingSync, "B"),
+		row("turn-3", now.Add(2*time.Second), StatusPendingSync, "C"),
+		row("turn-4", now.Add(3*time.Second), StatusPendingSync, "D"),
+		row("turn-5", now.Add(4*time.Second), StatusPendingSync, "E"),
+	}
+	cases := []struct {
+		name          string
+		existing      []PendingObservation
+		input         Input
+		wantDupOf     string
+		wantSupersede string
+	}{
+		{
+			name:     "empty store records a brand-new row",
+			input:    claim("turn-1", now),
+		},
+		{
+			name:      "exact signal id dedupes even a resolved row",
+			existing:  []PendingObservation{row("turn-1", now, StatusSuperseded, "萨拉赫")},
+			input:     claim("turn-1", now.Add(time.Second)),
+			wantDupOf: "turn-1",
+		},
+		{
+			name:      "identical active claim inside the window dedupes",
+			existing:  []PendingObservation{row("turn-1", now, StatusPendingSync, "萨拉赫")},
+			input:     claim("turn-2", now.Add(time.Second)),
+			wantDupOf: "turn-1",
+		},
+		{
+			name:     "same claim past the reconcile window records a new row",
+			existing: []PendingObservation{row("turn-1", now, StatusPendingSync, "萨拉赫")},
+			input:    claim("turn-2", now.Add(3*time.Minute)),
+		},
+		{
+			name:     "resolved duplicates stop deduping",
+			existing: []PendingObservation{row("turn-1", now, StatusExpired, "萨拉赫")},
+			input:    claim("turn-2", now.Add(time.Second)),
+		},
+		{
+			name:          "sixth active observation supersedes the oldest",
+			existing:      fiveActive,
+			input:         claimPlayer("turn-6", now.Add(5*time.Second), "F"),
+			wantSupersede: "turn-1",
+		},
+		{
+			name:     "resolved rows do not count toward the cap",
+			existing: fourActiveOneExpired,
+			input:    claimPlayer("turn-6", now.Add(5*time.Second), "F"),
+		},
+	}
+	for _, testCase := range cases {
+		t.Run(testCase.name, func(t *testing.T) {
+			decision := applyRecordRules(testCase.existing, testCase.input)
+			if testCase.wantDupOf == "" && decision.Existing != nil {
+				t.Fatalf("unexpected duplicate = %+v", *decision.Existing)
+			}
+			if testCase.wantDupOf != "" {
+				if decision.Existing == nil || decision.Existing.SignalID != testCase.wantDupOf {
+					t.Fatalf("duplicate = %+v, want the observation for signal %s", decision.Existing, testCase.wantDupOf)
+				}
+			}
+			if testCase.wantSupersede == "" && decision.Supersede != nil {
+				t.Fatalf("unexpected supersede = %+v", *decision.Supersede)
+			}
+			if testCase.wantSupersede != "" {
+				if decision.Supersede == nil || decision.Supersede.SignalID != testCase.wantSupersede {
+					t.Fatalf("supersede = %+v, want the observation for signal %s", decision.Supersede, testCase.wantSupersede)
+				}
+			}
+		})
 	}
 }
