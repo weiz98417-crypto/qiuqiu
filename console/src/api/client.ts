@@ -8,8 +8,8 @@ export class ApiError extends Error {
   status: number;
   body: string;
 
-  constructor(status: number, body: string) {
-    super(`API ${status}: ${body}`);
+  constructor(status: number, body: string, message?: string) {
+    super(message || `API ${status}: ${body}`);
     this.status = status;
     this.body = body;
   }
@@ -189,44 +189,114 @@ export interface RequestOptions {
   retriedAfterRefresh?: boolean;
 }
 
+// ---- 写路径传输策略（与 operator.html 的 operatorRequestJSON 同语义）----
+// 一次逻辑请求 = 一把幂等键：inflight 按 method:path:body 去重并发（双击只发
+// 一次），5xx 单次重试与 401 续期重放复用同一把键，409 冲突不重试并给出
+// 冲突文案，Idempotency-Replayed 回填到响应对象。parity harness 只锁
+// payload 形状，这层语义由 scripts/check-console-transport.mjs 守护。
+
+const WRITE_RETRY_DELAY_MS = 250;
+
+const inflightWrites = new Map<string, Promise<unknown>>();
+
+function newIdempotencyKey(): string {
+  if (globalThis.crypto?.randomUUID) return globalThis.crypto.randomUUID();
+  return `console-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+}
+
+function delay(ms: number): Promise<void> {
+  return new Promise((resolve) => setTimeout(resolve, ms));
+}
+
+// apiError 解析错误体：JSON 的 error 字段优先，409 组装冲突文案。
+async function apiError(response: Response): Promise<ApiError> {
+  const raw = await response.text().catch(() => '');
+  let message = raw.trim();
+  try {
+    message = JSON.parse(raw).error || message;
+  } catch {
+    // 裸文本错误体原样使用。
+  }
+  if (response.status === 409) message = `提交内容冲突：${message || '请刷新后重试'}`;
+  if (!message && response.status === 403) message = '权限不足';
+  return new ApiError(response.status, raw, message || `请求失败 ${response.status}`);
+}
+
 export async function api<T>(path: string, options: RequestOptions = {}): Promise<T> {
-  const headers: Record<string, string> = {};
-  // ADR-0010：访问令牌（人类通道）优先，机令牌（evals/脚本通道）兜底。
-  const token = getAccessToken() || getToken();
-  if (token) headers.Authorization = `Bearer ${token}`;
-  if (options.body !== undefined) headers['Content-Type'] = 'application/json';
-  // 写操作携带幂等键（与 operator-control 惯用法一致）。
-  if (options.method && options.method !== 'GET') {
-    headers['Idempotency-Key'] = `console-${Date.now()}-${Math.random().toString(16).slice(2)}`;
+  const method = options.method ?? 'GET';
+  const bodyJson = options.body !== undefined ? JSON.stringify(options.body) : undefined;
+  if (method === 'GET') return executeRequest<T>(path, method, bodyJson, options);
+  const inflightKey = `${method}:${path}:${bodyJson ?? '{}'}`;
+  const existing = inflightWrites.get(inflightKey);
+  if (existing) return existing as Promise<T>;
+  const request = executeRequest<T>(path, method, bodyJson, options);
+  inflightWrites.set(inflightKey, request);
+  try {
+    return await request;
+  } finally {
+    inflightWrites.delete(inflightKey);
   }
+}
 
-  const response = await fetch(path, {
-    method: options.method ?? 'GET',
-    headers,
-    body: options.body !== undefined ? JSON.stringify(options.body) : undefined,
-  });
+async function executeRequest<T>(
+  path: string,
+  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  bodyJson: string | undefined,
+  options: RequestOptions,
+): Promise<T> {
+  // 幂等键一次逻辑请求一把：5xx 重试与续期重放复用同一把键，服务端的
+  // 幂等去重才能把同一次提交认成一条事件。
+  const idempotencyKey = newIdempotencyKey();
+  let lastError: Error | null = null;
+  for (let attempt = 0; attempt < 2; attempt += 1) {
+    const headers: Record<string, string> = {};
+    // ADR-0010：访问令牌（人类通道）优先，机令牌（evals/脚本通道）兜底。
+    const token = getAccessToken() || getToken();
+    if (token) headers.Authorization = `Bearer ${token}`;
+    if (bodyJson !== undefined) headers['Content-Type'] = 'application/json';
+    if (method !== 'GET') headers['Idempotency-Key'] = idempotencyKey;
 
-  if (response.status === 401 && !options.skipAuthRedirect) {
-    // 有刷新令牌时先尝试无感续期，成功则原请求重放一次。
-    if (!options.retriedAfterRefresh && (getRefreshToken() || accessToken)) {
-      const refreshed = await refreshSession();
-      if (refreshed) {
-        return api<T>(path, { ...options, retriedAfterRefresh: true });
-      }
+    let response: Response;
+    try {
+      response = await fetch(path, { method, headers, body: bodyJson });
+    } catch (error) {
+      lastError = error instanceof Error ? error : new Error(String(error));
+      if (attempt > 0) throw lastError;
+      await delay(WRITE_RETRY_DELAY_MS);
+      continue;
     }
-    clearAccessToken();
-    notifyAuthInvalid('expired');
-    throw new ApiError(401, '令牌无效或已过期');
+
+    if (response.status === 401 && !options.skipAuthRedirect) {
+      // 有刷新令牌时先尝试无感续期，成功则原请求（同一幂等键）重放一次。
+      if (!options.retriedAfterRefresh && (getRefreshToken() || getAccessToken())) {
+        const refreshed = await refreshSession();
+        if (refreshed) {
+          return executeRequest<T>(path, method, bodyJson, { ...options, retriedAfterRefresh: true });
+        }
+      }
+      clearAccessToken();
+      notifyAuthInvalid('expired');
+      throw new ApiError(401, '令牌无效或已过期');
+    }
+    if (response.status === 403 && !options.skipAuthRedirect) {
+      notifyAuthInvalid('forbidden');
+      throw await apiError(response);
+    }
+    if (response.ok) {
+      const text = await response.text();
+      const data = (text ? JSON.parse(text) : {}) as T;
+      if (data && typeof data === 'object') {
+        (data as Record<string, unknown>).idempotencyReplayed =
+          response.headers.get('Idempotency-Replayed') === 'true';
+      }
+      return data;
+    }
+    const error = await apiError(response);
+    if (error.status < 500 || attempt > 0) throw error;
+    lastError = error;
+    await delay(WRITE_RETRY_DELAY_MS);
   }
-  if (response.status === 403 && !options.skipAuthRedirect) {
-    notifyAuthInvalid('forbidden');
-    throw new ApiError(403, await response.text().catch(() => '权限不足'));
-  }
-  if (!response.ok) {
-    throw new ApiError(response.status, await response.text().catch(() => response.statusText));
-  }
-  const text = await response.text();
-  return (text ? JSON.parse(text) : {}) as T;
+  throw lastError ?? new ApiError(500, '提交失败');
 }
 
 // ---- 契约类型（SHARED API CONTRACT，backend/cmd/server/console_api.go） ----
@@ -340,15 +410,56 @@ export interface TraceRow {
   createdAt?: string;
 }
 
-export interface MatchEventRow {
+// 比赛事件行（导演页与 Match 页共用；导演页视角的字段全集，
+// backend handleMatchAPI 的事件列表输出）。
+export interface DirectorEventRow {
   id: string;
+  factId?: string;
   eventType: string;
   clock?: string;
+  period?: string;
+  teamId?: string;
   teamName?: string;
   playerName?: string;
-  description?: string;
+  participants?: Array<{ role: string; name: string; teamId?: string; teamName?: string }>;
+  score?: ScoreLike;
+  reportedScore?: ScoreLike;
+  effectiveScoreAfter?: ScoreLike;
+  intensity?: number;
   confirmed?: boolean;
-  createdAt?: string;
+  factStatus?: string;
+  status?: string;
+  description?: string;
+  recommendedAction?: string;
+  proactiveText?: string;
+  evidence?: { correctionReason?: string } & Record<string, unknown>;
+  revisionOf?: string;
+}
+
+export interface DirectorConflict {
+  id: string;
+  status?: string;
+  members?: Array<{ role: string; factId: string }>;
+  edges?: Array<{ leftFactId: string; rightFactId: string }>;
+}
+
+export interface ScoreLike {
+  home: number;
+  away: number;
+}
+
+export interface MatchClockState {
+  period: string;
+  elapsedSeconds: number;
+  running: boolean;
+  anchorAt?: string | null;
+  version: number;
+}
+
+export interface VoiceDraftResponse {
+  transcript?: string;
+  draft?: Record<string, unknown>;
+  warnings?: string[];
 }
 
 export interface InteractionEventRow {
@@ -394,7 +505,47 @@ export const consoleApi = {
   matchUsers: (matchId: string) =>
     api<{ users: ConsoleUser[] }>(`/api/console/matches/${encodeURIComponent(matchId)}/users`),
   matchEvents: (matchId: string) =>
-    api<{ events: MatchEventRow[] }>(`/api/matches/${encodeURIComponent(matchId)}/events`),
+    api<{ events: DirectorEventRow[]; conflicts?: DirectorConflict[] }>(
+      `/api/matches/${encodeURIComponent(matchId)}/events`,
+    ),
+  // ---- 实战导演页（ADR-0011）：请求形状与 operator-control evals 断言一致 ----
+  matchConfig: (matchId: string) =>
+    api<Record<string, unknown>>(`/api/matches/${encodeURIComponent(matchId)}/config`),
+  matchClock: (matchId: string) =>
+    api<{ clock: MatchClockState; snapshot?: { score?: ScoreLike } }>(
+      `/api/matches/${encodeURIComponent(matchId)}/clock`,
+    ),
+  patchClock: (matchId: string, command: Record<string, unknown>) =>
+    api<{ clock: MatchClockState; snapshot?: { score?: ScoreLike } }>(
+      `/api/matches/${encodeURIComponent(matchId)}/clock`,
+      { method: 'PATCH', body: command },
+    ),
+  publishEvent: (matchId: string, payload: unknown) =>
+    api<{ event?: DirectorEventRow; snapshot?: { score?: ScoreLike }; idempotencyReplayed?: boolean }>(
+      `/api/matches/${encodeURIComponent(matchId)}/events`,
+      { method: 'POST', body: payload },
+    ),
+  correctEvent: (matchId: string, eventId: string, payload: unknown) =>
+    api<{ event?: DirectorEventRow; snapshot?: { score?: ScoreLike }; idempotencyReplayed?: boolean }>(
+      `/api/matches/${encodeURIComponent(matchId)}/events/${encodeURIComponent(eventId)}/correct`,
+      { method: 'POST', body: payload },
+    ),
+  factTransition: (matchId: string, factId: string, action: string) =>
+    api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/facts/${encodeURIComponent(factId)}/${action}`, {
+      method: 'POST',
+    }),
+  resolveConflict: (matchId: string, conflictId: string, body: Record<string, unknown>) =>
+    api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/conflicts/${encodeURIComponent(conflictId)}/resolve`, {
+      method: 'POST',
+      body,
+    }),
+  submitVoiceDraft: (matchId: string, body: Record<string, unknown>) =>
+    api<VoiceDraftResponse>(`/api/matches/${encodeURIComponent(matchId)}/drafts/voice`, { method: 'POST', body }),
+  publishVoiceDraft: (matchId: string, body: Record<string, unknown>) =>
+    api<{ event?: DirectorEventRow; snapshot?: { score?: ScoreLike }; idempotencyReplayed?: boolean }>(
+      `/api/matches/${encodeURIComponent(matchId)}/drafts/voice/publish`,
+      { method: 'POST', body },
+    ),
   interaction: (matchId: string, userId: string) => {
     const params = new URLSearchParams({ userId, limit: '50' });
     return api<{ events: InteractionEventRow[] }>(

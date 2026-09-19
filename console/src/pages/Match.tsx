@@ -3,7 +3,7 @@ import { Alert, Button, Card, Col, Drawer, Empty, Input, Row, Space, Table, Tag,
 import type { ColumnsType } from 'antd/es/table';
 import { useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
-import type { ConsoleUser, MatchEventRow, TraceRow } from '../api/client';
+import type { ConsoleUser, DirectorEventRow, TraceRow } from '../api/client';
 import { fmtDateTime, fmtTime, reasonCodeLabel, talkativenessLabel } from '../api/format';
 import { useAsync } from '../api/useAsync';
 import { ReactRouterLink } from '../components/ReactRouterLink';
@@ -32,7 +32,7 @@ export default function MatchPage() {
   const [drawerTrace, setDrawerTrace] = useState<TraceLike | null>(null);
 
   // 比赛层三路数据：事件流、审计轨迹、用户网格。
-  const events = useAsync<{ events: MatchEventRow[] }>(
+  const events = useAsync<{ events: DirectorEventRow[] }>(
     () => consoleApi.matchEvents(matchId),
     [matchId],
   );
@@ -139,7 +139,7 @@ export default function MatchPage() {
                   事件流
                 </Text>
                 {events.error ? <Alert type="error" showIcon message={events.error} /> : null}
-                <Table<MatchEventRow>
+                <Table<DirectorEventRow>
                   size="small"
                   rowKey="id"
                   columns={[
