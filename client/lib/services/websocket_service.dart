@@ -8,12 +8,43 @@ import 'client_timezone.dart';
 
 enum SocketStatus { connecting, connected, reconnecting, disconnected, failed }
 
+/// 连接抽象：服务只依赖 ready/stream/sink；默认实现包装真实
+/// WebSocketChannel，测试可注入 stub（close/add 抛错等残坏形态才能
+/// 确定性复现）。
+abstract interface class SocketConnection {
+  Future<void> get ready;
+
+  Stream<dynamic> get stream;
+
+  WebSocketSink get sink;
+}
+
+/// 连接工厂注入口。
+typedef SocketConnectionFactory = SocketConnection Function(
+  Uri url,
+  Iterable<String>? protocols,
+);
+
 class WebSocketService {
   final _messageController = StreamController<Map<String, dynamic>>.broadcast();
   final _binaryController = StreamController<Uint8List>.broadcast();
   final _statusController = StreamController<SocketStatus>.broadcast();
+  final SocketConnectionFactory _connectionFactory;
 
-  WebSocketChannel? _channel;
+  WebSocketService({SocketConnectionFactory? connectionFactory})
+      : _connectionFactory = connectionFactory ?? _defaultConnection;
+
+  static SocketConnection _defaultConnection(
+    Uri url,
+    Iterable<String>? protocols,
+  ) {
+    return _RealConnection(WebSocketChannel.connect(
+      url,
+      protocols: protocols,
+    ));
+  }
+
+  SocketConnection? _channel;
   StreamSubscription<dynamic>? _channelSubscription;
   Timer? _pingTimer;
   Timer? _reconnectTimer;
@@ -68,15 +99,20 @@ class WebSocketService {
     }
 
     await _channelSubscription?.cancel();
-    await _channel?.sink.close();
+    try {
+      // 旧连接可能已残坏：close 抛错吞掉，绝不让重连流程死在半路。
+      await _channel?.sink.close();
+    } catch (_) {
+      // 吞错后继续下面的重建。
+    }
 
     try {
       final protocols = _token.isEmpty
           ? null
           : <String>['qiuqiu-auth.${_encodeToken(_token)}'];
-      final channel = WebSocketChannel.connect(
+      final channel = _connectionFactory(
         Uri.parse(url),
-        protocols: protocols,
+        protocols,
       );
       _channel = channel;
       await channel.ready;
@@ -159,6 +195,9 @@ class WebSocketService {
       );
       return true;
     } catch (_) {
+      // 半开连接：写失败即进入可见的重连状态（_scheduleReconnect 幂等，
+      // 已有重连计时则忽略）。连接本就未建立时不需要额外触发。
+      _scheduleReconnect(_connectionGeneration);
       return false;
     }
   }
@@ -195,4 +234,20 @@ Map<String, dynamic> withClientContext(
     return message;
   }
   return {...message, 'timezone': timezone.trim()};
+}
+
+/// 真实连接的适配器：把 WebSocketChannel 收敛到 [SocketConnection]。
+class _RealConnection implements SocketConnection {
+  final WebSocketChannel inner;
+
+  _RealConnection(this.inner);
+
+  @override
+  Future<void> get ready => inner.ready;
+
+  @override
+  Stream<dynamic> get stream => inner.stream;
+
+  @override
+  WebSocketSink get sink => inner.sink;
 }
