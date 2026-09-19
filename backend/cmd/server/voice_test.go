@@ -81,7 +81,7 @@ func TestEvalVoiceSessionTextAndMockASRReachCompanion(t *testing.T) {
 
 func TestStreamingTranscriptReachesCompanionWithASRTraceMetadata(t *testing.T) {
 	agent := seededVoiceAgent(t, "streaming-voice-eval")
-	result, err := handleTranscribedVoiceSessionWithSignalID(
+	result, err := handleTranscribedVoiceSessionWithSignalIDOptions(
 		context.Background(),
 		agent,
 		nil,
@@ -91,9 +91,10 @@ func TestStreamingTranscriptReachesCompanionWithASRTraceMetadata(t *testing.T) {
 		"mimo",
 		fixedVoiceTime(),
 		"signal-stream-1",
+		voiceSessionOptions{},
 	)
 	if err != nil {
-		t.Fatalf("handleTranscribedVoiceSessionWithSignalID: %v", err)
+		t.Fatalf("handleTranscribedVoiceSessionWithSignalIDOptions: %v", err)
 	}
 	if !strings.Contains(result.Reply, "1-0") {
 		t.Fatalf("streaming transcript did not reach companion: %+v", result)

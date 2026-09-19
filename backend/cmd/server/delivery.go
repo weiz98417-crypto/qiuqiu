@@ -298,11 +298,18 @@ func recoverPendingDeliveries(ctx context.Context, writer *wsWriter, session *co
 	if session == nil || reader == nil || writer == nil {
 		return
 	}
-	recoveries, err := session.Recoveries(ctx, traceRecoverySource{reader: reader}, time.Now().UTC())
+	// server-residual-polish 1.4: source errors arrive as per-record
+	// recovery_source_error outcomes (logged in Recoveries); only resolved
+	// payloads replay on the wire, exactly as before.
+	outcomes, err := session.Recoveries(ctx, traceRecoverySource{reader: reader}, time.Now().UTC())
 	if err != nil {
 		return
 	}
-	for _, recovery := range recoveries {
+	for _, outcome := range outcomes {
+		if outcome.Status != conversation.RecoveryStatusResolved {
+			continue
+		}
+		recovery := outcome.Payload
 		if recovery.UserID != userID || recovery.MatchID != matchID {
 			continue
 		}

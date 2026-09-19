@@ -3,6 +3,7 @@ package conversation
 import (
 	"context"
 	"errors"
+	"log"
 	"sort"
 	"sync"
 	"time"
@@ -39,7 +40,27 @@ type WatchSession struct {
 	scheduler *Scheduler
 }
 
-func (s *WatchSession) Recoveries(ctx context.Context, source RecoverySource, now time.Time) ([]RecoveryPayload, error) {
+// Recovery status values (server-residual-polish 1.4): a recovery round either
+// resolves a pending delivery into a payload or records why the recovery source
+// failed — a broken source is no longer silently indistinguishable from
+// "nothing to recover".
+const (
+	RecoveryStatusResolved    = "recovered"
+	RecoveryStatusSourceError = "recovery_source_error"
+)
+
+// RecoveryOutcome is one pending delivery's result for this recovery round.
+type RecoveryOutcome struct {
+	// Status is RecoveryStatusResolved or RecoveryStatusSourceError.
+	Status string
+	// Payload carries the resolved recovery when Status is RecoveryStatusResolved.
+	Payload RecoveryPayload
+	// Error carries the recovery-source failure when Status is
+	// RecoveryStatusSourceError (also logged at resolution time).
+	Error error
+}
+
+func (s *WatchSession) Recoveries(ctx context.Context, source RecoverySource, now time.Time) ([]RecoveryOutcome, error) {
 	if s == nil || source == nil {
 		return nil, ErrRecoverySource
 	}
@@ -47,13 +68,18 @@ func (s *WatchSession) Recoveries(ctx context.Context, source RecoverySource, no
 		now = time.Now().UTC()
 	}
 	records := s.PendingDeliveries(now)
-	recoveries := make([]RecoveryPayload, 0, len(records))
+	outcomes := make([]RecoveryOutcome, 0, len(records))
 	for _, record := range records {
 		if !record.Critical || record.TraceID == "" || record.TextAcknowledged {
 			continue
 		}
 		payload, err := source.ResolveRecovery(ctx, s.MatchID, record.TraceID)
 		if err != nil {
+			// Recovery-source errors surface instead of vanishing: the
+			// per-record status lets the caller tell "the source is
+			// broken" apart from "nothing recoverable".
+			log.Printf("recovery source error match=%s trace=%s: %v", s.MatchID, record.TraceID, err)
+			outcomes = append(outcomes, RecoveryOutcome{Status: RecoveryStatusSourceError, Error: err})
 			continue
 		}
 		if payload.TraceID == "" {
@@ -65,9 +91,9 @@ func (s *WatchSession) Recoveries(ctx context.Context, source RecoverySource, no
 		if payload.DeliveryKey == "" {
 			payload.DeliveryKey = record.DeliveryKey
 		}
-		recoveries = append(recoveries, payload)
+		outcomes = append(outcomes, RecoveryOutcome{Status: RecoveryStatusResolved, Payload: payload})
 	}
-	return recoveries, nil
+	return outcomes, nil
 }
 
 type DeliveryLedgerRegistry struct {

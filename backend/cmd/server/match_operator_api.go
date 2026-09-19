@@ -30,6 +30,50 @@ import (
 	"qiuqiu/internal/operatorwrite"
 )
 
+// matchStateErrorStatus 是比赛运营 API 唯一的领域错误→HTTP 状态映射表
+// （server-residual-polish 1.2：此前 ErrNotFound→404 / ErrConflict→409 的
+// 判定散在 9 处内联 if/else）。ErrClockVersionConflict 与 ErrConflict 同为
+// 冲突语义；其余一律 400。
+func matchStateErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, matchstate.ErrNotFound):
+		return http.StatusNotFound
+	case errors.Is(err, matchstate.ErrConflict), errors.Is(err, matchstate.ErrClockVersionConflict):
+		return http.StatusConflict
+	default:
+		return http.StatusBadRequest
+	}
+}
+
+// writeMatchStateError 把映射结果直接写给客户端（幂等写包裹之外的调用面；
+// executeOperatorWrite 回调内走 matchStateWriteError，由幂等信封写响应体）。
+func writeMatchStateError(w http.ResponseWriter, err error) {
+	http.Error(w, err.Error(), matchStateErrorStatus(err))
+}
+
+// matchStateWriteError 携带映射后的状态，供 executeOperatorWrite 回调返回。
+func matchStateWriteError(err error) error {
+	return operatorError(matchStateErrorStatus(err), err)
+}
+
+// directorDraftErrorStatus 是语音草稿构建失败的映射变体：输入问题 400、
+// 服务未配置 503、上游 LLM/ASR 故障 502。
+func directorDraftErrorStatus(err error) int {
+	switch {
+	case errors.Is(err, directordraft.ErrNoInput), errors.Is(err, directordraft.ErrInvalidTranscript):
+		return http.StatusBadRequest
+	case errors.Is(err, directordraft.ErrNotConfigured), errors.Is(err, asr.ErrNotConfigured):
+		return http.StatusServiceUnavailable
+	default:
+		return http.StatusBadGateway
+	}
+}
+
+// directorDraftWriteError 携带草稿映射后的状态，供 executeOperatorWrite 回调返回。
+func directorDraftWriteError(err error) error {
+	return operatorError(directorDraftErrorStatus(err), err)
+}
+
 func handleMatchAPI(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client) http.HandlerFunc {
 	// 塌缩后的唯一入口：此前五层洋葱只在这里汇合。
 	return handleMatchAPIWithOperatorAuth(store, traceReader, demoResetter, cfg, llmClient, nil, nil, nil, operatorAuthz{cfg: cfg}, nil)
@@ -467,11 +511,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 			executeOperatorWrite(w, r, operatorWrites, matchID, "match.clock", body, func(_ context.Context) (operatorwrite.Response, error) {
 				clock, err := clockStore.SetClock(matchID, command)
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrClockVersionConflict) {
-						status = http.StatusConflict
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
 					"clock":    clock,
@@ -507,13 +547,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					Clock:   clockStore.Clock(matchID),
 				})
 				if err != nil {
-					status := http.StatusBadGateway
-					if errors.Is(err, directordraft.ErrNoInput) || errors.Is(err, directordraft.ErrInvalidTranscript) {
-						status = http.StatusBadRequest
-					} else if errors.Is(err, directordraft.ErrNotConfigured) || errors.Is(err, asr.ErrNotConfigured) {
-						status = http.StatusServiceUnavailable
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, directorDraftWriteError(err)
 				}
 				event, err := eventFromVoiceDraft(result, store.PublicSnapshot(matchID).Score)
 				if err != nil {
@@ -532,13 +566,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					created, snapshot, err = store.Create(matchID, event)
 				}
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrNotFound) {
-						status = http.StatusNotFound
-					} else if errors.Is(err, matchstate.ErrConflict) {
-						status = http.StatusConflict
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				if transactionalStore, supported := store.(matchstate.OperatorTransactionRepository); supported {
 					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
@@ -575,13 +603,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					Clock:   clockStore.Clock(matchID),
 				})
 				if err != nil {
-					status := http.StatusBadGateway
-					if errors.Is(err, directordraft.ErrNoInput) || errors.Is(err, directordraft.ErrInvalidTranscript) {
-						status = http.StatusBadRequest
-					} else if errors.Is(err, directordraft.ErrNotConfigured) || errors.Is(err, asr.ErrNotConfigured) {
-						status = http.StatusServiceUnavailable
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, directorDraftWriteError(err)
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, result)
 			})
@@ -621,13 +643,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					}
 				}
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrNotFound) {
-						status = http.StatusNotFound
-					} else if errors.Is(err, matchstate.ErrConflict) {
-						status = http.StatusConflict
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
 			})
@@ -699,13 +715,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					err = fmt.Errorf("%w: compatible fact selection is unavailable", matchstate.ErrInvalid)
 				}
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrNotFound) {
-						status = http.StatusNotFound
-					} else if errors.Is(err, matchstate.ErrConflict) {
-						status = http.StatusConflict
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				primary := existingByFactID[preferredFactID]
 				for _, event := range changedEvents {
@@ -785,11 +795,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 				}
 				saved, err := lifecycleStore.SetLifecycle(matchID, request.Lifecycle)
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrNotFound) {
-						status = http.StatusNotFound
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
 					"config": saved, "snapshot": store.PublicSnapshot(matchID), "operatorId": operator.Subject,
@@ -903,13 +909,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					}
 				}
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrNotFound) {
-						status = http.StatusNotFound
-					} else if errors.Is(err, matchstate.ErrConflict) {
-						status = http.StatusConflict
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
 					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
@@ -953,11 +953,7 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 					corrected, snapshot, err = store.Correct(matchID, parts[2], ev)
 				}
 				if err != nil {
-					status := http.StatusBadRequest
-					if errors.Is(err, matchstate.ErrNotFound) {
-						status = http.StatusNotFound
-					}
-					return operatorwrite.Response{}, operatorError(status, err)
+					return operatorwrite.Response{}, matchStateWriteError(err)
 				}
 				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
 					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
@@ -978,12 +974,10 @@ func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader com
 	}
 }
 
+// 语音 wrapper 链塌缩（server-residual-polish 1.3）：四层里两层纯转发 shim
+// 已删，只留无信号版入口与 ...WithSignalIDOptions 实装（转写版同理）。
 func handleVoiceSession(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time) (voiceSessionResult, error) {
-	return handleVoiceSessionWithSignalID(ctx, agent, recognizer, synthesizer, matchID, userID, text, audioB64, now, "")
-}
-
-func handleVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time, signalID string) (voiceSessionResult, error) {
-	return handleVoiceSessionWithSignalIDOptions(ctx, agent, recognizer, synthesizer, matchID, userID, text, audioB64, now, signalID, voiceSessionOptions{})
+	return handleVoiceSessionWithSignalIDOptions(ctx, agent, recognizer, synthesizer, matchID, userID, text, audioB64, now, "", voiceSessionOptions{})
 }
 
 func handleVoiceSessionWithSignalIDOptions(ctx context.Context, agent *companion.Agent, recognizer speechRecognizer, synthesizer speechSynthesizer, matchID, userID, text, audioB64 string, now time.Time, signalID string, options voiceSessionOptions) (voiceSessionResult, error) {
@@ -1021,8 +1015,4 @@ func handleVoiceSessionWithSignalIDOptions(ctx context.Context, agent *companion
 		}
 	}
 	return completeVoiceSessionWithOptions(ctx, agent, synthesizer, matchID, userID, now, signalID, result, voiceMeta, options)
-}
-
-func handleTranscribedVoiceSessionWithSignalID(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID, text, provider string, now time.Time, signalID string) (voiceSessionResult, error) {
-	return handleTranscribedVoiceSessionWithSignalIDOptions(ctx, agent, synthesizer, matchID, userID, text, provider, now, signalID, voiceSessionOptions{})
 }

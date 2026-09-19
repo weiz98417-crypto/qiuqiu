@@ -129,8 +129,6 @@ type voiceSessionResult struct {
 	TTSError       string
 }
 
-var submittedUserSignals = newSignalDeduper(userSignalDedupeTTL, userSignalDedupeMaxEntries)
-
 func qiuqiuReplyData(text, traceID, source, eventID, deliveryKey string, presentation relationship.PresentationPlan) map[string]interface{} {
 	data := map[string]interface{}{
 		"text":    text,
@@ -185,6 +183,9 @@ func main() {
 	ttsClient := configuredSpeechSynthesizer(cfg)
 	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
 	directorDrafts := directordraft.NewService(asrClient, directordraft.NewLLMExtractor(llmClient))
+	// 用户轮次信号去重器（server-residual-polish 1.3：原包级 global，改为
+	// main() 构造后经 watchDeps 显式注入）。
+	submittedUserSignals := newSignalDeduper(userSignalDedupeTTL, userSignalDedupeMaxEntries)
 
 	var sessionStore auth.Store = auth.NewMemoryStore()
 	var sessionStoreCloser func()
@@ -519,6 +520,7 @@ func main() {
 	mux.HandleFunc("/ws/match/", handleWatchConnection(watchDeps{
 		hub: hub, matchStore: matchStore, traceReader: traceReader, watchSessions: watchSessions,
 		agent: companionAgent, tts: ttsClient, asr: asrClient, cfg: cfg, memories: memoryQueue,
+		submittedSignals: submittedUserSignals,
 	}))
 
 	addr := ":" + cfg.Port

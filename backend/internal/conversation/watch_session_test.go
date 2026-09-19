@@ -127,11 +127,60 @@ func TestWatchSessionRecoversOnlyLiveCriticalDeliveries(t *testing.T) {
 	if err != nil {
 		t.Fatalf("retry Recoveries: %v", err)
 	}
-	if len(first) != 1 || first[0].TraceID != "trace-critical" || first[0].DeliveryKey != "goal:1" || first[0].Text != "进球了" || first[0].Presentation.Expression != "excited" {
+	if len(first) != 1 || first[0].Status != RecoveryStatusResolved ||
+		first[0].Payload.TraceID != "trace-critical" || first[0].Payload.DeliveryKey != "goal:1" ||
+		first[0].Payload.Text != "进球了" || first[0].Payload.Presentation.Expression != "excited" {
 		t.Fatalf("recoveries = %+v", first)
 	}
-	if len(second) != 1 || second[0].TraceID != first[0].TraceID {
+	if len(second) != 1 || second[0].Payload.TraceID != first[0].Payload.TraceID {
 		t.Fatalf("reconnect recovery was not idempotent: first=%+v second=%+v", first, second)
+	}
+}
+
+func TestWatchSessionRecoveriesSurfaceSourceErrors(t *testing.T) {
+	now := time.Date(2026, 9, 8, 12, 0, 0, 0, time.UTC)
+	ledger := NewMemoryDeliveryLedger()
+	for _, record := range []DeliveryRecord{
+		{Key: "critical-ok", DeliveryKey: "goal:1", TraceID: "trace-ok", UserID: "user-1", MatchID: "match-1", Critical: true, UpdatedAt: now, ExpiresAt: now.Add(time.Minute)},
+		{Key: "critical-broken", DeliveryKey: "goal:2", TraceID: "trace-broken", UserID: "user-1", MatchID: "match-1", Critical: true, UpdatedAt: now, ExpiresAt: now.Add(time.Minute)},
+	} {
+		if _, err := ledger.Plan(record); err != nil {
+			t.Fatalf("plan %s: %v", record.Key, err)
+		}
+	}
+	session := NewWatchSession(context.Background(), "user-1", "match-1", Config{}, ledger)
+	sourceErr := errors.New("trace store unavailable")
+	source := recoverySourceStub{
+		payloads: map[string]RecoveryPayload{
+			"trace-ok": {TraceID: "trace-ok", UserID: "user-1", MatchID: "match-1", Text: "进球了"},
+		},
+		errors: map[string]error{
+			"trace-broken": sourceErr,
+		},
+	}
+	outcomes, err := session.Recoveries(context.Background(), source, now)
+	if err != nil {
+		t.Fatalf("Recoveries: %v", err)
+	}
+	if len(outcomes) != 2 {
+		t.Fatalf("outcomes = %+v", outcomes)
+	}
+	var resolved, broken *RecoveryOutcome
+	for index := range outcomes {
+		switch outcomes[index].Status {
+		case RecoveryStatusResolved:
+			resolved = &outcomes[index]
+		case RecoveryStatusSourceError:
+			broken = &outcomes[index]
+		}
+	}
+	if resolved == nil || resolved.Payload.TraceID != "trace-ok" || resolved.Payload.Text != "进球了" {
+		t.Fatalf("resolved outcome missing or wrong: %+v", outcomes)
+	}
+	// A broken recovery source must be observable per record instead of
+	// silently collapsing into "nothing to recover".
+	if broken == nil || !errors.Is(broken.Error, sourceErr) || broken.Payload.TraceID != "" {
+		t.Fatalf("source-error outcome missing or wrong: %+v", outcomes)
 	}
 }
 
