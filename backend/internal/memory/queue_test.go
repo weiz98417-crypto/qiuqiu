@@ -3,6 +3,7 @@ package memory
 import (
 	"context"
 	"encoding/json"
+	"fmt"
 	"net/http"
 	"net/http/httptest"
 	"strings"
@@ -137,10 +138,6 @@ func stubQueueServer(insertFailures *atomic.Int64) *httptest.Server {
 	}))
 }
 
-func noBackoff() QueueOption {
-	return WithBackoff(func(int) time.Duration { return 0 })
-}
-
 func waitFor(t *testing.T, timeout time.Duration, check func() bool) {
 	t.Helper()
 	deadline := time.Now().Add(timeout)
@@ -153,24 +150,48 @@ func waitFor(t *testing.T, timeout time.Duration, check func() bool) {
 	t.Fatal("condition not met before timeout")
 }
 
-func TestQueueRetriesWithBackoffThenAccepts(t *testing.T) {
-	var insertFailures atomic.Int64
-	insertFailures.Store(2)
-	server := stubQueueServer(&insertFailures)
+// TestQueueSingleFailedWriteHandsOffToBacklog pins the backlog-first
+// contract: the first Observe failure goes straight to the persistent
+// backlog with exactly one adapter attempt — no inline retry, no drainer
+// sleep while every other user's moments queue up behind the backoff.
+func TestQueueSingleFailedWriteHandsOffToBacklog(t *testing.T) {
+	var insertCalls atomic.Int64
+	server, _ := stubMemobaseServer(func(r recordedRequest) (int, []byte) {
+		switch {
+		case r.method == http.MethodPost && strings.HasPrefix(r.path, "/api/v1/blobs/insert/"):
+			if insertCalls.Add(1) == 1 {
+				return http.StatusInternalServerError, []byte("memobase down")
+			}
+			return http.StatusOK, memobaseOK(`"blob-1"`)
+		case r.method == http.MethodGet && strings.HasPrefix(r.path, "/api/v1/users/"):
+			return http.StatusOK, memobaseOK(`{}`)
+		default:
+			return http.StatusOK, memobaseOK(`null`)
+		}
+	})
 	defer server.Close()
 	audit := &auditLog{}
-	adapter := NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"})
-	queue := NewQueue(adapter, audit, nil, noBackoff(), WithMaxAttempts(3))
+	backlog := newBacklogTable()
+	queue := NewQueue(NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"}), audit, backlog)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go queue.Run(ctx)
-	if err := queue.Observe(ctx, Moment{UserID: "user-1", Kind: MomentUserFact, Content: "我喜欢皇马", Importance: 0.8}); err != nil {
+	if err := queue.Observe(ctx, Moment{UserID: "user-1", Kind: MomentUserFact, Content: "我喜欢皇马", Importance: 0.8, LedgerSequence: 42}); err != nil {
 		t.Fatalf("Observe: %v", err)
 	}
-	waitFor(t, 2*time.Second, func() bool { return audit.count(ReasonAccepted) == 1 })
-	accepted := audit.last()
-	if accepted.UserID != "user-1" || accepted.Kind != MomentUserFact || !almostEqual(accepted.Importance, 0.8) {
-		t.Fatalf("accepted audit = %+v, want the original enqueue-time values", accepted)
+	waitFor(t, 2*time.Second, func() bool { return audit.count(ReasonBacklogged) == 1 })
+	if insertCalls.Load() != 1 {
+		t.Fatalf("adapter insert calls = %d, want exactly 1 before the backlog handoff", insertCalls.Load())
+	}
+	if backlog.size() != 1 {
+		t.Fatalf("backlog size = %d, want the failed moment handed to the persistent backlog", backlog.size())
+	}
+	handed := audit.last()
+	if handed.LedgerSequence != 42 || !almostEqual(handed.Importance, 0.8) {
+		t.Fatalf("backlog audit = %+v, want enqueue-time values preserved", handed)
+	}
+	if handed.Detail == "" {
+		t.Fatal("backlog audit must carry the adapter failure detail")
 	}
 }
 
@@ -181,7 +202,7 @@ func TestQueueBacklogsWhenMemobaseStaysDownAndReplaysAfterRecovery(t *testing.T)
 	audit := &auditLog{}
 	backlog := newBacklogTable()
 	adapter := NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"})
-	queue := NewQueue(adapter, audit, backlog, noBackoff(), WithMaxAttempts(2))
+	queue := NewQueue(adapter, audit, backlog)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go queue.Run(ctx)
@@ -269,7 +290,7 @@ func TestQueueReflectNowAuditsCitedSequences(t *testing.T) {
 	reflections := &reflectionLog{}
 	audit := &auditLog{}
 	adapter := NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"})
-	queue := NewQueue(adapter, audit, nil, WithReflections(reflections), noBackoff())
+	queue := NewQueue(adapter, audit, nil, WithReflections(reflections))
 	ctx := context.Background()
 	queue.trackCitation("user-1", 11)
 	queue.trackCitation("user-1", 12)
@@ -303,24 +324,10 @@ func (l *reflectionLog) RecordReflection(_ context.Context, entry ReflectionAudi
 	return nil
 }
 
-func TestBackoffCurvesAreExponentialAndCapped(t *testing.T) {
-	cases := []struct {
-		attempt int
-		want    time.Duration
-	}{
-		{attempt: 1, want: 0},
-		{attempt: 2, want: 500 * time.Millisecond},
-		{attempt: 3, want: time.Second},
-		{attempt: 4, want: 2 * time.Second},
-	}
-	for _, testCase := range cases {
-		if got := DefaultBackoff(testCase.attempt); got != testCase.want {
-			t.Fatalf("DefaultBackoff(%d) = %v, want %v", testCase.attempt, got, testCase.want)
-		}
-	}
-	if got := DefaultBackoff(40); got != 30*time.Second {
-		t.Fatalf("DefaultBackoff cap = %v, want 30s", got)
-	}
+func TestBacklogRetryDelayCurveIsExponentialAndCapped(t *testing.T) {
+	// Backlog-first: the replay channel is the only place a retry backoff
+	// still exists — 30s, 1m, 2m, ... capped at 10m, parked after
+	// MaxBacklogAttempts by the store.
 	if got := BacklogRetryDelay(1); got != 30*time.Second {
 		t.Fatalf("BacklogRetryDelay(1) = %v, want 30s", got)
 	}
@@ -345,5 +352,68 @@ func TestDecodeMomentFieldsRoundTripsAuditValues(t *testing.T) {
 	var body map[string]any
 	if err := json.Unmarshal(payload, &body); err != nil {
 		t.Fatalf("payload is not valid JSON: %v", err)
+	}
+}
+
+func TestQueueCitationLedgerStaysBounded(t *testing.T) {
+	queue := NewQueue(NewMemobase(MemobaseConfig{}), nil, nil)
+	for i := 0; i < maxCitationUsers+10; i++ {
+		queue.trackCitation(fmt.Sprintf("user-%d", i), int64(i))
+	}
+	if len(queue.citations) != maxCitationUsers {
+		t.Fatalf("citation users = %d, want the cap %d", len(queue.citations), maxCitationUsers)
+	}
+	if len(queue.citationOrder) != maxCitationUsers {
+		t.Fatalf("citation order index = %d, want the cap %d", len(queue.citationOrder), maxCitationUsers)
+	}
+	if _, tracked := queue.citations["user-0"]; tracked {
+		t.Fatal("the longest-unreflected user must be evicted first")
+	}
+	newest := fmt.Sprintf("user-%d", maxCitationUsers+9)
+	if _, tracked := queue.citations[newest]; !tracked {
+		t.Fatal("the newest user must survive the bound")
+	}
+	if users := queue.ActiveUsers(); len(users) != maxCitationUsers {
+		t.Fatalf("ActiveUsers = %d, want the capped count", len(users))
+	}
+	// Taking a ledger removes the user from the bound index as well.
+	if taken := queue.takeCitations(newest); len(taken) == 0 {
+		t.Fatal("takeCitations returned nothing for a tracked user")
+	}
+	if len(queue.citationOrder) != maxCitationUsers-1 {
+		t.Fatalf("citation order index after take = %d, want %d", len(queue.citationOrder), maxCitationUsers-1)
+	}
+}
+
+func TestQueueRecentMatchEndsStayBounded(t *testing.T) {
+	queue := NewQueue(NewMemobase(MemobaseConfig{}), nil, nil)
+	// Space out the first two records past one wall-clock tick so the
+	// earliest-evicted assertion below is deterministic on coarse timers.
+	queue.NotifyMatchEnded("match-0")
+	time.Sleep(20 * time.Millisecond)
+	queue.NotifyMatchEnded("match-1")
+	time.Sleep(20 * time.Millisecond)
+	total := maxRecentMatchEnds + 24
+	for i := 2; i < total; i++ {
+		queue.NotifyMatchEnded(fmt.Sprintf("match-%d", i))
+	}
+	queue.pendingMu.Lock()
+	size := len(queue.recentMatchEnds)
+	_, earliestKept := queue.recentMatchEnds["match-0"]
+	queue.pendingMu.Unlock()
+	if size != maxRecentMatchEnds {
+		t.Fatalf("recent match ends = %d, want the cap %d", size, maxRecentMatchEnds)
+	}
+	if earliestKept {
+		t.Fatal("the earliest ended match must be evicted once the ledger overflows")
+	}
+	if ended := queue.TakeMatchEnds(); len(ended) != maxRecentMatchEnds {
+		t.Fatalf("TakeMatchEnds = %d, want the surviving %d", len(ended), maxRecentMatchEnds)
+	}
+	queue.pendingMu.Lock()
+	drained := len(queue.recentMatchEnds)
+	queue.pendingMu.Unlock()
+	if drained != 0 {
+		t.Fatalf("recent match ends after take = %d, want drained", drained)
 	}
 }

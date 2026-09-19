@@ -144,6 +144,92 @@ func TestQueuePortraitMutationsNeedAnOverlayStore(t *testing.T) {
 	}
 }
 
+// failingListOverlays simulates the overlay store failing on its List half
+// so the whole-portrait forget hits a partial-delete state.
+type failingListOverlays struct {
+	MemoryPortraitOverlays
+	listErr error
+}
+
+func (f *failingListOverlays) List(context.Context, string) ([]PortraitOverlay, error) {
+	return nil, f.listErr
+}
+
+func TestForgetPortraitSurfacesAdapterFailureInsteadOfHalfDelete(t *testing.T) {
+	server, _ := stubMemobaseServer(func(recordedRequest) (int, []byte) {
+		return http.StatusInternalServerError, []byte("memobase down")
+	})
+	defer server.Close()
+	ctx := context.Background()
+	overlays := NewMemoryPortraitOverlays()
+	queue := NewQueue(NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"}), nil, nil, WithPortraitOverlays(overlays))
+	if _, err := queue.SetPortraitEntry(ctx, "user-1", "basic_info", "favorite_player", "佩德里", ""); err != nil {
+		t.Fatalf("SetPortraitEntry: %v", err)
+	}
+	if err := queue.ForgetPortrait(ctx, "user-1"); err == nil {
+		t.Fatal("ForgetPortrait with an unreachable adapter must error, not report a half-done privacy delete as success")
+	}
+	remaining, err := overlays.List(ctx, "user-1")
+	if err != nil || len(remaining) != 1 || remaining[0].Deleted {
+		t.Fatalf("overlays after failed forget = %+v err=%v, want the entry untouched", remaining, err)
+	}
+}
+
+func TestForgetPortraitSurfacesOverlayListFailure(t *testing.T) {
+	listErr := errors.New("overlay list unavailable")
+	overlays := &failingListOverlays{MemoryPortraitOverlays: *NewMemoryPortraitOverlays(), listErr: listErr}
+	queue := NewQueue(NewMemobase(MemobaseConfig{}), nil, nil, WithPortraitOverlays(overlays))
+	if err := queue.ForgetPortrait(context.Background(), "user-1"); !errors.Is(err, listErr) {
+		t.Fatalf("ForgetPortrait List failure = %v, want %v (the half-deleted portrait must not report success)", err, listErr)
+	}
+}
+
+func TestForgetPortraitStillSucceedsForDevLocalOnlyAndHealthyAdapter(t *testing.T) {
+	server, requestsFn := stubMemobaseServer(func(r recordedRequest) (int, []byte) {
+		switch {
+		case r.method == http.MethodGet && strings.HasPrefix(r.path, "/api/v1/users/profile/"):
+			return http.StatusOK, memobaseOK(`{"profiles":[{"id":"prof-team","content":"皇马","attributes":{"topic":"basic_info","sub_topic":"favorite_team"},"updated_at":"2026-09-01T03:04:05Z"}]}`)
+		case r.method == http.MethodGet && strings.HasPrefix(r.path, "/api/v1/users/"):
+			return http.StatusOK, memobaseOK(`{}`)
+		default:
+			return http.StatusOK, memobaseOK(`null`)
+		}
+	})
+	defer server.Close()
+
+	ctx := context.Background()
+	// Unconfigured Memobase (dev): only the local half exists, so the delete
+	// must keep succeeding.
+	localOnly := NewMemoryPortraitOverlays()
+	devQueue := NewQueue(NewMemobase(MemobaseConfig{}), nil, nil, WithPortraitOverlays(localOnly))
+	if _, err := devQueue.SetPortraitEntry(ctx, "user-1", "basic_info", "favorite_player", "佩德里", ""); err != nil {
+		t.Fatalf("SetPortraitEntry: %v", err)
+	}
+	if err := devQueue.ForgetPortrait(ctx, "user-1"); err != nil {
+		t.Fatalf("ForgetPortrait without Memobase = %v, want the local-only delete to succeed", err)
+	}
+	remaining, _ := localOnly.List(ctx, "user-1")
+	if len(remaining) != 1 || !remaining[0].Deleted {
+		t.Fatalf("overlays after dev forget = %+v, want the tombstoned slot", remaining)
+	}
+
+	// Healthy Memobase: the synthesis slot is tombstoned and forwarded too.
+	overlays := NewMemoryPortraitOverlays()
+	queue := NewQueue(NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"}), nil, nil, WithPortraitOverlays(overlays))
+	if err := queue.ForgetPortrait(ctx, "user-2"); err != nil {
+		t.Fatalf("ForgetPortrait with a healthy adapter: %v", err)
+	}
+	forwardedDelete := false
+	for _, request := range requestsFn() {
+		if request.method == http.MethodDelete && strings.HasSuffix(request.path, "/prof-team") {
+			forwardedDelete = true
+		}
+	}
+	if !forwardedDelete {
+		t.Fatalf("requests = %+v, want the forwarded synthesis DELETE", requestsFn())
+	}
+}
+
 // hiddenOverlays simulates the privacy lifecycle at the store seam: Check
 // reports an active user tombstone so the whole portrait must disappear.
 type hiddenOverlays struct {

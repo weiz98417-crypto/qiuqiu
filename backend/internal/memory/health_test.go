@@ -33,8 +33,6 @@ func TestHealthTracksBacklogDepthAndAuditTail(t *testing.T) {
 		NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "health-token"}),
 		nil,
 		backlog,
-		noBackoff(),
-		WithMaxAttempts(1),
 	)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
@@ -75,7 +73,7 @@ func TestHealthTracksBacklogDepthAndAuditTail(t *testing.T) {
 func TestHealthAuditTailStaysBounded(t *testing.T) {
 	server := stubQueueServer(&atomic.Int64{})
 	defer server.Close()
-	queue := NewQueue(NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "health-token"}), nil, nil, noBackoff())
+	queue := NewQueue(NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "health-token"}), nil, nil)
 	ctx, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	go queue.Run(ctx)

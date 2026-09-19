@@ -88,26 +88,27 @@ type BacklogStore interface {
 const MaxBacklogAttempts = 10
 
 // Queue fronts a Memobase adapter with the async write path from ADR-0006:
-// Observe never blocks a watch turn (bounded channel, drainer goroutine,
-// exponential backoff) and outages drain into the local backlog. The
-// open-thread ledger (C2) stays local: Threads/AppendThread delegate to the
-// ThreadStore behind WithThreads instead of Memobase.
+// Observe never blocks a watch turn (bounded channel, drainer goroutine) and
+// outages drain into the local backlog. The write itself gets exactly one
+// inline attempt — the first failure hands the moment to the persistent
+// backlog (backlog-first) instead of sleeping the drainer shared by every
+// user. The open-thread ledger (C2) stays local: Threads/AppendThread
+// delegate to the ThreadStore behind WithThreads instead of Memobase.
 type Queue struct {
-	adapter     *Memobase
-	audit       AuditSink
-	reflections ReflectionSink
-	backlog     BacklogStore
-	threads     ThreadStore
-	portraits   PortraitOverlayStore
+	adapter      *Memobase
+	audit        AuditSink
+	reflections  ReflectionSink
+	backlog      BacklogStore
+	threads      ThreadStore
+	portraits    PortraitOverlayStore
 
-	items     chan enqueueItem
-	dropped   atomic.Int64
-	backoff   func(attempt int) time.Duration
-	maxAttempts int
+	items        chan enqueueItem
+	dropped      atomic.Int64
 	backlogBatch int
 
 	pendingMu      sync.Mutex
 	citations      map[string][]int64
+	citationOrder  []string
 	recentMatchEnds map[string]time.Time
 
 	// Console health (ADR-0008 overview memory cell): a bounded tail of the
@@ -123,26 +124,8 @@ type enqueueItem struct {
 	reasonCode string // empty means proceed to extraction
 }
 
-// QueueOption tunes the drainer (tests shrink the backoff).
+// QueueOption tunes the drainer.
 type QueueOption func(*Queue)
-
-// WithBackoff overrides the retry delay function (attempt is 1-based).
-func WithBackoff(delay func(attempt int) time.Duration) QueueOption {
-	return func(q *Queue) {
-		if delay != nil {
-			q.backoff = delay
-		}
-	}
-}
-
-// WithMaxAttempts bounds per-moment retries before backlogging (minimum 1).
-func WithMaxAttempts(attempts int) QueueOption {
-	return func(q *Queue) {
-		if attempts >= 1 {
-			q.maxAttempts = attempts
-		}
-	}
-}
 
 // WithBacklogBatch sets how many due backlog rows one drain cycle replays.
 func WithBacklogBatch(size int) QueueOption {
@@ -192,8 +175,6 @@ func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options 
 		audit:           audit,
 		backlog:         backlog,
 		items:           make(chan enqueueItem, queueCapacity),
-		backoff:         DefaultBackoff,
-		maxAttempts:     3,
 		backlogBatch:    20,
 		citations:       make(map[string][]int64),
 		recentMatchEnds: make(map[string]time.Time),
@@ -210,23 +191,21 @@ func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options 
 // and logged, never allowed to block a turn.
 const queueCapacity = 256
 
-// DefaultBackoff: immediate first try, then 500ms, 1s, 2s, ... capped at 30s.
-func DefaultBackoff(attempt int) time.Duration {
-	if attempt <= 1 {
-		return 0
-	}
-	delay := 500 * time.Millisecond
-	for attempt > 2 && delay < 30*time.Second {
-		delay *= 2
-		attempt--
-	}
-	if delay > 30*time.Second {
-		delay = 30 * time.Second
-	}
-	return delay
-}
+// Bounds keeping the drainer's in-process ledgers memory-flat no matter how
+// many users or matches a long-running process sees:
+const (
+	// maxCitationUsers caps how many users may hold untaken citation
+	// ledgers at once; the longest-unreflected users are evicted first
+	// (citations are best-effort reflection hints, never correctness data).
+	maxCitationUsers = 256
+	// maxRecentMatchEnds caps the pending match-end ledger the same way;
+	// the earliest-ended matches are dropped first.
+	maxRecentMatchEnds = 256
+)
 
 // BacklogRetryDelay paces backlog replay: 30s, 1m, 2m, ... capped at 10m.
+// It is the only retry backoff left: the drainer itself writes once and
+// hands failures to the backlog, whose replays this curve spaces out.
 func BacklogRetryDelay(attempts int) time.Duration {
 	if attempts <= 0 {
 		return 30 * time.Second
@@ -410,12 +389,22 @@ func (q *Queue) ForgetPortraitEntry(ctx context.Context, userID, topic, subTopic
 }
 
 // ForgetPortrait forgets every slot at once (whole-portrait delete). It
-// tombstones synthesis slots and user-created overlay slots alike.
+// tombstones synthesis slots and user-created overlay slots alike. Failures
+// surface honestly: an unreachable adapter means the remote synthesis slots
+// cannot be deleted, and reporting that as success would hide a half-done
+// privacy deletion — callers map the error to a 5xx. Without a configured
+// Memobase (dev) there is no remote half, so the local delete still runs.
 func (q *Queue) ForgetPortrait(ctx context.Context, userID string) error {
 	if q == nil || q.portraits == nil {
 		return ErrNotSupported
 	}
-	portrait, _ := q.adapter.Portrait(ctx, userID)
+	var portrait Portrait
+	if q.adapter.Configured() {
+		var err error
+		if portrait, err = q.adapter.Portrait(ctx, userID); err != nil {
+			return err
+		}
+	}
 	seen := make(map[string]bool, len(portrait.Entries))
 	for _, entry := range portrait.Entries {
 		key := portraitKey(entry.Topic, entry.SubTopic)
@@ -431,7 +420,7 @@ func (q *Queue) ForgetPortrait(ctx context.Context, userID string) error {
 	}
 	overlays, err := q.portraits.List(ctx, userID)
 	if err != nil {
-		return nil
+		return err
 	}
 	for _, overlay := range overlays {
 		if overlay.Deleted {
@@ -527,41 +516,39 @@ func (q *Queue) Run(ctx context.Context) {
 	}
 }
 
+// process writes the moment with exactly one inline attempt (backlog-first):
+// the first Observe/Flush failure hands the moment to the persistent backlog
+// instead of sleeping this drainer — one user's Memobase jitter must not
+// queue everyone else's moments behind a backoff. The backlog channel paces
+// its own replays with BacklogRetryDelay; without a backlog store (dev mode
+// without Postgres) the failure is audited and dropped, as before.
 func (q *Queue) process(ctx context.Context, item enqueueItem) {
 	if item.reasonCode != "" {
 		q.recordAudit(ctx, rejectionAudit(item.moment, item.reasonCode))
 		return
 	}
-	moment := item.moment
-	var lastErr error
-	for attempt := 1; attempt <= q.maxAttempts; attempt++ {
-		if delay := q.backoff(attempt); delay > 0 && !q.sleep(ctx, delay) {
-			return
-		}
-		if ctx.Err() != nil {
-			return
-		}
-		if err := q.adapter.Observe(ctx, moment); err != nil {
-			lastErr = err
-			continue
-		}
-		if err := q.adapter.Flush(ctx, moment.UserID); err != nil {
-			lastErr = err
-			continue
-		}
-		q.recordAudit(ctx, ExtractionAudit{
-			MomentID:       momentID(moment),
-			UserID:         moment.UserID,
-			Kind:           moment.Kind,
-			Importance:     moment.Importance,
-			LedgerSequence: moment.LedgerSequence,
-			ReasonCode:     ReasonAccepted,
-			CreatedAt:      time.Now().UTC(),
-		})
-		q.drainBacklog(ctx)
+	if ctx.Err() != nil {
 		return
 	}
-	q.backlogMoment(ctx, moment, lastErr)
+	moment := item.moment
+	if err := q.adapter.Observe(ctx, moment); err != nil {
+		q.backlogMoment(ctx, moment, err)
+		return
+	}
+	if err := q.adapter.Flush(ctx, moment.UserID); err != nil {
+		q.backlogMoment(ctx, moment, err)
+		return
+	}
+	q.recordAudit(ctx, ExtractionAudit{
+		MomentID:       momentID(moment),
+		UserID:         moment.UserID,
+		Kind:           moment.Kind,
+		Importance:     moment.Importance,
+		LedgerSequence: moment.LedgerSequence,
+		ReasonCode:     ReasonAccepted,
+		CreatedAt:      time.Now().UTC(),
+	})
+	q.drainBacklog(ctx)
 }
 
 func (q *Queue) backlogMoment(ctx context.Context, moment Moment, cause error) {
@@ -729,14 +716,25 @@ func (q *Queue) ReflectNow(ctx context.Context, userID, matchID, trigger string)
 }
 
 // NotifyMatchEnded records a finished match so the next reflection beat can
-// run the post-match pass; safe to call from event callbacks.
+// run the post-match pass; safe to call from event callbacks. The ledger is
+// bounded: beyond maxRecentMatchEnds the earliest-ended matches are dropped.
 func (q *Queue) NotifyMatchEnded(matchID string) {
 	if q == nil || strings.TrimSpace(matchID) == "" {
 		return
 	}
 	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
 	q.recentMatchEnds[matchID] = time.Now().UTC()
-	q.pendingMu.Unlock()
+	for len(q.recentMatchEnds) > maxRecentMatchEnds {
+		oldestID := ""
+		var oldest time.Time
+		for id, endedAt := range q.recentMatchEnds {
+			if oldestID == "" || endedAt.Before(oldest) {
+				oldestID, oldest = id, endedAt
+			}
+		}
+		delete(q.recentMatchEnds, oldestID)
+	}
 }
 
 // TakeMatchEnds returns and clears recently ended match IDs.
@@ -768,13 +766,34 @@ func (q *Queue) ActiveUsers() []string {
 	return users
 }
 
+// forgetCitationUser drops a user from the insertion-order index once its
+// ledger was taken (or evicted); keeps citationOrder as long as the map.
+func (q *Queue) forgetCitationUser(userID string) {
+	for index, pending := range q.citationOrder {
+		if pending == userID {
+			q.citationOrder = append(q.citationOrder[:index], q.citationOrder[index+1:]...)
+			return
+		}
+	}
+}
+
 func (q *Queue) trackCitation(userID string, sequence int64) {
 	q.pendingMu.Lock()
 	defer q.pendingMu.Unlock()
+	if _, tracked := q.citations[userID]; !tracked {
+		// citationOrder preserves insertion order so the bound below evicts
+		// the longest-unreflected users instead of a random map entry.
+		q.citationOrder = append(q.citationOrder, userID)
+	}
 	q.citations[userID] = append(q.citations[userID], sequence)
 	const maxCitations = 64
 	if len(q.citations[userID]) > maxCitations {
 		q.citations[userID] = q.citations[userID][len(q.citations[userID])-maxCitations:]
+	}
+	for len(q.citations) > maxCitationUsers {
+		oldest := q.citationOrder[0]
+		q.citationOrder = q.citationOrder[1:]
+		delete(q.citations, oldest) // no-op if takeCitations already removed it
 	}
 }
 
@@ -783,21 +802,11 @@ func (q *Queue) takeCitations(userID string) []int64 {
 	defer q.pendingMu.Unlock()
 	cited := q.citations[userID]
 	delete(q.citations, userID)
+	q.forgetCitationUser(userID)
 	if len(cited) > 0 {
 		return append([]int64(nil), cited...)
 	}
 	return nil
-}
-
-func (q *Queue) sleep(ctx context.Context, delay time.Duration) bool {
-	timer := time.NewTimer(delay)
-	defer timer.Stop()
-	select {
-	case <-ctx.Done():
-		return false
-	case <-timer.C:
-		return true
-	}
 }
 
 // momentID derives a stable audit identifier from the moment content.

@@ -4,6 +4,7 @@ import (
 	"context"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"io"
 	"net/http"
 	"net/http/httptest"
@@ -240,5 +241,32 @@ func TestMemobaseUnconfiguredAdapterDegradesImmediately(t *testing.T) {
 	}
 	if _, err := adapter.Threads(context.Background(), "user-1"); !errors.Is(err, ErrNotSupported) {
 		t.Fatalf("Threads = %v, want ErrNotSupported until the C2 store lands", err)
+	}
+}
+
+func TestMemobaseUserCacheStaysBoundedAndEvictsLeastRecentlyUsed(t *testing.T) {
+	adapter := NewMemobase(MemobaseConfig{})
+	for i := 0; i < maxCachedUsers; i++ {
+		adapter.cacheUser(fmt.Sprintf("user-%d", i), fmt.Sprintf("remote-%d", i))
+	}
+	if len(adapter.userCache) != maxCachedUsers {
+		t.Fatalf("cache size = %d, want the cap %d", len(adapter.userCache), maxCachedUsers)
+	}
+	// Touch the oldest entry so it becomes the most recently used.
+	if remote, cached := adapter.cachedUser("user-0"); !cached || remote != "remote-0" {
+		t.Fatalf("cachedUser(user-0) = %q cached=%t, want the cached mapping", remote, cached)
+	}
+	adapter.cacheUser("user-new", "remote-new")
+	if len(adapter.userCache) != maxCachedUsers {
+		t.Fatalf("cache size after overflow = %d, want the cap %d", len(adapter.userCache), maxCachedUsers)
+	}
+	if _, cached := adapter.cachedUser("user-0"); !cached {
+		t.Fatal("the just-touched entry must survive eviction (LRU order)")
+	}
+	if _, cached := adapter.cachedUser("user-1"); cached {
+		t.Fatal("the least recently used entry must be evicted first")
+	}
+	if _, cached := adapter.cachedUser("user-new"); !cached {
+		t.Fatal("the newest entry must survive eviction")
 	}
 }

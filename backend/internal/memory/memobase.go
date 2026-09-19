@@ -55,7 +55,17 @@ const (
 	maxRecallBlockRunes      = 480
 	maxResponseBodyBytes     = 1 << 20
 	defaultExtractionTimeout = 10 * time.Second
+	// maxCachedUsers bounds the remote user-id cache so a long-running
+	// process stays memory-flat; eviction is LRU.
+	maxCachedUsers = 512
 )
+
+// userCacheEntry is one cached local→remote user id mapping with a logical
+// clock stamp for LRU eviction.
+type userCacheEntry struct {
+	remote   string
+	lastUsed uint64
+}
 
 type MemobaseConfig struct {
 	// BaseURL is the Memobase API root without the /api/v1 suffix,
@@ -74,7 +84,8 @@ type Memobase struct {
 	httpClient  *http.Client
 	degraded    atomic.Bool
 	userCacheMu sync.Mutex
-	userCache   map[string]string
+	userCache   map[string]userCacheEntry
+	cacheClock  uint64
 }
 
 func NewMemobase(cfg MemobaseConfig) *Memobase {
@@ -86,7 +97,7 @@ func NewMemobase(cfg MemobaseConfig) *Memobase {
 		baseURL:    strings.TrimRight(strings.TrimSpace(cfg.BaseURL), "/"),
 		token:      strings.TrimSpace(cfg.Token),
 		httpClient: &http.Client{Timeout: timeout},
-		userCache:  make(map[string]string),
+		userCache:  make(map[string]userCacheEntry),
 	}
 }
 
@@ -302,13 +313,10 @@ func memobaseUserID(userID string) string {
 }
 
 func (m *Memobase) ensureUser(ctx context.Context, userID string) (string, error) {
-	m.userCacheMu.Lock()
-	remote, cached := m.userCache[userID]
-	m.userCacheMu.Unlock()
-	if cached {
+	if remote, cached := m.cachedUser(userID); cached {
 		return remote, nil
 	}
-	remote = memobaseUserID(userID)
+	remote := memobaseUserID(userID)
 	if _, err := m.call(ctx, http.MethodGet, "/users/"+remote, nil, nil); err == nil {
 		m.cacheUser(userID, remote)
 		return remote, nil
@@ -324,10 +332,40 @@ func (m *Memobase) ensureUser(ctx context.Context, userID string) (string, error
 	return remote, nil
 }
 
+// cachedUser returns the cached remote id and refreshes its recency stamp.
+func (m *Memobase) cachedUser(userID string) (string, bool) {
+	m.userCacheMu.Lock()
+	defer m.userCacheMu.Unlock()
+	entry, cached := m.userCache[userID]
+	if !cached {
+		return "", false
+	}
+	m.cacheClock++
+	entry.lastUsed = m.cacheClock
+	m.userCache[userID] = entry
+	return entry.remote, true
+}
+
+// cacheUser stores one mapping, evicting the least recently used entry once
+// the cache grows past maxCachedUsers.
 func (m *Memobase) cacheUser(userID, remote string) {
 	m.userCacheMu.Lock()
-	m.userCache[userID] = remote
-	m.userCacheMu.Unlock()
+	defer m.userCacheMu.Unlock()
+	m.cacheClock++
+	m.userCache[userID] = userCacheEntry{remote: remote, lastUsed: m.cacheClock}
+	if len(m.userCache) <= maxCachedUsers {
+		return
+	}
+	oldestKey := ""
+	var oldestUsed uint64
+	for key, entry := range m.userCache {
+		if oldestKey == "" || entry.lastUsed < oldestUsed {
+			oldestKey, oldestUsed = key, entry.lastUsed
+		}
+	}
+	if oldestKey != "" {
+		delete(m.userCache, oldestKey)
+	}
 }
 
 func (m *Memobase) profileEntries(ctx context.Context, userID string) ([]profileEntry, error) {
