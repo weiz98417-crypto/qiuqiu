@@ -6,6 +6,10 @@ on:
     branches: [master]
   workflow_dispatch:
 
+concurrency:
+  group: evals-${{ github.ref }}
+  cancel-in-progress: true
+
 jobs:
   pr-evals:
     runs-on: ubuntu-latest
@@ -24,6 +28,11 @@ jobs:
         working-directory: backend
       # console 契约锁（console-contract-goldens）：编译错误与形状漂移的
       # TS 侧在此拦截；dist 同时供 browser 档 evals 的 /console 页面使用。
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+          cache-dependency-path: console/package-lock.json
       - run: npm ci
         working-directory: console
       - run: npm run build
@@ -40,6 +49,14 @@ jobs:
         working-directory: client
       - run: flutter build web --release
         working-directory: client
+      # Playwright 浏览器缓存：key 绑定 @playwright/test 版本，升级即失效重装。
+      - name: Resolve Playwright version
+        id: playwright-version
+        run: echo "version=$(node -p "require('@playwright/test/package.json').version")" >> "$GITHUB_OUTPUT"
+      - uses: actions/cache@v4
+        with:
+          path: ~/.cache/ms-playwright
+          key: playwright-${{ runner.os }}-${{ steps.playwright-version.outputs.version }}
       - run: npx playwright install --with-deps chromium
       - run: node scripts/evals/run.mjs --tier pr
       - uses: actions/upload-artifact@v4

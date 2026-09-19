@@ -29,9 +29,12 @@ services:
       - MEMOBASE_TOKEN=${MEMOBASE_TOKEN:-secret}
       - MEMOBASE_EXTRACTION_TIMEOUT_MS=${MEMOBASE_EXTRACTION_TIMEOUT_MS:-10000}
     depends_on:
-      - postgres
-      - redis
-      - memobase
+      postgres:
+        condition: service_healthy
+      redis:
+        condition: service_started
+      memobase:
+        condition: service_started
     restart: unless-stopped
 
   postgres:
@@ -41,7 +44,13 @@ services:
       - POSTGRES_USER=qiuqiu
       - POSTGRES_PASSWORD=${POSTGRES_PASSWORD:?POSTGRES_PASSWORD is required}
     volumes:
+      # 唯一全量事实源（画像/事实账本），备份与恢复见 deploy/README.md
       - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U qiuqiu -d qiuqiu"]
+      interval: 5s
+      timeout: 5s
+      retries: 5
     restart: unless-stopped
 
   redis:
@@ -55,7 +64,7 @@ services:
   memobase:
     image: ghcr.io/memodb-io/memobase:latest
     environment:
-      - DATABASE_URL=postgresql://memobase:${MEMOBASE_POSTGRES_PASSWORD:-memobase}@memobase-postgres:5432/memobase
+      - DATABASE_URL=postgresql://memobase:${MEMOBASE_POSTGRES_PASSWORD:?MEMOBASE_POSTGRES_PASSWORD is required}@memobase-postgres:5432/memobase
       - REDIS_URL=redis://memobase-redis:6379/0
       - ACCESS_TOKEN=${MEMOBASE_TOKEN:-secret}
       - PROJECT_ID=qiuqiu
@@ -80,7 +89,7 @@ services:
     environment:
       - POSTGRES_DB=memobase
       - POSTGRES_USER=memobase
-      - POSTGRES_PASSWORD=${MEMOBASE_POSTGRES_PASSWORD:-memobase}
+      - POSTGRES_PASSWORD=${MEMOBASE_POSTGRES_PASSWORD:?MEMOBASE_POSTGRES_PASSWORD is required}
     volumes:
       - memobase_postgres_data:/var/lib/postgresql/data
     healthcheck:
