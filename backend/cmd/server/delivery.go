@@ -215,8 +215,11 @@ type interruptedReactionGuard struct {
 	ring    *interruptionRing
 }
 
-func newInterruptedReactionGuard() *interruptedReactionGuard {
-	return &interruptedReactionGuard{emitted: make(map[string]struct{}), ring: sharedInterruptions}
+func newInterruptedReactionGuard(ring *interruptionRing) *interruptedReactionGuard {
+	if ring == nil {
+		ring = sharedInterruptions
+	}
+	return &interruptedReactionGuard{emitted: make(map[string]struct{}), ring: ring}
 }
 
 // interruptedReactionDeliveryKey namespaces the standalone presentation's

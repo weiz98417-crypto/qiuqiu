@@ -41,7 +41,7 @@ func (sink *recordingPresentationSink) count() int {
 
 func TestInterruptedOutcomeEmitsConfusedListeningReaction(t *testing.T) {
 	sink := &recordingPresentationSink{}
-	guard := newInterruptedReactionGuard()
+	guard := newInterruptedReactionGuard(nil)
 	trace := companion.Trace{ID: "trace-1", UserID: "user-1", MatchID: "match-1"}
 	now := time.Date(2026, 9, 16, 20, 0, 0, 0, time.UTC)
 
@@ -73,7 +73,7 @@ func TestInterruptedOutcomeEmitsConfusedListeningReaction(t *testing.T) {
 
 func TestInterruptedReactionFiresOncePerInterruption(t *testing.T) {
 	sink := &recordingPresentationSink{}
-	guard := newInterruptedReactionGuard()
+	guard := newInterruptedReactionGuard(nil)
 	trace := companion.Trace{ID: "trace-1", UserID: "user-1", MatchID: "match-1"}
 
 	guard.emit(sink, trace, relationship.AffectState{})
@@ -93,7 +93,7 @@ func TestInterruptedReactionFiresOncePerInterruption(t *testing.T) {
 
 func TestNonInterruptedOutcomesEmitNoReaction(t *testing.T) {
 	sink := &recordingPresentationSink{}
-	guard := newInterruptedReactionGuard()
+	guard := newInterruptedReactionGuard(nil)
 	trace := companion.Trace{ID: "trace-1", UserID: "user-1", MatchID: "match-1"}
 	now := time.Now().UTC()
 

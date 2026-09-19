@@ -35,7 +35,7 @@ func TestInteractionAPIIsScopedToRequestedMatch(t *testing.T) {
 			t.Fatalf("append interaction event: %v", err)
 		}
 	}
-	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, nil, ledger)
+	handler := handleMatchAPIWithOperatorAuth(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, nil, ledger, operatorAuthz{cfg: &config.Config{AppToken: "eval-token"}})
 
 	response := doJSON(t, handler, http.MethodGet, "/api/matches/match-1/interaction?token=eval-token&userId=user-1", nil)
 	if response.Code != http.StatusOK {
@@ -66,7 +66,7 @@ func TestInteractionAPIPaginatesWithoutDroppingOrRepeatingEvents(t *testing.T) {
 			t.Fatalf("append page event: %v", err)
 		}
 	}
-	handler := handleMatchAPIWithRuntime(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, nil, ledger)
+	handler := handleMatchAPIWithOperatorAuth(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, nil, ledger, operatorAuthz{cfg: &config.Config{AppToken: "eval-token"}})
 
 	firstResponse := doJSON(t, handler, http.MethodGet, "/api/matches/match-page/interaction?token=eval-token&userId=user-page&limit=2", nil)
 	var first struct {
@@ -469,7 +469,7 @@ func TestDirectorVoiceDraftAPITranscribesThenPublishesConfirmedFact(t *testing.T
 		Team: "德国", EventType: "substitution", Description: "德国换人，菲尔克鲁格换下哈弗茨。",
 		Participants: []directordraft.ExtractedParticipant{{Role: "sub_on", Name: "菲尔克鲁格"}, {Role: "sub_off", Name: "哈弗茨"}},
 	}})
-	handler := handleMatchAPIWithDirectorDraft(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, drafts)
+	handler := handleMatchAPIWithOperatorAuth(store, traces, traces, &config.Config{AppToken: "eval-token"}, nil, nil, drafts, nil, operatorAuthz{cfg: &config.Config{AppToken: "eval-token"}})
 
 	response := doJSON(t, handler, http.MethodPost, "/api/matches/voice-draft-api/drafts/voice?token=eval-token", directordraft.Request{
 		Text: "德国换人，菲尔克鲁格换下哈弗茨",
@@ -893,7 +893,7 @@ func TestSourceControlAPIReportsAndSwitchesSources(t *testing.T) {
 	cfg := &config.Config{AppToken: "eval-token"}
 	sources := datasource.NewManager(context.Background(), store, nil, datasource.ManagerConfig{})
 	t.Cleanup(sources.Close)
-	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, sources)
+	handler := handleMatchAPIWithOperatorAuth(store, traces, traces, cfg, nil, sources, nil, nil, operatorAuthz{cfg: cfg})
 
 	statusResp := doJSON(t, handler, http.MethodGet, "/api/matches/source-api/sources?token=eval-token", nil)
 	if statusResp.Code != http.StatusOK {
@@ -982,7 +982,7 @@ func TestManualTakeoverSwitchesSourceAndPausesAutomation(t *testing.T) {
 	cfg := &config.Config{AppToken: "eval-token"}
 	sources := datasource.NewManager(context.Background(), store, nil, datasource.ManagerConfig{})
 	t.Cleanup(sources.Close)
-	handler := handleMatchAPIWithSources(store, traces, traces, cfg, nil, sources)
+	handler := handleMatchAPIWithOperatorAuth(store, traces, traces, cfg, nil, sources, nil, nil, operatorAuthz{cfg: cfg})
 	matchID := "manual-takeover"
 
 	if _, err := sources.Start(matchID, datasource.SourceConfig{Type: datasource.SourceReplay}); err != nil {
@@ -1090,7 +1090,7 @@ func TestEvalTraceAPIProjectsInteractionLedgerInsteadOfLegacyTraceStore(t *testi
 	ledger := interaction.NewMemoryLedger()
 	agent := companion.NewAgent(traces).WithInteractionLedger(ledger)
 	cfg := &config.Config{AppToken: "eval-token"}
-	handler := handleMatchAPIWithRuntime(store, traces, traces, cfg, nil, nil, nil, ledger)
+	handler := handleMatchAPIWithOperatorAuth(store, traces, traces, cfg, nil, nil, nil, ledger, operatorAuthz{cfg: cfg})
 
 	matchID := "trace-ledger-eval"
 	reply, err := agent.HandleMessage(contextless(), companion.MessageRequest{
