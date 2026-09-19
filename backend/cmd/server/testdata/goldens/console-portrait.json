@@ -1,0 +1,17 @@
+{
+  "entries": [
+    {
+      "content": "皇马",
+      "subTopic": "favorite_team",
+      "topic": "basic_info",
+      "updatedAt": "<TS>"
+    },
+    {
+      "content": "输球后需要安抚",
+      "subTopic": "after_loss",
+      "topic": "emotional",
+      "updatedAt": "<TS>"
+    }
+  ],
+  "updatedAt": "<TS>"
+}

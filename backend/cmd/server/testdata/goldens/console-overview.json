@@ -1,0 +1,41 @@
+{
+  "matches": [
+    {
+      "matchId": "m1",
+      "onlineUsers": 1,
+      "state": "live"
+    }
+  ],
+  "memory": {
+    "backlogDepth": 0,
+    "degraded": false,
+    "recentAudit": [
+      {
+        "action": "thread.address",
+        "createdAt": "<TS>",
+        "object": "thread:1",
+        "operatorName": "阿琴"
+      }
+    ]
+  },
+  "onlineSessions": 1,
+  "recentProactive": [
+    {
+      "citation": "open_thread:7",
+      "createdAt": "<TS>",
+      "matchId": "m1",
+      "traceId": "trace-proactive"
+    }
+  ],
+  "router": {
+    "topUnroutable": [],
+    "totalTurns": 1,
+    "unknownRate": 0,
+    "unknownTurns": 0
+  },
+  "threadAging": {
+    "d1to3": 1,
+    "d3plus": 1,
+    "today": 1
+  }
+}

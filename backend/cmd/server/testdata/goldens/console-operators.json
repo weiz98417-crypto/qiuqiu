@@ -1,0 +1,16 @@
+{
+  "operators": [
+    {
+      "createdAt": "<TS>",
+      "id": 2,
+      "name": "小阅",
+      "role": "auditor"
+    },
+    {
+      "createdAt": "<TS>",
+      "id": 1,
+      "name": "阿琴",
+      "role": "director"
+    }
+  ]
+}

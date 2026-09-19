@@ -22,6 +22,12 @@ jobs:
       - run: npm ci
       - run: go test ./...
         working-directory: backend
+      # console 契约锁（console-contract-goldens）：编译错误与形状漂移的
+      # TS 侧在此拦截；dist 同时供 browser 档 evals 的 /console 页面使用。
+      - run: npm ci
+        working-directory: console
+      - run: npm run build
+        working-directory: console
       - uses: subosito/flutter-action@v2
         with:
           channel: stable

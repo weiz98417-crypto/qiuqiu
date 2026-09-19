@@ -1,0 +1,11 @@
+{
+  "users": [
+    {
+      "online": true,
+      "openThreads": 1,
+      "portraitUpdatedAt": "<TS>",
+      "talkativeness": "normal",
+      "userId": "user-1"
+    }
+  ]
+}

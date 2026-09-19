@@ -1,0 +1,217 @@
+{
+  "event": {
+    "clock": "61:00",
+    "confidence": 1,
+    "confirmed": true,
+    "createdAt": "<TS>",
+    "description": "穆西亚拉战术犯规染黄。",
+    "eventType": "yellow_card",
+    "factId": "evt_3",
+    "factRevision": 1,
+    "factStatus": "confirmed",
+    "id": "evt_3",
+    "intensity": 3,
+    "matchId": "m1",
+    "operatorId": "operator:阿琴",
+    "participants": [
+      {
+        "name": "穆西亚拉",
+        "role": "offender",
+        "teamId": "away",
+        "teamName": "德国"
+      }
+    ],
+    "period": "second_half",
+    "playerName": "穆西亚拉",
+    "proactiveText": "穆西亚拉战术犯规染黄。",
+    "providerName": "director-console",
+    "recommendedAction": "complain",
+    "recordedSequence": 3,
+    "score": {
+      "away": 0,
+      "home": 1
+    },
+    "sentiment": "complaint",
+    "source": "operator",
+    "status": "active",
+    "tags": [
+      "clockVersion=9",
+      "input=operator",
+      "proactive=auto"
+    ],
+    "teamId": "away",
+    "teamName": "德国",
+    "updatedAt": "<TS>",
+    "visibility": "public"
+  },
+  "snapshot": {
+    "awayTeam": "德国",
+    "clock": "12:15",
+    "emotionalTemperature": 3,
+    "homeTeam": "西班牙",
+    "integrity": {
+      "status": "ok"
+    },
+    "keyEvents": [
+      {
+        "clock": "12:15",
+        "confidence": 1,
+        "confirmed": true,
+        "createdAt": "<TS>",
+        "description": "禁区抢点破门，西班牙1比0领先。",
+        "eventType": "goal",
+        "factId": "evt_1",
+        "factRevision": 1,
+        "factStatus": "confirmed",
+        "id": "evt_1",
+        "intensity": 5,
+        "matchId": "m1",
+        "operatorId": "operator:阿琴",
+        "participants": [
+          {
+            "name": "佩德里",
+            "role": "scorer",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ],
+        "period": "first_half",
+        "playerName": "佩德里",
+        "proactiveText": "佩德里进了！1比0！",
+        "providerName": "director-console",
+        "recommendedAction": "celebrate",
+        "recordedSequence": 1,
+        "score": {
+          "away": 0,
+          "home": 1
+        },
+        "sentiment": "celebratory",
+        "source": "operator",
+        "status": "active",
+        "tags": [
+          "clockVersion=4",
+          "input=operator",
+          "proactive=manual"
+        ],
+        "teamId": "home",
+        "teamName": "西班牙",
+        "updatedAt": "<TS>",
+        "visibility": "public"
+      }
+    ],
+    "lastPublicDescription": "穆西亚拉战术犯规染黄。",
+    "lastRecommendedAction": "complain",
+    "lastUpdatedAt": "<TS>",
+    "matchClock": {
+      "anchorAt": "<TS>",
+      "elapsedSeconds": 735,
+      "matchId": "m1",
+      "period": "first_half",
+      "running": true,
+      "source": "operator",
+      "updatedAt": "<TS>",
+      "version": 2
+    },
+    "matchId": "m1",
+    "momentum": "neutral",
+    "period": "first_half",
+    "projectedSequence": 3,
+    "projectionVersion": "fact-ledger-projector/v1",
+    "recentEvents": [
+      {
+        "clock": "61:00",
+        "confidence": 1,
+        "confirmed": true,
+        "createdAt": "<TS>",
+        "description": "穆西亚拉战术犯规染黄。",
+        "eventType": "yellow_card",
+        "factId": "evt_3",
+        "factRevision": 1,
+        "factStatus": "confirmed",
+        "id": "evt_3",
+        "intensity": 3,
+        "matchId": "m1",
+        "operatorId": "operator:阿琴",
+        "participants": [
+          {
+            "name": "穆西亚拉",
+            "role": "offender",
+            "teamId": "away",
+            "teamName": "德国"
+          }
+        ],
+        "period": "second_half",
+        "playerName": "穆西亚拉",
+        "proactiveText": "穆西亚拉战术犯规染黄。",
+        "providerName": "director-console",
+        "recommendedAction": "complain",
+        "recordedSequence": 3,
+        "score": {
+          "away": 0,
+          "home": 1
+        },
+        "sentiment": "complaint",
+        "source": "operator",
+        "status": "active",
+        "tags": [
+          "clockVersion=9",
+          "input=operator",
+          "proactive=auto"
+        ],
+        "teamId": "away",
+        "teamName": "德国",
+        "updatedAt": "<TS>",
+        "visibility": "public"
+      },
+      {
+        "clock": "12:15",
+        "confidence": 1,
+        "confirmed": true,
+        "createdAt": "<TS>",
+        "description": "禁区抢点破门，西班牙1比0领先。",
+        "eventType": "goal",
+        "factId": "evt_1",
+        "factRevision": 1,
+        "factStatus": "confirmed",
+        "id": "evt_1",
+        "intensity": 5,
+        "matchId": "m1",
+        "operatorId": "operator:阿琴",
+        "participants": [
+          {
+            "name": "佩德里",
+            "role": "scorer",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ],
+        "period": "first_half",
+        "playerName": "佩德里",
+        "proactiveText": "佩德里进了！1比0！",
+        "providerName": "director-console",
+        "recommendedAction": "celebrate",
+        "recordedSequence": 1,
+        "score": {
+          "away": 0,
+          "home": 1
+        },
+        "sentiment": "celebratory",
+        "source": "operator",
+        "status": "active",
+        "tags": [
+          "clockVersion=4",
+          "input=operator",
+          "proactive=manual"
+        ],
+        "teamId": "home",
+        "teamName": "西班牙",
+        "updatedAt": "<TS>",
+        "visibility": "public"
+      }
+    ],
+    "score": {
+      "away": 0,
+      "home": 1
+    }
+  }
+}

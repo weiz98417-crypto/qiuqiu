@@ -1,0 +1,100 @@
+{
+  "conflicts": [],
+  "events": [
+    {
+      "clock": "80:00",
+      "confidence": 0,
+      "confirmed": false,
+      "createdAt": "<TS>",
+      "description": "人工核对后更正当前比分。",
+      "eventType": "score_correction",
+      "evidence": {
+        "correctionReason": "记分牌核对"
+      },
+      "factId": "evt_2",
+      "factRevision": 1,
+      "factStatus": "provisional",
+      "id": "evt_2",
+      "intensity": 3,
+      "matchId": "m1",
+      "operatorId": "operator:阿琴",
+      "period": "second_half",
+      "providerName": "director-console",
+      "recommendedAction": "analysis",
+      "recordedSequence": 2,
+      "reportedScore": {
+        "away": 1,
+        "home": 2
+      },
+      "score": {
+        "away": 1,
+        "home": 2
+      },
+      "sentiment": "analytical",
+      "source": "operator",
+      "status": "active",
+      "tags": [
+        "clockVersion=9",
+        "input=operator",
+        "proactive=quiet"
+      ],
+      "teamId": "home",
+      "teamName": "西班牙",
+      "updatedAt": "<TS>",
+      "visibility": "public"
+    },
+    {
+      "clock": "12:15",
+      "confidence": 1,
+      "confirmed": true,
+      "createdAt": "<TS>",
+      "description": "禁区抢点破门，西班牙1比0领先。",
+      "effectiveScoreAfter": {
+        "away": 0,
+        "home": 1
+      },
+      "eventType": "goal",
+      "factId": "evt_1",
+      "factRevision": 1,
+      "factStatus": "confirmed",
+      "id": "evt_1",
+      "intensity": 5,
+      "matchId": "m1",
+      "operatorId": "operator:阿琴",
+      "participants": [
+        {
+          "name": "佩德里",
+          "role": "scorer",
+          "teamId": "home",
+          "teamName": "西班牙"
+        }
+      ],
+      "period": "first_half",
+      "playerName": "佩德里",
+      "proactiveText": "佩德里进了！1比0！",
+      "providerName": "director-console",
+      "recommendedAction": "celebrate",
+      "recordedSequence": 1,
+      "reportedScore": {
+        "away": 0,
+        "home": 1
+      },
+      "score": {
+        "away": 0,
+        "home": 1
+      },
+      "sentiment": "celebratory",
+      "source": "operator",
+      "status": "active",
+      "tags": [
+        "clockVersion=4",
+        "input=operator",
+        "proactive=manual"
+      ],
+      "teamId": "home",
+      "teamName": "西班牙",
+      "updatedAt": "<TS>",
+      "visibility": "public"
+    }
+  ]
+}

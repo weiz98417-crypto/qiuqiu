@@ -1,0 +1,76 @@
+{
+  "traces": [
+    {
+      "createdAt": "<TS>",
+      "error": "",
+      "id": "trace-proactive",
+      "input": "",
+      "intent": "",
+      "latencyMs": 0,
+      "matchId": "m1",
+      "output": "",
+      "reason": "",
+      "relationshipDecision": {
+        "actions": null,
+        "createdAt": "<TS>",
+        "id": "",
+        "presentation": {
+          "affect": {
+            "arousal": 0,
+            "confidence": 0,
+            "engagement": 0,
+            "tension": 0,
+            "updatedAt": "<TS>",
+            "valence": 0
+          },
+          "expression": "",
+          "holdMs": 0,
+          "motion": "",
+          "returnMode": "",
+          "voiceEnergy": 0,
+          "voiceSpeed": 0,
+          "voiceStyle": ""
+        },
+        "reasonCodes": [
+          "relationship_decision",
+          "proactive_citation:open_thread:7"
+        ],
+        "relationship": {
+          "allowedBanterScopes": 0,
+          "analysisAppetite": "",
+          "boundaryCount": 0,
+          "greetingDelivered": false,
+          "initiativeMode": "",
+          "repairActive": false,
+          "stage": ""
+        },
+        "signalId": "",
+        "stateVersion": 0
+      },
+      "retrievedEventIds": null,
+      "toolCalls": null,
+      "userId": "user-1"
+    },
+    {
+      "createdAt": "<TS>",
+      "error": "",
+      "id": "trace-routed",
+      "input": "明明进了，裁判瞎了吗",
+      "intent": "",
+      "latencyMs": 0,
+      "matchId": "m1",
+      "output": "我看到了，进球有效。",
+      "reason": "router_reply_realized",
+      "retrievedEventIds": null,
+      "router": {
+        "confidence": 0.85,
+        "intent": "fact_claim",
+        "player": "佩德里",
+        "replyUsed": true,
+        "score": "1-0"
+      },
+      "toolCalls": null,
+      "userId": "user-1"
+    }
+  ]
+}

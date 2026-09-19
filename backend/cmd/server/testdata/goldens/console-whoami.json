@@ -1,0 +1,10 @@
+{
+  "name": "阿琴",
+  "scopes": [
+    "operator:match:write",
+    "operator:fact:confirm",
+    "operator:fact:correct",
+    "operator:trace:read"
+  ],
+  "subject": "operator:阿琴"
+}

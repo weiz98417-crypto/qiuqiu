@@ -130,78 +130,12 @@ func decodeConsoleJSON(t *testing.T, recorder *httptest.ResponseRecorder, destin
 	}
 }
 
-func TestConsoleOverviewShape(t *testing.T) {
+// TestConsoleOverviewAuth 只锁 overview 的鉴权行为；响应形状（含 thread
+// aging / memory health / recentProactive 的完整结构）由 TestConsoleGolden
+// Payloads 的 console-overview golden 锁定。
+func TestConsoleOverviewAuth(t *testing.T) {
 	harness := newConsoleHarness(t)
 	harness.seedOperators(t)
-	harness.seedLiveMatch(t)
-	harness.sessions.Acquire("user-1", "m1")
-
-	now := time.Now().UTC()
-	_, _ = harness.fakeThreads.AppendThread(context.Background(), memory.Thread{UserID: "user-1", Kind: memory.ThreadUnansweredQuestion, Content: "谁助攻的？"})
-	_, _ = harness.fakeThreads.AppendThread(context.Background(), memory.Thread{UserID: "user-2", Kind: memory.ThreadPromise, Content: "两天前的问题", CreatedAt: now.Add(-48 * time.Hour)})
-	_, _ = harness.fakeThreads.AppendThread(context.Background(), memory.Thread{UserID: "user-3", Kind: memory.ThreadPrediction, Content: "上周的预测", CreatedAt: now.Add(-120 * time.Hour)})
-
-	if err := harness.traces.WriteTrace(context.Background(), companion.Trace{
-		ID: "trace-proactive", MatchID: "m1", UserID: "user-1", CreatedAt: now,
-		RelationshipDecision: &relationship.Decision{ReasonCodes: []string{"relationship_decision", "proactive_citation:open_thread:7"}},
-	}); err != nil {
-		t.Fatalf("write proactive trace: %v", err)
-	}
-	if err := harness.traces.WriteTrace(context.Background(), companion.Trace{
-		ID: "trace-plain", MatchID: "m1", UserID: "user-1", CreatedAt: now.Add(time.Second),
-		RelationshipDecision: &relationship.Decision{ReasonCodes: []string{"relationship_decision"}},
-	}); err != nil {
-		t.Fatalf("write plain trace: %v", err)
-	}
-	if err := harness.operators.AppendAudit(context.Background(), consoleDirectorName, "thread.address", "thread:1"); err != nil {
-		t.Fatalf("append audit: %v", err)
-	}
-
-	recorder := doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/overview", token: consoleDirectorToken, handler: harness.console})
-	if recorder.Code != http.StatusOK {
-		t.Fatalf("GET overview = %d body=%s", recorder.Code, recorder.Body.String())
-	}
-	var payload struct {
-		Matches         []consoleMatch              `json:"matches"`
-		OnlineSessions  int                         `json:"onlineSessions"`
-		Memory          consoleMemoryHealth         `json:"memory"`
-		ThreadAging     consoleThreadAging          `json:"threadAging"`
-		RecentProactive []consoleProactiveCitation  `json:"recentProactive"`
-	}
-	decodeConsoleJSON(t, recorder, &payload)
-
-	if len(payload.Matches) != 1 {
-		t.Fatalf("matches = %+v, want the seeded live match", payload.Matches)
-	}
-	if payload.Matches[0].MatchID != "m1" || payload.Matches[0].State != "live" || payload.Matches[0].OnlineUsers != 1 {
-		t.Fatalf("match cell = %+v, want m1/live/1 online user", payload.Matches[0])
-	}
-	if payload.OnlineSessions != 1 {
-		t.Fatalf("onlineSessions = %d, want 1", payload.OnlineSessions)
-	}
-	if !payload.Memory.Degraded {
-		t.Fatal("memory cell should report degraded while the Memobase adapter is unconfigured")
-	}
-	if payload.Memory.BacklogDepth != 0 {
-		t.Fatalf("backlogDepth = %d, want 0", payload.Memory.BacklogDepth)
-	}
-	if len(payload.Memory.RecentAudit) != 1 {
-		t.Fatalf("recentAudit = %+v, want the operator audit tail", payload.Memory.RecentAudit)
-	}
-	audit := payload.Memory.RecentAudit[0]
-	if audit.OperatorName != consoleDirectorName || audit.Action != "thread.address" || audit.Object != "thread:1" || audit.CreatedAt == "" {
-		t.Fatalf("audit row = %+v, want operator-attributed thread.address row", audit)
-	}
-	if payload.ThreadAging.Today != 1 || payload.ThreadAging.D1to3 != 1 || payload.ThreadAging.D3plus != 1 {
-		t.Fatalf("threadAging = %+v, want 1/1/1 buckets", payload.ThreadAging)
-	}
-	if len(payload.RecentProactive) != 1 {
-		t.Fatalf("recentProactive = %+v, want only the cited trace", payload.RecentProactive)
-	}
-	proactive := payload.RecentProactive[0]
-	if proactive.TraceID != "trace-proactive" || proactive.MatchID != "m1" || proactive.Citation != "open_thread:7" || proactive.CreatedAt == "" {
-		t.Fatalf("proactive row = %+v", proactive)
-	}
 
 	if got := doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/overview", handler: harness.console}); got.Code != http.StatusUnauthorized {
 		t.Fatalf("unauthenticated overview = %d, want 401", got.Code)

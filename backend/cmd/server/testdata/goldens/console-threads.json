@@ -1,0 +1,31 @@
+{
+  "threads": [
+    {
+      "content": "谁助攻的？",
+      "createdAt": "<TS>",
+      "id": "1",
+      "kind": "unanswered_question",
+      "ledgerSequence": 0,
+      "state": "open",
+      "userId": "user-1"
+    },
+    {
+      "content": "两天前的问题",
+      "createdAt": "<TS>",
+      "id": "2",
+      "kind": "promise",
+      "ledgerSequence": 0,
+      "state": "open",
+      "userId": "user-2"
+    },
+    {
+      "content": "上周的预测",
+      "createdAt": "<TS>",
+      "id": "3",
+      "kind": "prediction",
+      "ledgerSequence": 0,
+      "state": "open",
+      "userId": "user-3"
+    }
+  ]
+}
