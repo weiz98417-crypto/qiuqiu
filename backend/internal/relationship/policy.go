@@ -215,32 +215,34 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 	return []CommunicationAct{ActAcknowledge}, []string{"default_acknowledgement"}
 }
 
+// inferUserCues 只查 policy_vocabulary.go 的触发词表（deep-water-polish 1.1：
+// 词表收敛单文件，此处保留判定结构）。
 func inferUserCues(text string) []UserCue {
 	var cues []UserCue
-	if strings.Contains(text, "我喜欢") || strings.Contains(text, "我支持") || strings.Contains(text, "我不喜欢") || strings.Contains(text, "我更吃") {
+	if containsAnyTriggers(text, stablePreferenceTriggers) {
 		cues = append(cues, UserCue{Kind: CueStablePreference})
 	}
-	if strings.Contains(text, "刚才说的") || strings.Contains(text, "接着上次") || strings.Contains(text, "上次说") {
+	if containsAnyTriggers(text, openThreadReadyTriggers) {
 		cues = append(cues, UserCue{Kind: CueOpenThreadReady})
-	} else if strings.Contains(text, "接着") || strings.Contains(text, "上次") {
+	} else if containsAnyTriggers(text, continuedThreadTriggers) {
 		cues = append(cues, UserCue{Kind: CueContinuedThread})
 	}
-	if strings.Contains(text, "别拿") && strings.Contains(text, "开我玩笑") {
+	if containsAllTriggers(text, banterDeniedRequiredTriggers[:]) {
 		cues = append(cues, UserCue{Kind: CueBanterDenied})
-	} else if strings.Contains(text, "毒奶") {
+	} else if containsAnyTriggers(text, banterAllowedTriggers) {
 		cues = append(cues, UserCue{Kind: CueBanterAllowed, Scope: "prediction"})
 	}
-	if strings.Contains(text, "不想分析") || strings.Contains(text, "缓会儿") || strings.Contains(text, "先别说话") {
+	if containsAnyTriggers(text, needsSilenceTriggers) {
 		cues = append(cues, UserCue{Kind: CueNeedsSilence})
 	}
-	if containsAnyPhrase(text, "判断挺准", "判断很准", "你说准了", "被你说中了", "你上次说得对") {
+	if containsAnyTriggers(text, acceptedJudgmentTriggers) {
 		cues = append(cues, UserCue{Kind: CueAcceptedJudgment})
 	}
-	if containsAnyPhrase(text, "接着来", "继续提醒我", "继续这样", "就这么来", "有变化提醒我") {
+	if containsAnyTriggers(text, acceptedInitiativeTriggers) {
 		cues = append(cues, UserCue{Kind: CueAcceptedInitiative})
 	}
-	if (containsAnyPhrase(text, "想起", "记得") && containsAnyPhrase(text, "上次那场", "那场", "上次那个球")) ||
-		containsAnyPhrase(text, "那个被吹掉的球", "上次那个绝杀") {
+	if (containsAnyTriggers(text, sharedMomentVerbTriggers) && containsAnyTriggers(text, sharedMomentObjectTriggers)) ||
+		containsAnyTriggers(text, sharedMomentDirectTriggers) {
 		cues = append(cues, UserCue{Kind: CueSharedMomentRecalled})
 	}
 	return cues
@@ -526,22 +528,23 @@ func allowedBanterScopes(permissions map[string]Permission) int {
 	return count
 }
 
+// interactionFeedback 查 policy_vocabulary.go 的修复类别触发词。
 func interactionFeedback(text string, cues []UserCue) (RepairState, bool) {
-	if hasCue(cues, CueBanterDenied) || strings.Contains(text, "开我玩笑") {
+	if hasCue(cues, CueBanterDenied) || containsAnyTriggers(text, repairBanterBoundaryTriggers) {
 		return RepairState{
 			Active:          true,
 			Category:        "banter_boundary",
 			BehaviorChanges: []string{"disable_banter", "reduce_teasing", "reduce_initiative"},
 		}, true
 	}
-	if strings.Contains(text, "你怎么老说") || strings.Contains(text, "又重复") {
+	if containsAnyTriggers(text, repairRepetitionTriggers) {
 		return RepairState{
 			Active:          true,
 			Category:        "repetition",
 			BehaviorChanges: []string{"avoid_recent_phrases", "reduce_reassurance_templates", "reduce_questions"},
 		}, true
 	}
-	if strings.Contains(text, "大道理") || strings.Contains(text, "分析太多") || strings.Contains(text, "太啰嗦") {
+	if containsAnyTriggers(text, repairOverAnalysisTriggers) {
 		return RepairState{
 			Active:          true,
 			Category:        "over_analysis",
@@ -559,38 +562,19 @@ func isExplicitWorkBoundary(text string) bool {
 }
 
 func isProfanityBoundary(text string) bool {
-	return containsAnyPhrase(text, "别说脏话", "别爆粗", "不要爆粗", "别说卧槽", "不喜欢你说脏话")
+	return containsAnyTriggers(text, profanityBoundaryTriggers)
 }
 
-func containsAnyPhrase(text string, phrases ...string) bool {
-	for _, phrase := range phrases {
-		if strings.Contains(text, phrase) {
-			return true
-		}
-	}
-	return false
-}
-
+// isTacticalQuestion 查 policy_vocabulary.go：疑问引导词 + 战术主题词。
 func isTacticalQuestion(text string) bool {
-	question := strings.Contains(text, "为什么") || strings.Contains(text, "怎么") || strings.Contains(text, "换人")
-	if !question {
+	if !containsAnyTriggers(text, tacticalQuestionTriggers) {
 		return false
 	}
-	for _, subject := range []string{"右路", "左路", "站位", "防线", "中场", "边后卫", "回收", "压迫"} {
-		if strings.Contains(text, subject) {
-			return true
-		}
-	}
-	return false
+	return containsAnyTriggers(text, tacticalSubjectTriggers)
 }
 
 func containsPersonalInsult(text string) bool {
-	for _, insult := range []string{"废物", "垃圾", "蠢货", "裁判瞎", "人没了"} {
-		if strings.Contains(text, insult) {
-			return true
-		}
-	}
-	return false
+	return containsAnyTriggers(text, personalInsultTriggers)
 }
 
 func hasBoundary(boundaries []UserBoundary, scope, rule string) bool {

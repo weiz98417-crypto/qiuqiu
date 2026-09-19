@@ -121,6 +121,112 @@ func NewResponseDeliveryService(sink ResponseSink, synthesizer ResponseAudioSynt
 	}
 }
 
+// deliveryRoundPlan 是加锁规划半的产物（deep-water-polish 1.2）：一轮投递的
+// 全部状态判定与队列操作结果；I/O 半锁外执行——任何网络调用都不持锁。
+type deliveryRoundPlan struct {
+	duplicate       bool
+	sendText        bool
+	reply           ReplyDelivery
+	afterTextStatus *DeliveryStatus
+	afterText       func(context.Context) error
+}
+
+// withPlanningLock is the scoped-lock primitive that replaces every manually
+// paired Lock/Unlock: a new early return can no longer deadlock or double
+// unlock the planning half.
+func (service *ResponseDeliveryService) withPlanningLock(fn func() error) error {
+	service.mu.Lock()
+	defer service.mu.Unlock()
+	return fn()
+}
+
+// transition queues a ledger state change under the planning lock.
+func (service *ResponseDeliveryService) transition(traceID string, state DeliveryState) {
+	_ = service.withPlanningLock(func() error {
+		return service.tracker.Transition(traceID, state, service.timestamp())
+	})
+}
+
+// deliveryIsTerminal reports terminal state under the planning lock.
+func (service *ResponseDeliveryService) deliveryIsTerminal(traceID string) bool {
+	terminal := false
+	_ = service.withPlanningLock(func() error {
+		if current, ok := service.tracker.Lookup(traceID); ok && isTerminalDeliveryState(current.State) {
+			terminal = true
+		}
+		return nil
+	})
+	return terminal
+}
+
+// planResponseRound is the locked planning half of a text round: duplicate
+// decisions, the TrackWithPolicy queue op and the TextDelivered claim
+// transition all happen under the lock; nothing here performs I/O.
+func (service *ResponseDeliveryService) planResponseRound(request ResponseDeliveryRequest) (deliveryRoundPlan, error) {
+	plan := deliveryRoundPlan{}
+	err := service.withPlanningLock(func() error {
+		if existing, ok := service.tracker.LookupByDeliveryKey(request.DeliveryKey); ok && existing.TraceID != request.Trace.ID {
+			plan.duplicate = true
+			return nil
+		}
+		record, exists := service.tracker.Lookup(request.Trace.ID)
+		if exists && (isTerminalDeliveryState(record.State) || record.State == DeliveryAudioStarted) {
+			plan.duplicate = true
+			return nil
+		}
+		if !exists {
+			if err := service.tracker.TrackWithPolicy(request.Trace, request.Trace.UserID, request.Trace.MatchID, request.DeliveryKey, request.Critical, request.TTL); err != nil {
+				if existing, ok := service.tracker.LookupByDeliveryKey(request.DeliveryKey); ok && existing.TraceID != request.Trace.ID {
+					plan.duplicate = true
+					return nil
+				}
+				return fmt.Errorf("plan response delivery: %w", err)
+			}
+			record = DeliveryRecord{State: DeliveryPlanned}
+		}
+		if record.State == DeliveryPlanned {
+			// The TextDelivered transition is queued inside the planning
+			// half as this round's claim: concurrent rounds observe it and
+			// skip the text while the I/O half runs unlocked.
+			if err := service.tracker.Transition(request.Trace.ID, DeliveryTextDelivered, service.timestamp()); err != nil {
+				return fmt.Errorf("record response text delivery: %w", err)
+			}
+			plan.sendText = true
+		}
+		plan.reply = ReplyDelivery{
+			Text: request.Reply, TraceID: request.Trace.ID, Source: request.Source,
+			EventID: request.EventID, DeliveryKey: request.DeliveryKey, Presentation: request.Presentation,
+		}
+		if request.AfterTextStatus != nil {
+			status := *request.AfterTextStatus
+			if status.TraceID == "" {
+				status.TraceID = request.Trace.ID
+			}
+			plan.afterTextStatus = &status
+		}
+		plan.afterText = request.AfterText
+		return nil
+	})
+	return plan, err
+}
+
+// planAudioRound is the locked planning half of the audio round: the terminal/
+// duplicate decision plus the AudioStarted claim transition.
+func (service *ResponseDeliveryService) planAudioRound(request ResponseDeliveryRequest) (bool, error) {
+	send := false
+	err := service.withPlanningLock(func() error {
+		if current, ok := service.tracker.Lookup(request.Trace.ID); ok && (isTerminalDeliveryState(current.State) || current.State == DeliveryAudioStarted) {
+			return nil
+		}
+		if err := service.tracker.Transition(request.Trace.ID, DeliveryAudioStarted, service.timestamp()); err != nil {
+			return fmt.Errorf("record response audio start: %w", err)
+		}
+		send = true
+		return nil
+	})
+	return send, err
+}
+
 func (service *ResponseDeliveryService) Deliver(ctx context.Context, request ResponseDeliveryRequest, playback Playback) (ResponseDeliveryResult, error) {
 	result := ResponseDeliveryResult{}
 	if service == nil || service.sink == nil || service.tracker == nil {
@@ -140,63 +246,34 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 		request.DeliveryKey = request.Trace.ID
 	}
 
-	service.mu.Lock()
-	if existing, ok := service.tracker.LookupByDeliveryKey(request.DeliveryKey); ok && existing.TraceID != request.Trace.ID {
-		service.mu.Unlock()
+	// ── 加锁规划半：状态判定 + 队列操作，产出投递计划。──
+	plan, err := service.planResponseRound(request)
+	if err != nil {
+		return result, err
+	}
+	if plan.duplicate {
 		result.Duplicate = true
 		return result, nil
 	}
-	record, exists := service.tracker.Lookup(request.Trace.ID)
-	if exists && (isTerminalDeliveryState(record.State) || record.State == DeliveryAudioStarted) {
-		service.mu.Unlock()
-		result.Duplicate = true
-		return result, nil
-	}
-	if !exists {
-		if err := service.tracker.TrackWithPolicy(request.Trace, request.Trace.UserID, request.Trace.MatchID, request.DeliveryKey, request.Critical, request.TTL); err != nil {
-			if existing, ok := service.tracker.LookupByDeliveryKey(request.DeliveryKey); ok && existing.TraceID != request.Trace.ID {
-				service.mu.Unlock()
-				result.Duplicate = true
-				return result, nil
-			}
-			service.mu.Unlock()
-			return result, fmt.Errorf("plan response delivery: %w", err)
-		}
-		record = DeliveryRecord{State: DeliveryPlanned}
-	}
-	if record.State == DeliveryPlanned {
-		err := service.sink.DeliverReply(ctx, ReplyDelivery{
-			Text: request.Reply, TraceID: request.Trace.ID, Source: request.Source,
-			EventID: request.EventID, DeliveryKey: request.DeliveryKey, Presentation: request.Presentation,
-		})
-		if err != nil {
-			_ = service.tracker.Transition(request.Trace.ID, DeliveryFailed, service.timestamp())
-			service.mu.Unlock()
+
+	// ── 无锁 I/O 半：sink/回调全部在锁外执行。──
+	if plan.sendText {
+		if err := service.sink.DeliverReply(ctx, plan.reply); err != nil {
+			service.transition(request.Trace.ID, DeliveryFailed)
 			return result, fmt.Errorf("deliver response text: %w", err)
-		}
-		if err := service.tracker.Transition(request.Trace.ID, DeliveryTextDelivered, service.timestamp()); err != nil {
-			service.mu.Unlock()
-			return result, fmt.Errorf("record response text delivery: %w", err)
 		}
 		result.TextDelivered = true
 	}
-	if request.AfterTextStatus != nil {
-		status := *request.AfterTextStatus
-		if status.TraceID == "" {
-			status.TraceID = request.Trace.ID
-		}
-		if err := service.sink.DeliverStatus(ctx, status); err != nil {
-			service.mu.Unlock()
+	if plan.afterTextStatus != nil {
+		if err := service.sink.DeliverStatus(ctx, *plan.afterTextStatus); err != nil {
 			return result, fmt.Errorf("deliver response status: %w", err)
 		}
 	}
-	if request.AfterText != nil {
-		if err := request.AfterText(ctx); err != nil {
-			service.mu.Unlock()
+	if plan.afterText != nil {
+		if err := plan.afterText(ctx); err != nil {
 			return result, fmt.Errorf("run post-text delivery action: %w", err)
 		}
 	}
-	service.mu.Unlock()
 
 	if service.synthesizer == nil {
 		return service.completeWithFallback(ctx, request, result, "tts unavailable", nil)
@@ -220,20 +297,22 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 		audio.MIME = "audio/mpeg"
 	}
 
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if current, ok := service.tracker.Lookup(request.Trace.ID); ok && (isTerminalDeliveryState(current.State) || current.State == DeliveryAudioStarted) {
+	// ── 加锁规划半（音频）：终态/重复判定 + AudioStarted 占位迁移。──
+	sendAudio, err := service.planAudioRound(request)
+	if err != nil {
+		return result, err
+	}
+	if !sendAudio {
 		result.Duplicate = true
 		return result, nil
 	}
-	if err := service.tracker.Transition(request.Trace.ID, DeliveryAudioStarted, service.timestamp()); err != nil {
-		return result, fmt.Errorf("record response audio start: %w", err)
-	}
+
+	// ── 无锁 I/O 半（音频）。──
 	if err := service.sink.DeliverAudio(ctx, AudioDelivery{
 		Data: audio.Data, MIME: audio.MIME, TraceID: request.Trace.ID, Source: request.Source,
 		EventID: request.EventID, DeliveryKey: request.DeliveryKey,
 	}); err != nil {
-		_ = service.tracker.Transition(request.Trace.ID, DeliveryFailed, service.timestamp())
+		service.transition(request.Trace.ID, DeliveryFailed)
 		_ = service.recordMedia(ctx, request, audio.MIME, "failed", err.Error())
 		return result, fmt.Errorf("deliver response audio: %w", err)
 	}
@@ -248,12 +327,12 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 }
 
 func (service *ResponseDeliveryService) completeWithFallback(ctx context.Context, request ResponseDeliveryRequest, result ResponseDeliveryResult, reason string, cause error) (ResponseDeliveryResult, error) {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if current, ok := service.tracker.Lookup(request.Trace.ID); ok && isTerminalDeliveryState(current.State) {
+	// 加锁判定半：只有终态去重需要互斥。
+	if service.deliveryIsTerminal(request.Trace.ID) {
 		result.Duplicate = true
 		return result, nil
 	}
+	// 无锁 I/O 半：fallback 状态、媒体记录与完成迁移。
 	result.FallbackReason = reason
 	statusErr := service.sink.DeliverStatus(ctx, DeliveryStatus{Kind: "voice", State: "tts_fallback", Reason: reason, TraceID: request.Trace.ID})
 	mediaState := "skipped"
@@ -263,17 +342,20 @@ func (service *ResponseDeliveryService) completeWithFallback(ctx context.Context
 	recordErr := service.recordMedia(ctx, request, "", mediaState, reason)
 	var transitionErr error
 	if !request.Critical {
-		transitionErr = service.tracker.Transition(request.Trace.ID, DeliveryCompleted, service.timestamp())
+		transitionErr = service.withPlanningLock(func() error {
+			return service.tracker.Transition(request.Trace.ID, DeliveryCompleted, service.timestamp())
+		})
 	}
 	return result, errors.Join(statusErr, recordErr, transitionErr)
 }
 
 func (service *ResponseDeliveryService) interrupt(traceID string) {
-	service.mu.Lock()
-	defer service.mu.Unlock()
-	if current, ok := service.tracker.Lookup(traceID); ok && !isTerminalDeliveryState(current.State) {
-		_ = service.tracker.Transition(traceID, DeliveryInterrupted, service.timestamp())
-	}
+	_ = service.withPlanningLock(func() error {
+		if current, ok := service.tracker.Lookup(traceID); ok && !isTerminalDeliveryState(current.State) {
+			_ = service.tracker.Transition(traceID, DeliveryInterrupted, service.timestamp())
+		}
+		return nil
+	})
 }
 
 func (service *ResponseDeliveryService) recordMedia(ctx context.Context, request ResponseDeliveryRequest, mediaType, state, reason string) error {

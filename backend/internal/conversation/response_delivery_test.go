@@ -280,6 +280,67 @@ func TestResponseDeliveryServiceDeduplicatesDeliveryKeyAcrossServices(t *testing
 	}
 }
 
+// deep-water-polish 1.2：Deliver 拆「加锁规划半 + 无锁 I/O 半」后，规划半
+// 纯函数化的可测面——只做状态判定与队列操作，全程零 sink I/O。
+func TestResponseDeliveryPlanningHalfDecidesAndClaims(t *testing.T) {
+	sink := &responseSinkStub{}
+	tracker := newResponseTrackerStub()
+	service := NewResponseDeliveryService(sink, nil, tracker, nil)
+
+	// 新投递：判定发送文本，并在锁内完成 TextDelivered 占位迁移；不产生 I/O。
+	plan, err := service.planResponseRound(responseRequest())
+	if err != nil {
+		t.Fatalf("plan response round: %v", err)
+	}
+	if plan.duplicate || !plan.sendText {
+		t.Fatalf("plan = %+v", plan)
+	}
+	if plan.reply.TraceID != "trace-1" || plan.reply.DeliveryKey != "goal:1" || plan.reply.Text != "这球漂亮。" {
+		t.Fatalf("plan reply = %+v", plan.reply)
+	}
+	if len(sink.replies) != 0 {
+		t.Fatalf("planning half performed I/O: %+v", sink.replies)
+	}
+	if record, _ := tracker.Lookup("trace-1"); record.State != DeliveryTextDelivered {
+		t.Fatalf("claim transition missing, record = %+v", record)
+	}
+
+	// 同 trace 重放：既非重复也不重发文本。
+	replay, err := service.planResponseRound(responseRequest())
+	if err != nil {
+		t.Fatalf("replay plan: %v", err)
+	}
+	if replay.duplicate || replay.sendText {
+		t.Fatalf("replay plan = %+v", replay)
+	}
+
+	// 终态之后：重复。
+	if err := tracker.Transition("trace-1", DeliveryCompleted, time.Now()); err != nil {
+		t.Fatalf("complete: %v", err)
+	}
+	terminal, err := service.planResponseRound(responseRequest())
+	if err != nil {
+		t.Fatalf("terminal plan: %v", err)
+	}
+	if !terminal.duplicate {
+		t.Fatalf("terminal plan = %+v", terminal)
+	}
+
+	// 同 deliveryKey 不同 trace：重复。
+	keyDuplicate := responseRequest()
+	keyDuplicate.Trace.ID = "trace-2"
+	duplicate, err := service.planResponseRound(keyDuplicate)
+	if err != nil {
+		t.Fatalf("key duplicate plan: %v", err)
+	}
+	if !duplicate.duplicate {
+		t.Fatalf("key duplicate plan = %+v", duplicate)
+	}
+	if len(sink.replies) != 0 || len(sink.statuses) != 0 {
+		t.Fatalf("planning half performed I/O: replies=%d statuses=%d", len(sink.replies), len(sink.statuses))
+	}
+}
+
 type firstMeetingPlannerStub struct{ response companion.ProactiveResponse }
 
 func (stub firstMeetingPlannerStub) HandleFirstMeeting(context.Context, companion.FirstMeetingRequest) (companion.ProactiveResponse, error) {
