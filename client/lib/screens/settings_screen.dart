@@ -10,11 +10,14 @@ class SettingsScreen extends StatefulWidget {
   /// Opens the 球球懂我 page (C3); the entry hides when the caller cannot
   /// provide the session-backed portrait service.
   final VoidCallback? onOpenPortrait;
+  /// 话痨档位变更回调（保存后触发）：走 WS set_talkativeness 即时持久化。
+  final void Function(String tier)? onTalkativenessChanged;
 
   const SettingsScreen({
     super.key,
     required this.initialProfile,
     required this.onSave,
+    this.onTalkativenessChanged,
     this.onOpenPortrait,
   });
 
@@ -49,6 +52,9 @@ class _SettingsScreenState extends State<SettingsScreen> {
         .copyWith(nickname: _nicknameController.text.trim())
         .ensureOutputAvailable();
     await widget.onSave(profile);
+    if (profile.talkativeness != widget.initialProfile.talkativeness) {
+      widget.onTalkativenessChanged?.call(profile.talkativeness);
+    }
     if (!mounted) return;
     Navigator.pop(context, profile);
   }

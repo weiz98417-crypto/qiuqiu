@@ -507,6 +507,24 @@ func handleWatchConnection(deps watchDeps) http.HandlerFunc {
 						conversationScheduler = watchSession.Scheduler()
 						scheduleRecoveredObservations(identity.Get())
 					}
+				case "set_talkativeness":
+					// C3 drift fix 的显式通道：改档即时持久化并 ack——客户端以 ack 为
+					// 真源，不再等下一条 user_speech 顺带生效，也不被第二台设备的
+					// 本地默认值静默覆盖。
+					setUserID := identity.Get()
+					tier := relationship.NormalizeTalkativeness(str(req, "talkativeness"))
+					userTalkativeness.Store(tier)
+					persisted := false
+					if deps.memoriesPrefs != nil {
+						persistCtx, persistCancel := context.WithTimeout(connectionCtx, 3*time.Second)
+						defer persistCancel()
+						if err := deps.memoriesPrefs.RecordTalkativeness(persistCtx, setUserID, tier); err != nil {
+							log.Printf("memory: record talkativeness for %q: %v", setUserID, err)
+						} else {
+							persisted = true
+						}
+					}
+					writer.SendJSON(map[string]interface{}{"type": "talkativeness_ack", "tier": tier, "persisted": persisted})
 				case "user_activity":
 					speaking := str(req, "state") == "speaking"
 					userSpeaking.Store(speaking)
