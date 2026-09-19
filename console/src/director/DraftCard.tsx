@@ -2,7 +2,11 @@ import { useMemo, useState } from 'react';
 import { Alert, Button, Card, Col, Form, Input, Row, Select, Space, Tag, Typography } from 'antd';
 import type { Draft } from './event-model';
 import { eventDefinitions, validateDraft } from './event-model';
+import type { DraftFormState } from './draft-form';
 import { directorTemplates } from './templates';
+
+// 表单状态形状住在纯 module draft-form（映射逻辑与形状同源），这里再导出。
+export type { DraftFormState };
 
 const { Text } = Typography;
 
@@ -34,20 +38,6 @@ const INTENSITY_OPTIONS = [1, 2, 3, 4, 5].map((value) => ({
   value: String(value),
   label: `${value} ${['', '安静', '轻微', '明显', '强烈', '爆发'][value]}`,
 }));
-
-export interface DraftFormState {
-  occurredClock: string;
-  intensity: string;
-  factStatus: string;
-  action: string;
-  mode: string;
-  description: string;
-  proactive: string;
-  correctionReason: string;
-  scoreHome: string;
-  scoreAway: string;
-  mainPlayer: string;
-}
 
 interface DraftCardProps {
   draft: Draft;

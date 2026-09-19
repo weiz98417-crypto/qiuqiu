@@ -2,7 +2,7 @@ import { useCallback, useEffect, useMemo, useState } from 'react';
 import { Alert, App as AntApp, Button, Card, Col, Input, Row, Segmented, Select, Space, Tag, Typography } from 'antd';
 import { useParams } from 'react-router-dom';
 import BehaviorBar from '../director/BehaviorBar';
-import DraftCard, { type DraftFormState } from '../director/DraftCard';
+import DraftCard from '../director/DraftCard';
 import FactTimeline from '../director/FactTimeline';
 import VoiceDraft from '../director/VoiceDraft';
 import {
@@ -21,6 +21,13 @@ import {
   resolveConflict,
 } from '../director/api';
 import { createDraft, formatClock, toEventPayload, updateDraft, type Draft } from '../director/event-model';
+import {
+  draftFromEvent,
+  elapsedClockSeconds,
+  formFromDraft,
+  mergedDraftForSubmit,
+  type DraftFormState,
+} from '../director/draft-form';
 
 const { Text } = Typography;
 
@@ -72,14 +79,10 @@ export default function DirectorLive() {
     return () => clearInterval(timer);
   }, [clock.running]);
 
-  const currentClockElapsed = useCallback(() => {
-    if (!clock.running || !clock.anchorAt) return clock.elapsedSeconds;
-    const anchored = Date.parse(clock.anchorAt);
-    if (Number.isFinite(anchored)) {
-      return Math.max(0, clock.elapsedSeconds + Math.floor((Date.now() - anchored) / 1000));
-    }
-    return clock.elapsedSeconds;
-  }, [clock]);
+  const currentClockElapsed = useCallback(
+    () => elapsedClockSeconds(clock, Date.now()),
+    [clock],
+  );
 
   const refreshTimeline = useCallback(async () => {
     const data = await loadEvents(matchId);
@@ -127,20 +130,9 @@ export default function DirectorLive() {
   // —— 表单回填：只在草稿被整体替换（选行为/清空/拉回更正）时重置表单 ——
   // 不能挂 [draft] 逐次同步：用户正在编辑的描述/话术会被草稿里的旧值清掉
   // （老页面 renderCurrentDraft({ preserveForm: true }) 防的就是这个）。
+  // 「何时回填」的 preserve 语义留在组件；「如何映射」在 draft-form 纯 module。
   const syncFormFromDraft = useCallback((source: Draft) => {
-    setForm({
-      occurredClock: formatClock(source.occurredSeconds),
-      intensity: String(source.intensity || 3),
-      factStatus: source.factStatus === 'pending' ? 'pending' : 'confirmed',
-      action: source.recommendedAction || '',
-      mode: source.deliveryMode || 'auto',
-      description: source.description || '',
-      proactive: source.proactiveText || '',
-      correctionReason: source.correctionReason || '',
-      mainPlayer: source.primaryParticipant?.name || '',
-      scoreHome: source.scoreOverride ? String(source.scoreOverride.home) : '',
-      scoreAway: source.scoreOverride ? String(source.scoreOverride.away) : '',
-    });
+    setForm(formFromDraft(source));
   }, []);
 
   const applyPreset = useCallback(
@@ -221,42 +213,8 @@ export default function DirectorLive() {
   };
 
   const submitDraft = async (factStatus: 'confirmed' | 'pending') => {
-    // 表单「pending 候选」上线时对应事实状态 provisional（老页面语义）。
-    const wireFactStatus = factStatus === 'pending' ? 'provisional' : 'confirmed';
-    let working = updateDraft(draft, { type: 'set_field', field: 'factStatus', value: wireFactStatus });
-    working = updateDraft(working, { type: 'set_field', field: 'description', value: form.description });
-    working = updateDraft(working, {
-      type: 'set_field',
-      field: 'proactiveText',
-      value: form.mode === 'manual' ? form.proactive : '',
-    });
-    working = updateDraft(working, { type: 'set_field', field: 'deliveryMode', value: form.mode });
-    working = updateDraft(working, { type: 'set_field', field: 'recommendedAction', value: form.action });
-    working = updateDraft(working, { type: 'set_field', field: 'intensity', value: Number(form.intensity || 3) });
-    working = updateDraft(working, { type: 'set_field', field: 'correctionReason', value: form.correctionReason });
-    if (working.eventType === 'score_correction') {
-      working = updateDraft(working, {
-        type: 'set_field',
-        field: 'scoreOverride',
-        value: { home: Number(form.scoreHome), away: Number(form.scoreAway) },
-      });
-    }
-    // 老页面 captureDraftFromForm 语义：表单手输的事件时间与主参与人
-    // 必须落回草稿，否则提交时静默丢失。
-    const clockMatch = /^([0-9]{1,2}):([0-9]{1,2})$/.exec(form.occurredClock.trim());
-    if (clockMatch) {
-      const seconds = Number(clockMatch[1]) * 60 + Number(clockMatch[2]);
-      working = updateDraft(working, { type: 'set_field', field: 'occurredSeconds', value: seconds });
-    }
-    if (form.mainPlayer.trim() && !working.primaryParticipant?.name
-        && !working.participants.some((item) => item.name)) {
-      working = updateDraft(working, {
-        type: 'select_player',
-        name: form.mainPlayer.trim(),
-        teamId: working.teamId || side,
-        teamName: working.teamId === 'away' ? awayTeam : homeTeam,
-      });
-    }
+    // 表单→草稿合并（含 captureDraftFromForm 静默丢失防护）在纯 module。
+    const working = mergedDraftForSubmit({ draft, form, factStatus, fallbackSide: side, homeTeam, awayTeam });
     setBusy(true);
     try {
       const payload = toEventPayload(working, { score: confirmedScore, homeTeam, awayTeam });
@@ -280,30 +238,8 @@ export default function DirectorLive() {
 
   const loadEventIntoDraft = (event: DirectorEventRow) => {
     setCorrectingId(event.id || '');
-    const loaded = createDraft({
-        matchId,
-        source: 'operator',
-        teamId: (event.teamId as 'home' | 'away') || null,
-        eventType: event.eventType,
-        occurredPeriod: event.period || clock.period,
-        occurredSeconds: clock.elapsedSeconds,
-        capturedClockVersion: Number(clock.version || 0),
-        description: event.description || '',
-        factStatus: event.factStatus === 'provisional' ? 'pending' : 'confirmed',
-        recommendedAction: event.recommendedAction || '',
-        intensity: Number(event.intensity || 3),
-        revisionOf: event.revisionOf || event.id || null,
-        correctionReason: '',
-        participants: (event.participants || []).map((item) => ({
-          role: item.role,
-          name: item.name,
-          teamId: item.teamId || '',
-          teamName: item.teamName || '',
-          resolved: true,
-        })),
-        proactiveText: ['__quiet__'].includes(event.proactiveText || '') ? '' : event.proactiveText || '',
-        deliveryMode: event.proactiveText === '__quiet__' ? 'quiet' : event.proactiveText ? 'manual' : 'auto',
-    });
+    // 事件行→草稿装载（__quiet__ 解码、provisional→pending）在纯 module。
+    const loaded = draftFromEvent({ event, matchId, clock });
     setDraft(loaded);
     syncFormFromDraft(loaded);
     messageApi.info('事件已拉回草稿，修改后确认会以更正发布');

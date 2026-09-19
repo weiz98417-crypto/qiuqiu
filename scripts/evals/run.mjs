@@ -22,6 +22,7 @@ await runCommand('go', ['run', './cmd/evals', '-suite', 'all', '-out', '../artif
 await runCommand('node', [join('scripts', 'check-presentation-map.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'check-director-event-model.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'check-console-transport.mjs')], { cwd: repoRoot, env: evalEnvironment });
+await runCommand('node', [join('scripts', 'check-director-draft-form.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'check-live2d-idle-yield.mjs')], { cwd: repoRoot, env: evalEnvironment });
 await runCommand('node', [join('scripts', 'voice-ui-smoke.mjs')], { cwd: repoRoot, env: evalEnvironment });
 
