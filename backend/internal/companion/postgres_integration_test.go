@@ -219,3 +219,57 @@ func TestPostgresCompanionPersistenceIntegration(t *testing.T) {
 		t.Fatalf("observation resolution did not persist in trace: %+v", otherTraces[0])
 	}
 }
+
+// RouterTrace round-trip（openspec/changes/router-trace-durability）：ADR-0009
+// 的路由审计证据（意图/置信度/槽位/拒绝原因）在 Postgres 部署与内存部署
+// 同样存活——不再只有内存储活。
+func TestPostgresRouterTraceRoundTripIntegration(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	traces, err := OpenPostgresTraceWriter(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgresTraceWriter error: %v", err)
+	}
+	defer traces.Close()
+
+	matchID := "pg-router-trace-" + time.Now().UTC().Format("20060102150405")
+	if err := traces.Reset(matchID); err != nil {
+		t.Fatalf("Reset traces error: %v", err)
+	}
+
+	used := Trace{
+		ID: "trace-router-used-" + matchID, MatchID: matchID, UserID: "pg-user",
+		Reason: ReasonRouterReplyRealized,
+		Router: &RouterTrace{Intent: "fact_claim", Confidence: 0.85, Player: "佩德里", Score: "1-0", ReplyUsed: true},
+	}
+	rejected := Trace{
+		ID: "trace-router-reject-" + matchID, MatchID: matchID, UserID: "pg-user",
+		Reason: ReasonDeterministicCompanion,
+		Router: &RouterTrace{Intent: "smalltalk", Confidence: 0.9, ReplyUsed: false, RejectReason: ReasonGuardRejected},
+	}
+	for _, trace := range []Trace{used, rejected} {
+		if err := traces.WriteTrace(ctx, trace); err != nil {
+			t.Fatalf("WriteTrace %s error: %v", trace.ID, err)
+		}
+	}
+
+	gotUsed, err := traces.GetTrace(ctx, matchID, used.ID)
+	if err != nil {
+		t.Fatalf("GetTrace used error: %v", err)
+	}
+	if gotUsed.Router == nil || gotUsed.Router.Intent != "fact_claim" || gotUsed.Router.Confidence != 0.85 ||
+		gotUsed.Router.Player != "佩德里" || gotUsed.Router.Score != "1-0" || !gotUsed.Router.ReplyUsed {
+		t.Fatalf("routed trace round-trip = %+v, want full RouterTrace", gotUsed.Router)
+	}
+	gotRejected, err := traces.GetTrace(ctx, matchID, rejected.ID)
+	if err != nil {
+		t.Fatalf("GetTrace rejected error: %v", err)
+	}
+	if gotRejected.Router == nil || gotRejected.Router.ReplyUsed || gotRejected.Router.RejectReason != ReasonGuardRejected {
+		t.Fatalf("rejected trace round-trip = %+v, want rejectReason=policy", gotRejected.Router)
+	}
+}

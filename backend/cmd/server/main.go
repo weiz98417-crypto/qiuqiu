@@ -2591,7 +2591,7 @@ func recordDisplayedReply(ctx context.Context, reader companion.TraceReader, age
 		purpose = "first_meeting"
 	} else if trace.ObservationResolution != nil {
 		purpose = "observation_resolution"
-	} else if trace.Reason == "operator_event_proactive_line" || trace.Reason == "relationship_match_reaction" {
+	} else if trace.Reason == companion.ReasonOperatorEventProactive || trace.Reason == companion.ReasonRelationshipMatchReaction {
 		purpose = "match_reaction"
 	}
 	decisionID := ""

@@ -60,12 +60,12 @@ func quoteJSONForRouter(value string) string {
 	return string(data)
 }
 
-func newRoutedAgent(t *testing.T, routerClient *router.Client) (*Agent, *matchstate.Store) {
+func newRoutedAgent(t *testing.T, turnRouter TurnRouter) (*Agent, *matchstate.Store) {
 	t.Helper()
 	store := matchstate.NewStore()
 	agent := NewAgent(NewStoreMemoryTools(store)).
 		WithDirector(relationship.NewDirector(relationship.NewMemoryRepository())).
-		WithRouter(routerClient)
+		WithRouter(turnRouter)
 	return agent, store
 }
 

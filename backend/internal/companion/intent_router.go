@@ -8,7 +8,6 @@ import (
 	"time"
 
 	"qiuqiu/internal/observation"
-	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/router"
 )
 
@@ -16,11 +15,6 @@ import (
 // only takes the deterministic fact path at confidence >= 0.7; below, the
 // turn degrades to the casual realization with the evidence funnelled (C3).
 const routerConfidenceThreshold = 0.7
-
-// reasonRelationshipPlanRealized is the trace reason realizeReply stamps on a
-// reply that passed guard validation; the router naturalization check keys
-// off it instead of a raw literal.
-const reasonRelationshipPlanRealized = "relationship_plan_realized"
 
 // TurnRouter is the routing seam the agent consumes. *router.Client is the
 // production implementation; the eval harness scripts its own so the golden
@@ -133,25 +127,6 @@ func routerReplyEligibleIntent(intent Intent) bool {
 	default:
 		return false
 	}
-}
-
-// validatedRouterReply runs the router's reply suggestion through the exact
-// same guardrails as the realizer output (sentence/char caps, ForbiddenClaims,
-// anchor and repetition discipline). An empty suggestion or any violation
-// returns "" and the caller falls back to the deterministic reliable text.
-func validatedRouterReply(input string, intent Intent, suggestion, reliable string, decision relationship.Decision) string {
-	candidate := strings.TrimSpace(suggestion)
-	if candidate == "" || decision.Speech == nil {
-		return ""
-	}
-	allowedSource := strings.Join(compactAnchors(input, reliable), " ")
-	if err := validateRealizedText(candidate, allowedSource, decision); err != nil {
-		return ""
-	}
-	if err := validateRealizedConversationTurn(input, intent, candidate); err != nil {
-		return ""
-	}
-	return candidate
 }
 
 // claimPersistedHoldReply is the C2 warm deterministic hold dialogue: the

@@ -208,6 +208,9 @@ type RouterTrace struct {
 	Team       string  `json:"team,omitempty"`
 	Score      string  `json:"score,omitempty"`
 	ReplyUsed  bool    `json:"replyUsed,omitempty"`
+	// RejectReason 非空 = 建议回复存在但被护栏拦截（policy）或为空（empty）：
+	// ReplyUsed=false 的两种去向从此可分（ADR-0009 审计承诺补全）。
+	RejectReason string `json:"rejectReason,omitempty"`
 }
 
 type VoiceTraceMetadata struct {
@@ -929,9 +932,9 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		trace.RetrievedEvent = eventIDs
 		if snapshot.Period == "pre_match" && claim.EventType == "goal" {
 			claim.Status = ClaimStatusContradicted
-			claim.Reason = "match has not started"
+			claim.Reason = ReasonMatchNotStarted
 		}
-		trace.Reason = "user_match_claim_" + string(claim.Status)
+		trace.Reason = ReasonUserMatchClaimPrefix + string(claim.Status)
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 		// intent-router C2: an insistence repeat of a claim this same user
 		// already raised gets the warm deterministic hold, not the generic
@@ -940,7 +943,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		if claim.Status == ClaimStatusUnverified {
 			if _, persisted := a.activeMatchingObservation(ctx, req, claim); persisted {
 				claimPersisted = true
-				trace.Reason = "claim_persisted_hold"
+				trace.Reason = ReasonClaimPersistedHold
 			}
 			a.recordObservation(ctx, req, requestTraceID, claim, &trace)
 		}
@@ -956,7 +959,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			}
 			requiredAnchors = compactAnchors(snapshot.HomeTeam, score, snapshot.AwayTeam)
 		} else {
-			if claim.Reason == "match has not started" {
+			if claim.Reason == ReasonMatchNotStarted {
 				reply = "比赛还没开始，这条不能算。"
 				break
 			}
@@ -993,7 +996,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		if issue := snapshotIntegrityIssue(snapshot); issue != "" {
 			allowRealize = false
 			deterministicReason = "snapshot_integrity"
-			trace.Reason = "match_snapshot_inconsistent"
+			trace.Reason = ReasonMatchSnapshotInc
 			reply = "这会儿赛况有点对不上，我先不报死，等一下再看。"
 			if claim, ok := assessScoreClaim(req.Text, snapshot); ok {
 				claim.Status = ClaimStatusUnverified
@@ -1007,7 +1010,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			allowRealize = false
 			deterministicReason = "claim_policy"
 			trace.Claim = &claim
-			trace.Reason = "user_match_claim_" + string(claim.Status)
+			trace.Reason = ReasonUserMatchClaimPrefix + string(claim.Status)
 			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 		}
 		reply = fmt.Sprintf("现在是%s %d-%d %s，时间在%s %s。", snapshot.HomeTeam, snapshot.Score.Home, snapshot.Score.Away, snapshot.AwayTeam, displayPeriod(snapshot.Period), snapshot.Clock)
@@ -1059,8 +1062,8 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			if snapshot, err := a.tools.Snapshot(ctx, req.MatchID); err == nil {
 				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
 				if currentReply, ok := activeMatchScheduleReply(snapshot); ok {
-					deterministicReason = "active_match_context"
-					trace.Reason = "active_match_context"
+					deterministicReason = ReasonActiveMatchContext
+					trace.Reason = ReasonActiveMatchContext
 					reply = currentReply
 					break
 				}
@@ -1087,7 +1090,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 					Name: "schedule.lookup_pending",
 					Args: map[string]string{"lookupId": lookupID, "scope": string(scheduleIntent.Scope)},
 				})
-				trace.Reason = "schedule_lookup_acknowledgement"
+				trace.Reason = ReasonScheduleLookupAck
 				reply = scheduleLookupAcknowledgement(scheduleIntent.Scope)
 				break
 			}
@@ -1098,7 +1101,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			result, err := searchReader.Search(ctx, searchRequest)
 			if err != nil {
 				trace.Error = strings.TrimSpace(err.Error())
-				trace.Reason = "schedule_unavailable"
+				trace.Reason = ReasonScheduleUnavailable
 				reply = "赛程源这次没接上，我不先乱报。"
 				break
 			}
@@ -1113,7 +1116,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		fixtures, err := a.scheduleReader.TodayFixtures(ctx)
 		if err != nil {
 			trace.Error = strings.TrimSpace(err.Error())
-			trace.Reason = "schedule_unavailable"
+			trace.Reason = ReasonScheduleUnavailable
 			reply = "今天的赛程查询没接上，你想查哪个联赛？"
 			break
 		}
@@ -1130,7 +1133,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			var claim FactClaim
 			reply, claim, trace.RetrievedEvent = answerDeicticMatchReaction(req.Text, events)
 			trace.Claim = &claim
-			trace.Reason = "user_event_reference_" + string(claim.Status)
+			trace.Reason = ReasonUserEventReferencePrfx + string(claim.Status)
 			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 			if claim.Status == ClaimStatusUnverified {
 				a.recordObservation(ctx, req, requestTraceID, claim, &trace)
@@ -1161,7 +1164,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	routerReplyUsed := false
 	if allowRealize && decision != nil && decision.Speech == nil {
 		reply = ""
-		trace.Reason = "relationship_chosen_silence"
+		trace.Reason = ReasonRelationshipChosenSilence
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "silence"}})
 	} else if allowRealize && decision != nil && (shouldRealizeUserTurn(intent, *decision) || (intent == IntentUnknown && routerChatReply != "")) {
 		reply = reliableFallbackForDecision(req.Text, intent, reply, *decision)
@@ -1169,16 +1172,24 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		// reply for a chat-class turn, it is realized directly through the
 		// guard validation — no second LLM call. Otherwise the normal
 		// realizer (C1 for the degraded-casual unknown) takes over.
-		if validated := validatedRouterReply(req.Text, intent, routerChatReply, reply, *decision); validated != "" {
+		if validated, reject := guardValidateReply(req.Text, intent, routerChatReply, requiredAnchors, reply, *decision); validated != "" {
 			reply = validated
 			routerReplyUsed = true
-			trace.Reason = "router_reply_realized"
+			trace.Reason = ReasonRouterReplyRealized
 			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized", "source": "router"}})
-		} else if a.realizer != nil && decision.Speech != nil {
-			reply = a.realizeReply(ctx, req, intent, reply, requiredAnchors, *decision, &trace)
 		} else {
-			trace.Reason = "realize_fallback_unavailable"
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "realizer_unavailable"}})
+			// ADR-0009 审计承诺补全：有建议但被拒/为空不再是静默的
+			// ReplyUsed=false——拒绝原因落 trace.Router，随后照旧走
+			// realizer / deterministic 兜底。
+			if trace.Router != nil {
+				trace.Router.RejectReason = reject
+			}
+			if a.realizer != nil && decision.Speech != nil {
+				reply = a.realizeReply(ctx, req, intent, reply, requiredAnchors, *decision, &trace)
+			} else {
+				trace.Reason = ReasonRealizeFallbackUnavail
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "realizer_unavailable"}})
+			}
 		}
 	} else {
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "reason": deterministicReason}})
@@ -1195,9 +1206,9 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	trace.LatencyMS = int(time.Since(start).Milliseconds())
 	if trace.Reason == "" {
 		if !allowRealize && deterministicReason != "policy" {
-			trace.Reason = "deterministic_" + deterministicReason
+			trace.Reason = ReasonDeterministicPrefix + deterministicReason
 		} else {
-			trace.Reason = "deterministic_companion_policy"
+			trace.Reason = ReasonDeterministicCompanion
 		}
 	}
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "conversation.append_turn", Args: map[string]string{"matchId": req.MatchID, "userId": req.UserID, "roles": "user,qiuqiu"}})
@@ -1224,7 +1235,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	// deterministic clarification — the reply text itself is never replaced.
 	// A routed turn that naturalized into a validated casual reply was parsed
 	// and must not play the interrupted reaction.
-	routerNaturalized := routerReplyUsed || (routedCasual && trace.Reason == reasonRelationshipPlanRealized)
+	routerNaturalized := routerReplyUsed || (routedCasual && trace.Reason == ReasonRelationshipPlanRealized)
 	if intent == IntentUnknown && !routerNaturalized {
 		presentation = relationship.InterruptedDeliveryPresentation(presentation.Affect)
 	}
@@ -1258,7 +1269,7 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": lookup.MatchID}})
 			if reply, active := activeMatchScheduleReply(snapshot); active {
 				trace.Output = reply
-				trace.Reason = "schedule_lookup_context_updated"
+				trace.Reason = ReasonScheduleLookupCtxUpdated
 				trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
 				trace.ToolCalls = append(trace.ToolCalls,
 					ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
@@ -1293,7 +1304,7 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 					ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
 				)
 				trace.Output = currentReply
-				trace.Reason = "schedule_lookup_context_updated"
+				trace.Reason = ReasonScheduleLookupCtxUpdated
 				trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
 				if err := a.tools.WriteTrace(ctx, trace); err != nil {
 					return Response{}, err
@@ -1308,12 +1319,12 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 	reply := ""
 	if err != nil {
 		trace.Error = strings.TrimSpace(err.Error())
-		trace.Reason = "schedule_lookup_unavailable"
+		trace.Reason = ReasonScheduleLookupUnavail
 		reply = "赛程源这次没接上，我不先乱报。"
 		searchArgs["state"] = "failed"
 	} else {
 		reply = formatScheduleSearchResult(result, intent.Scope)
-		trace.Reason = "schedule_lookup_result"
+		trace.Reason = ReasonScheduleLookupResult
 		searchArgs["state"] = "completed"
 		searchArgs["source"] = strings.TrimSpace(result.Source)
 		searchArgs["freshness"] = strings.TrimSpace(result.Freshness)
@@ -1526,14 +1537,14 @@ func answerDeicticMatchReaction(text string, events []matchstate.MatchEvent) (st
 		}
 	}
 	if event == nil {
-		claim.Reason = "no recent confirmed match event"
+		claim.Reason = ReasonNoRecentConfirmedEvent
 		return "我这边还没看到你说的那一下，先不跟着瞎认。", claim, nil
 	}
 	claim.EventType = event.EventType
 	claim.ActualPlayer = strings.TrimSpace(event.PlayerName)
 	claim.ActualTeam = strings.TrimSpace(event.TeamName)
 	claim.Status = ClaimStatusConfirmed
-	claim.Reason = "matched latest confirmed match event"
+	claim.Reason = ReasonMatchedLatestEvent
 	return fmt.Sprintf("这下我能接，刚才%s这一下确实漂亮：%s", event.Clock, event.Description), claim, []string{event.ID}
 }
 
@@ -1698,16 +1709,16 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	if err != nil {
 		return ProactiveResponse{}, err
 	}
-	trace.Reason = "relationship_match_reaction"
+	trace.Reason = ReasonRelationshipMatchReaction
 	if req.Critical && decision.ID != "" && decision.FactRevision != deliveryKey {
 		req.OutputAllowed = false
-		trace.Reason = "critical_fact_refresh_limit"
+		trace.Reason = ReasonCriticalFactRefreshLimit
 	}
 	if decision.ID != "" {
 		trace.RelationshipDecision = &decision
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
 	} else {
-		trace.Reason = "operator_event_proactive_line"
+		trace.Reason = ReasonOperatorEventProactive
 	}
 	reply := ""
 	if req.OutputAllowed && (decision.ID == "" || decision.Speech != nil) {
@@ -1722,8 +1733,8 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		if strings.TrimSpace(reply) == "" {
 			reply = FallbackProactiveText(req.Event)
 		}
-	} else if trace.Reason != "critical_fact_refresh_limit" {
-		trace.Reason = "relationship_match_observed_silent"
+	} else if trace.Reason != ReasonCriticalFactRefreshLimit {
+		trace.Reason = ReasonMatchObservedSilent
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
 			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "mode": "silence",
 		}})
@@ -1834,7 +1845,7 @@ func (a *Agent) handleFirstMeeting(ctx context.Context, req FirstMeetingRequest)
 			if decision.Relationship.GreetingDelivered {
 				reply = ""
 				trace.Output = ""
-				trace.Reason = "first_meeting_already_delivered"
+				trace.Reason = ReasonFirstMeetingDelivered
 				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
 					"mode": "silence", "reason": "already_delivered",
 				}})
@@ -2766,24 +2777,20 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 		if err != nil {
 			trace.Error = strings.TrimSpace(err.Error())
 		}
-		trace.Reason = "realize_fallback_error"
+		trace.Reason = ReasonRealizeFallbackError
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "realizer_error"}})
 		return reliable
 	}
-	allowedSource := strings.Join(compactAnchors(req.Text, reliable, strings.Join(anchors, " ")), " ")
-	if err := validateRealizedText(realized.Text, allowedSource, decision); err != nil {
-		trace.Reason = "realize_fallback_policy"
+	// 与路由建议共用同一个 guard：拒绝原因、锚源纪律一处定义。
+	validated, _ := guardValidateReply(req.Text, intent, realized.Text, anchors, reliable, decision)
+	if validated == "" {
+		trace.Reason = ReasonRealizeFallbackPolicy
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
 		return reliable
 	}
-	if err := validateRealizedConversationTurn(req.Text, intent, realized.Text); err != nil {
-		trace.Reason = "realize_fallback_policy"
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
-		return reliable
-	}
-	trace.Reason = reasonRelationshipPlanRealized
+	trace.Reason = ReasonRelationshipPlanRealized
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized"}})
-	return strings.TrimSpace(realized.Text)
+	return validated
 }
 
 func validateRealizedConversationTurn(input string, intent Intent, text string) error {
