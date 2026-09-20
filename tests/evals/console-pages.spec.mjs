@@ -293,10 +293,9 @@ test('比赛页事件流/引用审计/用户网格/设置全部渲染且有真�
   await expect(page.locator('.ant-card').filter({ hasText: `比赛 · ${matchId}` })).toBeVisible();
   // 事件流：播种的进球可见。
   await expect(page.locator('.ant-card').filter({ hasText: `比赛 · ${matchId}` })).toContainText('佩德里');
-  // 引用审计：主动引用行可见（UI 把 proactive_citation: 命名空间渲染为
-  // 「主动引用 ·」标签）。
-  const citations = page.locator('.ant-card').filter({ hasText: '引用审计' });
-  await expect(citations).toContainText('主动引用 · shared_moment:');
+  // 引用审计收敛到独立页（c8）：比赛页留入口链接。
+  const auditCard = page.locator('.ant-card').filter({ hasText: '审计轨迹' });
+  await expect(auditCard.getByRole('button', { name: '去引用审计查本场轨迹' })).toBeVisible();
   // 用户网格：WS 连接真实注册的在线用户。
   const grid = page.locator('.ant-card').filter({ hasText: '用户网格' });
   await expect(grid.locator('table')).toContainText(fan);

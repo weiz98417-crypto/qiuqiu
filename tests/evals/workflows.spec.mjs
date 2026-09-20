@@ -1,8 +1,34 @@
 import { expect, test } from '@playwright/test';
 import { openTextMode } from './support/open-text-mode.mjs';
+import { startConsoleStaticServer } from './support/console-server.mjs';
 
 const token = process.env.APP_TOKEN || 'qiuqiu-dev-token';
 const matchId = 'test';
+
+let consoleServer;
+let consoleBaseURL;
+
+test.beforeAll(async () => {
+  consoleServer = await startConsoleStaticServer({ backendURL: process.env.QIUQIU_BASE_URL || 'http://127.0.0.1:18080' });
+  consoleBaseURL = consoleServer.baseURL;
+});
+
+test.afterAll(async () => {
+  await consoleServer?.close();
+});
+
+// 轨迹审计已收敛到新台引用审计页（ADR-0013）：机令牌 + URL 预填，清空前缀看全量。
+async function openConsoleCitationAudit(context) {
+  const audit = await context.newPage();
+  await audit.addInitScript((value) => {
+    localStorage.setItem('qiuqiu.console.token', value);
+  }, token);
+  await audit.goto(`${consoleBaseURL}/console/#/console/citations?matchId=${encodeURIComponent(matchId)}`);
+  await audit.getByLabel('引用前缀').fill('');
+  await audit.getByRole('button', { name: '审计' }).click();
+  await expect(audit.getByText('按引用前缀审计轨迹')).toBeVisible();
+  return audit;
+}
 
 test.beforeEach(async ({ page, request }) => {
   await page.addInitScript((value) => {
@@ -71,10 +97,14 @@ test('用户侧展示导演主动线、基于记忆回答追问，并在日志�
   expect(trace.retrievedEventIds).not.toHaveLength(0);
   expect(JSON.stringify(trace.toolCalls)).toContain('match.search_events');
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#traces`);
-  await page.locator('#refreshTraces').click();
-  await expect(page.locator('#traceList')).toContainText('刚才谁助攻？');
-  await expect(page.locator('#memorySnapshot')).toContainText('1-0');
+  // 实时运营面收敛到新台（ADR-0013）：最新一条 trace 即本回合提问。
+  const audit = await openConsoleCitationAudit(page.context());
+  const firstWhy = audit.getByRole('button', { name: '为什么说话' }).first();
+  await firstWhy.click();
+  await expect(audit.getByText('刚才谁助攻？')).toBeVisible();
+  await audit.close();
+  const auditState = await apiGet(request, `/api/matches/${matchId}/state`);
+  expect(auditState.snapshot.score).toEqual({ home: 1, away: 0 });
 });
 
 test('用户错误赛况不会覆盖比赛事实，并留下核验记录', async ({ page, request }) => {
@@ -91,11 +121,13 @@ test('用户错误赛况不会覆盖比赛事实，并留下核验记录', async
   expect(trace.claim).toMatchObject({ kind: 'score', status: 'contradicted' });
   expect(JSON.stringify(trace.toolCalls)).toContain('match.verify_user_claim');
 
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#traces`);
-  await page.locator('#refreshTraces').click();
-  await page.locator('#traceList').getByText('德国已经3比0领先了').click();
-  await expect(page.locator('#traceDetail')).toContainText('用户赛况核验');
-  await expect(page.locator('#traceDetail')).toContainText('contradicted');
+  // 核验语义（contradicted + verify_user_claim）已在上方 API 断言；
+  // UI 侧验证引用审计页可打开该回合详情（ADR-0013）。
+  const audit = await openConsoleCitationAudit(page.context());
+  const firstWhy = audit.getByRole('button', { name: '为什么说话' }).first();
+  await firstWhy.click();
+  await expect(audit.getByText('德国已经3比0领先了')).toBeVisible();
+  await audit.close();
 });
 
 test('错误进球者会被纠正，玩笑不会进入事实核验', async ({ page, request }) => {
@@ -270,24 +302,33 @@ test('人工与外部源冲突时，球球暂停确认赛况', async ({ page, re
 });
 
 test('导演赛前配置通过页面保存，并同步到事实 API', async ({ page, request }) => {
-  await page.goto(`/operator.html?token=${encodeURIComponent(token)}#setup`);
-  await page.locator('#preHomeTeam').fill('评测主队');
-  await page.locator('#preAwayTeam').fill('评测客队');
-  await page.locator('#preHomePlayers').fill(rosterText('主队', 3));
-  await page.locator('#preAwayPlayers').fill(rosterText('客队', 2));
-  await page.locator('#preSubmit').click();
-  await expect(page.locator('#toast')).toContainText('主队还缺 8 名首发，客队还缺 9 名首发');
+  // 赛前配置收敛到新台设置区（ADR-0013）。旧页的「缺 N 名首发」为旧页
+  // 客户端校验，console 交给后端校验（评测种子一直是短名单）。
+  const setup = await page.context().newPage();
+  await setup.addInitScript((value) => {
+    localStorage.setItem('qiuqiu.console.token', value);
+  }, token);
+  await setup.goto(`${consoleBaseURL}/console/#/console/match/${matchId}`);
+  await expect(setup.getByText('赛前配置')).toBeVisible();
+  await setup.getByLabel('主队名').fill('评测主队');
+  await setup.getByLabel('客队名').fill('评测客队');
+  await setup.getByLabel('主队球员').fill(rosterText('主队', 3));
+  await setup.getByLabel('客队球员').fill(rosterText('客队', 2));
+  await setup.getByRole('button', { name: '保存阵容' }).click();
+  await expect(setup.getByText('阵容已保存').first()).toBeVisible();
 
   const preservedState = await apiGet(request, `/api/matches/${matchId}/state`);
   expect(preservedState.snapshot.score).toEqual({ home: 1, away: 0 });
   const preservedLedger = await apiGet(request, `/api/matches/${matchId}/events`);
   expect(preservedLedger.events).toHaveLength(1);
 
-  await page.locator('#preHomePlayers').fill(rosterText('主队', 11));
-  await page.locator('#preAwayPlayers').fill(rosterText('客队', 11));
-  await page.locator('#preSubmit').click();
-  await expect(page.locator('#toast')).toContainText('新比赛已开始');
-  await expect(page.locator('#homeTeam')).toHaveValue('评测主队');
+  await setup.getByLabel('主队球员').fill(rosterText('主队', 11));
+  await setup.getByLabel('客队球员').fill(rosterText('客队', 11));
+  await setup.getByRole('button', { name: '保存阵容' }).click();
+  await expect(setup.getByText('阵容已保存').first()).toBeVisible();
+  await setup.getByRole('button', { name: '开始比赛' }).click();
+  await expect(setup.getByText('比赛已开始').first()).toBeVisible();
+  await expect(setup.getByLabel('主队名')).toHaveValue('评测主队');
 
   const config = await apiGet(request, `/api/matches/${matchId}/config`);
   expect(config.config.homeTeam).toBe('评测主队');
@@ -306,9 +347,8 @@ test('导演赛前配置通过页面保存，并同步到事实 API', async ({ p
     running: false,
   });
 
-  await expect(page.locator('#homeScore')).toHaveValue('0');
-  await expect(page.locator('#awayScore')).toHaveValue('0');
-  await expect(page.locator('#clock')).toHaveValue('00:00');
+  // 旧页的 #homeScore/#awayScore/#clock 输入框随页面退役删除；
+  // 归零语义已由上方 state/clock API 断言承接。
 });
 
 function rosterText(prefix, count) {
