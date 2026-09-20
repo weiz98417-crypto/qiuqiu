@@ -210,7 +210,14 @@ export default function MatchSettings({ matchId }: { matchId: string }) {
       setActing(`lifecycle-${action}`);
       try {
         if (action === 'start') {
-          await consoleApi.startMatch(matchId);
+          // /start 的冻结形状携带整份配置（重置+存盘+开赛一体）：
+          // 用当前表单状态作为请求体，与保存阵容同一来源。
+          await consoleApi.startMatch(matchId, {
+            homeTeam: homeTeam.trim(),
+            awayTeam: awayTeam.trim(),
+            homePlayers: parsePlayerLines(homePlayersText),
+            awayPlayers: parsePlayerLines(awayPlayersText),
+          });
           messageApi.success('比赛已开始');
         } else {
           await consoleApi.resetMatch(matchId);
@@ -223,7 +230,7 @@ export default function MatchSettings({ matchId }: { matchId: string }) {
         setActing('');
       }
     },
-    [config, automation, sources, matchId, messageApi],
+    [config, automation, sources, matchId, messageApi, homeTeam, awayTeam, homePlayersText, awayPlayersText],
   );
 
   const status = sources.data?.status;

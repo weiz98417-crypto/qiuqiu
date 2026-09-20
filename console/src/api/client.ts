@@ -636,8 +636,9 @@ export const consoleApi = {
       method: 'POST',
       body: config,
     }),
-  startMatch: (matchId: string) =>
-    api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/start`, { method: 'POST', body: {} }),
+  // lifecycle start 的冻结形状 = 整份配置随请求体重置并存盘再开赛。
+  startMatch: (matchId: string, config: Record<string, unknown>) =>
+    api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/start`, { method: 'POST', body: config }),
   resetMatch: (matchId: string) =>
     api<unknown>(`/api/matches/${encodeURIComponent(matchId)}/reset`, { method: 'POST', body: {} }),
 };
