@@ -17,9 +17,11 @@ class AudioState {
 class AudioPlayerService {
   final _stateController = StreamController<AudioState>.broadcast();
   final _activeHandles = <SoundHandle>[];
-  final _sources = AudioSourceLifecycle<AudioSource>(
+  late final _sources = AudioSourceLifecycle<AudioSource>(
     release: _releaseSource,
   );
+  /// 在途释放 futures：deinit 前逐一等待，避免对已反初始化引擎释放。
+  final _pendingReleases = <Future<void>>[];
   SoLoud? _soloud;
   Timer? _completionTimer;
   bool _initialized = false;
@@ -37,9 +39,10 @@ class AudioPlayerService {
     _initialized = true;
   }
 
-  /// SoLoud 来源释放：disposeSource 是异步调用，失败不能拖垮播放路径。
-  static void _releaseSource(AudioSource source) {
-    unawaited(_disposeQuietly(source));
+  /// SoLoud 来源释放：disposeSource 是异步调用，失败不能拖垮播放路径；
+  /// future 挂到 _pendingReleases，dispose 前统一等待。
+  void _releaseSource(AudioSource source) {
+    _pendingReleases.add(_disposeQuietly(source));
   }
 
   static Future<void> _disposeQuietly(AudioSource source) async {
@@ -139,6 +142,7 @@ class AudioPlayerService {
     if (_disposed) return;
     await pause(notify: false);
     _disposed = true;
+    await Future.wait(_pendingReleases);
     if (_initialized) {
       _soloud?.deinit();
       _initialized = false;

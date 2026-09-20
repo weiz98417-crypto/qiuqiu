@@ -327,12 +327,29 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 }
 
 func (service *ResponseDeliveryService) completeWithFallback(ctx context.Context, request ResponseDeliveryRequest, result ResponseDeliveryResult, reason string, cause error) (ResponseDeliveryResult, error) {
-	// 加锁判定半：只有终态去重需要互斥。
-	if service.deliveryIsTerminal(request.Trace.ID) {
-		result.Duplicate = true
+	// 加锁判定半：终态去重与非 Critical 的 Completed 声明必须原子完成——
+	// 否则两个并发 fallback 都会通过检查、双发 tts_fallback 并重复记录
+	// 媒体。注意 mu 不可重入：终态检查必须内联，不能调 deliveryIsTerminal。
+	claimed := true
+	duplicate := false
+	_ = service.withPlanningLock(func() error {
+		if current, ok := service.tracker.Lookup(request.Trace.ID); ok && isTerminalDeliveryState(current.State) {
+			claimed = false
+			duplicate = true
+			return nil
+		}
+		if !request.Critical {
+			// 非 Critical：在此声明 Completed 终态，后续并发 fallback 与
+			// interrupt 都被终态挡住。Critical 保持不迁移（既有语义）。
+			_ = service.tracker.Transition(request.Trace.ID, DeliveryCompleted, service.timestamp())
+		}
+		return nil
+	})
+	if !claimed {
+		result.Duplicate = duplicate
 		return result, nil
 	}
-	// 无锁 I/O 半：fallback 状态、媒体记录与完成迁移。
+	// 无锁 I/O 半：fallback 状态与媒体记录。
 	result.FallbackReason = reason
 	statusErr := service.sink.DeliverStatus(ctx, DeliveryStatus{Kind: "voice", State: "tts_fallback", Reason: reason, TraceID: request.Trace.ID})
 	mediaState := "skipped"
@@ -340,13 +357,7 @@ func (service *ResponseDeliveryService) completeWithFallback(ctx context.Context
 		mediaState = "failed"
 	}
 	recordErr := service.recordMedia(ctx, request, "", mediaState, reason)
-	var transitionErr error
-	if !request.Critical {
-		transitionErr = service.withPlanningLock(func() error {
-			return service.tracker.Transition(request.Trace.ID, DeliveryCompleted, service.timestamp())
-		})
-	}
-	return result, errors.Join(statusErr, recordErr, transitionErr)
+	return result, errors.Join(statusErr, recordErr)
 }
 
 func (service *ResponseDeliveryService) interrupt(traceID string) {

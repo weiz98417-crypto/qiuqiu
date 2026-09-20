@@ -216,7 +216,10 @@ class WebSocketService {
     _reconnectTimer?.cancel();
     _pingTimer?.cancel();
     await _channelSubscription?.cancel();
-    await _channel?.sink.close();
+    try {
+      // 通道可能已残坏：dispose 路径吞错，保证控制器一定被关闭。
+      await _channel?.sink.close();
+    } catch (_) {}
     await _messageController.close();
     await _binaryController.close();
     await _statusController.close();

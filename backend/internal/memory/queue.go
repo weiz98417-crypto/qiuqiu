@@ -521,7 +521,7 @@ func (q *Queue) Run(ctx context.Context) {
 // instead of sleeping this drainer — one user's Memobase jitter must not
 // queue everyone else's moments behind a backoff. The backlog channel paces
 // its own replays with BacklogRetryDelay; without a backlog store (dev mode
-// without Postgres) the failure is audited and dropped, as before.
+// without Postgres) the failure is audited and dropped after one attempt.
 func (q *Queue) process(ctx context.Context, item enqueueItem) {
 	if item.reasonCode != "" {
 		q.recordAudit(ctx, rejectionAudit(item.moment, item.reasonCode))
