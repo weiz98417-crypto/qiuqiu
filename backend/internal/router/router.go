@@ -7,14 +7,13 @@ package router
 
 import (
 	"context"
-	"encoding/json"
 	"fmt"
-	"net/http"
+	"reflect"
 	"strconv"
 	"strings"
 	"time"
 
-	"qiuqiu/internal/openaicompat"
+	"qiuqiu/internal/structured"
 )
 
 // Default settings per design.md locked decision 1: the MiMo platform with
@@ -70,12 +69,10 @@ func parseMillis(raw string) int64 {
 
 // Client is the single-call router. It is deliberately stdlib-only: one
 // attempt, one timeout, no retry stacking on the reply latency (locked
-// decision 6).
+// decision 6). 传输与解析经 structured 深模块（留尾 3.6 兑现）。
 type Client struct {
-	baseURL    string
 	apiKey     string
-	model      string
-	httpClient *http.Client
+	structured *structured.Client
 }
 
 func NewClient(config Config) *Client {
@@ -84,10 +81,8 @@ func NewClient(config Config) *Client {
 		timeout = DefaultTimeout
 	}
 	return &Client{
-		baseURL:    strings.TrimRight(config.BaseURL, "/"),
 		apiKey:     config.APIKey,
-		model:      config.Model,
-		httpClient: &http.Client{Timeout: timeout},
+		structured: structured.NewClientWithTimeout(config.BaseURL, config.APIKey, config.Model, timeout),
 	}
 }
 
@@ -104,14 +99,17 @@ type Request struct {
 	Context string
 }
 
-// Result mirrors the route_turn function-call arguments.
+// Result mirrors the route_turn function-call arguments. jsonschema tag 由
+// structured.Extract 反射成工具参数 schema——invopop 的枚举语法是重复的
+// `enum=值` 指令，顺序与迁移前手写 schema 逐项一致（router_schema_test.go
+// 锁定），description 保留原中文文案。
 type Result struct {
-	Intent     string  `json:"intent"`
-	Player     string  `json:"player,omitempty"`
-	Team       string  `json:"team,omitempty"`
-	Score      string  `json:"score,omitempty"`
-	Confidence float64 `json:"confidence"`
-	Reply      string  `json:"reply,omitempty"`
+	Intent string `json:"intent" jsonschema:"description=用户这回合的意图，必须从这个枚举里选,required,enum=smalltalk,enum=schedule_question,enum=match_status_question,enum=recent_event_question,enum=follow_up_question,enum=player_question,enum=match_fact_claim,enum=emotion_reaction,enum=personal_share,enum=control_command,enum=reminder_request,enum=unknown"`
+	Player string `json:"player,omitempty" jsonschema_description:"提到的球员名，没有则空串"`
+	Team   string `json:"team,omitempty" jsonschema_description:"提到的球队名，没有则空串"`
+	Score  string `json:"score,omitempty" jsonschema_description:"提到的比分（如 2-1），没有则空串"`
+	Confidence float64 `json:"confidence" jsonschema:"description=意图判断置信度 0 到 1,required"`
+	Reply      string  `json:"reply,omitempty" jsonschema_description:"仅闲聊类意图给一句自然回复建议（最多两句60字），事实类与控制类留空"`
 }
 
 type chatMessage struct {
@@ -119,66 +117,28 @@ type chatMessage struct {
 	Content string `json:"content"`
 }
 
-type toolFunction struct {
-	Name       string         `json:"name"`
-	Parameters map[string]any `json:"parameters"`
-}
-
-type toolSpec struct {
-	Type     string       `json:"type"`
-	Function toolFunction `json:"function"`
-}
-
-type routeRequestPayload struct {
-	Model       string        `json:"model"`
-	Messages    []chatMessage `json:"messages"`
-	Tools       []toolSpec    `json:"tools"`
-	ToolChoice  any           `json:"tool_choice"`
-	MaxTokens   int           `json:"max_tokens"`
-	Temperature float64       `json:"temperature"`
-	Thinking    struct {
-		Type string `json:"type"`
-	} `json:"thinking"`
-}
-
-type routeResponsePayload struct {
-	Choices []struct {
-		Message struct {
-			ToolCalls []struct {
-				Function struct {
-					Name      string `json:"name"`
-					Arguments string `json:"arguments"`
-				} `json:"function"`
-			} `json:"tool_calls"`
-		} `json:"message"`
-	} `json:"choices"`
-}
-
 // RouteTurnToolName is the single function the router model must call.
 const RouteTurnToolName = "route_turn"
 
-// routableIntents is the intent vocabulary the router schema offers — the
-// single source both the tool schema and the vocabulary lock test read.
-// match_reaction is proactive-only and deliberately absent from user turns.
-var routableIntents = []string{
-	"smalltalk",
-	"schedule_question",
-	"match_status_question",
-	"recent_event_question",
-	"follow_up_question",
-	"player_question",
-	"match_fact_claim",
-	"emotion_reaction",
-	"personal_share",
-	"control_command",
-	"reminder_request",
-	"unknown",
-}
-
-// RoutableIntents exposes the router intent vocabulary (the companion
-// package's vocabulary lock test reads it to keep routedTurnIntent 1:1).
+// RoutableIntents exposes the router intent vocabulary——单一来源是 Result.
+// Intent 字段的 jsonschema tag（重复 enum= 指令即枚举，schema 反射与词汇
+// 锁测试同源）。match_reaction is proactive-only and deliberately absent
+// from user turns.
 func RoutableIntents() []string {
-	return append([]string(nil), routableIntents...)
+	field, ok := reflect.TypeOf(Result{}).FieldByName("Intent")
+	if !ok {
+		return nil
+	}
+	values := []string{}
+	for _, part := range strings.Split(field.Tag.Get("jsonschema"), ",") {
+		if strings.HasPrefix(part, "enum=") {
+			values = append(values, strings.TrimPrefix(part, "enum="))
+		}
+	}
+	if len(values) == 0 {
+		return nil
+	}
+	return values
 }
 
 // SystemPrompt exposes the hardcoded routing prompt read-only: the intent
@@ -187,28 +147,6 @@ func RoutableIntents() []string {
 // itself stays byte-identical (ADR-0009 behavior lock).
 func SystemPrompt() string {
 	return routeSystemPrompt
-}
-
-// routeTurnParameters is the tool schema: the 12 backend intents (the router
-// prompt documents 坚持主张 as match_fact_claim), slots, confidence and the
-// reply suggestion used only for non-fact intents.
-func routeTurnParameters() map[string]any {
-	return map[string]any{
-		"type": "object",
-		"properties": map[string]any{
-			"intent": map[string]any{
-				"type":        "string",
-				"enum":        routableIntents,
-				"description": "用户这回合的意图，必须从这个枚举里选",
-			},
-			"player":     map[string]any{"type": "string", "description": "提到的球员名，没有则空串"},
-			"team":       map[string]any{"type": "string", "description": "提到的球队名，没有则空串"},
-			"score":      map[string]any{"type": "string", "description": "提到的比分（如 2-1），没有则空串"},
-			"confidence": map[string]any{"type": "number", "description": "意图判断置信度 0 到 1"},
-			"reply":      map[string]any{"type": "string", "description": "仅闲聊类意图给一句自然回复建议（最多两句60字），事实类与控制类留空"},
-		},
-		"required": []string{"intent", "confidence"},
-	}
 }
 
 // routeSystemPrompt: 12 intent definitions (match_reaction is proactive-only
@@ -236,7 +174,10 @@ const routeSystemPrompt = `你是陪看足球助手"球球"的意图路由器。
 
 // Route classifies one turn. Exactly one attempt: any transport/parse failure
 // returns an error and the caller degrades to the legacy keyword-miss path
-// (locked decision 6 — never a console error).
+// (locked decision 6 — never a console error). 迁移说明（留尾 3.6 兑现）：
+// payload/响应解析全部走 structured.Extract——schema 由 Result 的
+// jsonschema tag 反射生成（router_schema_test.go 锁形状），单次调用、6s
+// 超时、thinking disabled、MaxTokens 200、温度 0.1 均不变。
 func (c *Client) Route(ctx context.Context, req Request) (Result, error) {
 	if !c.Enabled() {
 		return Result{}, fmt.Errorf("router disabled")
@@ -245,66 +186,16 @@ func (c *Client) Route(ctx context.Context, req Request) (Result, error) {
 	if text == "" {
 		return Result{}, fmt.Errorf("router: empty text")
 	}
-	messages := []chatMessage{
-		{Role: "system", Content: routeSystemPrompt},
-		{Role: "user", Content: text},
-	}
-	if contextSummary := strings.TrimSpace(req.Context); contextSummary != "" {
-		messages = append(messages, chatMessage{Role: "user", Content: contextSummary})
-	}
-	payload := routeRequestPayload{
-		Model:    c.model,
-		Messages: messages,
-		Tools: []toolSpec{{
-			Type: "function",
-			Function: toolFunction{
-				Name:       RouteTurnToolName,
-				Parameters: routeTurnParameters(),
-			},
-		}},
-		ToolChoice: map[string]any{
-			"type":     "function",
-			"function": map[string]any{"name": RouteTurnToolName},
-		},
-		MaxTokens:   200,
-		Temperature: 0.1,
-	}
-	payload.Thinking.Type = "disabled"
-
-	body, err := json.Marshal(payload)
+	result, err := structured.Extract[Result](ctx, c.structured, structured.CallOptions{
+		SystemPrompt:   routeSystemPrompt,
+		UserContent:    text,
+		ContextMessage: strings.TrimSpace(req.Context),
+		ToolName:       RouteTurnToolName,
+		Temperature:    0.1,
+		MaxTokens:      200,
+	})
 	if err != nil {
-		return Result{}, fmt.Errorf("router encode: %w", err)
-	}
-	// 单次调用（ADR-0009）：传输层零重试，6s 超时由 ctx 承载。
-	startedAt := time.Now()
-	respBody, err := openaicompat.Post(ctx, c.httpClient, c.endpoint(), "/chat/completions", body, 1<<20)
-	if err != nil {
-		return Result{}, fmt.Errorf("router call: %w", err)
-	}
-	var parsed routeResponsePayload
-	if err := json.Unmarshal(respBody, &parsed); err != nil {
-		return Result{}, fmt.Errorf("router decode: %w", err)
-	}
-	if len(parsed.Choices) == 0 {
-		return Result{}, fmt.Errorf("router returned no choices")
-	}
-	for _, toolCall := range parsed.Choices[0].Message.ToolCalls {
-		if toolCall.Function.Name != RouteTurnToolName {
-			continue
-		}
-		result, err := parseRouteResult(toolCall.Function.Arguments)
-		if err != nil {
-			return Result{}, err
-		}
-		return result, nil
-	}
-	return Result{}, fmt.Errorf("router returned no %s tool call (elapsed %s)", RouteTurnToolName, time.Since(startedAt).Round(time.Millisecond))
-}
-
-func parseRouteResult(arguments string) (Result, error) {
-	var result Result
-	if err := json.Unmarshal([]byte(arguments), &result); err != nil {
-		return Result{}, fmt.Errorf("router arguments: %w", err)
+		return Result{}, err
 	}
 	result.Intent = strings.TrimSpace(result.Intent)
 	if result.Intent == "" {
@@ -319,11 +210,7 @@ func parseRouteResult(arguments string) (Result, error) {
 	return result, nil
 }
 
-func (c *Client) endpoint() openaicompat.Endpoint {
-	return openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model}
-}
-
-// 待迁标记（openspec/changes/structured-tool-seam）：本文件自抄的
+// 迁移完成（semantic-memory 兑现 structured-tool-seam 留尾 3.6）：自抄的
 // function-call payload/响应解析（routeRequestPayload/routeResponsePayload/
-// parseRouteResult）是 internal/structured 深模块的迁移候选——迁移会字节级
-// 改动调用载荷，须带 boundary 路由 eval 重验，单独立项，本轮不动。
+// parseRouteResult）已删，Route 走 structured.Extract；schema 形状由
+// router_schema_test.go 锁定，6s 超时/单次调用/thinking disabled 不变。

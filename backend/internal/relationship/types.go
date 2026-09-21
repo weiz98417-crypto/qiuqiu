@@ -318,6 +318,12 @@ type RelationshipMemory struct {
 	PendingDecisionIDs []string        `json:"pendingDecisionIds,omitempty"`
 }
 
+// RelationshipMemory 种类（单一声明点）。与 memory 域的词汇映射
+// （openspec/changes/semantic-memory 任务 1.6 的统一注释）：两个域保持
+// 各自生命周期，但概念一一对应——shared_moment ↔ memory.Moment（共同
+// 瞬间的观察侧）、open_thread ↔ memory.Thread（未完话题，C2 引用两侧
+// 同义）、taste_evidence ↔ Portrait preferences（口味证据）。
+// unified-forbidden：不要在此再造一份 memory.ThreadKind 式枚举。
 const (
 	MemoryKindSharedMoment   = "shared_moment"
 	MemoryKindOpenThread     = "open_thread"

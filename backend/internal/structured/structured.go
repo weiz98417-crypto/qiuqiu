@@ -14,11 +14,20 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/http"
+	"reflect"
+	"strings"
 	"time"
 
 	"github.com/invopop/jsonschema"
 	"qiuqiu/internal/openaicompat"
 )
+
+// reflectSchema 反射结果类型为根内联的 JSON Schema——ExpandedStruct 把
+// 定义放根上（否则根是 $ref，部分平台不认作合法工具参数）。
+func reflectSchema(v any) *jsonschema.Schema {
+	reflector := jsonschema.Reflector{ExpandedStruct: true, DoNotReference: true}
+	return reflector.ReflectFromType(reflect.TypeOf(v))
+}
 
 const (
 	defaultHTTPTimeout = 10 * time.Second
@@ -33,17 +42,28 @@ type Client struct {
 
 // NewClient 与 llm.NewClient 同构：同一组凭据可同时喂两个 client。
 func NewClient(baseURL, apiKey, model string) *Client {
+	return NewClientWithTimeout(baseURL, apiKey, model, defaultHTTPTimeout)
+}
+
+// NewClientWithTimeout 让调用方声明自己的延迟预算（router 的 6s 单次
+// 调用是 ADR-0009 锁定决策，不能吃默认 10s）。
+func NewClientWithTimeout(baseURL, apiKey, model string, timeout time.Duration) *Client {
+	if timeout <= 0 {
+		timeout = defaultHTTPTimeout
+	}
 	return &Client{
-		httpClient: &http.Client{Timeout: defaultHTTPTimeout},
+		httpClient: &http.Client{Timeout: timeout},
 		endpoint:   openaicompat.Endpoint{BaseURL: baseURL, APIKey: apiKey, Model: model},
 	}
 }
 
 // CallOptions 是一次结构化抽取的语义载荷；工具的参数 schema 由结果类型
-// 反射生成，不在这里声明。
+// 反射生成，不在这里声明。ContextMessage 是可选的附加 user 消息（如
+// router 的比赛上下文摘要），插在 UserContent 之后。
 type CallOptions struct {
 	SystemPrompt    string
 	UserContent     string
+	ContextMessage  string
 	ToolName        string
 	ToolDescription string
 	Temperature     float64
@@ -72,20 +92,27 @@ func Extract[T any](ctx context.Context, client *Client, opts CallOptions) (T, e
 	if client == nil {
 		return zero, fmt.Errorf("structured client unavailable")
 	}
-	schema := jsonschema.Reflect(&zero)
+	schema := reflectSchema(&zero)
+	messages := []map[string]string{
+		{"role": "system", "content": opts.SystemPrompt},
+		{"role": "user", "content": opts.UserContent},
+	}
+	if strings.TrimSpace(opts.ContextMessage) != "" {
+		messages = append(messages, map[string]string{"role": "user", "content": opts.ContextMessage})
+	}
+	toolFunction := map[string]any{
+		"name":       opts.ToolName,
+		"parameters": schema,
+	}
+	if strings.TrimSpace(opts.ToolDescription) != "" {
+		toolFunction["description"] = opts.ToolDescription
+	}
 	payload := map[string]any{
-		"model": client.endpoint.Model,
-		"messages": []map[string]string{
-			{"role": "system", "content": opts.SystemPrompt},
-			{"role": "user", "content": opts.UserContent},
-		},
+		"model":    client.endpoint.Model,
+		"messages": messages,
 		"tools": []map[string]any{{
-			"type": "function",
-			"function": map[string]any{
-				"name":        opts.ToolName,
-				"description": opts.ToolDescription,
-				"parameters":  schema,
-			},
+			"type":     "function",
+			"function": toolFunction,
 		}},
 		"tool_choice": map[string]any{
 			"type":     "function",

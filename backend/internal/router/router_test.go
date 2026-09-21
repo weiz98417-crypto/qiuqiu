@@ -16,7 +16,9 @@ func stubConfig(baseURL string) Config {
 }
 
 // toolCallStub answers one forced route_turn call with the given arguments.
-func toolCallStub(t *testing.T, arguments string, captured *routeRequestPayload) http.HandlerFunc {
+// captured 解码为通用 map——payload 构造已迁入 structured（semantic-memory
+// 兑现留尾 3.6），断言面向线上 JSON 形状而非内部类型。
+func toolCallStub(t *testing.T, arguments string, captured *map[string]any) http.HandlerFunc {
 	t.Helper()
 	return func(w http.ResponseWriter, r *http.Request) {
 		if captured != nil {
@@ -24,9 +26,11 @@ func toolCallStub(t *testing.T, arguments string, captured *routeRequestPayload)
 			if err != nil {
 				t.Errorf("read request body: %v", err)
 			}
-			if err := json.Unmarshal(body, captured); err != nil {
+			var payload map[string]any
+			if err := json.Unmarshal(body, &payload); err != nil {
 				t.Errorf("decode request payload: %v", err)
 			}
+			*captured = payload
 		}
 		w.Header().Set("Content-Type", "application/json")
 		_, _ = w.Write([]byte(`{"choices":[{"message":{"tool_calls":[{"function":{"name":"route_turn","arguments":` + quoteJSON(arguments) + `}}]}}]}`))
@@ -49,7 +53,7 @@ func TestClientDisabledWithoutKey(t *testing.T) {
 }
 
 func TestRoutePayloadShapeAndParse(t *testing.T) {
-	var captured routeRequestPayload
+	var captured map[string]any
 	server := httptest.NewServer(toolCallStub(t, `{"intent":"match_fact_claim","confidence":0.85,"reply":""}`, &captured))
 	defer server.Close()
 
@@ -61,32 +65,43 @@ func TestRoutePayloadShapeAndParse(t *testing.T) {
 	if result.Intent != "match_fact_claim" || result.Confidence < 0.84 || result.Confidence > 0.86 {
 		t.Fatalf("unexpected result %+v", result)
 	}
-	if captured.Model != "mimo-v2.5" {
-		t.Fatalf("payload model = %q", captured.Model)
+	if captured["model"] != "mimo-v2.5" {
+		t.Fatalf("payload model = %q", captured["model"])
 	}
-	if len(captured.Messages) != 3 {
-		t.Fatalf("payload messages = %d, want system+text+context", len(captured.Messages))
+	messages, ok := captured["messages"].([]any)
+	if !ok || len(messages) != 3 {
+		t.Fatalf("payload messages = %+v, want system+text+context", captured["messages"])
 	}
-	if captured.Messages[0].Role != "system" || !strings.Contains(captured.Messages[0].Content, "只分类不回答") {
-		t.Fatalf("system prompt missing fact discipline: %q", captured.Messages[0].Content)
+	system := messages[0].(map[string]any)
+	if system["role"] != "system" || !strings.Contains(system["content"].(string), "只分类不回答") {
+		t.Fatalf("system prompt missing fact discipline: %+v", system)
 	}
-	if captured.Messages[1].Content != "明明进了，裁判瞎了吗" || captured.Messages[2].Content == "" {
-		t.Fatalf("user messages not carried: %+v", captured.Messages)
+	text := messages[1].(map[string]any)
+	contextMessage := messages[2].(map[string]any)
+	if text["content"] != "明明进了，裁判瞎了吗" || contextMessage["content"] == "" {
+		t.Fatalf("user messages not carried: %+v", messages)
 	}
-	if len(captured.Tools) != 1 || captured.Tools[0].Function.Name != RouteTurnToolName {
-		t.Fatalf("payload tools = %+v", captured.Tools)
+	tools, ok := captured["tools"].([]any)
+	if !ok || len(tools) != 1 {
+		t.Fatalf("payload tools = %+v", captured["tools"])
 	}
-	choice, ok := captured.ToolChoice.(map[string]any)
+	function := tools[0].(map[string]any)["function"].(map[string]any)
+	if function["name"] != RouteTurnToolName {
+		t.Fatalf("payload tool name = %+v", function["name"])
+	}
+	choice, ok := captured["tool_choice"].(map[string]any)
 	if !ok {
-		t.Fatalf("tool_choice is not a forced function object: %T", captured.ToolChoice)
+		t.Fatalf("tool_choice is not a forced function object: %T", captured["tool_choice"])
 	}
 	forced, ok := choice["function"].(map[string]any)
 	if !ok || forced["name"] != RouteTurnToolName {
 		t.Fatalf("tool_choice.function = %+v", choice["function"])
 	}
 	// Forced enum of the routable backend intents (match_reaction is
-	// proactive-only and stays out of the user-turn enum).
-	properties := captured.Tools[0].Function.Parameters["properties"].(map[string]any)
+	// proactive-only and stays out of the user-turn enum)——枚举由 Result
+	// 的 jsonschema tag 反射生成。
+	parameters := function["parameters"].(map[string]any)
+	properties := parameters["properties"].(map[string]any)
 	intent := properties["intent"].(map[string]any)
 	enum := intent["enum"].([]any)
 	if len(enum) != 12 {

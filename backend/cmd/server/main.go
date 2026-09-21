@@ -22,6 +22,7 @@ import (
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/directordraft"
+	"qiuqiu/internal/embedding"
 	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/structured"
 	"qiuqiu/internal/interaction"
@@ -407,6 +408,23 @@ func main() {
 	})
 	var memoryQueue *memory.Queue
 	var memoryPreferenceStore *memory.PostgresRecords
+	// 语义记忆双路（openspec/changes/semantic-memory）：EMBEDDING_BASE_URL
+	// 留空即整体停用（行为=现状 contains 单路）；配置后 Observe 异步嵌写、
+	// Recall 双路合并，任何 embedding 故障弃权。
+	var vectorOptions []memory.QueueOption
+	if cfg.EmbeddingBaseURL != "" {
+		embedder := embedding.NewClient(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, "ollama")
+		if cfg.DatabaseURL != "" {
+			vectorStore, err := memory.OpenPostgresVectorStore(context.Background(), cfg.DatabaseURL)
+			if err != nil {
+				log.Fatalf("postgres vector store: %v", err)
+			}
+			defer vectorStore.Close()
+			vectorOptions = append(vectorOptions, memory.WithVectorRecall(vectorStore, embedder))
+		} else {
+			vectorOptions = append(vectorOptions, memory.WithVectorRecall(memory.NewMemoryVectorStore(), embedder))
+		}
+	}
 	if cfg.DatabaseURL != "" {
 		memoryRecords, err := memory.OpenRecords(context.Background(), cfg.DatabaseURL)
 		if err != nil {
@@ -418,12 +436,15 @@ func main() {
 			log.Fatalf("postgres memory threads: %v", err)
 		}
 		defer memoryThreads.Close()
-		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads), memory.WithPortraitOverlays(memoryRecords))
+		queueOptions := []memory.QueueOption{memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads), memory.WithPortraitOverlays(memoryRecords)}
+		queueOptions = append(queueOptions, vectorOptions...)
+		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, queueOptions...)
 		memoryPreferenceStore = memoryRecords
 	} else {
 		// No database: the C3 portrait overlay layer lives in-process so the
 		// 球球懂我 page still edits real state for the running server.
-		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays()))
+		queueOptions := append([]memory.QueueOption{memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays())}, vectorOptions...)
+		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, queueOptions...)
 	}
 	companionAgent.WithMemories(memoryQueue)
 	go memoryQueue.Run(memoryCtx)

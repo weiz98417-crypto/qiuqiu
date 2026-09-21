@@ -102,6 +102,11 @@ type Queue struct {
 	threads      ThreadStore
 	portraits    PortraitOverlayStore
 
+	// 向量召回路（openspec/changes/semantic-memory）：双路之一，任何故障
+	// 弃权即现状行为。
+	vectorStore VectorMomentStore
+	embedder    Embedder
+
 	items        chan enqueueItem
 	dropped      atomic.Int64
 	backlogBatch int
@@ -167,6 +172,31 @@ func WithPortraitOverlays(store PortraitOverlayStore) QueueOption {
 	}
 }
 
+// WithVectorRecall 启用 pgvector 召回路（openspec/changes/semantic-memory）：
+// Observe 异步嵌 Moment，Recall 与 contains 路双路合并。store 或 embedder
+// 为 nil 即不启用（行为=现状）。
+func WithVectorRecall(store VectorMomentStore, embedder Embedder) QueueOption {
+	return func(q *Queue) {
+		if store != nil && embedder != nil {
+			q.vectorStore = store
+			q.embedder = embedder
+		}
+	}
+}
+
+// Embedder 是向量召回路的嵌入能力接缝；internal/embedding.Client 结构性
+// 满足，测试用桩。
+type Embedder interface {
+	Embed(ctx context.Context, text string) ([]float32, error)
+}
+
+// 向量路的两个独立预算：嵌入/检索本地 Ollama 毫秒级，200ms 覆盖抖动；
+// 超时即弃权（降级矩阵 Q12）。
+const (
+	vectorQueryTimeout  = 200 * time.Millisecond
+	vectorEmbedTimeout  = 3 * time.Second
+)
+
 // NewQueue wires the async pipeline. audit and backlog may be nil (dev mode
 // without Postgres): observations still flow but decisions are only logged.
 func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options ...QueueOption) *Queue {
@@ -222,18 +252,26 @@ func BacklogRetryDelay(attempts int) time.Duration {
 }
 
 // Observe enqueues without ever touching the network or the database on the
-// turn path; validation decisions are audited by the drainer instead.
+// turn path; validation decisions are audited by the drainer instead. 向量路
+// 独立于 Memobase：有效时刻在入队旁路异步嵌写 pgvector（fail-soft）。
 func (q *Queue) Observe(_ context.Context, moment Moment) error {
-	if q == nil || !q.adapter.Configured() {
+	if q == nil {
 		return nil
 	}
-	if strings.TrimSpace(moment.UserID) == "" || strings.TrimSpace(moment.Content) == "" {
-		q.enqueue(enqueueItem{moment: moment, reasonCode: ReasonRejectedInvalid})
-		return nil
-	}
+	empty := strings.TrimSpace(moment.UserID) == "" || strings.TrimSpace(moment.Content) == ""
 	moment.Importance = clamp01(moment.Importance)
 	if moment.OccurredAt.IsZero() {
 		moment.OccurredAt = time.Now().UTC()
+	}
+	if !empty && moment.Importance >= MinExtractionImportance {
+		q.observeVector(moment)
+	}
+	if !q.adapter.Configured() {
+		return nil
+	}
+	if empty {
+		q.enqueue(enqueueItem{moment: moment, reasonCode: ReasonRejectedInvalid})
+		return nil
 	}
 	if moment.Importance < MinExtractionImportance {
 		q.enqueue(enqueueItem{moment: moment, reasonCode: ReasonRejectedLowImport})
@@ -251,6 +289,33 @@ func (q *Queue) Observe(_ context.Context, moment Moment) error {
 	return nil
 }
 
+// observeVector 异步嵌 Moment 落向量库：失败重试一次后放弃（contains 路
+// 已覆盖该内容），绝不阻塞回合路径。
+func (q *Queue) observeVector(moment Moment) {
+	if q.vectorStore == nil || q.embedder == nil {
+		return
+	}
+	go func() {
+		for attempt := 0; attempt < 2; attempt++ {
+			embedCtx, cancel := context.WithTimeout(context.Background(), vectorEmbedTimeout)
+			vector, err := q.embedder.Embed(embedCtx, moment.Content)
+			cancel()
+			if err == nil {
+				storeCtx, storeCancel := context.WithTimeout(context.Background(), vectorEmbedTimeout)
+				err = q.vectorStore.Store(storeCtx, moment, vector)
+				storeCancel()
+				if err == nil {
+					return
+				}
+			}
+			if attempt == 0 {
+				time.Sleep(500 * time.Millisecond)
+			}
+		}
+		log.Printf("memory: vector path dropped moment for user %q (contains path still covers it)", moment.UserID)
+	}()
+}
+
 func (q *Queue) enqueue(item enqueueItem) {
 	select {
 	case q.items <- item:
@@ -259,13 +324,65 @@ func (q *Queue) enqueue(item enqueueItem) {
 	}
 }
 
-// Recall degrades transparently: the adapter returns nil while unreachable,
-// and callers keep read_recent.
+// Recall 双路合并（openspec/changes/semantic-memory）：contains 路（adapter，
+// 原样打分排序）+ 向量路（pgvector 余弦），各取一半配额、按 content 去重、
+// adapter 路保序在前。embedding 故障时向量路弃权，行为=现状。
 func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
-	if q == nil || !q.adapter.Configured() {
+	if q == nil {
 		return nil
 	}
-	return q.adapter.Recall(ctx, query)
+	adapterConfigured := q.adapter.Configured()
+	vectorEnabled := q.vectorStore != nil && q.embedder != nil
+	if !adapterConfigured && !vectorEnabled {
+		return nil
+	}
+	limit := query.Limit
+	if limit <= 0 {
+		limit = defaultRecallLimit
+	}
+	var adapterPath []Recall
+	if adapterConfigured {
+		adapterPath = q.adapter.Recall(ctx, query)
+	}
+	var vectorPath []Recall
+	if vectorEnabled && strings.TrimSpace(query.Focus) != "" {
+		vecCtx, cancel := context.WithTimeout(ctx, vectorQueryTimeout)
+		defer cancel()
+		if vector, err := q.embedder.Embed(vecCtx, query.Focus); err == nil {
+			if vectors, err := q.vectorStore.Search(vecCtx, query.UserID, vector, limit); err != nil {
+				log.Printf("memory: vector recall search degraded: %v", err)
+			} else {
+				vectorPath = vectors
+			}
+		} else {
+			log.Printf("memory: vector recall embed degraded: %v", err)
+		}
+	}
+	// 各取一半配额（adapter 向上取整，保序在前），按 content 去重。
+	seen := make(map[string]bool, limit)
+	merged := make([]Recall, 0, limit)
+	adapterQuota := limit - limit/2
+	for _, recall := range adapterPath {
+		if len(merged) >= adapterQuota {
+			break
+		}
+		if seen[recall.Content] {
+			continue
+		}
+		seen[recall.Content] = true
+		merged = append(merged, recall)
+	}
+	for _, recall := range vectorPath {
+		if len(merged) >= limit {
+			break
+		}
+		if seen[recall.Content] {
+			continue
+		}
+		seen[recall.Content] = true
+		merged = append(merged, recall)
+	}
+	return merged
 }
 
 // Portrait is the single read path behind prompt injection: synthesis layered

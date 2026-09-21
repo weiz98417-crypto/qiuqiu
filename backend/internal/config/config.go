@@ -35,6 +35,10 @@ type Config struct {
 	RouterTimeoutMS                int
 	APISportsAPIKey                string
 	APISportsBaseURL               string
+	// 语义记忆（openspec/changes/semantic-memory）：端点留空即整体停用
+	//（行为=现状 contains 单路）；本地 Ollama 形态见 deploy/.env.example。
+	EmbeddingBaseURL               string
+	EmbeddingModel                 string
 	PrivacyRetentionDays           int
 	PendingObservationCoordination bool
 	FactLedgerPublicReads          bool
@@ -77,6 +81,8 @@ func Load() *Config {
 		MiMoAPIKey:                     getEnv("MIMO_API_KEY", ""),
 		MiMoBaseURL:                    getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
 		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		EmbeddingBaseURL:               strings.TrimSpace(getEnv("EMBEDDING_BASE_URL", "")),
+		EmbeddingModel:                 getEnv("EMBEDDING_MODEL", "bge-m3"),
 		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
 		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
 		RouterAPIKey:                   routerConfig.APIKey,
