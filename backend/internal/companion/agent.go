@@ -607,6 +607,10 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		}
 	}
 
+	// 记忆进措辞层：事实应答补充语——recall 材料非空时补一句记忆衔接，
+	// 失败/拒绝即整句丢弃，事实本体措辞不变（design decision 4）。
+	reply = a.appendFactMemoryCallback(ctx, req, intent, reply, requiredAnchors, &trace)
+
 	recentPhraseHashes := a.recentPhraseHashes(ctx, req.MatchID, req.UserID, allowRealize, &trace)
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
 		return Response{}, err
@@ -1178,6 +1182,21 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		reply = req.Event.ProactiveText
 		if strings.TrimSpace(reply) == "" {
 			reply = FallbackProactiveText(req.Event)
+		}
+		// 记忆进措辞层：运营 ProactiveText 是锚点（Q3）。仅 recall 材料
+		// 非空且 director 给出 Speech 决策时带记忆重措辞，guard 不过回原文。
+		// recall 检索词取事件实体（球员优先、球队兜底）——contains 语义下
+		// 整段描述永远匹配不上。
+		if decision.Speech != nil {
+			focus := strings.TrimSpace(req.Event.PlayerName)
+			if focus == "" {
+				focus = strings.TrimSpace(req.Event.TeamName)
+			}
+			if realized, done := a.realizeWithMemory(ctx, IntentMatchReaction, req.UserID, req.Event.Description, focus, reply, decision.Speech.Content.RequiredAnchors, decision, &trace); done {
+				reply = realized
+				trace.Reason = ReasonProactiveMemoryRealized
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized", "source": "match_event_memory"}})
+			}
 		}
 	} else if trace.Reason != ReasonCriticalFactRefreshLimit {
 		trace.Reason = ReasonMatchObservedSilent

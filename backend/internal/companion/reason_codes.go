@@ -40,6 +40,10 @@ const (
 
 	// realizeReply 通过全部护栏后盖的章（router 自然化判定依赖它）。
 	ReasonRelationshipPlanRealized = "relationship_plan_realized"
+
+	// 记忆进措辞层（openspec/changes/memory-into-turns）：带记忆重措辞的
+	// 主动回合盖的章（仅 recall 材料非空时可能触发）。
+	ReasonProactiveMemoryRealized = "proactive_memory_realized"
 )
 
 // ReasonGuardRejected / ReasonGuardEmpty 是护栏拒绝的两类原因，落在

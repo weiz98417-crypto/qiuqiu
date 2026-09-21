@@ -274,10 +274,19 @@ func (a *Agent) RecoverOpenThreads(ctx context.Context, userID, matchID string, 
 			CreatedAt:      now,
 			ToolCalls: []ToolCall{
 				{Name: "memory.recover_thread", Args: map[string]string{"threadId": thread.ID, "kind": string(thread.Kind)}},
-				{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "open_thread_recovery", "threadId": thread.ID}},
-				{Name: "trace.write_decision", Args: map[string]string{"matchId": matchID, "traceId": traceID}},
 			},
 		}
+		// 记忆进措辞层：回访文本仅在 recall 材料非空时带记忆重措辞，
+		// guard 不过回罐头原文（evals 无记忆种子，走原文路径）。
+		emitMode := "deterministic"
+		if realized, done := a.realizeWithMemory(ctx, IntentRecentEvent, userID, thread.Content, thread.Content, reply, nil, threadRecoveryDecision(), &trace); done {
+			reply = realized
+			emitMode = "realized"
+		}
+		trace.ToolCalls = append(trace.ToolCalls,
+			ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": emitMode, "source": "open_thread_recovery", "threadId": thread.ID}},
+			ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": matchID, "traceId": traceID}},
+		)
 		trace.Output = reply
 		if err := a.tools.WriteTrace(ctx, trace); err != nil {
 			return recoveries, err
