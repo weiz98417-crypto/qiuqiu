@@ -71,7 +71,16 @@ services:
       - MEMOBASE_LLM_API_KEY=${MIMO_API_KEY:?MIMO_API_KEY is required}
       - MEMOBASE_LLM_BASE_URL=${MIMO_BASE_URL:-https://api.xiaomimimo.com/v1}
       - MEMOBASE_BEST_LLM_MODEL=${MIMO_MODEL:-mimo-v2.5-pro}
-      - MEMOBASE_ENABLE_EVENT_EMBEDDING=false
+      # 语义记忆开关（openspec/changes/memory-into-turns 独立任务 A）：
+      # 默认关（现状 contains 召回）；在 .env 里配好 MEMOBASE_EMBEDDING_API_KEY
+      # 后把开关翻 true 即启用 bge-m3 语义检索。上游键名已于实施时对
+      # docs/site/references/local_config.mdx 核实。
+      - MEMOBASE_ENABLE_EVENT_EMBEDDING=${MEMOBASE_ENABLE_EVENT_EMBEDDING:-false}
+      - MEMOBASE_EMBEDDING_PROVIDER=${MEMOBASE_EMBEDDING_PROVIDER:-openai}
+      - MEMOBASE_EMBEDDING_API_KEY=${MEMOBASE_EMBEDDING_API_KEY:-}
+      - MEMOBASE_EMBEDDING_BASE_URL=${MEMOBASE_EMBEDDING_BASE_URL:-https://api.siliconflow.cn/v1}
+      - MEMOBASE_EMBEDDING_DIM=${MEMOBASE_EMBEDDING_DIM:-1024}
+      - MEMOBASE_EMBEDDING_MODEL=${MEMOBASE_EMBEDDING_MODEL:-BAAI/bge-m3}
     volumes:
       - ./deploy/memobase/config.yaml:/app/config.yaml
     ports:

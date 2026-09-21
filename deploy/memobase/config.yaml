@@ -6,8 +6,11 @@
 #
 # Key references (upstream: memobase docs/site/references/local_config.mdx):
 #   language: prompt language of the extraction LLM ("zh" keeps profiles Chinese).
-#   enable_event_embedding: false removes the embedding-provider dependency for v1 —
-#   profile synthesis still works; only event similarity search is unavailable.
+#   enable_event_embedding: false keeps the file default off; the semantic-memory
+#   switch (bge-m3 via an OpenAI-compatible /embeddings endpoint) lives in
+#   docker-compose.yml + .env (MEMOBASE_ENABLE_EVENT_EMBEDDING / MEMOBASE_EMBEDDING_*),
+#   so enabling is an operator action taken with the key present — profile
+#   synthesis works either way; only event similarity search waits.
 #   event_theme_requirement: the only prompt-direction knob in the profile config —
 #   it steers what the extraction LLM pays attention to. Kept in 球球's domain voice
 #   so synthesis lands as football-companionship facts, not generic chat notes.
