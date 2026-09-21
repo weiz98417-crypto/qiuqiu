@@ -26,6 +26,7 @@ import (
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
+	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/ws"
 
@@ -46,6 +47,7 @@ type watchDeps struct {
 	memoriesPrefs *memory.PostgresRecords
 	interruptions *interruptionRing
 	sessions      *auth.Manager
+	reminders     proactive.Store
 	// submittedSignals 是用户轮次的信号去重器（server-residual-polish 1.3：
 	// 此前是包级 global，现由 main() 构造注入）。
 	submittedSignals *signalDeduper
@@ -168,6 +170,7 @@ func (c *watchConnection) identifyAndSubscribe(r *http.Request) (unsubscribeEven
 	if userID := c.identity.Get(); userID != "" {
 		c.scheduleRecoveredObservations(userID)
 		c.scheduleRecoveredThreadTurns(userID)
+		c.submitDueReminders(userID)
 	}
 	return unsubscribeEvents, unsubscribeClock
 }
@@ -282,6 +285,81 @@ func (c *watchConnection) scheduleRecoveredThreadTurns(userID string) {
 
 // ── 相 3：message-pump ───────────────────────────────────────────────────────
 
+// submitDueReminders 把该用户已到点的赛前提醒经同一条主动投递路径送出
+// （020 outbox 的连接补递腿）；送达才翻 delivered，失败留在簿里下次再试。
+func (c *watchConnection) submitDueReminders(userID string) {
+	if c.deps.reminders == nil || userID == "" {
+		return
+	}
+	remindersCtx, cancel := context.WithTimeout(c.connectionCtx, 5*time.Second)
+	defer cancel()
+	pendings, err := c.deps.reminders.PendingForUser(remindersCtx, userID)
+	if err != nil {
+		log.Printf("reminder pending query error: %v", err)
+		return
+	}
+	now := time.Now().UTC()
+	for _, reminder := range pendings {
+		reminder := reminder
+		if !reminder.Due(now) {
+			continue
+		}
+		reply := proactive.PreMatchReminderReply(reminder, time.Local)
+		trace := companion.Trace{
+			// trace ID 即提醒 ID 的确定性投影：同一条提醒的重试投递共用
+			// 一条 trace（投递去重靠 DeliveryKey，不靠 ID）。
+			ID:      "reminder-trace-" + reminder.ID,
+			MatchID: reminder.MatchID, UserID: userID,
+			Input:     reminder.CitationCode(),
+			Intent:    companion.IntentMatchReaction,
+			Reason:    "reminder_due",
+			CreatedAt: now, Output: reply,
+			RelationshipDecision: &relationship.Decision{ReasonCodes: []string{"proactive_citation:" + reminder.CitationCode()}},
+		}
+		ttl := time.Until(reminder.ExpireAt)
+		c.scheduler.SubmitProactive("reminder:"+reminder.ID, conversation.UrgencyNormal, ttl, func(replyCtx context.Context, playback conversation.Playback) {
+			_, err := c.responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
+				Reply: reply, Trace: trace,
+				Presentation: relationship.PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"},
+				Source:       "reminder", DeliveryKey: "reminder:" + reminder.ID, Critical: false, TTL: ttl,
+			}, playback)
+			if err != nil {
+				if !errors.Is(err, context.Canceled) {
+					log.Printf("reminder delivery error: %v", err)
+				}
+				return
+			}
+			markCtx, markCancel := context.WithTimeout(context.Background(), 3*time.Second)
+			defer markCancel()
+			if err := c.deps.reminders.MarkDelivered(markCtx, reminder.ID); err != nil {
+				log.Printf("reminder mark delivered error: %v", err)
+			}
+		})
+	}
+}
+
+// startReminderTicker 让一直挂在 App 里的用户在开球时刻附近也能收到提醒，
+// 无需重连；协程随 connectionCtx 收敛。
+func (c *watchConnection) startReminderTicker() {
+	if c.deps.reminders == nil {
+		return
+	}
+	go func() {
+		ticker := time.NewTicker(30 * time.Second)
+		defer ticker.Stop()
+		for {
+			select {
+			case <-c.connectionCtx.Done():
+				return
+			case <-ticker.C:
+				if userID := c.identity.Get(); userID != "" {
+					c.submitDueReminders(userID)
+				}
+			}
+		}
+	}()
+}
+
 // startMessagePumps 装配语音转写会话并拉起两条协程：比赛事件外推与 15-case
 // 读循环。两者都随 connectionCtx 收敛，写出口共用同一条 wsWriter。
 func (c *watchConnection) startMessagePumps() {
@@ -296,6 +374,7 @@ func (c *watchConnection) startMessagePumps() {
 	)
 	go c.pumpMatchEvents()
 	go c.readMessages()
+	c.startReminderTicker()
 }
 
 // pumpMatchEvents is the outbound event loop: clock ticks and match events are

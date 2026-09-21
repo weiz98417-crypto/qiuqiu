@@ -22,6 +22,7 @@ import (
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/directordraft"
+	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/structured"
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/llm"
@@ -342,7 +343,18 @@ func main() {
 	if err := companion.ValidateIntentRegistry(); err != nil {
 		log.Fatalf("intent registry validation: %v", err)
 	}
-	companionAgent := companion.NewAgent(companionTools)
+	// 提醒簿（openspec/changes/proactive-scheduler，ADR-0015）：有库走
+	// Postgres（migration 045），无库走内存实现（测试/裸跑降级）。
+	var reminderStore proactive.Store = proactive.NewMemoryStore()
+	if cfg.DatabaseURL != "" {
+		postgresReminders, err := proactive.OpenPostgresStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres reminder store: %v", err)
+		}
+		defer postgresReminders.Close()
+		reminderStore = postgresReminders
+	}
+	companionAgent := companion.NewAgent(companionTools).WithReminders(reminderStore)
 	interactionLedger := interaction.Ledger(interaction.NewMemoryLedger())
 	var interactionLedgerCloser func()
 	if cfg.DatabaseURL != "" {
@@ -442,6 +454,22 @@ func main() {
 		go outboxRunner.RunOutbox(outboxCtx)
 	}
 
+	// 提醒簿清理节拍：过期待递翻 suppressed 并转记忆素材（Q13：错过开球
+	// 的提醒不再补发，成为下次聊天可引用的共同事实）。到点投递由连接内
+	// 低频检查与连接时补递承担（socket 归连接所有）。
+	go proactive.SweepLoop(outboxCtx, reminderStore, func(ctx context.Context, reminder proactive.Reminder) {
+		if memoryQueue == nil {
+			return
+		}
+		_ = memoryQueue.Observe(ctx, memory.Moment{
+			UserID:     reminder.UserID,
+			Kind:       memory.MomentUserFact,
+			Content:    fmt.Sprintf("开球前没等到你：%s 对 %s 的赛前提醒错过了。", reminder.HomeTeam, reminder.AwayTeam),
+			Importance: 0.6,
+			OccurredAt: time.Now().UTC(),
+		})
+	}, time.Minute)
+
 	mux := http.NewServeMux()
 	watchSessions := conversation.NewWatchSessionRegistry(context.Background(), conversation.Config{})
 	defer watchSessions.Close()
@@ -526,6 +554,7 @@ func main() {
 	mux.HandleFunc("/ws/match/", handleWatchConnection(watchDeps{
 		hub: hub, matchStore: matchStore, traceReader: traceReader, watchSessions: watchSessions,
 		agent: companionAgent, tts: ttsClient, asr: asrClient, cfg: cfg, memories: memoryQueue,
+		reminders: reminderStore,
 		submittedSignals: submittedUserSignals,
 	}))
 

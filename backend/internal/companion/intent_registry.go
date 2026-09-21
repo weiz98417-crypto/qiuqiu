@@ -95,6 +95,7 @@ var intentRegistry = IntentRegistry{
 		{IntentMatchClaim, "fact_claim", isMatchFactClaimText},
 		{IntentMatchStatus, "question_shaped_score", isQuestionShapedScoreText},
 		{IntentControlCommand, "silence_request", matchesSilenceRequestCue},
+		{IntentReminderRequest, "pre_match_reminder_cue", matchesPreMatchReminderCue},
 		{IntentMatchStatus, "match_status_question", isMatchStatusQuestion},
 		{IntentSchedule, "schedule_question", isScheduleQuestion},
 		{IntentSmalltalk, "companion_directed_smalltalk", isCompanionDirectedSmalltalk},
@@ -184,6 +185,13 @@ var intentRegistry = IntentRegistry{
 			RouterPromptLine: "control_command：让球球别说/少说/安静。",
 			ConfidenceGated:  true,
 			Handle:           (*Agent).handleControlCommand,
+		},
+		{
+			Intent:           IntentReminderRequest,
+			RouterIntent:     "reminder_request",
+			RouterPromptLine: "reminder_request：让我在开球前提醒你（开球前叫我、赛前提醒我）。",
+			ConfidenceGated:  true,
+			Handle:           (*Agent).handleReminderRequest,
 		},
 		{
 			Intent:           IntentUnknown,

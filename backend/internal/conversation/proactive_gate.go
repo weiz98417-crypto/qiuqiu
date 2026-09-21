@@ -15,6 +15,10 @@ import (
 const (
 	CitationOpenThread   = "open_thread"
 	CitationSharedMoment = "shared_moment"
+	// C2 的第三把钥匙（ADR-0015）"reminder:<id>"（用户显式请求的提醒）
+	// 定义在 internal/proactive——本包不能反向依赖它（conversation ←
+	// companion ← proactive 会成环），gate 只要求引用码非空，前缀语义归
+	// 各来源包所有。
 )
 
 // ThreadCitation builds the reason code referencing an open thread id.

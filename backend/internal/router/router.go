@@ -171,6 +171,7 @@ var routableIntents = []string{
 	"emotion_reaction",
 	"personal_share",
 	"control_command",
+	"reminder_request",
 	"unknown",
 }
 
@@ -225,6 +226,7 @@ const routeSystemPrompt = `你是陪看足球助手"球球"的意图路由器。
 - emotion_reaction：看球情绪反应（漂亮、牛、紧张、离谱、真的假的）。
 - personal_share：用户分享自己的生活（我赢了、我累了、我喜欢某队）。
 - control_command：让球球别说/少说/安静。
+- reminder_request：让我在开球前提醒你（开球前叫我、赛前提醒我）。
 - unknown：以上都不适合。
 置信度低于 0.7 时直接给 unknown。闲聊类（smalltalk/emotion_reaction/personal_share）额外给一句自然回复建议 reply，口语、最多两句60字、绝不提具体比分球员等比赛事实；其余意图 reply 留空。
 示例：

@@ -27,6 +27,7 @@ const (
 	IntentPersonalShare   Intent = "personal_share"
 	IntentControlCommand  Intent = "control_command"
 	IntentMatchClaim      Intent = "match_fact_claim"
+	IntentReminderRequest Intent = "reminder_request"
 	IntentUnknown         Intent = "unknown"
 )
 

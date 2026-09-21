@@ -6,9 +6,13 @@ package companion
 // 的提前 return）全部原样保留；共享局部变量收进 intentHandling。
 
 import (
+	"context"
 	"fmt"
 	"strings"
 	"time"
+
+	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/proactive"
 )
 
 func (a *Agent) handleMatchClaim(t *userTurn) (intentHandling, error) {
@@ -297,4 +301,93 @@ func (a *Agent) handleUnknownTurn(t *userTurn) (intentHandling, error) {
 	h := newIntentHandling()
 	h.reply = "这句我没接明白，你换个说法？"
 	return h, nil
+}
+
+// handleReminderRequest 落 ADR-0015 的提醒簿：pre_match 且赛程源给了
+// 开球时间才记；其余情况如实回话，不假装记上了。
+func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
+	h := newIntentHandling()
+	ctx, req, trace := t.ctx, t.req, t.trace
+	h.allowRealize = false
+	h.deterministicReason = "reminder_policy"
+	if a.reminders == nil {
+		h.reply = "提醒簿还没接上，等我能记事的时候你再叫我一声。"
+		return h, nil
+	}
+	snapshot, err := a.tools.Snapshot(ctx, req.MatchID)
+	if err != nil {
+		return h, err
+	}
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
+	if snapshot.Period != "pre_match" {
+		h.reply = "这场已经开赛了，下次开球前提前叫我。"
+		return h, nil
+	}
+	kickoff, ok := a.reminderKickoff(ctx, req, snapshot)
+	if !ok {
+		h.reply = "赛程源还没给我这场几点开球，等我知道了，你再叫我一声。"
+		return h, nil
+	}
+	reminder, err := a.reminders.Append(ctx, proactive.Reminder{
+		UserID:    req.UserID,
+		MatchID:   req.MatchID,
+		HomeTeam:  snapshot.HomeTeam,
+		AwayTeam:  snapshot.AwayTeam,
+		KickoffAt: kickoff,
+		CreatedAt: req.Now,
+	})
+	if err != nil {
+		trace.Error = strings.TrimSpace(err.Error())
+		h.reply = "提醒没记上，我这边出了点小状况，再试一次？"
+		return h, nil
+	}
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "reminder.create", Args: map[string]string{"reminderId": reminder.ID, "kickoffAt": kickoff.UTC().Format(time.RFC3339)}})
+	trace.Reason = ReasonReminderScheduled
+	h.reply = fmt.Sprintf("好，%s 对 %s 开球前%d分钟我叫你。", snapshot.HomeTeam, snapshot.AwayTeam, reminder.LeadMinutes)
+	return h, nil
+}
+
+// reminderKickoff 从赛程源找本场的开球时间：优先搜索窗口（昨天到后天），
+// 降级今日赛程；队伍名对上（不分主客）即采用。
+func (a *Agent) reminderKickoff(ctx context.Context, req AgentBoundaryRequest, snapshot matchstate.Snapshot) (time.Time, bool) {
+	if a.scheduleReader == nil {
+		return time.Time{}, false
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var fixtures []ScheduleMatch
+	if searchReader, ok := a.scheduleReader.(ScheduleSearchReader); ok {
+		if result, err := searchReader.Search(ctx, ScheduleSearchRequest{
+			From: now.AddDate(0, 0, -1),
+			To:   now.AddDate(0, 0, 2),
+		}); err == nil {
+			fixtures = result.Fixtures
+		}
+	} else {
+		if today, err := a.scheduleReader.TodayFixtures(ctx); err == nil {
+			fixtures = today
+		}
+	}
+	for _, fixture := range fixtures {
+		if fixture.KickoffAt.IsZero() {
+			continue
+		}
+		if teamNamesAlign(fixture.HomeTeam, fixture.AwayTeam, snapshot.HomeTeam, snapshot.AwayTeam) ||
+			teamNamesAlign(fixture.AwayTeam, fixture.HomeTeam, snapshot.HomeTeam, snapshot.AwayTeam) {
+			return fixture.KickoffAt, true
+		}
+	}
+	return time.Time{}, false
+}
+
+// teamNamesAlign 要求两队名非空且（contains 口径）各自对上，防止空串
+// 全匹配。
+func teamNamesAlign(leftHome, leftAway, rightHome, rightAway string) bool {
+	if leftHome == "" || leftAway == "" || rightHome == "" || rightAway == "" {
+		return false
+	}
+	return (strings.Contains(rightHome, leftHome) || strings.Contains(leftHome, rightHome)) &&
+		(strings.Contains(rightAway, leftAway) || strings.Contains(leftAway, rightAway))
 }

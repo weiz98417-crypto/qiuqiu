@@ -17,6 +17,7 @@ import (
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/observation"
+	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/relationship"
 )
 
@@ -31,6 +32,7 @@ type Agent struct {
 	router                     TurnRouter
 	interactions               interaction.Ledger
 	memories                   memory.Memories
+	reminders                  proactive.Store
 }
 
 func NewAgent(tools MemoryTools) *Agent {
@@ -70,6 +72,16 @@ func (a *Agent) WithRealizer(realizer ReplyRealizer, timeout time.Duration) *Age
 func (a *Agent) WithRouter(routerClient TurnRouter) *Agent {
 	if routerClient != nil && routerClient.Enabled() {
 		a.router = routerClient
+	}
+	return a
+}
+
+// WithReminders attaches the proactive reminder book (ADR-0015): the
+// reminder_request intent schedules user-requested pre-match nudges into it.
+// Nil keeps the intent replying that the book is not wired yet.
+func (a *Agent) WithReminders(store proactive.Store) *Agent {
+	if store != nil {
+		a.reminders = store
 	}
 	return a
 }

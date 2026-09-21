@@ -56,6 +56,14 @@ func matchesFollowUpCue(lower string) bool {
 	return containsAny(lower, "谁策动", "策动", "谁传的", "谁参与", "那球呢", "然后呢")
 }
 
+// matchesPreMatchReminderCue：用户显式请求开球前提醒（ADR-0015 的入口）。
+func matchesPreMatchReminderCue(lower string) bool {
+	return containsAny(lower,
+		"开球前叫我", "开球前提醒我", "开球前叫醒我", "开赛前叫我", "开赛前提醒我",
+		"比赛前叫我", "比赛前提醒我", "赛前叫我", "赛前提醒我", "提前叫我",
+	)
+}
+
 func isScheduleQuestion(text string) bool {
 	normalized := normalizeConversationText(text)
 	if containsAny(normalized, "比分", "进球", "分钟", "赛况", "球员", "比赛怎么样", "比赛什么情况", "比赛现在什么情况", "现在什么情况") {

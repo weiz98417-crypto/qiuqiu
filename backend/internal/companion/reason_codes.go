@@ -44,6 +44,9 @@ const (
 	// 记忆进措辞层（openspec/changes/memory-into-turns）：带记忆重措辞的
 	// 主动回合盖的章（仅 recall 材料非空时可能触发）。
 	ReasonProactiveMemoryRealized = "proactive_memory_realized"
+
+	// 提醒簿落账（openspec/changes/proactive-scheduler，ADR-0015）。
+	ReasonReminderScheduled = "reminder_scheduled"
 )
 
 // ReasonGuardRejected / ReasonGuardEmpty 是护栏拒绝的两类原因，落在

@@ -108,6 +108,10 @@ _Avoid_: NLU, 分类器关键词表
 A QiuQiu-initiated contribution justified by match context, an open thread, or a relevant shared moment.
 _Avoid_: Push notification, automated message
 
+**Proactive Scheduling（主动调度）**:
+The time- and schedule-driven sourcing of Proactive Turns, independent of any connection: a user-requested reminder (C2 citation `reminder:<id>`, ADR-0015) fires near kickoff; a missed one expires silently and becomes memory material rather than a late ping.
+_Avoid_: Director agent, push service, global scheduler takeover
+
 **Chosen Silence（主动沉默）**:
 A deliberate decision not to speak because silence best serves the shared moment or user boundary.
 _Avoid_: Missing response, timeout
