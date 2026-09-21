@@ -116,6 +116,10 @@ _Avoid_: Director agent, push service, global scheduler takeover
 A deliberate decision not to speak because silence best serves the shared moment or user boundary.
 _Avoid_: Missing response, timeout
 
+**Subscription（订阅）**:
+A user-requested standing reminder for one team's fixtures, expanded by the daily beat into per-match reminders and cited as `subscription:<id>` (ADR-0015 third key). Managed entirely through conversation.
+_Avoid_: Push channel, following, fan level
+
 **Knowledge Entry（知识条目）**:
 A curated, source-attributed unit of football knowledge (rules, formats) that Qiuqiu answers from verbatim — the second fact domain (ADR-0017). Qiuqiu never generates knowledge; a miss is an honest "不知道".
 _Avoid_: RAG dump, wiki scrape, LLM-generated trivia

@@ -29,6 +29,7 @@ const (
 	IntentMatchClaim      Intent = "match_fact_claim"
 	IntentReminderRequest Intent = "reminder_request"
 	IntentKnowledge       Intent = "knowledge_question"
+	IntentSubscription    Intent = "subscription_manage"
 	IntentUnknown         Intent = "unknown"
 )
 

@@ -104,8 +104,8 @@ func TestRoutePayloadShapeAndParse(t *testing.T) {
 	properties := parameters["properties"].(map[string]any)
 	intent := properties["intent"].(map[string]any)
 	enum := intent["enum"].([]any)
-	if len(enum) != 13 {
-		t.Fatalf("intent enum size = %d, want 13 routable intents", len(enum))
+	if len(enum) != 14 {
+		t.Fatalf("intent enum size = %d, want 14 routable intents", len(enum))
 	}
 }
 

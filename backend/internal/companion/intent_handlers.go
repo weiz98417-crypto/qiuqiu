@@ -419,12 +419,160 @@ func (a *Agent) reminderKickoff(ctx context.Context, req AgentBoundaryRequest, s
 	return time.Time{}, false
 }
 
-// teamNamesAlign 要求两队名非空且（contains 口径）各自对上，防止空串
-// 全匹配。
+// teamNamesAlign 要求两队名非空且各自对上（别名感知 + 预备队排除），
+// 防止空串全匹配与"曼联 U21"误配"曼联"（season-subscription 还债）。
 func teamNamesAlign(leftHome, leftAway, rightHome, rightAway string) bool {
 	if leftHome == "" || leftAway == "" || rightHome == "" || rightAway == "" {
 		return false
 	}
-	return (strings.Contains(rightHome, leftHome) || strings.Contains(leftHome, rightHome)) &&
-		(strings.Contains(rightAway, leftAway) || strings.Contains(leftAway, rightAway))
+	if proactive.IsReserveOrYouthTeam(leftHome) || proactive.IsReserveOrYouthTeam(leftAway) {
+		return false
+	}
+	return proactive.TeamNameAligns(leftHome, rightHome) && proactive.TeamNameAligns(leftAway, rightAway)
+}
+
+// handleSubscriptionManage 落订阅簿（Q8/Q9/Q18）：订阅、列出、取消三动作
+// 全走对话即接口；队名从 14 天赛程窗口的参赛队里按字符对齐提取。
+func (a *Agent) handleSubscriptionManage(t *userTurn) (intentHandling, error) {
+	h := newIntentHandling()
+	ctx, req, trace := t.ctx, t.req, t.trace
+	h.allowRealize = false
+	h.deterministicReason = "subscription_policy"
+	if a.subscriptions == nil {
+		h.reply = "订阅簿还没接上，等我能记长事的时候再说。"
+		return h, nil
+	}
+	text := strings.TrimSpace(req.Text)
+
+	// 列表。
+	if containsAny(text, "列出", "我的订阅") {
+		subs, err := a.subscriptions.ActiveForUser(ctx, req.UserID)
+		if err != nil {
+			return h, err
+		}
+		if len(subs) == 0 {
+			h.reply = "你还没有订阅任何球队，说「以后XX的比赛都叫我」就行。"
+			return h, nil
+		}
+		names := make([]string, 0, len(subs))
+		for _, sub := range subs {
+			names = append(names, sub.TeamName)
+		}
+		h.reply = "你现在订了：" + strings.Join(names, "、") + "。想取消就说「别叫我XX的了」。"
+		return h, nil
+	}
+
+	// 取消：在活跃订阅里找被点名的队。
+	if containsAny(text, "取消", "别叫", "别提醒") {
+		subs, err := a.subscriptions.ActiveForUser(ctx, req.UserID)
+		if err != nil {
+			return h, err
+		}
+		for _, sub := range subs {
+			if mentionsRunes(text, sub.TeamName) >= 2 {
+				if _, done, err := a.subscriptions.CancelTeam(ctx, req.UserID, sub.TeamName); err == nil && done {
+					_ = a.remindersSuppressSubscription(ctx, req.UserID, sub.ID)
+					trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "subscription.cancel", Args: map[string]string{"subscriptionId": sub.ID}})
+					trace.Reason = ReasonSubscriptionCancelled
+					h.reply = "好，以后" + sub.TeamName + "的比赛不叫你了，想恢复随时说。"
+					return h, nil
+				}
+			}
+		}
+		h.reply = "想取消哪支球队？说个队名，比如「别叫我皇马的了」。"
+		return h, nil
+	}
+
+	// 订阅：从赛程窗口的参赛队里对齐用户提到的队名。
+	team, ok := a.extractFixtureTeam(ctx, text, req)
+	if !ok {
+		h.reply = "想订阅哪支球队？说个队名，比如「以后皇马的比赛都叫我」。"
+		return h, nil
+	}
+	subs, err := a.subscriptions.ActiveForUser(ctx, req.UserID)
+	if err != nil {
+		return h, err
+	}
+	if len(subs) >= proactive.MaxSubscriptionsPerUser {
+		h.reply = "最多订三支球队，先取消一支再订吧。"
+		return h, nil
+	}
+	sub, err := a.subscriptions.Append(ctx, proactive.Subscription{UserID: req.UserID, TeamName: team, CreatedAt: req.Now})
+	if err != nil {
+		trace.Error = strings.TrimSpace(err.Error())
+		h.reply = "订阅没记上，再试一次？"
+		return h, nil
+	}
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "subscription.create", Args: map[string]string{"subscriptionId": sub.ID, "team": sub.TeamName}})
+	trace.Reason = ReasonSubscriptionScheduled
+	h.reply = "好，以后" + sub.TeamName + "的比赛，开球前我都叫你。"
+	return h, nil
+}
+
+// extractFixtureTeam 从 14 天赛程窗口的参赛队里找用户文本提到的队名
+//（字符对齐：文本里出现队名 ≥2 个不同字符即候选，取最多者；预备队/
+// 青年队/女足排除）。搜索读不到时降级今日赛程。
+func (a *Agent) extractFixtureTeam(ctx context.Context, text string, req AgentBoundaryRequest) (string, bool) {
+	if a.scheduleReader == nil {
+		return "", false
+	}
+	now := req.Now
+	if now.IsZero() {
+		now = time.Now().UTC()
+	}
+	var fixtures []ScheduleMatch
+	if searchReader, ok := a.scheduleReader.(ScheduleSearchReader); ok {
+		if result, err := searchReader.Search(ctx, ScheduleSearchRequest{
+			From: now,
+			To:   now.Add(14 * 24 * time.Hour),
+		}); err == nil {
+			fixtures = result.Fixtures
+		}
+	} else {
+		if today, err := a.scheduleReader.TodayFixtures(ctx); err == nil {
+			fixtures = today
+		}
+	}
+	seen := map[string]bool{}
+	bestTeam := ""
+	bestScore := 0
+	for _, fixture := range fixtures {
+		for _, team := range []string{fixture.HomeTeam, fixture.AwayTeam} {
+			team = strings.TrimSpace(team)
+			if team == "" || seen[team] || proactive.IsReserveOrYouthTeam(team) {
+				continue
+			}
+			seen[team] = true
+			if score := mentionsRunes(text, team); score >= 2 && score > bestScore {
+				bestScore = score
+				bestTeam = team
+			}
+		}
+	}
+	return bestTeam, bestTeam != ""
+}
+
+// mentionsRunes 统计队名（别名展开后）里有多少个不同字符出现在文本中
+//——"皇马"对"以后皇马都叫我"得 2。
+func mentionsRunes(text, team string) int {
+	seen := map[rune]bool{}
+	count := 0
+	for _, r := range proactive.AlignKey(team) {
+		if r == ' ' || seen[r] {
+			continue
+		}
+		seen[r] = true
+		if strings.ContainsRune(text, r) {
+			count++
+		}
+	}
+	return count
+}
+
+// remindersSuppressSubscription 是可选依赖的守门包装：提醒簿在场才静默。
+func (a *Agent) remindersSuppressSubscription(ctx context.Context, userID, subscriptionID string) error {
+	if a.reminders == nil {
+		return nil
+	}
+	return a.reminders.SuppressPendingSubscription(ctx, userID, subscriptionID)
 }

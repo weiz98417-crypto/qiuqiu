@@ -64,6 +64,17 @@ func matchesPreMatchReminderCue(lower string) bool {
 	)
 }
 
+// matchesSubscriptionCue：球队级订阅管理（订阅/列出/取消）。
+func matchesSubscriptionCue(lower string) bool {
+	if containsAny(lower, "列出我的订阅", "我的订阅", "取消订阅") {
+		return true
+	}
+	if containsAny(lower, "别叫我", "别提醒我") {
+		return true
+	}
+	return containsAny(lower, "以后", "每场", "每次") && containsAny(lower, "叫我", "提醒我", "叫醒我")
+}
+
 // matchesKnowledgeCue：足球知识问答（规则/赛制类）——主题词 + 疑问向的
 // 组合，避免抢走事实主张与情绪回合（claim 类判定在管道里更早）。
 func matchesKnowledgeCue(lower string) bool {

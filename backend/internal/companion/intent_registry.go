@@ -97,6 +97,7 @@ var intentRegistry = IntentRegistry{
 		{IntentControlCommand, "silence_request", matchesSilenceRequestCue},
 		{IntentReminderRequest, "pre_match_reminder_cue", matchesPreMatchReminderCue},
 		{IntentKnowledge, "knowledge_cue", matchesKnowledgeCue},
+		{IntentSubscription, "subscription_cue", matchesSubscriptionCue},
 		{IntentMatchStatus, "match_status_question", isMatchStatusQuestion},
 		{IntentSchedule, "schedule_question", isScheduleQuestion},
 		{IntentSmalltalk, "companion_directed_smalltalk", isCompanionDirectedSmalltalk},
@@ -200,6 +201,13 @@ var intentRegistry = IntentRegistry{
 			RouterPromptLine: "knowledge_question：问足球规则或赛制知识（越位是什么、积分怎么算）。",
 			ConfidenceGated:  true,
 			Handle:           (*Agent).handleKnowledgeQuestion,
+		},
+		{
+			Intent:           IntentSubscription,
+			RouterIntent:     "subscription_manage",
+			RouterPromptLine: "subscription_manage：管理球队提醒订阅（以后都叫我、列出我的订阅、别叫我XX的了）。",
+			ConfidenceGated:  true,
+			Handle:           (*Agent).handleSubscriptionManage,
 		},
 		{
 			Intent:           IntentUnknown,

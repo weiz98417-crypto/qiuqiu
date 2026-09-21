@@ -50,6 +50,10 @@ const (
 
 	// 知识域命中（openspec/changes/knowledge-rag，ADR-0017）。
 	ReasonKnowledgeAnswered = "knowledge_answered"
+
+	// 订阅簿落账（openspec/changes/season-subscription）。
+	ReasonSubscriptionScheduled  = "subscription_scheduled"
+	ReasonSubscriptionCancelled  = "subscription_cancelled"
 )
 
 // ReasonGuardRejected / ReasonGuardEmpty 是护栏拒绝的两类原因，落在

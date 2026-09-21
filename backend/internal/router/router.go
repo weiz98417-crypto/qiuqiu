@@ -104,7 +104,7 @@ type Request struct {
 // `enum=值` 指令，顺序与迁移前手写 schema 逐项一致（router_schema_test.go
 // 锁定），description 保留原中文文案。
 type Result struct {
-	Intent string `json:"intent" jsonschema:"description=用户这回合的意图，必须从这个枚举里选,required,enum=smalltalk,enum=schedule_question,enum=match_status_question,enum=recent_event_question,enum=follow_up_question,enum=player_question,enum=match_fact_claim,enum=emotion_reaction,enum=personal_share,enum=control_command,enum=reminder_request,enum=knowledge_question,enum=unknown"`
+	Intent string `json:"intent" jsonschema:"description=用户这回合的意图，必须从这个枚举里选,required,enum=smalltalk,enum=schedule_question,enum=match_status_question,enum=recent_event_question,enum=follow_up_question,enum=player_question,enum=match_fact_claim,enum=emotion_reaction,enum=personal_share,enum=control_command,enum=reminder_request,enum=knowledge_question,enum=subscription_manage,enum=unknown"`
 	Player string `json:"player,omitempty" jsonschema_description:"提到的球员名，没有则空串"`
 	Team   string `json:"team,omitempty" jsonschema_description:"提到的球队名，没有则空串"`
 	Score  string `json:"score,omitempty" jsonschema_description:"提到的比分（如 2-1），没有则空串"`
@@ -166,6 +166,7 @@ const routeSystemPrompt = `你是陪看足球助手"球球"的意图路由器。
 - control_command：让球球别说/少说/安静。
 - reminder_request：让我在开球前提醒你（开球前叫我、赛前提醒我）。
 - knowledge_question：问足球规则或赛制知识（越位是什么、积分怎么算）。
+- subscription_manage：管理球队提醒订阅（以后都叫我、列出我的订阅、别叫我XX的了）。
 - unknown：以上都不适合。
 置信度低于 0.7 时直接给 unknown。闲聊类（smalltalk/emotion_reaction/personal_share）额外给一句自然回复建议 reply，口语、最多两句60字、绝不提具体比分球员等比赛事实；其余意图 reply 留空。
 示例：

@@ -369,7 +369,18 @@ func main() {
 		}
 		knowledgeLibrary = library
 	}
-	companionAgent := companion.NewAgent(companionTools).WithReminders(reminderStore).WithKnowledge(knowledgeLibrary)
+	// 订阅簿（openspec/changes/season-subscription）：有库走 Postgres
+	//（migration 047），无库走内存实现。
+	var subscriptionStore proactive.SubscriptionStore = proactive.NewMemorySubscriptionStore()
+	if cfg.DatabaseURL != "" {
+		postgresSubs, err := proactive.OpenPostgresSubscriptionStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres subscription store: %v", err)
+		}
+		defer postgresSubs.Close()
+		subscriptionStore = postgresSubs
+	}
+	companionAgent := companion.NewAgent(companionTools).WithReminders(reminderStore).WithSubscriptions(subscriptionStore).WithKnowledge(knowledgeLibrary)
 	interactionLedger := interaction.Ledger(interaction.NewMemoryLedger())
 	var interactionLedgerCloser func()
 	if cfg.DatabaseURL != "" {
@@ -384,11 +395,16 @@ func main() {
 		defer interactionLedgerCloser()
 	}
 	companionAgent.WithInteractionLedger(interactionLedger)
+	var scheduleReaderSource companion.ScheduleReader
 	if reader, ok := sportsClient.(scheduleFixturesClient); ok {
-		companionAgent.WithScheduleReader(apiSportsScheduleReader{client: reader})
+		scheduleReaderSource = apiSportsScheduleReader{client: reader}
+		companionAgent.WithScheduleReader(scheduleReaderSource)
 	} else if reader, ok := sportsClient.(todayFixturesClient); ok {
-		companionAgent.WithScheduleReader(apiSportsScheduleReader{client: reader})
+		scheduleReaderSource = apiSportsScheduleReader{client: reader}
+		companionAgent.WithScheduleReader(scheduleReaderSource)
 	}
+	// 订阅展开节拍（Q17）：每日合并扫描未来 14 天，新赛程增量补提醒。
+	go runSubscriptionExpansion(outboxCtx, subscriptionStore, reminderStore, scheduleReaderSource)
 	if observationCoordinator != nil {
 		companionAgent.WithObservationCoordinator(observationCoordinator)
 		companionAgent.WithObservationReconcileWindow(func(matchID, eventType string) time.Duration {

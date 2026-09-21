@@ -48,15 +48,21 @@ type Reminder struct {
 	LeadMinutes int
 	// Timezone 是请求方的 IANA 时区（user_speech 附带）；开球时间展示用，
 	// 空则退服务器本地时区。
-	Timezone    string
-	Status      ReminderStatus
-	DeliverAt   time.Time
-	ExpireAt    time.Time
-	CreatedAt   time.Time
+	Timezone string
+	// SubscriptionID 非空 = 订阅展开产物（引用码走 subscription:<id>）。
+	SubscriptionID string
+	Status         ReminderStatus
+	DeliverAt      time.Time
+	ExpireAt       time.Time
+	CreatedAt      time.Time
 }
 
-// CitationCode 是这次主动回合的 C2 引用码：用户显式请求本身。
+// CitationCode 是这次主动回合的 C2 引用码：单次提醒 = reminder:<id>，
+// 订阅展开产物 = subscription:<subID>（Q8：用户显式订阅同属第三钥匙）。
 func (r Reminder) CitationCode() string {
+	if r.SubscriptionID != "" {
+		return CitationSubscriptionPrefix + ":" + r.SubscriptionID
+	}
 	return CitationPrefix + ":" + r.ID
 }
 
@@ -108,6 +114,9 @@ type Store interface {
 	// SweepSuppressed 把过期待递翻 suppressed 并返回它们（调用方转为记忆
 	// 素材，Q13）；未过期的 pending 原样留在簿里。
 	SweepSuppressed(ctx context.Context, now time.Time) ([]Reminder, error)
+	// SuppressPendingSubscription 取消订阅时把该订阅的未投递提醒翻
+	// suppressed（不再打扰）。
+	SuppressPendingSubscription(ctx context.Context, userID, subscriptionID string) error
 }
 
 // MemoryStore 是第二个 adapter（ADR-0006 同款双实现纪律）。
@@ -200,4 +209,20 @@ func (s *MemoryStore) SweepSuppressed(_ context.Context, now time.Time) ([]Remin
 		}
 	}
 	return suppressed, nil
+}
+
+// SuppressPendingSubscription 取消订阅时静默该订阅的在途提醒。
+func (s *MemoryStore) SuppressPendingSubscription(_ context.Context, userID, subscriptionID string) error {
+	if s == nil {
+		return fmt.Errorf("reminder store unavailable")
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	for i := range s.reminders {
+		r := &s.reminders[i]
+		if r.UserID == userID && r.SubscriptionID == subscriptionID && r.Status == StatusPending {
+			r.Status = StatusSuppressed
+		}
+	}
+	return nil
 }

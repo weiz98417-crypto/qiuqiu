@@ -34,6 +34,7 @@ type Agent struct {
 	interactions               interaction.Ledger
 	memories                   memory.Memories
 	reminders                  proactive.Store
+	subscriptions              proactive.SubscriptionStore
 	knowledge                  *knowledge.Library
 }
 
@@ -94,6 +95,15 @@ func (a *Agent) WithReminders(store proactive.Store) *Agent {
 func (a *Agent) WithKnowledge(library *knowledge.Library) *Agent {
 	if library != nil {
 		a.knowledge = library
+	}
+	return a
+}
+
+// WithSubscriptions attaches the subscription book (season-subscription):
+// the subscription_manage intent reads and mutates it. Nil degrades honestly.
+func (a *Agent) WithSubscriptions(store proactive.SubscriptionStore) *Agent {
+	if store != nil {
+		a.subscriptions = store
 	}
 	return a
 }
