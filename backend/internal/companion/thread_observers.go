@@ -277,9 +277,15 @@ func (a *Agent) RecoverOpenThreads(ctx context.Context, userID, matchID string, 
 			},
 		}
 		// 记忆进措辞层：回访文本仅在 recall 材料非空时带记忆重措辞，
-		// guard 不过回罐头原文（evals 无记忆种子，走原文路径）。
+		// guard 不过回罐头原文（evals 无记忆种子，走原文路径）。recall
+		// 检索词取线程里的实体词（球员名优先）——contains 语义下整段
+		// 提问几乎永远匹配不上。
 		emitMode := "deterministic"
-		if realized, done := a.realizeWithMemory(ctx, IntentRecentEvent, userID, thread.Content, thread.Content, reply, nil, threadRecoveryDecision(), &trace); done {
+		focus := inferPlayer(thread.Content)
+		if focus == "" {
+			focus = thread.Content
+		}
+		if realized, done := a.realizeWithMemory(ctx, IntentRecentEvent, userID, thread.Content, focus, reply, nil, threadRecoveryDecision(), &trace); done {
 			reply = realized
 			emitMode = "realized"
 		}
