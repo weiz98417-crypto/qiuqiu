@@ -39,6 +39,9 @@ type Config struct {
 	//（行为=现状 contains 单路）；本地 Ollama 形态见 deploy/.env.example。
 	EmbeddingBaseURL               string
 	EmbeddingModel                 string
+	// 知识域（openspec/changes/knowledge-rag，ADR-0017）：策展条目目录，
+	// 留空即停用 knowledge_question 的实质回答。
+	KnowledgeDir                   string
 	PrivacyRetentionDays           int
 	PendingObservationCoordination bool
 	FactLedgerPublicReads          bool
@@ -83,6 +86,7 @@ func Load() *Config {
 		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
 		EmbeddingBaseURL:               strings.TrimSpace(getEnv("EMBEDDING_BASE_URL", "")),
 		EmbeddingModel:                 getEnv("EMBEDDING_MODEL", "bge-m3"),
+		KnowledgeDir:                   strings.TrimSpace(getEnv("KNOWLEDGE_DIR", "")),
 		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
 		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
 		RouterAPIKey:                   routerConfig.APIKey,

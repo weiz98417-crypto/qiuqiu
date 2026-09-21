@@ -1,0 +1,6 @@
+id: rule-offside
+topics: ["越位", "offside"]
+answer: "简单说：传球的那一瞬间，接球的队友比对方最后一名防守球员更靠近球门线，接下来去拿球就算越位。所以反越位都是掐着出脚那一拍启动的。"
+source: "IFAB Laws of the Game, Law 11"
+confidence: 0.95
+effective_at: 2026-07-01

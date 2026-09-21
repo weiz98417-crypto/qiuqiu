@@ -42,6 +42,7 @@ func TestIntentVocabularyLockedAcrossRouterSeam(t *testing.T) {
 		"personal_share":        IntentPersonalShare,
 		"control_command":       IntentControlCommand,
 		"reminder_request":      IntentReminderRequest,
+		"knowledge_question":    IntentKnowledge,
 		"unknown":               IntentUnknown,
 		// match_reaction 是主动回合专属、用户回合不可达，落情绪路径。
 		"match_reaction": IntentEmotionReaction,
@@ -66,7 +67,7 @@ func TestIntentVocabularyLockedAcrossRouterSeam(t *testing.T) {
 		IntentSmalltalk, IntentSchedule, IntentMatchStatus, IntentRecentEvent,
 		IntentFollowUp, IntentPlayerQuestion, IntentEmotionReaction,
 		IntentPersonalShare, IntentControlCommand, IntentMatchClaim,
-		IntentReminderRequest, IntentUnknown,
+		IntentReminderRequest, IntentKnowledge, IntentUnknown,
 	} {
 		if routedTurnIntent(string(intent)) != intent {
 			t.Fatalf("Intent %q is not covered by the registry router mapping (vocabulary drift)", intent)
@@ -88,6 +89,7 @@ func TestIntentSpecFlagValueSets(t *testing.T) {
 		IntentMatchClaim: true, IntentMatchStatus: true, IntentRecentEvent: true,
 		IntentFollowUp: true, IntentPlayerQuestion: true,
 		IntentSchedule: true, IntentControlCommand: true, IntentReminderRequest: true,
+		IntentKnowledge: true,
 	}
 	replyEligibleWants := map[Intent]bool{
 		IntentSmalltalk: true, IntentEmotionReaction: true,

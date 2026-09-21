@@ -14,6 +14,7 @@ import (
 	"unicode"
 
 	"qiuqiu/internal/interaction"
+	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/observation"
@@ -33,6 +34,7 @@ type Agent struct {
 	interactions               interaction.Ledger
 	memories                   memory.Memories
 	reminders                  proactive.Store
+	knowledge                  *knowledge.Library
 }
 
 func NewAgent(tools MemoryTools) *Agent {
@@ -82,6 +84,16 @@ func (a *Agent) WithRouter(routerClient TurnRouter) *Agent {
 func (a *Agent) WithReminders(store proactive.Store) *Agent {
 	if store != nil {
 		a.reminders = store
+	}
+	return a
+}
+
+// WithKnowledge attaches the curated knowledge library (ADR-0017): the
+// knowledge_question intent answers from it verbatim. Nil keeps the intent
+// replying that the library is not wired yet.
+func (a *Agent) WithKnowledge(library *knowledge.Library) *Agent {
+	if library != nil {
+		a.knowledge = library
 	}
 	return a
 }

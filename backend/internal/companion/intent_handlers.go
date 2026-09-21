@@ -8,6 +8,7 @@ package companion
 import (
 	"context"
 	"fmt"
+	"strconv"
 	"strings"
 	"time"
 
@@ -355,6 +356,31 @@ func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "reminder.create", Args: map[string]string{"reminderId": reminder.ID, "kickoffAt": kickoff.UTC().Format(time.RFC3339)}})
 	trace.Reason = ReasonReminderScheduled
 	h.reply = fmt.Sprintf("好，%s 对 %s 开球前%d分钟我叫你。", snapshot.HomeTeam, snapshot.AwayTeam, reminder.LeadMinutes)
+	return h, nil
+}
+
+// handleKnowledgeQuestion 落 ADR-0017 的知识域：策展条目检索命中即逐字
+// 回答（确定性拼装，realizer 不碰），无命中如实说不知道——绝不生成知识。
+func (a *Agent) handleKnowledgeQuestion(t *userTurn) (intentHandling, error) {
+	h := newIntentHandling()
+	ctx, req, trace := t.ctx, t.req, t.trace
+	h.allowRealize = false
+	h.deterministicReason = "knowledge_policy"
+	if a.knowledge == nil {
+		h.reply = "知识库还没接上，这块我先不敢乱说。"
+		return h, nil
+	}
+	entry, ok := a.knowledge.Search(ctx, req.Text)
+	if !ok {
+		h.reply = "这个我还真不敢乱说，等我把功课补上再答你。"
+		return h, nil
+	}
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "knowledge.answer", Args: map[string]string{
+		"entryId":    entry.ID,
+		"confidence": strconv.FormatFloat(entry.Confidence, 'f', 2, 64),
+	}})
+	trace.Reason = ReasonKnowledgeAnswered
+	h.reply = entry.Answer
 	return h, nil
 }
 

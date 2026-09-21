@@ -28,6 +28,7 @@ const (
 	IntentControlCommand  Intent = "control_command"
 	IntentMatchClaim      Intent = "match_fact_claim"
 	IntentReminderRequest Intent = "reminder_request"
+	IntentKnowledge       Intent = "knowledge_question"
 	IntentUnknown         Intent = "unknown"
 )
 

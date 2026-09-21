@@ -1,0 +1,6 @@
+id: rule-penalty
+topics: ["点球", "penalty", "十二码"]
+answer: "点球就是防守方在本方禁区内犯规或手球，裁判判给对方在十二码点的直接射门，只有门将一人能扑，其他人得站在禁区外等出脚。"
+source: "IFAB Laws of the Game, Law 14"
+confidence: 0.95
+effective_at: 2026-07-01

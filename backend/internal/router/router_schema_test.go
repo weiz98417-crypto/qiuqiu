@@ -36,7 +36,7 @@ func TestReflectedRouteSchemaMatchesMigrationShape(t *testing.T) {
 		"smalltalk", "schedule_question", "match_status_question",
 		"recent_event_question", "follow_up_question", "player_question",
 		"match_fact_claim", "emotion_reaction", "personal_share",
-		"control_command", "reminder_request", "unknown",
+		"control_command", "reminder_request", "knowledge_question", "unknown",
 	}
 	intent := parsed.Properties["intent"]
 	if len(intent.Enum) != len(wantEnum) {

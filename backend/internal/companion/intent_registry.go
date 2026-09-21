@@ -96,6 +96,7 @@ var intentRegistry = IntentRegistry{
 		{IntentMatchStatus, "question_shaped_score", isQuestionShapedScoreText},
 		{IntentControlCommand, "silence_request", matchesSilenceRequestCue},
 		{IntentReminderRequest, "pre_match_reminder_cue", matchesPreMatchReminderCue},
+		{IntentKnowledge, "knowledge_cue", matchesKnowledgeCue},
 		{IntentMatchStatus, "match_status_question", isMatchStatusQuestion},
 		{IntentSchedule, "schedule_question", isScheduleQuestion},
 		{IntentSmalltalk, "companion_directed_smalltalk", isCompanionDirectedSmalltalk},
@@ -192,6 +193,13 @@ var intentRegistry = IntentRegistry{
 			RouterPromptLine: "reminder_request：让我在开球前提醒你（开球前叫我、赛前提醒我）。",
 			ConfidenceGated:  true,
 			Handle:           (*Agent).handleReminderRequest,
+		},
+		{
+			Intent:           IntentKnowledge,
+			RouterIntent:     "knowledge_question",
+			RouterPromptLine: "knowledge_question：问足球规则或赛制知识（越位是什么、积分怎么算）。",
+			ConfidenceGated:  true,
+			Handle:           (*Agent).handleKnowledgeQuestion,
 		},
 		{
 			Intent:           IntentUnknown,

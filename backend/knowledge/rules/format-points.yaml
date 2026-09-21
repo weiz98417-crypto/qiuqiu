@@ -1,0 +1,6 @@
+id: format-points
+topics: ["积分", "赢一场几分", "积分规则"]
+answer: "联赛积分制：赢一场三分，平局一分，输球零分，赛季结束按总分排名，同分先比净胜球。"
+source: "各大联赛通行竞赛规则"
+confidence: 0.95
+effective_at: 2026-07-01

@@ -1,0 +1,6 @@
+id: format-duration
+topics: ["多久", "多长时间", "时长", "中场休息"]
+answer: "一场球上下半场各 45 分钟，中间 15 分钟休息，伤停补时看情况加，所以整场看下来一般两个小时上下。"
+source: "IFAB Laws of the Game, Law 7"
+confidence: 0.95
+effective_at: 2026-07-01

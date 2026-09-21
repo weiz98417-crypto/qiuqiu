@@ -1,0 +1,6 @@
+id: rule-var
+topics: ["var", "视频助理裁判", "看var"]
+answer: "VAR 是视频助理裁判，只在进球、点球、直接红牌和认错球员这四类关键判罚上介入，主裁判可以去看回放后再做最终决定。"
+source: "IFAB VAR Protocol"
+confidence: 0.9
+effective_at: 2026-07-01

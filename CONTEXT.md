@@ -116,6 +116,10 @@ _Avoid_: Director agent, push service, global scheduler takeover
 A deliberate decision not to speak because silence best serves the shared moment or user boundary.
 _Avoid_: Missing response, timeout
 
+**Knowledge Entry（知识条目）**:
+A curated, source-attributed unit of football knowledge (rules, formats) that Qiuqiu answers from verbatim — the second fact domain (ADR-0017). Qiuqiu never generates knowledge; a miss is an honest "不知道".
+_Avoid_: RAG dump, wiki scrape, LLM-generated trivia
+
 **Match Fact（比赛事实）**:
 A time-scoped, source-attributed statement about what happened in a match, including its certainty, visibility, and later correction history.
 _Avoid_: Raw event, score cache

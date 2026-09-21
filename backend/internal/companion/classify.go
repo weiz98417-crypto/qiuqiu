@@ -64,6 +64,22 @@ func matchesPreMatchReminderCue(lower string) bool {
 	)
 }
 
+// matchesKnowledgeCue：足球知识问答（规则/赛制类）——主题词 + 疑问向的
+// 组合，避免抢走事实主张与情绪回合（claim 类判定在管道里更早）。
+func matchesKnowledgeCue(lower string) bool {
+	topic := containsAny(lower,
+		"越位", "点球", "红牌", "黄牌", "角球", "任意球", "净胜球",
+		"积分", "升降级", "降级", "赛制", "欧冠", "世界杯", "换人名额",
+	)
+	questionish := containsAny(lower, "什么", "怎么", "为啥", "为什么", "啥", "意思", "规则", "规定", "解释", "讲讲", "介绍", "几分")
+	leagueSlots := containsAny(lower, "几个队", "多少队", "几支队") &&
+		containsAny(lower, "英超", "西甲", "意甲", "德甲", "法甲", "联赛")
+	if leagueSlots {
+		return true
+	}
+	return topic && questionish
+}
+
 func isScheduleQuestion(text string) bool {
 	normalized := normalizeConversationText(text)
 	if containsAny(normalized, "比分", "进球", "分钟", "赛况", "球员", "比赛怎么样", "比赛什么情况", "比赛现在什么情况", "现在什么情况") {

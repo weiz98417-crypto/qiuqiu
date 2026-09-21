@@ -47,6 +47,9 @@ const (
 
 	// 提醒簿落账（openspec/changes/proactive-scheduler，ADR-0015）。
 	ReasonReminderScheduled = "reminder_scheduled"
+
+	// 知识域命中（openspec/changes/knowledge-rag，ADR-0017）。
+	ReasonKnowledgeAnswered = "knowledge_answered"
 )
 
 // ReasonGuardRejected / ReasonGuardEmpty 是护栏拒绝的两类原因，落在

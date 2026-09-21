@@ -1,0 +1,6 @@
+id: rule-cards
+topics: ["红牌", "黄牌", "牌"]
+answer: "黄牌是警告，两黄变一红就得下场；红牌是直接罚下，球队还得少打一人，而且接下来一般要停赛。两回事，红牌严重得多。"
+source: "IFAB Laws of the Game, Law 12"
+confidence: 0.95
+effective_at: 2026-07-01

@@ -23,6 +23,7 @@ import (
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/directordraft"
 	"qiuqiu/internal/embedding"
+	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/structured"
 	"qiuqiu/internal/interaction"
@@ -355,7 +356,20 @@ func main() {
 		defer postgresReminders.Close()
 		reminderStore = postgresReminders
 	}
-	companionAgent := companion.NewAgent(companionTools).WithReminders(reminderStore)
+	// 语义记忆嵌入端点（第二波）：留空 = 停用向量路与知识向量检索。
+	var knowledgeEmbedder knowledge.Embedder
+	if cfg.EmbeddingBaseURL != "" {
+		knowledgeEmbedder = embedding.NewClient(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, "ollama")
+	}
+	var knowledgeLibrary *knowledge.Library
+	if cfg.KnowledgeDir != "" {
+		library, err := knowledge.Load(cfg.KnowledgeDir, knowledgeEmbedder)
+		if err != nil {
+			log.Fatalf("knowledge library: %v", err)
+		}
+		knowledgeLibrary = library
+	}
+	companionAgent := companion.NewAgent(companionTools).WithReminders(reminderStore).WithKnowledge(knowledgeLibrary)
 	interactionLedger := interaction.Ledger(interaction.NewMemoryLedger())
 	var interactionLedgerCloser func()
 	if cfg.DatabaseURL != "" {
@@ -412,17 +426,16 @@ func main() {
 	// 留空即整体停用（行为=现状 contains 单路）；配置后 Observe 异步嵌写、
 	// Recall 双路合并，任何 embedding 故障弃权。
 	var vectorOptions []memory.QueueOption
-	if cfg.EmbeddingBaseURL != "" {
-		embedder := embedding.NewClient(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, "ollama")
+	if cfg.EmbeddingBaseURL != "" && knowledgeEmbedder != nil {
 		if cfg.DatabaseURL != "" {
 			vectorStore, err := memory.OpenPostgresVectorStore(context.Background(), cfg.DatabaseURL)
 			if err != nil {
 				log.Fatalf("postgres vector store: %v", err)
 			}
 			defer vectorStore.Close()
-			vectorOptions = append(vectorOptions, memory.WithVectorRecall(vectorStore, embedder))
+			vectorOptions = append(vectorOptions, memory.WithVectorRecall(vectorStore, knowledgeEmbedder))
 		} else {
-			vectorOptions = append(vectorOptions, memory.WithVectorRecall(memory.NewMemoryVectorStore(), embedder))
+			vectorOptions = append(vectorOptions, memory.WithVectorRecall(memory.NewMemoryVectorStore(), knowledgeEmbedder))
 		}
 	}
 	if cfg.DatabaseURL != "" {
