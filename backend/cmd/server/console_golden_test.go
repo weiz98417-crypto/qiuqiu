@@ -142,7 +142,11 @@ func TestConsoleGoldenPayloads(t *testing.T) {
 	harness.seedGoldenMatch(t)
 	harness.sessions.Acquire("user-1", "m1")
 
-	now := time.Date(2026, 9, 19, 12, 0, 0, 0, time.UTC)
+	// 夹具时钟锚定真实当天（UTC 零点截断）：此前钉死 2026-09-19，三天后
+	// 线程老化过桶（d1to3→d3plus）、router 统计窗关窗，golden 随日历漂移。
+	// -48h/-120h 的相对距离才是各桶的本意；时间戳本身已被 normalizeGolden
+	// 归一成 <TS>，绝对值不进 golden。
+	now := time.Now().UTC().Truncate(24 * time.Hour)
 	_, _ = harness.fakeThreads.AppendThread(context.Background(), memory.Thread{UserID: "user-1", Kind: memory.ThreadUnansweredQuestion, Content: "谁助攻的？"})
 	_, _ = harness.fakeThreads.AppendThread(context.Background(), memory.Thread{UserID: "user-2", Kind: memory.ThreadPromise, Content: "两天前的问题", CreatedAt: now.Add(-48 * time.Hour)})
 	_, _ = harness.fakeThreads.AppendThread(context.Background(), memory.Thread{UserID: "user-3", Kind: memory.ThreadPrediction, Content: "上周的预测", CreatedAt: now.Add(-120 * time.Hour)})
