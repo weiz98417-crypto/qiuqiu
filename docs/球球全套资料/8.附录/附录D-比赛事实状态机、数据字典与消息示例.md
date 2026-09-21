@@ -1,335 +1,191 @@
 # 附录D：比赛事实状态机、数据字典与消息示例
 
-> 文档类型：可复用领域参考  
-> 适用阶段：产品、协议、POC 和工程 Evals 已经需要共享同一套事实、版本与可见性语言时  
-> 决策状态：首轮字段与状态合同。字段用于表达已批准的边界，不允许用自由文本绕过事实确认、剧透保护或用户控制。  
-> 公开资料访问日：2026-01-28。
+我们在做一个陪用户看球的数字人。它说的每一句赛况，都必须能回答一个问题：这句话是从哪里来的、经过了几道确认。本篇对外说明我们如何管理比赛事实：事实的五种状态、状态之间如何流转、支撑这套流转的数据结构，以及客户端会收到的实时消息长什么样。
 
-## 1. 核心模型：信号不会自动变成用户事实
+## 1. 核心思想：信号不会自动变成用户听到的事实
 
-```mermaid
-flowchart LR
-    S[允许的外部观察] --> C[事实声明\n候选]
-    C --> R{调和与证据门}
-    R -->|不足或冲突| H[核对中\n不呈现结果]
-    R -->|满足条件| F[已确认事实版本]
-    F --> V{用户进度、模式、终态\n是否允许可见}
-    V -->|否| Q[仅保留为可请求状态]
-    V -->|是| P[文字、字幕、语音、舞台计划]
-    N[更正或撤销] --> F
-    E[结束、静音、删除] --> V
-```
+一条来源上报的进球、一张红牌、一个比分变化，只是"信号"。信号进入系统后首先入账，处于"待确认"状态；只有通过确认，它才成为可以呈现给用户的事实。我们不让任何一条未经确认或仍在冲突中的信息，以确定事实的口吻出现在用户面前——这是产品红线之一，也是本篇全部设计的出发点。
 
-这套模型有四层对象：比赛本身、对比赛的事实声明、支持声明的证据引用、用户当场的观察与控制。角色表达和运营动作不属于事实层，不能直接写入或提升事实。
+围绕事实，我们维护几层对象：比赛本身、比赛事件的账本记录、事件的事实修订链，以及事件之间的冲突记录。角色的表达、运营的动作属于各自的层，不会冒充比赛事实。
 
 ## 2. 不变量
 
-```mermaid
-mindmap
-  root((不变量))
-    候选不等于已确认
-    旧版本不能覆盖新版本
-    更正必须指向被替换版本
-    进度未知不产生结果型呈现
-    结束压过排队输出
-    删除屏障压过缓存与重试
-    接收时间不等于发生时间
-```
+无论功能如何演进，以下规则不变：
 
-- 每条 `fact_claim` 都属于一个场次、一个类型和一个版本；对象不清楚时保持候选或冲突。
-- 接收时间、来源观察时间和比赛发生时间分别记录；不能用任一个冒充另一个。
-- `candidate`、`conflicted`、`retracted` 不能驱动比分、结果性语气、兴奋动作或通知。
-- 更正、撤回和会话结束必须使相关的旧呈现计划失效，而不是只改当前文本。
-- 用户观察模式属于当前会话，不能因缓存、重连或角色记忆被悄悄放宽。
-- 删除屏障建立后，旧队列、离线任务、缓存和恢复流程都不能重新写入或读取被覆盖的资料。
+- **待确认不等于已确认。** 只有 `已确认` 状态的事实才进入公开读取范围，才会驱动比分、结果性语气或通知。
+- **旧版本不能覆盖新版本。** 每条事实带单调递增的修订号，确认与更正都使修订号加一，迟到的旧数据无法回写。
+- **更正必须指向被替换的版本。** 每次修订通过"修订自"字段形成替换链，历史可以被追溯，不能被静默改写。
+- **接收时间不等于发生时间。** 事件的发生时间、入账时间、公开时间分别记录，不用其中一个冒充另一个。
+- **撤销要使旧呈现失效。** 一条事实被撤销后，系统不允许继续以旧口径呈现。
+- **同一动作只生效一次。** 运营与来源写入均携带幂等键，重试不会产生第二份事实或第二次播报。
 
 ## 3. 事实状态机
 
+比赛事实有五种状态：**待确认（provisional）、已确认（confirmed）、冲突（conflict）、已调和（reconciled）、已撤销（revoked）**。
+
 ```mermaid
 stateDiagram-v2
-    [*] --> received: 收到格式有效的声明
-    received --> candidate: 已完成场次、对象与许可校验
-    candidate --> confirmed: 证据与调和门通过
-    candidate --> conflicted: 不同声明无法一致
-    conflicted --> candidate: 新证据缩小冲突
-    conflicted --> confirmed: 达到确认门
-    confirmed --> corrected: 新版本替换关键字段
-    confirmed --> retracted: 官方或等价证据撤销
-    corrected --> corrected: 后续更正
-    corrected --> retracted: 撤销当前版本
-    received --> rejected: 格式、范围或许可不合格
-    candidate --> expired: 核对窗口结束
-    conflicted --> expired: 无法安全解决
-    rejected --> [*]
-    expired --> [*]
-    retracted --> [*]
+    [*] --> provisional: 来源事件或运营录入入账
+    provisional --> confirmed: 运营员确认，修订号 +1，记录公开时间
+    provisional --> conflict: 与另一条事实无法同时成立
+    confirmed --> conflict: 新证据与已确认事实矛盾
+    conflict --> reconciled: 人工裁决保留哪一方，必须填写原因
+    reconciled --> confirmed: 被保留方继续以事实口径呈现
+    confirmed --> revoked: 证据被撤销
+    reconciled --> revoked: 证据被撤销
+    revoked --> [*]
 ```
+
+两种典型流转值得展开。
+
+**确认流**：来源或运营写入的事件以"待确认"入账；运营员执行确认操作时，系统校验操作者身份，将状态置为"已确认"，修订号加一，并写入确认人与公开时间。从这一刻起，该事实才进入对用户的公开读取范围。
+
+**冲突调和流**：当两条事实无法同时成立（例如两个来源对同一进球给出不同球员），系统生成一条冲突记录，把相关事实登记为冲突成员，并冻结它们的结果性呈现。冲突不会由系统"猜一个更可信的"来自动了结——裁决必须由运营员执行，并且**必须填写原因**，缺少原因的裁决请求会被直接拒绝。裁决结果（保留了哪条事实、由谁裁决、依据是什么）连同原因一起留痕在冲突调和审计中。
 
 ```mermaid
 flowchart TD
-    A[任意事实声明] --> B{场次、对象、范围和许可有效？}
-    B -->|否| X[rejected：不入账、不呈现]
-    B -->|是| C{证据能确认？}
-    C -->|否，且无冲突| D[candidate：仅核对]
-    C -->|冲突| E[conflicted：冻结结果性呈现]
-    C -->|是| F[confirmed：生成新事实版本]
-    F --> G{之后出现更高优先级证据？}
-    G -->|更正| H[corrected：保留替换链]
-    G -->|撤销| I[retracted：使旧呈现失效]
+    A[来源事件入账] --> B{与已有事实矛盾？}
+    B -->|否| C[待确认：等待确认]
+    B -->|是| D[冲突：冻结结果性呈现]
+    C --> E[运营员确认：已确认，修订号 +1]
+    D --> F[人工裁决，原因必填]
+    F --> G[已调和：保留方回到事实口径]
+    E --> H{后续出现新证据？}
+    G --> H
+    H -->|更正| I[生成新修订，指向被替换版本]
+    H -->|撤销| J[已撤销：旧口径失效]
 ```
 
-## 4. 调和、版本与呈现
+## 4. 数据字典
 
-```mermaid
-sequenceDiagram
-    participant A as 来源 A
-    participant B as 来源 B
-    participant L as 事实账本
-    participant R as 调和器
-    participant Q as 可见性裁决
-    A->>L: 候选进球 v1
-    L->>R: 对象与范围校验
-    R-->>Q: candidate，不呈现结果
-    B->>L: 相同事件的独立支持 v2
-    L->>R: 证据门通过
-    R-->>Q: confirmed v2
-    A->>L: 官方撤销 v3
-    L->>R: 关联被替换版本
-    R-->>Q: retracted v3，抑制旧计划
+以下是我们实际存储事实的对象。字段按真实实现说明。
+
+### 4.1 `matches`：比赛
+
+- `id`：比赛标识，不透明的稳定 ID。
+- `home_team` / `away_team`：主客队。
+- `competition`：赛事。
+- `kickoff`：开球时间。
+- `created_at` / `updated_at`：记录创建与更新时间。
+
+### 4.2 `match_events`：比赛事件账本
+
+一场比赛的每个事件在这里有一行，事实字段与内容字段同 row 管理：
+
+- `id`、`match_id`：事件与所属比赛。
+- `source`：来源类别（运营录入或外部数据提供方）；`provider_name`、`operator_id` 分别记录提供方名称与操作者。
+- `period`、`clock`、`event_type`：比赛阶段、时间点与事件类型（进球、红黄牌、换人等）。
+- `team_id` / `team_name`、`player_name`、`score_home` / `score_away`：事件主体与当时的比分。
+- `intensity`、`sentiment`、`description`、`tags`：为呈现准备的内容字段；`proactive_text`、`recommended_action` 是给主动播报的候选素材。
+- `fact_status`：事实状态，五种取值——`provisional` / `confirmed` / `conflict` / `reconciled` / `revoked`，由数据库约束限定。
+- `fact_revision`：修订号。确认与更正都会使其加一；旧修订号的数据不能覆盖新修订号。
+- `confidence`：置信度，0 到 1 之间。
+- `evidence`：证据信息（JSON），说明这条事实凭什么成立。
+- `confirmed_by`：确认人。
+- `public_at`：公开时间。只有"已确认"的事实才写入公开时间，也只有这类事实进入公开读取索引。
+- `revision_of`：本事件替换了哪条旧事件，形成替换链。
+- `status`：记录本身的存续状态——`active` / `corrected` / `deleted`，被更正或删除的旧记录不再出现。
+- `visibility`：内容可见性标记，默认公开。
+- `created_at` / `updated_at`：入账与更新时间。
+
+### 4.3 `fact_revisions`：事实修订链
+
+每次状态变化与更正都会追加一条修订记录，主键是（事实、修订号）：
+
+- `fact_id`、`revision`：事实与单调递增的修订号。
+- `status`：该修订对应的事实状态（五种状态同上）。
+- `source_type`：修订来源——`operator` / `provider` / `system`。
+- `source_event_id`：触发本修订的来源事件。
+- `revision_of`：被替换的修订。
+- `confidence`、`evidence`、`confirmed_by`：与事件账本同义。
+- `occurred_at` / `recorded_at` / `public_at`：发生时间、入账时间、公开时间，三者分开记录。
+
+修订链让"这条事实曾经是什么、何时变的、为什么变"始终可查——用户听到的每个口径都能对到一行修订记录。
+
+### 4.4 `fact_conflicts`：冲突记录
+
+- `id`、`match_id`：冲突与所属比赛。
+- `status`：`open` / `resolved`。
+- `chosen_fact_id`：裁决后保留的事实。
+- `reason`：裁决原因，**必填**——没有原因的裁决在接口层就被拒绝。
+- `detected_at`、`resolved_at`、`resolved_by`：发现、裁决时间与裁决人。
+- 成员表 `fact_conflict_members` 登记参与冲突的事实及其角色（`accepted` / `candidate`）；`fact_conflict_edges` 维护事实之间的矛盾关系图；调和结果连同原因写入调和审计，供事后追溯。
+
+## 5. 实时消息
+
+客户端通过 WebSocket 连接接收推送。消息形状如下，示例均为真实格式。
+
+**连接建立**——服务端立即发送欢迎消息：
+
+```json
+{ "type": "welcome", "message": "connected" }
 ```
 
-确认并不要求固定数量的来源，而要求该类型的确认规则、来源独立性、对象匹配和允许范围都被写清。冲突状态不选择“看起来更像真的”一方；它只说明当前不能把结果交给用户。
+**心跳**——客户端发送 `{"type": "ping"}`，服务端回答：
 
-## 5. 数据字典
-
-```mermaid
-erDiagram
-    MATCH ||--o{ FACT_CLAIM : contains
-    FACT_CLAIM ||--o{ EVIDENCE_REF : supported_by
-    FACT_CLAIM ||--o{ FACT_CLAIM : supersedes
-    MATCH ||--o{ OBSERVATION_CONTEXT : viewed_in
-    OBSERVATION_CONTEXT ||--o{ EVENT_ENVELOPE : qualifies
-    FACT_CLAIM ||--o{ EVENT_ENVELOPE : may_trigger
+```json
+{ "type": "pong" }
 ```
 
-### 5.1 `match`：稳定的场次边界
-
-- `match_id`：不透明稳定标识；不能由队名拼接，也不暴露外部账户。
-- `competition_id`、`season_id`、`stage_id`：赛事、赛季和阶段范围；共同解释场次，不能只依赖自然年。
-- `home_participant`、`away_participant`：规范化参与方对象；必须和允许来源的场次匹配。
-- `scheduled_at`：计划开始时间，采用 RFC 3339；不是实际开球或当前进度。
-- `status`、`status_version`：场次状态与单调版本；拒绝迟到的旧状态覆盖。
-- `source_scope`：许可和可用来源范围；不能因后续方便扩大用途。
-
-### 5.2 `fact_claim`：一条可追溯的事实声明
-
-- `claim_id`：声明稳定标识；同一逻辑声明的新版本可关联但不能混写。
-- `match_id`、`claim_type`、`subject`、`value`：所属场次、类型、对象和结构化值；自由文本不能替代这些字段。
-- `occurred_at`、`received_at`、`source_observed_at`：发生、接收和来源观察时间；缺失就标未知。
-- `knowledge_state`：`received`、`candidate`、`confirmed`、`conflicted`、`corrected`、`retracted`、`expired` 或 `rejected`。
-- `version`、`supersedes`：单调版本与替换链；旧版本不得回写覆盖。
-- `evidence_refs`、`confidence_note`：最小证据索引与可审计理由；不向普通用户泄露原始凭证。
-
-### 5.3 `evidence_ref`：支持声明但不扩大资料范围
-
-- `evidence_id`：单条证据标识；不等同于公开可浏览链接。
-- `source_class`、`independence_group`：来源类别与独立性分组；多条同源转述不能伪装成独立支持。
-- `source_received_at`、`integrity_status`：获取时刻与完整/缺字段/撤销等状态。
-- `usage_scope`：该证据可支持什么类型的声明和什么用户范围；范围不自动外溢。
-
-### 5.4 `observation_context`：用户当场可见性与控制
-
-- `session_id`、`match_id`：当次交互与可选场次边界；不作为长期关系标识。
-- `spoiler_mode`：严格保护、主动查看或允许更新等明确选择；必须用户可见、可改、可撤回。
-- `information_density`、`audio_mode`、`motion_mode`：信息密度、声音和动态选项；静音和低动态不应让核心状态消失。
-- `ended_at`、`control_version`：会话终态和控制版本；终态优先于任何迟到输出。
-- `last_seen_fact_version`：用户确实看过的最后事实版本；仅用于解释更正，不是放宽剧透的授权。
-
-### 5.5 `event_envelope`：跨通道投递封装
-
-- `message_id`、`message_type`、`contract_version`：唯一性、消息族和合同版本。
-- `occurred_at`、`published_at`、`sequence`：业务发生、允许分发和会话内顺序；三者分别表达不同语义。
-- `causation_id`、`correlation_id`：上游原因与本次流程关联；不能放入私人原文或可识别资料。
-- `payload`：与消息类型对应的经验证结构；禁止由客户端自由拼接。
-- `visibility`：`hidden`、`available_on_request`、`visible` 或 `suppressed`；由事实、进度、模式和终态共同裁决。
-
-## 6. 消息示例
-
-### 6.1 候选事实：只进入核对
+**回复事件**——球球的一条回复，以 `event` 类型推送，`deliveryKey` 是这次投递的去重键，客户端凭它做幂等；`presentation` 携带表情、动作与语音风格等呈现计划：
 
 ```json
 {
-  "message_id": "msg-1001",
-  "message_type": "fact.candidate",
-  "contract_version": "v1",
-  "sequence": 18,
-  "occurred_at": "2026-01-28T18:42:10Z",
-  "published_at": "2026-01-28T18:42:14Z",
-  "visibility": "hidden",
-  "payload": {
-    "claim_id": "claim-501",
-    "match_id": "match-901",
-    "knowledge_state": "candidate",
-    "reason": "awaiting_reconciliation"
+  "type": "event",
+  "event": "qiuqiu_reply",
+  "data": {
+    "text": "这球漂亮！第 63 分钟禁区外一脚远射，比分变成 2 比 1。",
+    "traceId": "trace-8f2a",
+    "source": "chat",
+    "deliveryKey": "trace-8f2a",
+    "presentation": {
+      "expression": "excited",
+      "motion": "cheer",
+      "voiceStyle": "energetic"
+    }
   }
 }
 ```
 
-### 6.2 已确认事实：仍要经过观察模式
+**独立呈现**——除了随回复一起送出的呈现计划，有些场景会单独推送一条 `presentation` 消息，例如一次播报被用户打断后，球球给出的即时反应：
 
 ```json
 {
-  "message_id": "msg-1002",
-  "message_type": "fact.confirmed",
-  "contract_version": "v1",
-  "sequence": 19,
-  "causation_id": "claim-501",
-  "occurred_at": "2026-01-28T18:43:02Z",
-  "published_at": "2026-01-28T18:43:05Z",
-  "visibility": "available_on_request",
-  "payload": {
-    "claim_id": "claim-501-v2",
-    "match_id": "match-901",
-    "knowledge_state": "confirmed",
-    "fact_version": 2
-  }
+  "type": "presentation",
+  "data": { "expression": "attentive", "motion": "lean_in" },
+  "deliveryKey": "delivery-interrupted:trace-8f2a",
+  "source": "delivery_interrupted"
 }
 ```
 
-### 6.3 更正或撤回：不能静默改写
+## 6. 顺序、去重与断线恢复
 
-```json
-{
-  "message_id": "msg-1003",
-  "message_type": "fact.retracted",
-  "contract_version": "v1",
-  "sequence": 20,
-  "occurred_at": "2026-01-28T18:46:40Z",
-  "published_at": "2026-01-28T18:46:45Z",
-  "visibility": "visible",
-  "payload": {
-    "claim_id": "claim-501-v3",
-    "supersedes": "claim-501-v2",
-    "knowledge_state": "retracted",
-    "user_explanation": "此前状态已被撤回，当前不再作为比赛结果呈现。"
-  }
-}
-```
+**去重靠键。** 每条投递都带 `deliveryKey`，客户端对同一键只呈现一次；服务端对运营写入使用幂等键记录，同一操作重试只会返回同一个已生效结果。
 
-### 6.4 会话结束：让迟到输出失效
+**断线不丢内容。** 连接恢复时，客户端不需要"猜"错过了什么：服务端按会话检查未完成的投递，把已就绪的回复以 `recovered_delivery` 来源重放，未成功的则以记录留痕，不会拼造内容补位。
 
-```json
-{
-  "message_id": "msg-1004",
-  "message_type": "session.ended",
-  "contract_version": "v1",
-  "sequence": 21,
-  "occurred_at": "2026-01-28T18:47:00Z",
-  "published_at": "2026-01-28T18:47:00Z",
-  "visibility": "visible",
-  "payload": {
-    "session_id": "session-301",
-    "control_version": 7,
-    "suppress_after_sequence": 21,
-    "user_explanation": "本场陪看已结束，不会再自动呈现内容。"
-  }
-}
-```
+**被取代的输出不再出现。** 回合可能因为新输入或会话状态变化而作废（账本中的 `turn_stale` 事件）；作废回合的内容不会在之后重新出现。
 
-### 6.5 问题说明：保留下一步，不泄露不该显示的内容
+## 7. 可见性与剧透保护
 
-```json
-{
-  "message_id": "msg-1005",
-  "message_type": "problem",
-  "contract_version": "v1",
-  "sequence": 22,
-  "visibility": "visible",
-  "payload": {
-    "code": "FACTS_STILL_RECONCILING",
-    "title": "比赛状态仍在核对中",
-    "next_actions": ["查看已确认状态", "稍后主动刷新", "结束本场"],
-    "spoiler_safe": true
-  }
-}
-```
+当前版本的可见性规则很朴素：**只有"已确认"状态的事实才进入公开读取与呈现**；待确认、冲突中的信息不参与结果性表达，撤销的事实立即退出。事实的内容字段带有一个可见性标记，默认公开。
 
-## 7. 顺序、去重与重连
+**剧透保护**（延迟观看时避免比分与关键事件被提前透露）是我们规划中的能力：设计方向是让用户对"自动更新"与"主动查看"有明确控制，确认后的信息在用户未请求时不主动剧透。该能力上线前，本节描述的"仅确认事实可见"是唯一的可见性门。
 
-```mermaid
-flowchart TD
-    A[客户端收到封装消息] --> B{会话终态或控制版本已压过它？}
-    B -->|是| X[抑制，不呈现]
-    B -->|否| C{message_id 已处理？}
-    C -->|是| D[忽略副作用，保留原确认]
-    C -->|否| E{sequence 与事实版本连续且可接受？}
-    E -->|否| F[请求最小快照，不猜缺失内容]
-    E -->|是| G[更新结构化状态]
-    G --> H{资格允许当前媒介？}
-    H -->|是| I[呈现已批准计划]
-    H -->|否| J[保持隐藏或按需可见]
-```
+## 8. 概念设计（未实现）
 
-幂等键用于用户动作：同一次结束、删除、保存选择或取消重复提交，必须返回同一已生效结果，而非制造多次声音、多个提醒或多个资料对象。
+我们在早期设计稿中推敲过一些更细的机制，它们**没有进入当前实现**，为避免误解如实列出：
 
-## 8. 可见性不是单独的“通知开关”
+- 八态的"知识状态"枚举（received / candidate / corrected / expired / rejected 等）——现行实现是上述五态。
+- 跨通道消息信封上的四级 `visibility`（hidden / available_on_request / visible / suppressed）与 `causation_id` 因果链字段——现行消息即第 5 节所列的真实形状，不携带这些字段。
+- 独立的"观察上下文"对象（含剧透模式开关、信息密度、控制版本等字段）——剧透保护仍在规划中，落地时会在本篇补充真实字段。
 
-```mermaid
-flowchart TB
-    F[事实状态] --> V{可见性裁决}
-    P[用户进度] --> V
-    M[严格保护/信息密度] --> V
-    C[静音、仅文字、低动态] --> V
-    T[会话终态与删除屏障] --> V
-    V --> H[hidden\n不向用户呈现]
-    V --> R[available_on_request\n用户主动查看]
-    V --> S[visible\n允许文字基线]
-    V --> X[suppressed\n因控制或终态失效]
-    S --> A[字幕、语音和舞台仅在各自允许时增强]
-```
+## 9. 相关公开资料
 
-严格保护下，候选、冲突和任何可推断结果的信息都保持 `hidden`；用户主动查看也只能得到已经确认且在其明确范围内可见的内容。静音改变输出媒介，不改变事实状态；结束和删除改变后续可见性与读写许可。
-
-## 9. 首轮验收场景
-
-```mermaid
-mindmap
-  root((必须覆盖))
-    事实
-      冲突来源不选边
-      确认后出现撤销
-      旧版本迟到
-    控制
-      静音时仍有文字
-      结束竞态抑制输出
-      删除阻断回写
-    重连
-      序列缺口只取快照
-      旧客户端安全降级
-    可访问
-      低动态和读屏完成任务
-```
-
-每个场景采用合成或获授权输入，记录触发序列、预期领域状态、禁止的用户可见结果和可重放步骤。事实、控制和资料权利属于硬门：一旦失败，不能用满意度、模型评分或平均延迟抵消。
-
-## 10. 与产品、POC 和工程 Evals 的交接
-
-```mermaid
-flowchart LR
-    A[本附录\n状态、字段、消息语义] --> B[42 协议设计\n跨端合同]
-    A --> C[44 技术 POC\n版本、取消、删除实验]
-    A --> D[45 产品评测\n用户可见风险场景]
-    B --> E[57 工程 Evals\n夹具、断言与回归]
-    C --> E
-    D --> E
-```
-
-附录只统一术语和可复用对象，不做用户价值、技术选型或发布决定。任何字段变更都必须同时审阅：它是否改变事实等级、可见性、用户控制、资料范围或 Evals 的可重放场景。
-
-## 11. 公开资料
-
-- [IETF, RFC 3339](https://www.rfc-editor.org/rfc/rfc3339)：时间戳表达与时区语义。
-- [IETF, RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)：实时消息通道与关闭语义。
-- [IETF, RFC 9110](https://www.rfc-editor.org/rfc/rfc9110)：状态、条件与幂等概念。
+- [IETF, RFC 6455](https://www.rfc-editor.org/rfc/rfc6455)：WebSocket 实时通道。
+- [IETF, RFC 3339](https://www.rfc-editor.org/rfc/rfc3339)：时间戳与时区语义。
 - [IETF, RFC 7807](https://www.rfc-editor.org/rfc/rfc7807)：结构化问题说明。
-- [OWASP, API Security Top 10](https://owasp.org/www-project-api-security/)：对象授权和资料暴露风险。
+
+---
+
+版本 2.0（2026-09-20）
