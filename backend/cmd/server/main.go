@@ -336,6 +336,11 @@ func main() {
 		}
 		go runObservationExpiry(cleanupCtx, observationCoordinator)
 	}
+	// 意图注册表漂移断言（openspec/changes/intent-registry）：启动即校验
+	// 注册表镜像与 router 硬编码事实一致，不一致 fail-fast。
+	if err := companion.ValidateIntentRegistry(); err != nil {
+		log.Fatalf("intent registry validation: %v", err)
+	}
 	companionAgent := companion.NewAgent(companionTools)
 	interactionLedger := interaction.Ledger(interaction.NewMemoryLedger())
 	var interactionLedgerCloser func()

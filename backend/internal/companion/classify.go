@@ -5,70 +5,55 @@ import (
 	"strings"
 )
 
+// Classify 走 intent_registry 的有序分类管道（步骤顺序即原判定顺序）；
+// 谓词函数体留在本文件不动。
 func Classify(text string) Intent {
-	trimmed := strings.TrimSpace(text)
-	if trimmed == "" {
-		return IntentUnknown
-	}
-	lower := strings.ToLower(trimmed)
-	if containsAny(lower, "把比分改成", "比分改成", "修改比分", "记录进球", "记一条进球") {
-		return IntentUnknown
-	}
-	if isPresenceCheck(lower) {
-		return IntentSmalltalk
-	}
-	if isNonLiteralMatchAside(lower) {
-		return IntentSmalltalk
-	}
-	if isScoreClaim(lower) || isEventClaim(lower) {
-		return IntentMatchClaim
-	}
-	if scoreClaimPattern.FindStringSubmatch(lower) != nil && containsAny(lower, "吗", "么", "是不是", "?", "？") {
-		return IntentMatchStatus
-	}
-	if containsAny(lower, "别说", "少说", "闭嘴", "安静", "别播报") {
-		return IntentControlCommand
-	}
-	if isMatchStatusQuestion(lower) {
-		return IntentMatchStatus
-	}
-	if isScheduleQuestion(lower) {
-		return IntentSchedule
-	}
-	if isCompanionDirectedSmalltalk(lower) {
-		return IntentSmalltalk
-	}
-	if isDisbeliefReaction(lower) {
-		return IntentEmotionReaction
-	}
-	if containsAny(lower, "哈哈", "太激动", "紧张", "上头") || containsMatchReactionCue(lower) {
-		return IntentEmotionReaction
-	}
-	if isRecentGoalScorerQuestion(lower) {
-		return IntentRecentEvent
-	}
-	if isPersonalShare(lower) {
-		return IntentPersonalShare
-	}
-	if containsAny(lower, "进球了吗", "表现", "有没有进球", "有进球") {
-		return IntentPlayerQuestion
-	}
-	if containsAny(lower, "谁助攻", "谁主攻", "助攻", "刚才谁", "上一个", "刚刚") {
-		return IntentRecentEvent
-	}
-	if containsAny(lower, "最新", "刚才", "上一球") && containsAny(lower, "进球", "破门", "比赛") {
-		return IntentRecentEvent
-	}
-	if containsAny(lower, "谁策动", "策动", "谁传的", "谁参与", "那球呢", "然后呢") {
-		return IntentFollowUp
-	}
-	if isGreeting(lower) {
-		return IntentSmalltalk
-	}
-	if isSimpleSocialTurn(lower) {
-		return IntentSmalltalk
-	}
-	return IntentUnknown
+	return intentRegistry.classify(text)
+}
+
+// matchesOperatorEditGuard：运营台改分手令不是用户回合，强制 Unknown。
+func matchesOperatorEditGuard(lower string) bool {
+	return containsAny(lower, "把比分改成", "比分改成", "修改比分", "记录进球", "记一条进球")
+}
+
+// isMatchFactClaimText：比分主张或事件主张（C2 检测入口）。
+func isMatchFactClaimText(lower string) bool {
+	return isScoreClaim(lower) || isEventClaim(lower)
+}
+
+// isQuestionShapedScoreText：比分数字 + 疑问语气 = 提问不是主张。
+func isQuestionShapedScoreText(lower string) bool {
+	return scoreClaimPattern.FindStringSubmatch(lower) != nil && containsAny(lower, "吗", "么", "是不是", "?", "？")
+}
+
+// matchesSilenceRequestCue：让球球闭嘴/少说的控制指令。
+func matchesSilenceRequestCue(lower string) bool {
+	return containsAny(lower, "别说", "少说", "闭嘴", "安静", "别播报")
+}
+
+// matchesRawEmotionCue：裸情绪词或比赛反应线索。
+func matchesRawEmotionCue(lower string) bool {
+	return containsAny(lower, "哈哈", "太激动", "紧张", "上头") || containsMatchReactionCue(lower)
+}
+
+// matchesPlayerQuestionCue：问某球员进球/表现。
+func matchesPlayerQuestionCue(lower string) bool {
+	return containsAny(lower, "进球了吗", "表现", "有没有进球", "有进球")
+}
+
+// matchesRecentEventCue：问刚发生的事（助攻/上一个/刚刚）。
+func matchesRecentEventCue(lower string) bool {
+	return containsAny(lower, "谁助攻", "谁主攻", "助攻", "刚才谁", "上一个", "刚刚")
+}
+
+// matchesRecentEventComboCue：「最新/刚才/上一球」+「进球/破门/比赛」组合。
+func matchesRecentEventComboCue(lower string) bool {
+	return containsAny(lower, "最新", "刚才", "上一球") && containsAny(lower, "进球", "破门", "比赛")
+}
+
+// matchesFollowUpCue：顺着上一条的追问。
+func matchesFollowUpCue(lower string) bool {
+	return containsAny(lower, "谁策动", "策动", "谁传的", "谁参与", "那球呢", "然后呢")
 }
 
 func isScheduleQuestion(text string) bool {

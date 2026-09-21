@@ -80,49 +80,22 @@ func (a *Agent) routerContextSummary(ctx context.Context, req AgentBoundaryReque
 }
 
 // routedTurnIntent maps the raw router intent onto the backend intents 1:1
-// (locked decision 4). match_reaction is proactive-only downstream, so a
-// routed match_reaction lands on the user-turn emotion path.
+// (locked decision 4) via the intent registry. match_reaction is
+// proactive-only downstream, so a routed match_reaction lands on the
+// user-turn emotion path (registry alias table).
 func routedTurnIntent(raw string) Intent {
-	switch strings.TrimSpace(raw) {
-	case "smalltalk":
-		return IntentSmalltalk
-	case "schedule_question":
-		return IntentSchedule
-	case "match_status_question":
-		return IntentMatchStatus
-	case "recent_event_question":
-		return IntentRecentEvent
-	case "follow_up_question":
-		return IntentFollowUp
-	case "player_question":
-		return IntentPlayerQuestion
-	case "match_fact_claim":
-		return IntentMatchClaim
-	case "match_reaction", "emotion_reaction":
-		return IntentEmotionReaction
-	case "personal_share":
-		return IntentPersonalShare
-	case "control_command":
-		return IntentControlCommand
-	default:
-		return IntentUnknown
-	}
+	return intentRegistry.routeIntent(raw)
 }
 
 // confidenceGatedIntent: intents whose deterministic path only fires at
 // confidence >= 0.7 (locked decisions 4/5) — the fact class plus the two
 // other deterministic non-chat paths (schedule lookup, control command).
 func confidenceGatedIntent(intent Intent) bool {
-	return isFactIntent(intent) || intent == IntentSchedule || intent == IntentControlCommand
+	return intentRegistry.specFor(intent).ConfidenceGated
 }
 
 // routerReplyEligibleIntent: design decision 4 — only chat-class turns (and
 // the degraded-casual unknown) consume the router's reply suggestion.
 func routerReplyEligibleIntent(intent Intent) bool {
-	switch intent {
-	case IntentSmalltalk, IntentEmotionReaction, IntentPersonalShare, IntentUnknown:
-		return true
-	default:
-		return false
-	}
+	return intentRegistry.specFor(intent).ReplyEligible
 }

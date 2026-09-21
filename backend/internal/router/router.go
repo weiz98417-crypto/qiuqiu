@@ -180,6 +180,14 @@ func RoutableIntents() []string {
 	return append([]string(nil), routableIntents...)
 }
 
+// SystemPrompt exposes the hardcoded routing prompt read-only: the intent
+// registry (openspec/changes/intent-registry) mirrors each intent definition
+// line and asserts at startup/CI that the mirror still matches — the prompt
+// itself stays byte-identical (ADR-0009 behavior lock).
+func SystemPrompt() string {
+	return routeSystemPrompt
+}
+
 // routeTurnParameters is the tool schema: the 12 backend intents (the router
 // prompt documents 坚持主张 as match_fact_claim), slots, confidence and the
 // reply suggestion used only for non-fact intents.
