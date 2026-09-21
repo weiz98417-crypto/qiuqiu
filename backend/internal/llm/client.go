@@ -1,18 +1,20 @@
 package llm
 
 import (
-	"bufio"
-	"bytes"
 	"context"
 	"encoding/json"
 	"fmt"
 	"net/http"
-	"strings"
 	"time"
 
 	"qiuqiu/internal/openaicompat"
 	"qiuqiu/internal/resilience"
 )
+
+// defaultMaxTokens 是闲聊措辞类调用的回复预算：realizer 的句数上限决定了
+// 80 token 足够。需要更大预算的调用方走 GenerateWithMessagesLimit 显式
+// 声明（如 directordraft 的结构化抽取 320）。
+const defaultMaxTokens = 80
 
 type Client struct {
 	baseURL    string
@@ -83,71 +85,6 @@ type GenerateResult struct {
 	Tokens   int
 }
 
-// StreamChunk is a token from streaming LLM output.
-type StreamChunk struct {
-	Text   string
-	Done   bool
-	Tokens int
-}
-
-// StreamWithMessages sends messages and returns a channel of streaming tokens.
-func (c *Client) StreamWithMessages(ctx context.Context, messages []Message, temperature float64) <-chan StreamChunk {
-	ch := make(chan StreamChunk, 16)
-	go func() {
-		defer close(ch)
-		if c == nil || c.breaker.Allow(time.Now().UTC()) != nil {
-			return
-		}
-		req := ChatRequest{
-			Model: c.model, Messages: messages,
-			MaxTokens: 80, Temperature: temperature, Stream: true,
-			Thinking: Thinking{Type: "disabled"},
-		}
-		body, _ := json.Marshal(req)
-		httpReq, _ := http.NewRequestWithContext(ctx, "POST", c.baseURL+"/chat/completions", bytes.NewReader(body))
-		c.setAuthHeaders(httpReq)
-		httpReq.Header.Set("Content-Type", "application/json")
-		httpReq.Header.Set("Accept", "text/event-stream")
-
-		resp, err := c.httpClient.Do(httpReq)
-		if err != nil {
-			c.breaker.Failure(time.Now().UTC())
-			return
-		}
-		defer resp.Body.Close()
-		if resp.StatusCode < 200 || resp.StatusCode >= 300 {
-			c.breaker.Failure(time.Now().UTC())
-			return
-		}
-
-		scanner := bufio.NewScanner(resp.Body)
-		for scanner.Scan() {
-			line := scanner.Text()
-			if !strings.HasPrefix(line, "data: ") {
-				continue
-			}
-			data := strings.TrimPrefix(line, "data: ")
-			if data == "[DONE]" {
-				c.breaker.Success()
-				ch <- StreamChunk{Done: true}
-				return
-			}
-			var sse struct {
-				Choices []struct {
-					Delta struct {
-						Content string `json:"content"`
-					} `json:"delta"`
-				} `json:"choices"`
-			}
-			if json.Unmarshal([]byte(data), &sse) == nil && len(sse.Choices) > 0 {
-				ch <- StreamChunk{Text: sse.Choices[0].Delta.Content}
-			}
-		}
-		c.breaker.Failure(time.Now().UTC())
-	}()
-	return ch
-}
-
 func (c *Client) CircuitState() resilience.State {
 	if c == nil {
 		return resilience.StateOpen
@@ -157,13 +94,13 @@ func (c *Client) CircuitState() resilience.State {
 
 // GenerateWithMessages sends a full message list with configurable temperature.
 func (c *Client) GenerateWithMessages(ctx context.Context, messages []Message, temperature float64) (*GenerateResult, error) {
-	return c.GenerateWithMessagesLimit(ctx, messages, temperature, 80)
+	return c.GenerateWithMessagesLimit(ctx, messages, temperature, defaultMaxTokens)
 }
 
 // GenerateWithMessagesLimit allows structured-output callers to reserve enough room for their schema.
 func (c *Client) GenerateWithMessagesLimit(ctx context.Context, messages []Message, temperature float64, maxTokens int) (*GenerateResult, error) {
 	if maxTokens <= 0 {
-		maxTokens = 80
+		maxTokens = defaultMaxTokens
 	}
 	req := ChatRequest{
 		Model:       c.model,
@@ -184,7 +121,7 @@ func (c *Client) Generate(ctx context.Context, system, prompt string) (*Generate
 			{Role: "system", Content: system},
 			{Role: "user", Content: prompt},
 		},
-		MaxTokens:   80,
+		MaxTokens:   defaultMaxTokens,
 		Temperature: 0.7,
 		Stream:      false,
 		Thinking:    Thinking{Type: "disabled"},
@@ -232,9 +169,4 @@ func (c *Client) doChat(ctx context.Context, req ChatRequest) (*GenerateResult, 
 
 func (c *Client) endpoint() openaicompat.Endpoint {
 	return openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model}
-}
-
-// setAuthHeaders 委托共享传输层的平台鉴权约定（单源实现）。
-func (c *Client) setAuthHeaders(req *http.Request) {
-	openaicompat.SetAuthHeaders(req, openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model})
 }

@@ -321,6 +321,7 @@ func (c *Client) endpoint() openaicompat.Endpoint {
 	return openaicompat.Endpoint{BaseURL: c.baseURL, APIKey: c.apiKey, Model: c.model}
 }
 
-func (c *Client) setAuthHeaders(req *http.Request) {
-	openaicompat.SetAuthHeaders(req, c.endpoint())
-}
+// 待迁标记（openspec/changes/structured-tool-seam）：本文件自抄的
+// function-call payload/响应解析（routeRequestPayload/routeResponsePayload/
+// parseRouteResult）是 internal/structured 深模块的迁移候选——迁移会字节级
+// 改动调用载荷，须带 boundary 路由 eval 重验，单独立项，本轮不动。

@@ -17,15 +17,6 @@ type AgentBoundaryRequest struct {
 	Voice               *VoiceTraceMetadata `json:"voice,omitempty"`
 }
 
-type AgentBoundaryResponse struct {
-	Intent            Intent     `json:"intent"`
-	Reply             string     `json:"reply"`
-	TraceID           string     `json:"traceId"`
-	ToolCalls         []ToolCall `json:"toolCalls"`
-	RetrievedEventIDs []string   `json:"retrievedEventIds"`
-	Reason            string     `json:"reason"`
-}
-
 func sanitizeVoiceMetadata(meta *VoiceTraceMetadata) *VoiceTraceMetadata {
 	if meta == nil {
 		return nil

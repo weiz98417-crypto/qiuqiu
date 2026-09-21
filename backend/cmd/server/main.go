@@ -22,6 +22,7 @@ import (
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/datasource"
 	"qiuqiu/internal/directordraft"
+	"qiuqiu/internal/structured"
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
@@ -182,7 +183,7 @@ func main() {
 	llmClient := newTextLLMClient(cfg)
 	ttsClient := configuredSpeechSynthesizer(cfg)
 	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
-	directorDrafts := directordraft.NewService(asrClient, directordraft.NewLLMExtractor(llmClient))
+	directorDrafts := directordraft.NewService(asrClient, directordraft.NewLLMExtractor(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)))
 	// 用户轮次信号去重器（server-residual-polish 1.3：原包级 global，改为
 	// main() 构造后经 watchDeps 显式注入）。
 	submittedUserSignals := newSignalDeduper(userSignalDedupeTTL, userSignalDedupeMaxEntries)

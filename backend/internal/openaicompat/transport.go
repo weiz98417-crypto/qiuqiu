@@ -5,8 +5,9 @@
 //
 // 韧性策略说明：传输层默认零重试——调用方自行决定策略。llm 在自己的
 // 调用序列上叠加熔断器（resilience.CircuitBreaker）；router 的单次调用
-// （ADR-0009 锁定决策）即「不开重试」的原样表达。流式（SSE）暂留 llm：
-// 只有它一个消费者，第二个消费者出现前不抽象（假设 seam 不立）。
+// （ADR-0009 锁定决策）即「不开重试」的原样表达。流式（SSE）曾以
+// StreamWithMessages 形式暂留 llm，因长期零消费方随
+// structured-tool-seam 删除；需要时从传输层重建，不必恢复此处的假设。
 package openaicompat
 
 import (
