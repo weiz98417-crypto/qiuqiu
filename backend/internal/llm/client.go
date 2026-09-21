@@ -13,7 +13,7 @@ import (
 
 // defaultMaxTokens 是闲聊措辞类调用的回复预算：realizer 的句数上限决定了
 // 80 token 足够。需要更大预算的调用方走 GenerateWithMessagesLimit 显式
-// 声明（如 directordraft 的结构化抽取 320）。
+// 声明；结构化抽取类调用走 internal/structured（自带 MaxTokens）。
 const defaultMaxTokens = 80
 
 type Client struct {

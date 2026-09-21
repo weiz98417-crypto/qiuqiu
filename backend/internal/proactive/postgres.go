@@ -35,10 +35,10 @@ func (s *PostgresStore) Append(ctx context.Context, reminder Reminder) (Reminder
 		return Reminder{}, err
 	}
 	row := s.pool.QueryRow(ctx, `
-INSERT INTO proactive_reminders (user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, status, deliver_at, expire_at)
-VALUES ($1, $2, $3, $4, $5, $6, 'pending', $7, $8)
+INSERT INTO proactive_reminders (user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, timezone, status, deliver_at, expire_at)
+VALUES ($1, $2, $3, $4, $5, $6, $7, 'pending', $8, $9)
 RETURNING id`, reminder.UserID, reminder.MatchID, reminder.HomeTeam, reminder.AwayTeam,
-		reminder.KickoffAt, reminder.LeadMinutes, reminder.DeliverAt, reminder.ExpireAt)
+		reminder.KickoffAt, reminder.LeadMinutes, reminder.Timezone, reminder.DeliverAt, reminder.ExpireAt)
 	var id int64
 	if err := row.Scan(&id); err != nil {
 		return Reminder{}, fmt.Errorf("reminder insert: %w", err)
@@ -49,7 +49,7 @@ RETURNING id`, reminder.UserID, reminder.MatchID, reminder.HomeTeam, reminder.Aw
 
 func (s *PostgresStore) PendingForUser(ctx context.Context, userID string) ([]Reminder, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, status, deliver_at, expire_at, created_at
+SELECT id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, timezone, status, deliver_at, expire_at, created_at
 FROM proactive_reminders
 WHERE user_id = $1 AND status = 'pending'
 ORDER BY deliver_at`, userID)
@@ -62,7 +62,7 @@ ORDER BY deliver_at`, userID)
 
 func (s *PostgresStore) DuePending(ctx context.Context, now time.Time) ([]Reminder, error) {
 	rows, err := s.pool.Query(ctx, `
-SELECT id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, status, deliver_at, expire_at, created_at
+SELECT id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, timezone, status, deliver_at, expire_at, created_at
 FROM proactive_reminders
 WHERE status = 'pending' AND deliver_at <= $1 AND expire_at > $1`, now)
 	if err != nil {
@@ -73,7 +73,9 @@ WHERE status = 'pending' AND deliver_at <= $1 AND expire_at > $1`, now)
 }
 
 func (s *PostgresStore) MarkDelivered(ctx context.Context, id string) error {
-	tag, err := s.pool.Exec(ctx, `UPDATE proactive_reminders SET status = 'delivered' WHERE id = $1`, numericID(id))
+	// pending 守卫：与 SweepSuppressed 竞态时（提醒已被翻 suppressed 并
+	// 转为"错过"素材），迟到送达不得把状态改回 delivered（ADR-0015）。
+	tag, err := s.pool.Exec(ctx, `UPDATE proactive_reminders SET status = 'delivered' WHERE id = $1 AND status = 'pending'`, numericID(id))
 	if err != nil {
 		return fmt.Errorf("reminder mark delivered: %w", err)
 	}
@@ -87,7 +89,7 @@ func (s *PostgresStore) SweepSuppressed(ctx context.Context, now time.Time) ([]R
 	rows, err := s.pool.Query(ctx, `
 UPDATE proactive_reminders SET status = 'suppressed'
 WHERE status = 'pending' AND expire_at <= $1
-RETURNING id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, status, deliver_at, expire_at, created_at`, now)
+RETURNING id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, timezone, status, deliver_at, expire_at, created_at`, now)
 	if err != nil {
 		return nil, fmt.Errorf("reminder sweep: %w", err)
 	}
@@ -108,7 +110,7 @@ func scanReminders(rows pgx.Rows) ([]Reminder, error) {
 		var id int64
 		var status string
 		if err := rows.Scan(&id, &reminder.UserID, &reminder.MatchID, &reminder.HomeTeam, &reminder.AwayTeam,
-			&reminder.KickoffAt, &reminder.LeadMinutes, &status, &reminder.DeliverAt, &reminder.ExpireAt, &reminder.CreatedAt); err != nil {
+			&reminder.KickoffAt, &reminder.LeadMinutes, &reminder.Timezone, &status, &reminder.DeliverAt, &reminder.ExpireAt, &reminder.CreatedAt); err != nil {
 			return nil, fmt.Errorf("reminder scan: %w", err)
 		}
 		reminder.ID = fmt.Sprintf("rem-%d", id)

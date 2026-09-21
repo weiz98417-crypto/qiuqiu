@@ -64,6 +64,7 @@ func (a *Agent) realizeWithMemory(ctx context.Context, intent Intent, userID, in
 // 沟通动作是 recall，一句为限、允许一个问句；不进 director 存储。
 func factCallbackDecision() relationship.Decision {
 	return relationship.Decision{
+		Actions: []relationship.CommunicationAct{relationship.ActRecall},
 		Speech: &relationship.SpeechPlan{
 			Content: relationship.ContentPolicy{
 				Goal:            "顺着长期记忆自然补一句衔接，不重复事实本身，不引入新赛况",
@@ -121,6 +122,7 @@ func (a *Agent) appendFactMemoryCallback(ctx context.Context, req AgentBoundaryR
 // 的沟通动作（recalling）本就是回访逻辑的确定性决定，不进 director 存储。
 func threadRecoveryDecision() relationship.Decision {
 	return relationship.Decision{
+		Actions: []relationship.CommunicationAct{relationship.ActRecall},
 		Speech: &relationship.SpeechPlan{
 			Content: relationship.ContentPolicy{
 				Goal:            "把之前没答完的话题自然接回来，保留底稿里的事实与答案",

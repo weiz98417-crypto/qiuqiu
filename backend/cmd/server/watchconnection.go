@@ -304,7 +304,7 @@ func (c *watchConnection) submitDueReminders(userID string) {
 		if !reminder.Due(now) {
 			continue
 		}
-		reply := proactive.PreMatchReminderReply(reminder, time.Local)
+		reply := proactive.PreMatchReminderReply(reminder)
 		trace := companion.Trace{
 			// trace ID 即提醒 ID 的确定性投影：同一条提醒的重试投递共用
 			// 一条 trace（投递去重靠 DeliveryKey，不靠 ID）。

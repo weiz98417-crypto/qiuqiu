@@ -18,7 +18,7 @@
 
 ## 事实应答补充语
 
-- 插入点：意图 handler 之后、fact_language 检查与 recentPhraseHashes 之前——补充语随最终 reply 进 applyDecision 与账本。
+- 插入点：意图 handler 之后、fact_language 检查之后、recentPhraseHashes 之前——补充语随最终 reply 进 applyDecision 与账本。
 - `appendFactMemoryCallback`：仅 fact 意图 + recall 非空；衔接语单独过 guard（`factCallbackDecision`：一句为限、允许一个问句、BanterScope=none），guard 的锚源放宽到 `reply + memoryContext`（衔接语里的球员/球队来自 recall 是合法来源）；拒绝即整句丢弃。
 - 事实本体措辞归确定性路径所有（ADR-0009 design decision 4 不动摇）：追加的是句子，不改写事实句。
 

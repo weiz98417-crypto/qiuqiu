@@ -88,9 +88,50 @@ func TestMemoryStoreAppendDueSweep(t *testing.T) {
 
 func TestPreMatchReminderReplyMentionsTeamsAndKickoff(t *testing.T) {
 	kickoff := time.Date(2026, 9, 22, 20, 0, 0, 0, time.UTC)
-	reminder, _ := NewReminder(Reminder{UserID: "u", HomeTeam: "西班牙", AwayTeam: "德国", KickoffAt: kickoff})
-	reply := PreMatchReminderReply(reminder, time.UTC)
+	reminder, _ := NewReminder(Reminder{UserID: "u", HomeTeam: "西班牙", AwayTeam: "德国", KickoffAt: kickoff, Timezone: "UTC"})
+	reply := PreMatchReminderReply(reminder)
 	if !strings.Contains(reply, "西班牙") || !strings.Contains(reply, "德国") || !strings.Contains(reply, "20:00") {
 		t.Fatalf("reply = %q", reply)
+	}
+}
+
+func TestMemoryStoreMarkDeliveredRespectsPendingGuard(t *testing.T) {
+	store := NewMemoryStore()
+	ctx := context.Background()
+	now := time.Date(2026, 9, 22, 21, 0, 0, 0, time.UTC)
+	reminder, _ := store.Append(ctx, Reminder{UserID: "u", KickoffAt: now.Add(-30 * time.Minute), CreatedAt: now})
+	// 竞态窗口：清扫先把它翻 suppressed，迟到的送达不得改回 delivered
+	//（ADR-0015 错过即静默）。
+	if _, err := store.SweepSuppressed(ctx, now); err != nil {
+		t.Fatalf("SweepSuppressed: %v", err)
+	}
+	if err := store.MarkDelivered(ctx, reminder.ID); err == nil {
+		t.Fatal("MarkDelivered on a suppressed reminder must fail")
+	}
+}
+
+func TestSweepLoopMaterializesAndStops(t *testing.T) {
+	store := NewMemoryStore()
+	ctx, cancel := context.WithCancel(context.Background())
+	defer cancel()
+	now := time.Now().UTC()
+	if _, err := store.Append(ctx, Reminder{
+		UserID: "user-1", MatchID: "m1", HomeTeam: "西班牙", AwayTeam: "德国",
+		KickoffAt: now.Add(-time.Hour), CreatedAt: now,
+	}); err != nil {
+		t.Fatalf("Append: %v", err)
+	}
+	materialized := make(chan Reminder, 1)
+	go SweepLoop(ctx, store, func(_ context.Context, reminder Reminder) {
+		materialized <- reminder
+		cancel()
+	}, 10*time.Millisecond)
+	select {
+	case reminder := <-materialized:
+		if reminder.HomeTeam != "西班牙" || reminder.Status != StatusSuppressed {
+			t.Fatalf("materialized = %+v", reminder)
+		}
+	case <-time.After(3 * time.Second):
+		t.Fatal("SweepLoop never materialized the expired reminder")
 	}
 }

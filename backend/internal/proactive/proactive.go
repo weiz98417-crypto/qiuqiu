@@ -46,6 +46,9 @@ type Reminder struct {
 	AwayTeam    string
 	KickoffAt   time.Time
 	LeadMinutes int
+	// Timezone 是请求方的 IANA 时区（user_speech 附带）；开球时间展示用，
+	// 空则退服务器本地时区。
+	Timezone    string
 	Status      ReminderStatus
 	DeliverAt   time.Time
 	ExpireAt    time.Time
@@ -82,12 +85,16 @@ func (r Reminder) Due(now time.Time) bool {
 }
 
 // PreMatchReminderReply 是提醒回合的确定性文本：事实（对阵/开球时间）由
-// 提醒簿拥有，不LLM 化——这是「快、准、不打扰」的一类回合。
-func PreMatchReminderReply(r Reminder, location *time.Location) string {
-	when := r.KickoffAt
-	if location != nil {
-		when = r.KickoffAt.In(location)
+// 提醒簿拥有，不LLM 化——这是「快、准、不打扰」的一类回合。开球时间按
+// 请求方时区展示，空/非法时区退服务器本地。
+func PreMatchReminderReply(r Reminder) string {
+	location := time.Local
+	if r.Timezone != "" {
+		if loaded, err := time.LoadLocation(r.Timezone); err == nil {
+			location = loaded
+		}
 	}
+	when := r.KickoffAt.In(location)
 	return fmt.Sprintf("快开球了，%s 对 %s，%s开球。我在这儿陪你。", r.HomeTeam, r.AwayTeam, when.Format("15:04"))
 }
 
@@ -168,7 +175,9 @@ func (s *MemoryStore) MarkDelivered(_ context.Context, id string) error {
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	for i := range s.reminders {
-		if s.reminders[i].ID == id {
+		// pending 守卫：已被清扫翻 suppressed 的提醒不得改回 delivered
+		//（ADR-0015 错过即静默）。
+		if s.reminders[i].ID == id && s.reminders[i].Status == StatusPending {
 			s.reminders[i].Status = StatusDelivered
 			return nil
 		}

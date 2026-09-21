@@ -21,3 +21,5 @@
 
 - 换 OpenAI 兼容平台只改配置；平台鉴权约定变更只改 `openaicompat` 一处。
 - 新增表驱动鉴权分支测试（transport_test.go），llm/router/asr/tts 既有测试作为行为等价回归网。
+
+> 2026-09 修订（structured-tool-seam）：llm 的流式半成品 StreamWithMessages 因长期零消费方删除，"SSE 暂留 llm"的假设随之撤销——需要流式时从传输层重建；invopop/jsonschema 之上的 structured.Extract 成为 openaicompat 的第三个消费者。

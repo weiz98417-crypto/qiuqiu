@@ -328,12 +328,23 @@ func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
 		h.reply = "赛程源还没给我这场几点开球，等我知道了，你再叫我一声。"
 		return h, nil
 	}
+	// 查重：同一场比赛已有在途提醒就不重复落簿（重复投递 = 重复打扰）。
+	if pendings, err := a.reminders.PendingForUser(ctx, req.UserID); err == nil {
+		for _, existing := range pendings {
+			if existing.MatchID == req.MatchID && teamNamesAlign(existing.HomeTeam, existing.AwayTeam, snapshot.HomeTeam, snapshot.AwayTeam) {
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "reminder.duplicate", Args: map[string]string{"reminderId": existing.ID}})
+				h.reply = "记着呢，开球前我会叫你，放心。"
+				return h, nil
+			}
+		}
+	}
 	reminder, err := a.reminders.Append(ctx, proactive.Reminder{
 		UserID:    req.UserID,
 		MatchID:   req.MatchID,
 		HomeTeam:  snapshot.HomeTeam,
 		AwayTeam:  snapshot.AwayTeam,
 		KickoffAt: kickoff,
+		Timezone:  req.Timezone,
 		CreatedAt: req.Now,
 	})
 	if err != nil {

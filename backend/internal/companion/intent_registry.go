@@ -225,14 +225,19 @@ func (r *IntentRegistry) classify(text string) Intent {
 }
 
 // specFor 返回意图规格；未知意图防御性落 Unknown 规格（启动校验保证
-// 注册表本身完备）。
+// Unknown spec 存在，这里不递归）。
 func (r *IntentRegistry) specFor(intent Intent) IntentSpec {
 	for _, spec := range r.specs {
 		if spec.Intent == intent {
 			return spec
 		}
 	}
-	return r.specFor(IntentUnknown)
+	for _, spec := range r.specs {
+		if spec.Intent == IntentUnknown {
+			return spec
+		}
+	}
+	return IntentSpec{Intent: IntentUnknown, Handle: (*Agent).handleUnknownTurn}
 }
 
 // routeIntent 把 router 的原始枚举映射到后端意图（locked decision 4 的
@@ -303,6 +308,16 @@ func (r *IntentRegistry) Validate() error {
 		}
 		if step.Match == nil {
 			return fmt.Errorf("classify step %q has no matcher", step.Name)
+		}
+	}
+	// ADR-0009 locked decisions 4/5 的不变式：事实类必须置信门控；且
+	// Unknown spec 必须存在（specFor 的防御性兜底依赖它）。
+	if unknownSeen := seenIntent[IntentUnknown]; !unknownSeen {
+		return fmt.Errorf("intent registry is missing the %q spec", IntentUnknown)
+	}
+	for _, spec := range r.specs {
+		if spec.IsFact && !spec.ConfidenceGated {
+			return fmt.Errorf("intent %q is fact-class but not confidence-gated (ADR-0009)", spec.Intent)
 		}
 	}
 	declared := r.routableIntentsInOrder()
