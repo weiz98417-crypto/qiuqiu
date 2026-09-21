@@ -1949,3 +1949,28 @@ func stableTraceID(userID, matchID, signalID string) string {
 	digest := sha256.Sum256([]byte(strings.TrimSpace(userID) + "\x00" + strings.TrimSpace(matchID) + "\x00" + strings.TrimSpace(signalID)))
 	return "trace_" + hex.EncodeToString(digest[:16])
 }
+
+// RecordBackchannel 落微反应审计（ADR-0016）：trace + Interaction Ledger
+// 各一条——伴随反应不过 C2 引用码门、不占回合槽，但全程可审计。
+func (a *Agent) RecordBackchannel(ctx context.Context, userID, matchID, eventType, phrase string, now time.Time) error {
+	if a == nil || a.tools == nil {
+		return nil
+	}
+	trace := Trace{
+		ID:      fmt.Sprintf("backchannel-%s-%d", matchID, now.UnixMilli()),
+		MatchID: matchID, UserID: userID,
+		Input: eventType, Intent: IntentMatchReaction,
+		Reason: "backchannel", CreatedAt: now, Output: phrase,
+		ToolCalls: []ToolCall{{Name: "backchannel.emit", Args: map[string]string{"eventType": eventType}}},
+	}
+	if err := a.tools.WriteTrace(ctx, trace); err != nil {
+		return err
+	}
+	if a.interactions != nil {
+		_, _ = a.interactions.Append(ctx, interaction.Event{
+			Kind: interaction.KindBackchannel, UserID: userID, MatchID: matchID,
+			TraceID: trace.ID, Phrase: phrase, CreatedAt: now,
+		})
+	}
+	return nil
+}

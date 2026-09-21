@@ -8,9 +8,9 @@ package main
 
 import (
 	"context"
+	"encoding/base64"
 	"encoding/json"
 	"errors"
-	"encoding/base64"
 	"fmt"
 	"log"
 	"net/http"
@@ -21,6 +21,7 @@ import (
 
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/auth"
+	"qiuqiu/internal/backchannel"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
@@ -50,6 +51,8 @@ type watchDeps struct {
 	reminders     proactive.Store
 	// characterSettings 是人格互动规范的持久化状态（三入口一状态）。
 	characterSettings *relationship.CharacterSettings
+	// backchannelState 是伴随反应的连接内限频计数（ADR-0016）。
+	backchannelState backchannel.State
 	// submittedSignals 是用户轮次的信号去重器（server-residual-polish 1.3：
 	// 此前是包级 global，现由 main() 构造注入）。
 	submittedSignals *signalDeduper
@@ -70,20 +73,23 @@ type watchConnection struct {
 	matchEvents  <-chan matchstate.MatchEvent
 	clockUpdates <-chan matchstate.MatchClock
 
+	// backchannelState 是伴随反应的连接内限频计数（ADR-0016）。
+	backchannelState backchannel.State
+
 	connectionCtx    context.Context
 	connectionCancel context.CancelFunc
 
-	watchSession    *conversation.WatchSession
-	deliveryTracker *replyDeliveryTracker
-	responseDelivery *conversation.ResponseDeliveryService
-	firstMeeting    *conversation.FirstMeetingCoordinator
-	scheduler       *conversation.Scheduler
-	scheduleLookups scheduleLookupLifecycle
-	proactiveGate   *conversation.ProactiveGate
+	watchSession         *conversation.WatchSession
+	deliveryTracker      *replyDeliveryTracker
+	responseDelivery     *conversation.ResponseDeliveryService
+	firstMeeting         *conversation.FirstMeetingCoordinator
+	scheduler            *conversation.Scheduler
+	scheduleLookups      scheduleLookupLifecycle
+	proactiveGate        *conversation.ProactiveGate
 	interruptedReactions *interruptedReactionGuard
 
-	userSpeaking      atomic.Bool
-	userTurnActive    atomic.Bool
+	userSpeaking   atomic.Bool
+	userTurnActive atomic.Bool
 	// Talkativeness tier (C2 drift fix): the client sends the 话痨程度
 	// setting on every user_speech payload; the latest tier on this
 	// connection feeds the proactive gate (quiet restricts), the policy
@@ -362,6 +368,41 @@ func (c *watchConnection) startReminderTicker() {
 	}()
 }
 
+// maybeBackchannel 是伴随反应通道（openspec/changes/backchannel，ADR-0016）：
+// 白名单事件的微反应直发（绕回合调度、不过 C2 门），文字气泡 + 现有表演
+// 槽位，失败即弃。审计走 trace + 账本（agent.RecordBackchannel）。
+func (c *watchConnection) maybeBackchannel(ev matchstate.MatchEvent) {
+	verdict, ok := backchannel.Decide(&c.backchannelState, ev.EventType, ev.Period, backchannelTalkativeness(&c.userTalkativeness), c.userSpeaking.Load() || c.userTurnActive.Load(), time.Now().UTC())
+	if !ok {
+		return
+	}
+	now := time.Now().UTC()
+	c.writer.SendJSON(map[string]interface{}{
+		"type":  "event",
+		"event": "qiuqiu_reply",
+		"data": map[string]interface{}{
+			"text":    verdict.Phrase,
+			"traceId": "backchannel-" + ev.ID,
+			"source":  "backchannel",
+			"presentation": map[string]interface{}{
+				"expression": verdict.Expression,
+				"motion":     verdict.Motion,
+			},
+		},
+	})
+	auditCtx, auditCancel := context.WithTimeout(c.connectionCtx, 3*time.Second)
+	defer auditCancel()
+	if err := c.deps.agent.RecordBackchannel(auditCtx, c.identity.Get(), c.matchID, verdict.EventType, verdict.Phrase, now); err != nil {
+		log.Printf("backchannel audit error: %v", err)
+	}
+}
+
+// backchannelTalkativeness 归一连接内的安静档读取。
+func backchannelTalkativeness(store interface{ Load() any }) string {
+	tier, _ := store.Load().(string)
+	return tier
+}
+
 // startMessagePumps 装配语音转写会话并拉起两条协程：比赛事件外推与 15-case
 // 读循环。两者都随 connectionCtx 收敛，写出口共用同一条 wsWriter。
 func (c *watchConnection) startMessagePumps() {
@@ -437,6 +478,7 @@ func (c *watchConnection) pumpMatchEvents() {
 				if followUpCount > 0 {
 					continue
 				}
+				c.maybeBackchannel(ev)
 				userID := c.identity.Get()
 				if userID == "" {
 					userID = c.identity.Wait(c.connectionCtx)

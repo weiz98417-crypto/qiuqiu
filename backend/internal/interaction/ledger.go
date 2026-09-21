@@ -23,6 +23,7 @@ const (
 	KindMediaDelivery  Kind = "media_delivery"
 	KindPlaybackResult Kind = "playback_result"
 	KindTurnStale      Kind = "turn_stale"
+	KindBackchannel    Kind = "backchannel"
 )
 
 var (
@@ -47,6 +48,7 @@ type Event struct {
 	DeliveryReason string                         `json:"deliveryReason,omitempty"`
 	MediaType      string                         `json:"mediaType,omitempty"`
 	PlaybackState  string                         `json:"playbackState,omitempty"`
+	Phrase         string                         `json:"phrase,omitempty"`
 	InputText      string                         `json:"inputText,omitempty"`
 	OutputText     string                         `json:"outputText,omitempty"`
 	Decision       *relationship.Decision         `json:"decision,omitempty"`
