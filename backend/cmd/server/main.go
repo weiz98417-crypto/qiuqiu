@@ -380,6 +380,21 @@ func main() {
 		defer postgresSubs.Close()
 		subscriptionStore = postgresSubs
 	}
+	// 人格互动规范（openspec/changes/character-settings）：三入口一状态。
+	var characterSettings *relationship.CharacterSettings
+	if cfg.DatabaseURL != "" {
+		postgresSettings, err := relationship.OpenPostgresCharacterSettingStore(context.Background(), cfg.DatabaseURL)
+		if err != nil {
+			log.Fatalf("postgres character settings: %v", err)
+		}
+		defer postgresSettings.Close()
+		characterSettings, err = relationship.NewCharacterSettings(postgresSettings)
+		if err != nil {
+			log.Fatalf("character settings: %v", err)
+		}
+	} else {
+		characterSettings, _ = relationship.NewCharacterSettings(relationship.NewMemoryCharacterSettingStore())
+	}
 	companionAgent := companion.NewAgent(companionTools).WithReminders(reminderStore).WithSubscriptions(subscriptionStore).WithKnowledge(knowledgeLibrary)
 	interactionLedger := interaction.Ledger(interaction.NewMemoryLedger())
 	var interactionLedgerCloser func()
@@ -536,6 +551,7 @@ func main() {
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
+	mux.HandleFunc("/api/me/character", handleCharacterAPI(sessionManager, cfg, characterSettings))
 	// C3 球球懂我: the user-facing portrait page (read/edit/forget) on the
 	// privacy API's transport (session bearer auth, account-scoped).
 	mux.HandleFunc("/api/me/portrait", handlePortraitAPI(sessionManager, cfg, memoryQueue))

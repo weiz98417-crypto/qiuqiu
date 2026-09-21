@@ -48,6 +48,8 @@ type watchDeps struct {
 	interruptions *interruptionRing
 	sessions      *auth.Manager
 	reminders     proactive.Store
+	// characterSettings 是人格互动规范的持久化状态（三入口一状态）。
+	characterSettings *relationship.CharacterSettings
 	// submittedSignals 是用户轮次的信号去重器（server-residual-polish 1.3：
 	// 此前是包级 global，现由 main() 构造注入）。
 	submittedSignals *signalDeduper
@@ -697,6 +699,23 @@ func (c *watchConnection) readMessages() {
 				}
 			}
 			c.writer.SendJSON(map[string]interface{}{"type": "talkativeness_ack", "tier": tier, "persisted": persisted})
+		case "set_character":
+			// 三入口一状态（openspec/changes/character-settings）：改互动
+			// 规范即时持久化并 ack，与 set_talkativeness 同一模式。
+			setUserID := c.identity.Get()
+			field := strings.TrimSpace(str(req, "field"))
+			value := strings.TrimSpace(str(req, "value"))
+			persisted := false
+			if c.deps.characterSettings != nil {
+				settingsCtx, settingsCancel := context.WithTimeout(c.connectionCtx, 3*time.Second)
+				if _, err := c.deps.characterSettings.Set(settingsCtx, setUserID, field, value); err != nil {
+					log.Printf("character settings set for %q: %v", setUserID, err)
+				} else {
+					persisted = true
+				}
+				settingsCancel()
+			}
+			c.writer.SendJSON(map[string]interface{}{"type": "character_ack", "field": field, "value": value, "persisted": persisted})
 		case "user_activity":
 			speaking := str(req, "state") == "speaking"
 			c.userSpeaking.Store(speaking)
