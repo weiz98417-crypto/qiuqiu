@@ -16,7 +16,16 @@ func TestVersionedEvalCasesPass(t *testing.T) {
 	if len(cases) < 8 {
 		t.Fatalf("expected a meaningful eval corpus, got %d cases", len(cases))
 	}
-	report := Run(context.Background(), cases)
+	// router_net 真网档需要真 key 且有费用/抖动，与 CLI -suite all 同语义：
+	// 默认门禁不跑，显式点名才执行。
+	var gated []Case
+	for _, evalCase := range cases {
+		if evalCase.Suite == "router_net" {
+			continue
+		}
+		gated = append(gated, evalCase)
+	}
+	report := Run(context.Background(), gated)
 	if report.Scorecard.FailedCases != 0 {
 		t.Fatalf("eval report has failures: %+v", report)
 	}
