@@ -511,6 +511,7 @@ func main() {
 		registrar.SetEventObserver(func(event matchstate.MatchEvent) error {
 			if event.EventType == "match_end" || event.EventType == "fulltime" {
 				memoryQueue.NotifyMatchEnded(event.MatchID)
+				scheduleFulltimeReviewReminders(memoryCtx, reminderStore, memoryQueue, matchStore, event)
 			}
 			observationCtx, observationCancel := context.WithTimeout(cleanupCtx, 5*time.Second)
 			defer observationCancel()

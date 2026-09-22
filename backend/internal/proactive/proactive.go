@@ -55,6 +55,10 @@ type Reminder struct {
 	Timezone string
 	// SubscriptionID 非空 = 订阅展开产物（引用码走 subscription:<id>）。
 	SubscriptionID string
+	// Kind 区分提醒类别（proactive-match-nodes）：空 = 赛前提醒（默认），
+	// fulltime_review = 终场复盘邀约（DeliverAt/ExpireAt 从 KickoffAt 即终场
+	// 时刻正推，见 NewReminder）。
+	Kind           string
 	Status         ReminderStatus
 	DeliverAt      time.Time
 	ExpireAt       time.Time
@@ -78,11 +82,16 @@ func NewReminder(r Reminder) (Reminder, error) {
 	if r.KickoffAt.IsZero() {
 		return Reminder{}, fmt.Errorf("reminder needs a kickoff time")
 	}
-	if r.LeadMinutes <= 0 {
+	if r.LeadMinutes <= 0 && r.Kind != KindFulltimeReview {
 		r.LeadMinutes = DefaultLeadMinutes
 	}
 	if r.Status == "" {
 		r.Status = StatusPending
+	}
+	if r.Kind == KindFulltimeReview {
+		r.DeliverAt = r.KickoffAt.Add(ReviewDeliverAfter)
+		r.ExpireAt = r.KickoffAt.Add(ReviewExpireAfter)
+		return r, nil
 	}
 	r.DeliverAt = r.KickoffAt.Add(-time.Duration(r.LeadMinutes) * time.Minute)
 	r.ExpireAt = r.KickoffAt.Add(ExpireAfterKickoff)

@@ -38,10 +38,11 @@ type Agent struct {
 	subscriptions              proactive.SubscriptionStore
 	knowledge                  *knowledge.Library
 	triggerStates              *knowledgeTriggerStates
+	comfortSent                *goalComfortOnce
 }
 
 func NewAgent(tools MemoryTools) *Agent {
-	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger(), triggerStates: newKnowledgeTriggerStates()}
+	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger(), triggerStates: newKnowledgeTriggerStates(), comfortSent: newGoalComfortOnce()}
 }
 
 // WithMemories attaches the ADR-0006 memory seam (async observations, recall,
@@ -1232,9 +1233,18 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		if citation != "" && decision.ID != "" {
 			decision.ReasonCodes = append(decision.ReasonCodes, "proactive_citation:"+citation)
 		}
-		reply = req.Event.ProactiveText
-		if strings.TrimSpace(reply) == "" {
-			reply = FallbackProactiveText(req.Event)
+		// 赛事节奏节点（proactive-match-nodes）：中场=确定性半场摘要底稿
+		// （realizer 在其上织写闲聊）；进球=丢球方命中订阅球队时前置安慰
+		// 前缀（ADR-0019 失球安慰留尾清偿，每场 ≤1）。
+		var goalComfort string
+		if req.Event.EventType == "halftime" {
+			reply = HalftimeBreakReply(req.Snapshot)
+		} else {
+			goalComfort = a.goalComfortPrefix(req.UserID, req.Event, req.Snapshot, req.Talkativeness, &trace)
+			reply = req.Event.ProactiveText
+			if strings.TrimSpace(reply) == "" {
+				reply = FallbackProactiveText(req.Event)
+			}
 		}
 		// 判罚时刻知识附句（knowledge-event-triggers）：过门命中条目——
 		// quote 作为织写锚进 RequiredAnchors（硬指令原样携带），织写没带住
@@ -1262,6 +1272,9 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		if knowledgeEntry != nil && !knowledgeQuoteCarried(reply, knowledgeEntry) {
 			reply += knowledgeDeterministicAppendix(knowledgeEntry)
 			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "knowledge.trigger_fallback", Args: map[string]string{"id": knowledgeEntry.ID, "mode": "deterministic_appendix"}})
+		}
+		if goalComfort != "" {
+			reply = goalComfort + reply
 		}
 	} else if trace.Reason != ReasonCriticalFactRefreshLimit {
 		trace.Reason = ReasonMatchObservedSilent

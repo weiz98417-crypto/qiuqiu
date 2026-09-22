@@ -1002,6 +1002,27 @@ func (q *Queue) RecentEndedMatchFor(userID string, ended []string) string {
 	return ""
 }
 
+// UsersForEndedMatch lists the users whose attribution window contains the
+// given match (proactive-match-nodes: the fulltime review reminder is only
+// created for users who actually watched the match).
+func (q *Queue) UsersForEndedMatch(matchID string) []string {
+	if q == nil || strings.TrimSpace(matchID) == "" {
+		return nil
+	}
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	users := make([]string, 0, len(q.userMatches))
+	for userID, matches := range q.userMatches {
+		for _, watched := range matches {
+			if watched == matchID {
+				users = append(users, userID)
+				break
+			}
+		}
+	}
+	return users
+}
+
 // ActiveUsers lists users with observations since their last reflection.
 func (q *Queue) ActiveUsers() []string {
 	if q == nil {
