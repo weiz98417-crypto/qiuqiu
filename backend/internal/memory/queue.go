@@ -7,6 +7,8 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"math"
+	"sort"
 	"strings"
 	"sync"
 	"sync/atomic"
@@ -106,6 +108,9 @@ type Queue struct {
 	// 弃权即现状行为。
 	vectorStore VectorMomentStore
 	embedder    Embedder
+	// 召回时序衰减（memory-recall-fusion）：向量路按 score×exp(-age/τ) 重
+	// 排，0=关（默认）。
+	recallDecayDays float64
 
 	items        chan enqueueItem
 	dropped      atomic.Int64
@@ -142,6 +147,17 @@ func WithBacklogBatch(size int) QueueOption {
 	return func(q *Queue) {
 		if size >= 1 {
 			q.backlogBatch = size
+		}
+	}
+}
+
+// WithRecallDecay 启用向量路的时序衰减重排（memory-recall-fusion）：
+// weight = cosine × exp(-age/τ)，days≤0 表示关闭。只影响向量路内部顺序，
+// adapter 路保序不动。
+func WithRecallDecay(days float64) QueueOption {
+	return func(q *Queue) {
+		if days > 0 {
+			q.recallDecayDays = days
 		}
 	}
 }
@@ -357,29 +373,51 @@ func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
 		adapterPath = q.adapter.Recall(ctx, query)
 	}
 	var vectorPath []Recall
+	var contentPath []Recall
 	if vectorEnabled && strings.TrimSpace(query.Focus) != "" {
+		// 第三腿（memory-recall-fusion）：Focus 原文作为内容精确通道，独立
+		// 于 embedding——嵌不出来的稀有实体由它兜住，embedding 故障不影响
+		// 本腿。模式转义在 store 侧（likeEscape）。
+		contentCtx, contentCancel := context.WithTimeout(ctx, vectorQueryTimeout)
+		if content, err := q.vectorStore.SearchByContent(contentCtx, query.UserID, query.Focus, limit); err != nil {
+			log.Printf("memory: content recall degraded: %v", err)
+		} else {
+			contentPath = content
+		}
+		contentCancel()
 		vecCtx, cancel := context.WithTimeout(ctx, vectorQueryTimeout)
 		defer cancel()
 		if vector, err := q.embedder.Embed(vecCtx, query.Focus); err == nil {
 			if vectors, err := q.vectorStore.Search(vecCtx, query.UserID, vector, limit); err != nil {
 				log.Printf("memory: vector recall search degraded: %v", err)
 			} else {
-				vectorPath = vectors
+				vectorPath = q.applyRecencyDecay(vectors)
 			}
 		} else {
 			log.Printf("memory: vector recall embed degraded: %v", err)
 		}
 	}
-	// 双路各取一半配额（adapter 保序在前）、按 content 去重；向量路弃权
-	// 或空手时 adapter 独享全量配额——弃权=现状，配额不得回退。
+	// 双路各取一半配额（adapter 保序在前）、按 content 去重；向量/内容路
+	// 弃权或空手时 adapter 独享全量配额——弃权=现状，配额不得回退。
+	// 内容精确命中置顶在向量段前部（同占 limit/2 的向量段配额）。
 	seen := make(map[string]bool, limit)
 	merged := make([]Recall, 0, limit)
 	adapterQuota := limit
-	if len(vectorPath) > 0 {
+	if len(vectorPath) > 0 || len(contentPath) > 0 {
 		adapterQuota = limit - limit/2
 	}
 	for _, recall := range adapterPath {
 		if len(merged) >= adapterQuota {
+			break
+		}
+		if seen[recall.Content] {
+			continue
+		}
+		seen[recall.Content] = true
+		merged = append(merged, recall)
+	}
+	for _, recall := range contentPath {
+		if len(merged) >= limit {
 			break
 		}
 		if seen[recall.Content] {
@@ -399,6 +437,34 @@ func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
 		merged = append(merged, recall)
 	}
 	return merged
+}
+
+// applyRecencyDecay 重排向量路召回：weight = score × exp(-age/τ)。τ 由
+// WithRecallDecay 配置（天），0=关。只动顺序，不丢条目。
+func (q *Queue) applyRecencyDecay(recalls []Recall) []Recall {
+	if len(recalls) < 2 {
+		return recalls
+	}
+	type weighted struct {
+		recall Recall
+		weight float64
+	}
+	tau := time.Duration(q.recallDecayDays * 24 * float64(time.Hour))
+	now := time.Now().UTC()
+	items := make([]weighted, 0, len(recalls))
+	for _, recall := range recalls {
+		age := now.Sub(recall.OccurredAt)
+		if age < 0 {
+			age = 0
+		}
+		items = append(items, weighted{recall: recall, weight: recall.Score * math.Exp(-float64(age)/float64(tau))})
+	}
+	sort.SliceStable(items, func(a, b int) bool { return items[a].weight > items[b].weight })
+	ordered := make([]Recall, len(items))
+	for index, item := range items {
+		ordered[index] = item.recall
+	}
+	return ordered
 }
 
 // Portrait is the single read path behind prompt injection: synthesis layered

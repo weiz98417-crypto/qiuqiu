@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"strings"
 	"sync"
 	"time"
 
@@ -19,6 +20,10 @@ import (
 type VectorMomentStore interface {
 	Store(ctx context.Context, moment Moment, embedding []float32) error
 	Search(ctx context.Context, userID string, embedding []float32, limit int) ([]Recall, error)
+	// SearchByContent 是第三条腿（memory-recall-fusion）：内容精确通道，
+	// 稀有实体（裁判名、错别字球员名）余弦不可靠时由它兜住。pattern 由
+	// 调用方转义（likePattern）。
+	SearchByContent(ctx context.Context, userID, pattern string, limit int) ([]Recall, error)
 }
 
 type PostgresVectorStore struct {
@@ -64,7 +69,7 @@ func (s *PostgresVectorStore) Search(ctx context.Context, userID string, embeddi
 		limit = 5
 	}
 	rows, err := s.pool.Query(ctx, `
-SELECT content, importance, occurred_at FROM embedding_moments
+SELECT content, importance, occurred_at, 1 - (embedding <=> $2) FROM embedding_moments
 WHERE user_id = $1
 ORDER BY embedding <=> $2
 LIMIT $3`, userID, embedding, limit)
@@ -75,8 +80,48 @@ LIMIT $3`, userID, embedding, limit)
 	recalls := make([]Recall, 0, limit)
 	for rows.Next() {
 		var recall Recall
-		if err := rows.Scan(&recall.Content, &recall.Importance, &recall.OccurredAt); err != nil {
+		if err := rows.Scan(&recall.Content, &recall.Importance, &recall.OccurredAt, &recall.Score); err != nil {
 			return nil, fmt.Errorf("vector store scan: %w", err)
+		}
+		recall.Source = fmt.Sprintf("vector://moment/%s", userID)
+		recalls = append(recalls, recall)
+	}
+	if err := rows.Err(); err != nil {
+		return nil, err
+	}
+	return recalls, nil
+}
+
+// likeEscape 转义 ILIKE 模式中的通配符与转义符本身。
+func likeEscape(value string) string {
+	replacer := strings.NewReplacer(`\`, `\\`, `%`, `\%`, `_`, `\_`)
+	return replacer.Replace(value)
+}
+
+func (s *PostgresVectorStore) SearchByContent(ctx context.Context, userID, pattern string, limit int) ([]Recall, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("vector store unavailable")
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if strings.TrimSpace(pattern) == "" {
+		return nil, nil
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT content, importance, occurred_at FROM embedding_moments
+WHERE user_id = $1 AND content ILIKE '%' || $2 || '%' ESCAPE '\'
+ORDER BY occurred_at DESC
+LIMIT $3`, userID, likeEscape(pattern), limit)
+	if err != nil {
+		return nil, fmt.Errorf("vector store content search: %w", err)
+	}
+	defer rows.Close()
+	recalls := make([]Recall, 0, limit)
+	for rows.Next() {
+		var recall Recall
+		if err := rows.Scan(&recall.Content, &recall.Importance, &recall.OccurredAt); err != nil {
+			return nil, fmt.Errorf("vector store content scan: %w", err)
 		}
 		recall.Source = fmt.Sprintf("vector://moment/%s", userID)
 		recalls = append(recalls, recall)
@@ -140,6 +185,7 @@ func (s *MemoryVectorStore) Search(_ context.Context, userID string, embedding [
 				Importance: stored.moment.Importance,
 				OccurredAt: stored.moment.OccurredAt,
 				Source:     fmt.Sprintf("vector://moment/%s", userID),
+				Score:      cosine(embedding, stored.embedding),
 			},
 			score: cosine(embedding, stored.embedding),
 		})
@@ -157,6 +203,44 @@ func (s *MemoryVectorStore) Search(_ context.Context, userID string, embedding [
 		matches = append(matches[:best], matches[best+1:]...)
 	}
 	return recalls, nil
+}
+
+func (s *MemoryVectorStore) SearchByContent(_ context.Context, userID, pattern string, limit int) ([]Recall, error) {
+	if s == nil {
+		return nil, nil
+	}
+	if limit <= 0 {
+		limit = 5
+	}
+	if strings.TrimSpace(pattern) == "" {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	lower := strings.ToLower(pattern)
+	var matches []Recall
+	for _, stored := range s.vectors {
+		if stored.moment.UserID != userID {
+			continue
+		}
+		if !strings.Contains(strings.ToLower(stored.moment.Content), lower) {
+			continue
+		}
+		matches = append(matches, Recall{
+			Content:    stored.moment.Content,
+			Importance: stored.moment.Importance,
+			OccurredAt: stored.moment.OccurredAt,
+			Source:     fmt.Sprintf("vector://moment/%s", userID),
+		})
+	}
+	// 新的在前（与 Postgres 版 ORDER BY occurred_at DESC 对齐）。
+	for i, j := 0, len(matches)-1; i < j; i, j = i+1, j-1 {
+		matches[i], matches[j] = matches[j], matches[i]
+	}
+	if len(matches) > limit {
+		matches = matches[:limit]
+	}
+	return matches, nil
 }
 
 func cosine(a, b []float32) float64 {

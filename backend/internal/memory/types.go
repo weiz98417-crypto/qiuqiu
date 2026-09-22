@@ -59,11 +59,15 @@ type Query struct {
 
 // Recall is one retrieved memory. Source carries provenance (e.g.
 // "memobase://profile/basic_info/favorite_team") so recall blocks can cite it.
+// Score is the retrieving path's own relevance (cosine for the vector path,
+// unset for contains paths); it feeds the recency-decay reordering and is not
+// rendered anywhere.
 type Recall struct {
 	Content    string
 	Importance float64
 	OccurredAt time.Time
 	Source     string
+	Score      float64
 }
 
 // Portrait is the synthesized user model rendered as a bounded Chinese block

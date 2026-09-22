@@ -458,6 +458,9 @@ func main() {
 	// Recall 双路合并，任何 embedding 故障弃权。
 	var vectorOptions []memory.QueueOption
 	if cfg.EmbeddingBaseURL != "" && knowledgeEmbedder != nil {
+		if cfg.RecallDecayDays > 0 {
+			vectorOptions = append(vectorOptions, memory.WithRecallDecay(float64(cfg.RecallDecayDays)))
+		}
 		if cfg.DatabaseURL != "" {
 			vectorStore, err := memory.OpenPostgresVectorStore(context.Background(), cfg.DatabaseURL)
 			if err != nil {
