@@ -1,0 +1,10 @@
+# 判罚类知识条目（knowledge-event-triggers）：answer 逐字锚定 source，
+# quote 是织写锚（必须 ≤40 字、规则陈述不带语气词）。
+id: rule-var-scope
+topics: ["VAR", "视频助理裁判", "回放"]
+triggers: ["var_check", "var_result"]
+quote: "VAR 只介入进球、点球、直接红牌和认错球员四类情况"
+answer: "VAR 只介入四类情况：进球、点球判罚、直接红牌和认错球员，其他判罚以场上裁判为准。"
+source: "IFAB VAR Protocol"
+confidence: 0.95
+effective_at: 2026-09-23

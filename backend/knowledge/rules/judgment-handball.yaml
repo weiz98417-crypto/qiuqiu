@@ -1,0 +1,8 @@
+id: rule-handball
+topics: ["手球"]
+triggers: ["var_check", "goal_cancelled"]
+quote: "手球要看是否故意用手或手臂扩大防守面积"
+answer: "手球判罚看故意性：故意用手或手臂触球、或用扩大防守面积挡球，才会被判罚。"
+source: "IFAB Laws of the Game, Law 12"
+confidence: 0.9
+effective_at: 2026-09-23

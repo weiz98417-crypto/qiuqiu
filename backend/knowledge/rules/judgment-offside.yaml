@@ -1,0 +1,8 @@
+id: rule-offside
+topics: ["越位"]
+triggers: ["goal_cancelled"]
+quote: "传球一瞬间比对方倒数第二名球员更靠近球门线就是越位"
+answer: "越位看的是传球一瞬间：接球人比对方倒数第二名球员更靠近球门线，就算越位，进球无效。"
+source: "IFAB Laws of the Game, Law 11"
+confidence: 0.95
+effective_at: 2026-09-23

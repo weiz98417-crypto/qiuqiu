@@ -1,0 +1,8 @@
+id: rule-red-card
+topics: ["红牌", "罚下"]
+triggers: ["red_card"]
+quote: "直接红牌针对严重犯规、暴力行为或破坏明显进球机会"
+answer: "直接红牌针对严重犯规、暴力行为、吐口水或破坏对方明显进球机会等情形，罚下后球队不能再补人。"
+source: "IFAB Laws of the Game, Law 12"
+confidence: 0.95
+effective_at: 2026-09-23

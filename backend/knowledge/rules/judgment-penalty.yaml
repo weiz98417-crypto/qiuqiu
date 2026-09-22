@@ -1,0 +1,8 @@
+id: rule-penalty
+topics: ["点球", "十二码"]
+triggers: ["penalty", "penalty_awarded"]
+quote: "防守方在本方禁区内犯规被判直接任意球时执行点球"
+answer: "点球的来源是防守方在本方禁区内犯规被判直接任意球，由主罚球员单独面对门将主罚。"
+source: "IFAB Laws of the Game, Law 14"
+confidence: 0.95
+effective_at: 2026-09-23

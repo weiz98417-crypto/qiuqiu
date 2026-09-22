@@ -26,3 +26,4 @@
 - 知识条目错误 = 策展错误，走 git 修正而非运行时补丁；条目格式变更需过本 ADR。
 - 2026-09 补充（knowledge-players）：球队/球员档案条目的快变字段（现属俱乐部、队长等）自带 `effective_at` 保质期标签，并建立**转会窗复查制度**——每年 7 月、1 月两个转会窗关闭后对 players 目录集中复查一轮；data-provider-lite-bridge 权威源落地后由源数据替换策展。原料经 AnySearch 检索 + 整页抽取、人工策展后落 repo（检索是策展工具，不是运行时依赖——运行时知识面仍只有 repo 内条目）。
 - CONTEXT.md 新增「知识条目 Knowledge Entry」词条。
+- 2026-09-23 修订（knowledge-event-triggers）：消费面从问答扩到**判罚时刻的事件附句**。两条纪律并存——问答路=纯确定性拼装（不变，规则文本必须逐字来自条目）；事件附句路=realizer 织写语气，但规则陈述必须原样携带策展引语 `quote`（运行时 contains 守卫，失败降级确定性附句 verbatim answer）。附句搭事件反应拍便车，不立独立话轮、不走 ADR-0015 引用码门；限频=同条目每场 1 次、总量每场 2 次、quiet 禁用。触发仅限判罚类事件（var_check/var_result/goal_cancelled/red_card/penalty/penalty_awarded）；球员档案不做事件触发（进球报简历语用不成立）。

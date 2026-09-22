@@ -37,10 +37,11 @@ type Agent struct {
 	characterSettings          *relationship.CharacterSettings
 	subscriptions              proactive.SubscriptionStore
 	knowledge                  *knowledge.Library
+	triggerStates              *knowledgeTriggerStates
 }
 
 func NewAgent(tools MemoryTools) *Agent {
-	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger()}
+	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger(), triggerStates: newKnowledgeTriggerStates()}
 }
 
 // WithMemories attaches the ADR-0006 memory seam (async observations, recall,
@@ -1235,6 +1236,10 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		if strings.TrimSpace(reply) == "" {
 			reply = FallbackProactiveText(req.Event)
 		}
+		// 判罚时刻知识附句（knowledge-event-triggers）：过门命中条目——
+		// quote 作为织写锚进 RequiredAnchors（硬指令原样携带），织写没带住
+		// 或无 realizer 路径时降级确定性附句 verbatim answer。
+		knowledgeEntry := a.knowledgeTrigger(req, &trace)
 		// 记忆进措辞层：运营 ProactiveText 是锚点（Q3）。仅 recall 材料
 		// 非空且 director 给出 Speech 决策时带记忆重措辞，guard 不过回原文。
 		// recall 检索词取事件实体（球员优先、球队兜底）——contains 语义下
@@ -1244,11 +1249,19 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 			if focus == "" {
 				focus = strings.TrimSpace(req.Event.TeamName)
 			}
-			if realized, done := a.realizeWithMemory(ctx, IntentMatchReaction, req.UserID, req.Event.Description, focus, reply, decision.Speech.Content.RequiredAnchors, decision, &trace); done {
+			anchors := decision.Speech.Content.RequiredAnchors
+			if knowledgeEntry != nil {
+				anchors = append(append([]string(nil), anchors...), knowledgeEntry.Quote)
+			}
+			if realized, done := a.realizeWithMemory(ctx, IntentMatchReaction, req.UserID, req.Event.Description, focus, reply, anchors, decision, &trace); done {
 				reply = realized
 				trace.Reason = ReasonProactiveMemoryRealized
 				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized", "source": "match_event_memory"}})
 			}
+		}
+		if knowledgeEntry != nil && !knowledgeQuoteCarried(reply, knowledgeEntry) {
+			reply += knowledgeDeterministicAppendix(knowledgeEntry)
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "knowledge.trigger_fallback", Args: map[string]string{"id": knowledgeEntry.ID, "mode": "deterministic_appendix"}})
 		}
 	} else if trace.Reason != ReasonCriticalFactRefreshLimit {
 		trace.Reason = ReasonMatchObservedSilent

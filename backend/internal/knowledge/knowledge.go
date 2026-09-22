@@ -9,6 +9,7 @@ import (
 	"math"
 	"os"
 	"path/filepath"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -31,14 +32,21 @@ type Entry struct {
 	Source      string    `yaml:"source" json:"source"`
 	Confidence  float64   `yaml:"confidence" json:"confidence"`
 	EffectiveAt time.Time `yaml:"effective_at" json:"effective_at,omitempty"`
+	// Triggers 是事件触发通道（knowledge-event-triggers）：命中即把条目
+	// 作为判罚时刻的知识附句素材。仅判罚类事件类型。
+	Triggers []string `yaml:"triggers" json:"triggers,omitempty"`
+	// Quote 是织写锚：策展短引文，realizer 织写时必须引号原样携带（运行
+	// 时 contains 守卫），失败降级确定性附句。带 triggers 的条目必填。
+	Quote string `yaml:"quote" json:"quote,omitempty"`
 }
 
 type Library struct {
 	entries  []Entry
 	embedder Embedder
 
-	mu        sync.Mutex
-	topicVecs map[int][]float32 // 惰性嵌条目主题（topics 以空格相连）
+	mu         sync.Mutex
+	topicVecs  map[int][]float32 // 惰性嵌条目主题（topics 以空格相连）
+	triggerIdx map[string][]int  // 事件类型 → 条目下标（confidence 降序）
 }
 
 // Load 递归读取目录下全部 *.yaml 条目（子目录如 rules/、players/ 仅作
@@ -63,13 +71,52 @@ func Load(dir string, embedder Embedder) (*Library, error) {
 		if entry.ID == "" || strings.TrimSpace(entry.Answer) == "" || len(entry.Topics) == 0 {
 			return fmt.Errorf("knowledge entry %s missing id/topics/answer", path)
 		}
+		if len(entry.Triggers) > 0 && strings.TrimSpace(entry.Quote) == "" {
+			return fmt.Errorf("knowledge entry %s has triggers but no quote (weave anchor required)", path)
+		}
 		library.entries = append(library.entries, entry)
 		return nil
 	})
 	if err != nil {
 		return nil, fmt.Errorf("knowledge dir: %w", err)
 	}
+	library.buildTriggerIndex()
 	return library, nil
+}
+
+// buildTriggerIndex 建事件类型索引，同类型按 confidence 降序——TriggerLookup
+// 取最高确信条目。
+func (l *Library) buildTriggerIndex() {
+	l.triggerIdx = map[string][]int{}
+	for i, entry := range l.entries {
+		for _, trigger := range entry.Triggers {
+			trigger = strings.TrimSpace(trigger)
+			if trigger == "" {
+				continue
+			}
+			l.triggerIdx[trigger] = append(l.triggerIdx[trigger], i)
+		}
+	}
+	for trigger, indexes := range l.triggerIdx {
+		sort.SliceStable(indexes, func(a, b int) bool {
+			return l.entries[indexes[a]].Confidence > l.entries[indexes[b]].Confidence
+		})
+		l.triggerIdx[trigger] = indexes
+	}
+}
+
+// TriggerLookup 返回该事件类型的知识附句条目（confidence 最高的命中），
+// 无命中 ok=false。走与 Search 相同的确信度阈值。
+func (l *Library) TriggerLookup(eventType string) (Entry, bool) {
+	if l == nil || len(l.entries) == 0 {
+		return Entry{}, false
+	}
+	for _, index := range l.triggerIdx[strings.TrimSpace(eventType)] {
+		if entry, ok := l.guard(l.entries[index]); ok {
+			return entry, true
+		}
+	}
+	return Entry{}, false
 }
 
 func (l *Library) Size() int {
