@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"github.com/jackc/pgx/v5"
+	"github.com/jackc/pgx/v5/pgconn"
 	"github.com/jackc/pgx/v5/pgxpool"
 )
 
@@ -132,22 +133,6 @@ func (store *PostgresStore) Get(ctx context.Context, sessionID string) (SessionR
 	return record, err
 }
 
-func (store *PostgresStore) FindByRefreshHash(ctx context.Context, refreshHash []byte) (SessionRecord, error) {
-	var record SessionRecord
-	err := store.pool.QueryRow(ctx, `
-		SELECT id, user_id, device_id, token_hash, scopes, created_at, expires_at, revoked_at
-		FROM user_sessions
-		WHERE token_hash = $1
-	`, refreshHash).Scan(
-		&record.SessionID, &record.UserID, &record.DeviceID, &record.RefreshTokenHash,
-		&record.Scopes, &record.CreatedAt, &record.ExpiresAt, &record.RevokedAt,
-	)
-	if errors.Is(err, pgx.ErrNoRows) {
-		return SessionRecord{}, ErrNotFound
-	}
-	return record, err
-}
-
 func (store *PostgresStore) Rotate(ctx context.Context, sessionID string, currentHash, refreshHash []byte, expiresAt time.Time) error {
 	result, err := store.pool.Exec(ctx, `
 		UPDATE user_sessions
@@ -176,4 +161,38 @@ func (store *PostgresStore) Revoke(ctx context.Context, sessionID string) error 
 		return ErrNotFound
 	}
 	return nil
+}
+
+// CreateCredential 绑定登录凭证（ADR-0020）。identifier 唯一约束冲突
+// （23505）映射为 ErrCredentialExists——Login 的注册竞态据此归并到验证
+// 路径。
+func (store *PostgresStore) CreateCredential(ctx context.Context, credential Credential) error {
+	_, err := store.pool.Exec(ctx, `
+		INSERT INTO user_credentials (user_id, identifier, password_hash, created_at, updated_at)
+		VALUES ($1, $2, $3, $4, $5)
+	`, credential.UserID, credential.Identifier, credential.PasswordHash, credential.CreatedAt, credential.UpdatedAt)
+	if err != nil {
+		var pgErr *pgconn.PgError
+		if errors.As(err, &pgErr) && pgErr.Code == "23505" {
+			return ErrCredentialExists
+		}
+		return err
+	}
+	return nil
+}
+
+func (store *PostgresStore) FindCredential(ctx context.Context, identifier string) (Credential, error) {
+	var credential Credential
+	err := store.pool.QueryRow(ctx, `
+		SELECT user_id, identifier, password_hash, created_at, updated_at
+		FROM user_credentials
+		WHERE identifier = $1
+	`, identifier).Scan(&credential.UserID, &credential.Identifier, &credential.PasswordHash, &credential.CreatedAt, &credential.UpdatedAt)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return Credential{}, ErrNotFound
+	}
+	if err != nil {
+		return Credential{}, err
+	}
+	return credential, nil
 }

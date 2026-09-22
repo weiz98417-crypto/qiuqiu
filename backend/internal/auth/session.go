@@ -76,9 +76,21 @@ type Store interface {
 	Create(context.Context, SessionRecord) error
 	CreateAnonymous(context.Context, SessionRecord) (SessionRecord, error)
 	Get(context.Context, string) (SessionRecord, error)
-	FindByRefreshHash(context.Context, []byte) (SessionRecord, error)
 	Rotate(context.Context, string, []byte, []byte, time.Time) error
 	Revoke(context.Context, string) error
+	// 登录凭证缝（ADR-0020）：identifier→usr_ 的绑定存取。
+	CreateCredential(context.Context, Credential) error
+	FindCredential(context.Context, string) (Credential, error)
+}
+
+// Credential 是一个正式身份凭证：identifier 唯一，密码只存 argon2id PHC 串。
+// user_id 是身份主体——绑定不换 ID，画像/记忆/订阅都挂在原 usr_ 上。
+type Credential struct {
+	UserID        string
+	Identifier    string
+	PasswordHash  string
+	CreatedAt     time.Time
+	UpdatedAt     time.Time
 }
 
 type Manager struct {
@@ -118,7 +130,7 @@ func (manager *Manager) IssueAnonymous(ctx context.Context, deviceID string) (Se
 	if err != nil {
 		return Session{}, err
 	}
-	refreshToken, err := randomToken()
+	refreshSecret, err := randomToken()
 	if err != nil {
 		return Session{}, err
 	}
@@ -126,7 +138,7 @@ func (manager *Manager) IssueAnonymous(ctx context.Context, deviceID string) (Se
 		SessionID:        sessionID,
 		UserID:           proposedUserID,
 		DeviceID:         deviceID,
-		RefreshTokenHash: hashToken(refreshToken),
+		RefreshTokenHash: hashToken(refreshSecret),
 		Scopes:           []string{ScopeUserChat, ScopeUserRead},
 		CreatedAt:        now,
 		ExpiresAt:        now.Add(refreshTokenTTL),
@@ -135,7 +147,101 @@ func (manager *Manager) IssueAnonymous(ctx context.Context, deviceID string) (Se
 	if err != nil {
 		return Session{}, err
 	}
-	return manager.session(record, refreshToken, now), nil
+	return manager.session(record, formatRefreshToken(record.SessionID, refreshSecret), now), nil
+}
+
+// formatRefreshToken 把会话 ID 编进刷新令牌（<sessionID>.<secret>）：
+// 重放检测需要定位被滥用的会话才能吊销整条链——纯随机令牌按哈希查找时，
+// 旧令牌在库里已不存在，无从归因（ADR-0020 决定 6）。
+func formatRefreshToken(sessionID, secret string) string {
+	return sessionID + "." + secret
+}
+
+func splitRefreshToken(token string) (sessionID, secret string, ok bool) {
+	parts := strings.Split(token, ".")
+	if len(parts) != 2 || parts[0] == "" || parts[1] == "" {
+		return "", "", false
+	}
+	return parts[0], parts[1], true
+}
+
+// Login 是登录凭证缝的单一入口（ADR-0020），注册与切换双合一：
+//   - identifier 未绑定 → 给当前会话的 usr_ 原地注册凭证（升级不换 ID）；
+//   - identifier 已绑定 → 验密后为该账号签发会话（切换；本机匿名数据不迁移）；
+//   - 密码错误 → ErrInvalidLogin。
+//
+// DeviceID 沿用当前会话的设备；旧会话不吊销（多设备允许同时在线）。
+func (manager *Manager) Login(ctx context.Context, claims Claims, identifier, password string) (Session, error) {
+	if claims.Subject == "" || claims.DeviceID == "" {
+		return Session{}, ErrInvalidToken
+	}
+	identifier = NormalizeIdentifier(identifier)
+	if err := ValidateLoginRequest(identifier, password); err != nil {
+		return Session{}, err
+	}
+	existing, err := manager.store.FindCredential(ctx, identifier)
+	switch {
+	case err == nil:
+		if !VerifyPassword(password, existing.PasswordHash) {
+			return Session{}, ErrInvalidLogin
+		}
+		return manager.issueForDevice(ctx, existing.UserID, claims.DeviceID)
+	case errors.Is(err, ErrNotFound):
+		hash, hashErr := HashPassword(password)
+		if hashErr != nil {
+			return Session{}, hashErr
+		}
+		now := manager.now().UTC()
+		createErr := manager.store.CreateCredential(ctx, Credential{
+			UserID:       claims.Subject,
+			Identifier:   identifier,
+			PasswordHash: hash,
+			CreatedAt:    now,
+			UpdatedAt:    now,
+		})
+		if createErr != nil {
+			if errors.Is(createErr, ErrCredentialExists) {
+				// 注册竞态：另一请求先绑定了同一 identifier——归并到
+				// 验证路径，语义与「已绑定」一致。
+				raced, raceErr := manager.store.FindCredential(ctx, identifier)
+				if raceErr != nil || !VerifyPassword(password, raced.PasswordHash) {
+					return Session{}, ErrInvalidLogin
+				}
+				return manager.issueForDevice(ctx, raced.UserID, claims.DeviceID)
+			}
+			return Session{}, createErr
+		}
+		return manager.issueForDevice(ctx, claims.Subject, claims.DeviceID)
+	default:
+		return Session{}, err
+	}
+}
+
+// issueForDevice 为 (userID, deviceID) 签发全新会话， scopes 与匿名一致
+// （正式身份不追加管理面作用域）。
+func (manager *Manager) issueForDevice(ctx context.Context, userID, deviceID string) (Session, error) {
+	now := manager.now().UTC()
+	sessionID, err := randomIdentifier("ses_")
+	if err != nil {
+		return Session{}, err
+	}
+	refreshSecret, err := randomToken()
+	if err != nil {
+		return Session{}, err
+	}
+	record := SessionRecord{
+		SessionID:        sessionID,
+		UserID:           userID,
+		DeviceID:         deviceID,
+		RefreshTokenHash: hashToken(refreshSecret),
+		Scopes:           []string{ScopeUserChat, ScopeUserRead},
+		CreatedAt:        now,
+		ExpiresAt:        now.Add(refreshTokenTTL),
+	}
+	if err := manager.store.Create(ctx, record); err != nil {
+		return Session{}, err
+	}
+	return manager.session(record, formatRefreshToken(record.SessionID, refreshSecret), now), nil
 }
 
 func (manager *Manager) Authenticate(ctx context.Context, token string) (Claims, error) {
@@ -186,10 +292,11 @@ func (manager *Manager) ValidateClaims(ctx context.Context, claims Claims) error
 }
 
 func (manager *Manager) Refresh(ctx context.Context, refreshToken string) (Session, error) {
-	if strings.TrimSpace(refreshToken) == "" {
+	sessionID, secret, ok := splitRefreshToken(refreshToken)
+	if !ok {
 		return Session{}, ErrInvalidToken
 	}
-	record, err := manager.store.FindByRefreshHash(ctx, hashToken(refreshToken))
+	record, err := manager.store.Get(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return Session{}, ErrInvalidToken
@@ -203,6 +310,12 @@ func (manager *Manager) Refresh(ctx context.Context, refreshToken string) (Sessi
 	if !record.ExpiresAt.After(now) {
 		return Session{}, ErrExpiredToken
 	}
+	if !hmac.Equal(record.RefreshTokenHash, hashToken(secret)) {
+		// 重用检测（ADR-0020 决定 6）：令牌自报的会话与库中哈希不符=
+		// 重放——吊销整条会话，重放者与持有者一同下线。
+		_ = manager.store.Revoke(ctx, record.SessionID)
+		return Session{}, ErrInvalidToken
+	}
 	rotated, err := randomToken()
 	if err != nil {
 		return Session{}, err
@@ -211,7 +324,7 @@ func (manager *Manager) Refresh(ctx context.Context, refreshToken string) (Sessi
 		return Session{}, err
 	}
 	record.RefreshTokenHash = hashToken(rotated)
-	return manager.session(record, rotated, now), nil
+	return manager.session(record, formatRefreshToken(record.SessionID, rotated), now), nil
 }
 
 func (manager *Manager) RevokeAccess(ctx context.Context, accessToken string) error {
@@ -223,12 +336,19 @@ func (manager *Manager) RevokeAccess(ctx context.Context, accessToken string) er
 }
 
 func (manager *Manager) RevokeRefresh(ctx context.Context, refreshToken string) error {
-	record, err := manager.store.FindByRefreshHash(ctx, hashToken(refreshToken))
+	sessionID, secret, ok := splitRefreshToken(refreshToken)
+	if !ok {
+		return ErrInvalidToken
+	}
+	record, err := manager.store.Get(ctx, sessionID)
 	if err != nil {
 		if errors.Is(err, ErrNotFound) {
 			return ErrInvalidToken
 		}
 		return err
+	}
+	if !hmac.Equal(record.RefreshTokenHash, hashToken(secret)) {
+		return ErrInvalidToken
 	}
 	return manager.store.Revoke(ctx, record.SessionID)
 }
@@ -355,15 +475,17 @@ func (claims Claims) String() string {
 }
 
 type MemoryStore struct {
-	mu         sync.RWMutex
-	sessions   map[string]SessionRecord
-	identities map[string]anonymousIdentity
+	mu          sync.RWMutex
+	sessions    map[string]SessionRecord
+	identities  map[string]anonymousIdentity
+	credentials map[string]Credential // identifier → credential
 }
 
 func NewMemoryStore() *MemoryStore {
 	return &MemoryStore{
-		sessions:   make(map[string]SessionRecord),
-		identities: make(map[string]anonymousIdentity),
+		sessions:    make(map[string]SessionRecord),
+		identities:  make(map[string]anonymousIdentity),
+		credentials: make(map[string]Credential),
 	}
 }
 
@@ -409,17 +531,6 @@ func (store *MemoryStore) Get(_ context.Context, sessionID string) (SessionRecor
 	return cloneRecord(record), nil
 }
 
-func (store *MemoryStore) FindByRefreshHash(_ context.Context, refreshHash []byte) (SessionRecord, error) {
-	store.mu.RLock()
-	defer store.mu.RUnlock()
-	for _, record := range store.sessions {
-		if hmac.Equal(record.RefreshTokenHash, refreshHash) {
-			return cloneRecord(record), nil
-		}
-	}
-	return SessionRecord{}, ErrNotFound
-}
-
 func (store *MemoryStore) Rotate(_ context.Context, sessionID string, currentHash, refreshHash []byte, expiresAt time.Time) error {
 	store.mu.Lock()
 	defer store.mu.Unlock()
@@ -447,6 +558,26 @@ func (store *MemoryStore) Revoke(_ context.Context, sessionID string) error {
 	record.RevokedAt = &now
 	store.sessions[sessionID] = record
 	return nil
+}
+
+func (store *MemoryStore) CreateCredential(_ context.Context, credential Credential) error {
+	store.mu.Lock()
+	defer store.mu.Unlock()
+	if _, exists := store.credentials[credential.Identifier]; exists {
+		return ErrCredentialExists
+	}
+	store.credentials[credential.Identifier] = credential
+	return nil
+}
+
+func (store *MemoryStore) FindCredential(_ context.Context, identifier string) (Credential, error) {
+	store.mu.RLock()
+	defer store.mu.RUnlock()
+	credential, ok := store.credentials[identifier]
+	if !ok {
+		return Credential{}, ErrNotFound
+	}
+	return credential, nil
 }
 
 func cloneRecord(record SessionRecord) SessionRecord {

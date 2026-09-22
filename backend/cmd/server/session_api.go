@@ -42,6 +42,37 @@ func handleSessionAPI(manager *auth.Manager, cfg *config.Config) http.HandlerFun
 				return
 			}
 			writeJSON(w, http.StatusCreated, sessionResponse(session))
+		case r.Method == http.MethodPost && resource == "login":
+			// 登录凭证缝（ADR-0020）：注册与切换双合一。必须携带有效的
+			// 当前会话（匿名即可）——升级在原 usr_ 上原地发生。
+			claims, err := manager.Authenticate(r.Context(), auth.BearerToken(r.Header.Get("Authorization")))
+			if err != nil {
+				http.Error(w, "invalid session", http.StatusUnauthorized)
+				return
+			}
+			var request struct {
+				Identifier string `json:"identifier"`
+				Password   string `json:"password"`
+			}
+			if err := decodeSessionJSON(w, r, &request); err != nil {
+				http.Error(w, "invalid json", http.StatusBadRequest)
+				return
+			}
+			session, err := manager.Login(r.Context(), claims, request.Identifier, request.Password)
+			if err != nil {
+				switch {
+				case errors.Is(err, auth.ErrInvalidLoginFields):
+					http.Error(w, "invalid identifier or password", http.StatusBadRequest)
+				case errors.Is(err, auth.ErrInvalidLogin):
+					http.Error(w, "invalid identifier or password", http.StatusUnauthorized)
+				case errors.Is(err, auth.ErrInvalidToken):
+					http.Error(w, "invalid session", http.StatusUnauthorized)
+				default:
+					http.Error(w, "login unavailable", http.StatusInternalServerError)
+				}
+				return
+			}
+			writeJSON(w, http.StatusOK, sessionResponse(session))
 		case r.Method == http.MethodPost && resource == "refresh":
 			var request struct {
 				RefreshToken string `json:"refreshToken"`
