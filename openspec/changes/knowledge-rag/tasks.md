@@ -9,3 +9,7 @@
 ## Sequencing
 
 第二波第 2 个；依赖 semantic-memory 的 embedding 通道（缺席时自动退关键词单路）。
+
+## 触发型留尾（Q3 标准格式）
+
+- 触发：data-provider-lite-bridge 落地；动作：权威源接入知识域（knowledge-players change 已承接球队/球员档案，规则/赛制条目复核其来源表述）。

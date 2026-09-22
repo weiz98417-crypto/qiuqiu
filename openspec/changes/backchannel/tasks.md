@@ -8,3 +8,8 @@
 ## Sequencing
 
 第二波第 5 个（放最后：表情表现力受 live2d-motion-pack 资产进度影响，v1 用现有槽位先行）。
+
+## 触发型留尾（Q3 标准格式）
+
+- 触发：v1 文字气泡验证有陪伴价值 + 客户端排期；动作：v1.1 音频（客户端音频队列 FIFO→deliveryKey 配对 + 短 TTS 接入）。
+- 触发：v1.1 稳定且出现流式需求；动作：SSE 流式语音（从 openaicompat 重建，真消费者=backchannel/长回复）。
