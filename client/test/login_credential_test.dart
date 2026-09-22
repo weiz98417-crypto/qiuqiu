@@ -10,16 +10,6 @@ import 'package:shared_preferences/shared_preferences.dart';
 
 import 'session_service_test.dart' show MemorySessionSecretStore;
 
-SessionCredentials _credentials({String userId = 'usr_server'}) {
-  return SessionCredentials(
-    userId: userId,
-    sessionId: 'ses_server',
-    accessToken: 'access_token',
-    refreshToken: 'refresh_token',
-    expiresAt: DateTime.now().toUtc().add(const Duration(minutes: 15)),
-  );
-}
-
 Map<String, String> _headers(http.Request request) => {
       if (request.headers['authorization'] != null)
         'authorization': request.headers['authorization']!,
