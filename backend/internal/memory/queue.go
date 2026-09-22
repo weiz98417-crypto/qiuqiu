@@ -358,10 +358,14 @@ func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
 			log.Printf("memory: vector recall embed degraded: %v", err)
 		}
 	}
-	// 各取一半配额（adapter 向上取整，保序在前），按 content 去重。
+	// 双路各取一半配额（adapter 保序在前）、按 content 去重；向量路弃权
+	// 或空手时 adapter 独享全量配额——弃权=现状，配额不得回退。
 	seen := make(map[string]bool, limit)
 	merged := make([]Recall, 0, limit)
-	adapterQuota := limit - limit/2
+	adapterQuota := limit
+	if len(vectorPath) > 0 {
+		adapterQuota = limit - limit/2
+	}
 	for _, recall := range adapterPath {
 		if len(merged) >= adapterQuota {
 			break

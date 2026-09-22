@@ -1952,12 +1952,13 @@ func stableTraceID(userID, matchID, signalID string) string {
 
 // RecordBackchannel 落微反应审计（ADR-0016）：trace + Interaction Ledger
 // 各一条——伴随反应不过 C2 引用码门、不占回合槽，但全程可审计。
-func (a *Agent) RecordBackchannel(ctx context.Context, userID, matchID, eventType, phrase string, now time.Time) error {
+// traceID 由调用方传入（下发信封与落库同键，可关联）。
+func (a *Agent) RecordBackchannel(ctx context.Context, userID, matchID, traceID, eventType, phrase string, now time.Time) error {
 	if a == nil || a.tools == nil {
 		return nil
 	}
 	trace := Trace{
-		ID:      fmt.Sprintf("backchannel-%s-%d", matchID, now.UnixMilli()),
+		ID:      traceID,
 		MatchID: matchID, UserID: userID,
 		Input: eventType, Intent: IntentMatchReaction,
 		Reason: "backchannel", CreatedAt: now, Output: phrase,

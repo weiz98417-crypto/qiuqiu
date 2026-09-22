@@ -11,6 +11,7 @@ CREATE TABLE IF NOT EXISTS proactive_reminders (
   away_team TEXT NOT NULL DEFAULT '',
   kickoff_at TIMESTAMPTZ NOT NULL,
   lead_minutes INT NOT NULL DEFAULT 30,
+  timezone TEXT NOT NULL DEFAULT '',
   status TEXT NOT NULL DEFAULT 'pending' CHECK (status IN ('pending', 'delivered', 'suppressed')),
   deliver_at TIMESTAMPTZ NOT NULL,
   expire_at TIMESTAMPTZ NOT NULL,

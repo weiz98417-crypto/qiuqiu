@@ -125,11 +125,11 @@ type Fixture struct {
 // ExpandSubscriptions 把活跃订阅展开成未来赛程的 Reminder（Q9：调用方带
 // 已扫描窗口的赛程与该用户在途提醒；去重键 = subscription+fixture）。
 // 纯函数、可测；投递仍走提醒簿的两腿。返回新落簿数。
-func ExpandSubscriptions(ctx context.Context, subs []Subscription, reminders Store, fixtures []Fixture, pendingForUser func(ctx context.Context, userID string) ([]Reminder, error), now time.Time) int {
+func ExpandSubscriptions(ctx context.Context, subs []Subscription, reminders Store, fixtures []Fixture, allForUser func(ctx context.Context, userID string) ([]Reminder, error), now time.Time) int {
 	created := 0
 	for _, sub := range subs {
 		sub := sub
-		pendings, err := pendingForUser(ctx, sub.UserID)
+		seenReminders, err := allForUser(ctx, sub.UserID)
 		if err != nil {
 			continue
 		}
@@ -141,7 +141,7 @@ func ExpandSubscriptions(ctx context.Context, subs []Subscription, reminders Sto
 				continue
 			}
 			duplicate := false
-			for _, pending := range pendings {
+			for _, pending := range seenReminders {
 				if pending.SubscriptionID == sub.ID && pending.MatchID == fixtureKey(fixture) {
 					duplicate = true
 					break

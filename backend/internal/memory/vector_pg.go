@@ -8,6 +8,7 @@ import (
 	"context"
 	"fmt"
 	"math"
+	"sync"
 	"time"
 
 	"github.com/jackc/pgx/v5/pgxpool"
@@ -86,8 +87,10 @@ LIMIT $3`, userID, embedding, limit)
 	return recalls, nil
 }
 
-// MemoryVectorStore 是第二个 adapter（测试用）：线性扫描 + 余弦。
+// MemoryVectorStore 是第二个 adapter（测试与无库开发用，带锁——Observe
+// 异步写与请求读并发）：线性扫描 + 余弦。
 type MemoryVectorStore struct {
+	mu      sync.Mutex
 	vectors []storedVector
 }
 
@@ -107,6 +110,8 @@ func (s *MemoryVectorStore) Store(_ context.Context, moment Moment, embedding []
 	if moment.OccurredAt.IsZero() {
 		moment.OccurredAt = time.Now().UTC()
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	s.vectors = append(s.vectors, storedVector{moment: moment, embedding: embedding})
 	return nil
 }
@@ -118,6 +123,8 @@ func (s *MemoryVectorStore) Search(_ context.Context, userID string, embedding [
 	if limit <= 0 {
 		limit = 5
 	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
 	type scored struct {
 		recall Recall
 		score  float64

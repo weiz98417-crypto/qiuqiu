@@ -145,21 +145,26 @@ func (l *Library) guard(entry Entry) (Entry, bool) {
 
 func (l *Library) topicVector(index int, entry Entry) ([]float32, bool) {
 	l.mu.Lock()
-	defer l.mu.Unlock()
 	if vector, ok := l.topicVecs[index]; ok {
+		l.mu.Unlock()
 		return vector, true
 	}
-	if l.embedder == nil {
+	embedder := l.embedder
+	l.mu.Unlock()
+	if embedder == nil {
 		return nil, false
 	}
+	// 嵌入在锁外执行：持锁做网络 IO 会串行化并发查询并放大延迟。
 	embedCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
 	text := strings.Join(entry.Topics, " ")
-	vector, err := l.embedder.Embed(embedCtx, text)
+	vector, err := embedder.Embed(embedCtx, text)
 	if err != nil {
 		return nil, false
 	}
+	l.mu.Lock()
 	l.topicVecs[index] = vector
+	l.mu.Unlock()
 	return vector, true
 }
 

@@ -7,7 +7,6 @@ package main
 import (
 	"encoding/json"
 	"net/http"
-	"strings"
 
 	"qiuqiu/internal/auth"
 	"qiuqiu/internal/config"
@@ -75,7 +74,3 @@ func writeSettings(w http.ResponseWriter, values map[relationship.CharacterSetti
 	})
 }
 
-// characterSettingFields 供 WS 入口复用同一校验（三入口一状态）。
-func characterSettingField(field string) relationship.CharacterSettingField {
-	return relationship.CharacterSettingField(strings.TrimSpace(field))
-}

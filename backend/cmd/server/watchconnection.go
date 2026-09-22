@@ -392,7 +392,7 @@ func (c *watchConnection) maybeBackchannel(ev matchstate.MatchEvent) {
 	})
 	auditCtx, auditCancel := context.WithTimeout(c.connectionCtx, 3*time.Second)
 	defer auditCancel()
-	if err := c.deps.agent.RecordBackchannel(auditCtx, c.identity.Get(), c.matchID, verdict.EventType, verdict.Phrase, now); err != nil {
+	if err := c.deps.agent.RecordBackchannel(auditCtx, c.identity.Get(), c.matchID, "backchannel-"+ev.ID, verdict.EventType, verdict.Phrase, now); err != nil {
 		log.Printf("backchannel audit error: %v", err)
 	}
 }
@@ -478,7 +478,6 @@ func (c *watchConnection) pumpMatchEvents() {
 				if followUpCount > 0 {
 					continue
 				}
-				c.maybeBackchannel(ev)
 				userID := c.identity.Get()
 				if userID == "" {
 					userID = c.identity.Wait(c.connectionCtx)
@@ -503,6 +502,10 @@ func (c *watchConnection) pumpMatchEvents() {
 					allowed = false
 				} else if hasEventTag(ev, "proactive=manual") {
 					allowed = c.proactiveGate.AllowManual(now)
+				} else {
+					// ADR-0016：导播手动注入（manual/quiet 标记）不走微反应，
+					// 自动事件的微反应在回合判定之后让路触发。
+					c.maybeBackchannel(ev)
 				}
 				response, err := c.deps.agent.HandleMatchEvent(c.connectionCtx, companion.MatchEventRequest{
 					UserID:                userID,

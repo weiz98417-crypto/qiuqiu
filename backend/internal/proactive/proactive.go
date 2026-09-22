@@ -109,6 +109,9 @@ func PreMatchReminderReply(r Reminder) string {
 type Store interface {
 	Append(ctx context.Context, reminder Reminder) (Reminder, error)
 	PendingForUser(ctx context.Context, userID string) ([]Reminder, error)
+	// AllForUser 返回该用户全部提醒（含已投递/已静默）——订阅展开去重
+	// 必须看到历史键，否则早场已投递的提醒会被重复展开。
+	AllForUser(ctx context.Context, userID string) ([]Reminder, error)
 	DuePending(ctx context.Context, now time.Time) ([]Reminder, error)
 	MarkDelivered(ctx context.Context, id string) error
 	// SweepSuppressed 把过期待递翻 suppressed 并返回它们（调用方转为记忆
@@ -159,6 +162,22 @@ func (s *MemoryStore) PendingForUser(_ context.Context, userID string) ([]Remind
 		}
 	}
 	sort.Slice(out, func(i, j int) bool { return out[i].DeliverAt.Before(out[j].DeliverAt) })
+	return out, nil
+}
+
+// AllForUser 返回该用户全部提醒（订阅展开去重用）。
+func (s *MemoryStore) AllForUser(_ context.Context, userID string) ([]Reminder, error) {
+	if s == nil {
+		return nil, nil
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	out := make([]Reminder, 0)
+	for _, reminder := range s.reminders {
+		if reminder.UserID == userID {
+			out = append(out, reminder)
+		}
+	}
 	return out, nil
 }
 

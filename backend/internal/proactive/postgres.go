@@ -146,6 +146,19 @@ WHERE status = 'active' ORDER BY created_at`)
 	return out, rows.Err()
 }
 
+// AllForUser 返回该用户全部提醒（订阅展开去重用——已投递/已静默的
+// 历史键也要能挡住重复展开）。
+func (s *PostgresStore) AllForUser(ctx context.Context, userID string) ([]Reminder, error) {
+	rows, err := s.pool.Query(ctx, `
+SELECT id, user_id, match_id, home_team, away_team, kickoff_at, lead_minutes, timezone, subscription_id, status, deliver_at, expire_at, created_at
+FROM proactive_reminders WHERE user_id = $1 ORDER BY deliver_at`, userID)
+	if err != nil {
+		return nil, fmt.Errorf("reminder all query: %w", err)
+	}
+	defer rows.Close()
+	return scanReminders(rows)
+}
+
 // SuppressPendingSubscription 取消订阅时静默该订阅的在途提醒（ADR-0015
 // 同款静默语义：不打扰，不删除审计）。
 func (s *PostgresStore) SuppressPendingSubscription(ctx context.Context, userID, subscriptionID string) error {
