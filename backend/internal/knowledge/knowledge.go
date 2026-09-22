@@ -41,29 +41,33 @@ type Library struct {
 	topicVecs map[int][]float32 // 惰性嵌条目主题（topics 以空格相连）
 }
 
-// Load 读取目录下全部 *.yaml 条目；embedder 可为 nil（纯关键词检索）。
+// Load 递归读取目录下全部 *.yaml 条目（子目录如 rules/、players/ 仅作
+// 组织用途）；embedder 可为 nil（纯关键词检索）。
 func Load(dir string, embedder Embedder) (*Library, error) {
-	items, err := os.ReadDir(dir)
-	if err != nil {
-		return nil, fmt.Errorf("knowledge dir: %w", err)
-	}
 	library := &Library{embedder: embedder, topicVecs: map[int][]float32{}}
-	for _, item := range items {
-		if item.IsDir() || !strings.HasSuffix(item.Name(), ".yaml") {
-			continue
+	err := filepath.WalkDir(dir, func(path string, item os.DirEntry, walkErr error) error {
+		if walkErr != nil {
+			return walkErr
 		}
-		raw, err := os.ReadFile(filepath.Join(dir, item.Name()))
+		if item.IsDir() || !strings.HasSuffix(item.Name(), ".yaml") {
+			return nil
+		}
+		raw, err := os.ReadFile(path)
 		if err != nil {
-			return nil, fmt.Errorf("knowledge read %s: %w", item.Name(), err)
+			return fmt.Errorf("knowledge read %s: %w", path, err)
 		}
 		var entry Entry
 		if err := yaml.Unmarshal(raw, &entry); err != nil {
-			return nil, fmt.Errorf("knowledge parse %s: %w", item.Name(), err)
+			return fmt.Errorf("knowledge parse %s: %w", path, err)
 		}
 		if entry.ID == "" || strings.TrimSpace(entry.Answer) == "" || len(entry.Topics) == 0 {
-			return nil, fmt.Errorf("knowledge entry %s missing id/topics/answer", item.Name())
+			return fmt.Errorf("knowledge entry %s missing id/topics/answer", path)
 		}
 		library.entries = append(library.entries, entry)
+		return nil
+	})
+	if err != nil {
+		return nil, fmt.Errorf("knowledge dir: %w", err)
 	}
 	return library, nil
 }

@@ -24,4 +24,5 @@
 
 - KNOWLEDGE_DIR 配置留空即停用实质回答（意图如实回"还没接上"）。
 - 知识条目错误 = 策展错误，走 git 修正而非运行时补丁；条目格式变更需过本 ADR。
+- 2026-09 补充（knowledge-players）：球队/球员档案条目的快变字段（现属俱乐部、队长等）自带 `effective_at` 保质期标签，并建立**转会窗复查制度**——每年 7 月、1 月两个转会窗关闭后对 players 目录集中复查一轮；data-provider-lite-bridge 权威源落地后由源数据替换策展。原料经 AnySearch 检索 + 整页抽取、人工策展后落 repo（检索是策展工具，不是运行时依赖——运行时知识面仍只有 repo 内条目）。
 - CONTEXT.md 新增「知识条目 Knowledge Entry」词条。
