@@ -24,14 +24,14 @@
     "speak_01": { "group": "speak", "variant": 0 },
     "speak_02": { "group": "speak", "variant": 1 },
     "think": { "group": "think", "variant": 0 },
-    "celebrate": { "group": "celebrate", "variant": 0 },
-    "celebrate_02": { "group": "celebrate", "variant": 1 },
-    "miss": { "group": "miss", "variant": 0 },
-    "complain": { "group": "complain", "variant": 0 },
-    "analysis": { "group": "analysis", "variant": 0 },
-    "tense": { "group": "tense", "variant": 0 },
-    "agree": { "group": "agree", "variant": 0 },
-    "wave": { "group": "wave", "variant": 0 }
+    "celebrate": { "group": "speak", "variant": 0 },
+    "celebrate_02": { "group": "speak", "variant": 1 },
+    "miss": { "group": "idle", "variant": 2 },
+    "complain": { "group": "speak", "variant": 0 },
+    "analysis": { "group": "think", "variant": 0 },
+    "tense": { "group": "think", "variant": 0 },
+    "agree": { "group": "listen", "variant": 0 },
+    "wave": { "group": "hello", "variant": 0 }
   },
   "acts": {
     "ActReact": { "positive": "excited/celebrate", "negative": "nervous/complain", "neutral": "chat/speak" },
@@ -45,10 +45,13 @@
   },
   "events": {
     "goal": "excited/celebrate",
+    "big_chance": "excited/celebrate_02",
+    "save": "surprised/tense",
+    "miss": "sad/miss",
+    "shot_missed": "sad/miss",
     "goal_cancelled": "surprised/complain",
     "var_overturn": "surprised/confused",
-    "var_check": "tense/tense",
-    "shot_missed": "sad/miss"
+    "var_check": "tense/tense"
   },
   "phases": {
     "user_speaking": "listening/listen_01",

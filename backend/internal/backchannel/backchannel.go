@@ -6,6 +6,8 @@ package backchannel
 
 import (
 	"time"
+
+	"qiuqiu/internal/relationship"
 )
 
 // 限频与白名单（Q7 策略初值，运营可调点集中于此）。
@@ -32,13 +34,9 @@ var phrasePools = map[string][]string{
 	"var_check":  {"VAR 回放，心悬住了。", "等 VAR，先别喊。"},
 }
 
-// 表演槽位取自 presentation-map.json 既有库存（ADR-0007，不新增资产）。
-var presentations = map[string][2]string{ // [expression, motion]
-	"big_chance": {"excited", "celebrate_02"},
-	"miss":       {"sad", "miss"},
-	"save":       {"surprised", "tense"},
-	"var_check":  {"thinking", "analysis"},
-}
+// 表演槽位不在此维护：Decide 经 relationship.BackchannelPresentation 走
+// presentation-map.json 的同一张 events 表（live2d-motion-revert 单源化，
+// ADR-0007）。
 
 // State 是一条连接内的微反应计数（随连接生命周期走）。
 type State struct {
@@ -85,12 +83,15 @@ func Decide(state *State, eventType, period, talkativeness string, userSpeaking 
 	if state.rotation == nil {
 		state.rotation = map[string]int{}
 	}
+	expression, motion, ok := relationship.BackchannelPresentation(eventType)
+	if !ok {
+		return Verdict{}, false
+	}
 	rotation := state.rotation[eventType]
 	state.rotation[eventType] = rotation + 1
 	phrase := pool[rotation%len(pool)]
 	state.halfCount++
 	state.fullCount++
 	state.lastEmitted = now
-	presentation := presentations[eventType]
-	return Verdict{Phrase: phrase, EventType: eventType, Expression: presentation[0], Motion: presentation[1]}, true
+	return Verdict{Phrase: phrase, EventType: eventType, Expression: expression, Motion: motion}, true
 }

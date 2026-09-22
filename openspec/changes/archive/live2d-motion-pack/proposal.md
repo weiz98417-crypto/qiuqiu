@@ -1,5 +1,7 @@
 # Live2D Motion Pack Expansion
 
+> **[已取消 2026-09-23]** 用户裁决：自建动作质量未达原装水平且无补齐路径（约稿否决、AI 生成无成熟工具、换皮套否决），8 个自建动作全部撤回，语义动作名保留在 presentation-map.json 并映射到原装 9 个动作。后继 spec：openspec/changes/live2d-motion-revert。
+
 ## Why
 
 QiuQiu already has a working Live2D runtime and a small action scheduler, but the character still needs more body language to feel like a football companion. The next step is to add new motion assets in a controlled way so every new motion can be previewed, mapped to a football moment, and verified in the browser.

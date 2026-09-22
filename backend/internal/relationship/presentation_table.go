@@ -66,6 +66,16 @@ var presentationTable = []presentationRow{
 	// Trigger: updateAffect "goal" (valence/arousal spike) — the first-class
 	// celebrate group ('cheer' stays accepted as a legacy client alias).
 	{eventClass: "goal", expression: "excited", motion: "celebrate"},
+	// Trigger: a clear chance created (live2d-motion-revert: also the
+	// backchannel micro-reaction row — big_chance is a real matchstate event
+	// type and shares this single source).
+	{eventClass: "big_chance", expression: "excited", motion: "celebrate_02"},
+	// Trigger: a save denies the chance — startle then tense respect for the
+	// keeper (backchannel row, single source).
+	{eventClass: "save", expression: "surprised", motion: "tense"},
+	// Trigger: a shot goes wide/miss (live2d-motion-revert: backchannel's
+	// "miss" event type; shot_missed below keeps its own row).
+	{eventClass: "miss", expression: "sad", motion: "miss"},
 	// Trigger: updateAffect "goal_cancelled" (valence crash on a
 	// controversial call) — the VAR-overturn startle plus the referee
 	// complaint (resurrects the previously never-emitted `surprised` slot).
@@ -75,7 +85,9 @@ var presentationTable = []presentationRow{
 	// lockstep with the JSON events section so the slot cannot silently die.
 	{eventClass: "var_overturn", expression: "surprised", motion: "confused"},
 	// Trigger: updateAffect "var_check" (tension spike, confidence drop) —
-	// the anxious wait during the review.
+	// the anxious wait during the review (also the backchannel row; the
+	// micro-reaction takes the tense body, the analytical think pose stays
+	// with user-turn ActAnalyze).
 	{eventClass: "var_check", expression: "tense", motion: "tense"},
 	// Trigger: updateAffect "shot_missed" (mild valence dip) — the
 	// near-miss gesture instead of the neutral watching default.
@@ -215,6 +227,20 @@ func presentationActKey(act CommunicationAct, affect AffectState, signal Signal)
 	}
 	// Serene/calm band (client idle tier "calm").
 	return QuadrantNeutral
+}
+
+// BackchannelPresentation resolves the micro-reaction performance for a
+// backchannel-eligible event type through the same events rows the turn path
+// uses (live2d-motion-revert: backchannel's private map was collapsed into
+// this single source). ok=false when the event class has no row.
+func BackchannelPresentation(eventType string) (expression, motion string, ok bool) {
+	for index := range presentationTable {
+		row := &presentationTable[index]
+		if row.eventClass != "" && row.eventClass != watchingEventClass && row.eventClass == eventType {
+			return row.expression, row.motion, true
+		}
+	}
+	return "", "", false
 }
 
 // InterruptedDeliveryPresentation builds the one-shot confused/listening
