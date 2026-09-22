@@ -8,16 +8,19 @@ package companion
 
 import (
 	"context"
+	"fmt"
+	"log"
 	"strings"
+	"time"
 
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/relationship"
 )
 
-// cueMirrorFields 是决策视图 → settings 槽位的映射（banter 许可是
-// state.Banter 映射，非单值槽位，不在此列）。
+// cueMirrorFields 是决策视图 → settings 槽位的映射（polish-round-3 修正：
+// initiative 是 talkativeness 每回合推导值，镜像它会把推导升格为显式设置、
+// 永久压制 tier 变化——故 v1 只镜像 AnalysisAppetite 这类真 cue 信号）。
 var cueMirrorFields = map[relationship.CharacterSettingField]func(relationship.RelationshipView) string{
-	relationship.SettingInitiative:       func(v relationship.RelationshipView) string { return v.InitiativeMode },
 	relationship.SettingAnalysisAppetite: func(v relationship.RelationshipView) string { return v.AnalysisAppetite },
 }
 
@@ -41,11 +44,16 @@ func (a *Agent) mirrorCharacterSettings(ctx context.Context, userID, matchID str
 		}
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "character.setting_mirror", Args: map[string]string{"field": string(field), "value": value}})
 		if a.interactions != nil {
-			_, _ = a.interactions.Append(ctx, interaction.Event{
-				Kind: interaction.KindCharacterSetting, UserID: userID, MatchID: matchID,
+			event := interaction.Event{
+				Kind: interaction.KindCharacterSetting,
+				ID:   fmt.Sprintf("character-%s-%d", userID, time.Now().UnixNano()),
+				UserID: userID, MatchID: matchID,
 				TraceID: trace.ID, InputText: "field=" + string(field) + " from=" + current[field] + " to=" + value,
 				Source: "cue", CreatedAt: trace.CreatedAt,
-			})
+			}
+			if _, err := a.interactions.Append(ctx, event); err != nil {
+				log.Printf("character mirror audit for %q: %v", userID, err)
+			}
 		}
 	}
 }

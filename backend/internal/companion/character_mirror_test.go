@@ -2,13 +2,16 @@ package companion
 
 // T2-cue 镜像锁（openspec/changes/polish-round-3）：cue 驱动的偏好变化
 // 镜像进 user_character_settings（三入口一状态），变化才落、审计同形状。
+// 修正后语义（双轴审查）：v1 只镜像 AnalysisAppetite——initiative 是
+// talkativeness 每回合的推导值，镜像它会把推导升格为显式设置、永久压制
+// tier 变化（ADR-0018 粘性语义被破坏）。
 
 import (
 	"context"
 	"testing"
-	"qiuqiu/internal/matchstate"
 
 	"qiuqiu/internal/interaction"
+	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
 )
 
@@ -21,7 +24,7 @@ func mustSettings(t *testing.T, store relationship.CharacterSettingStore) *relat
 	return s
 }
 
-func TestMirrorCharacterSettingsWritesChangedFields(t *testing.T) {
+func TestMirrorCharacterSettingsWritesAppetiteOnly(t *testing.T) {
 	store := relationship.NewMemoryCharacterSettingStore()
 	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithCharacterSettings(mustSettings(t, store))
 	trace := &Trace{ID: "t-mirror"}
@@ -34,8 +37,11 @@ func TestMirrorCharacterSettingsWritesChangedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if values[relationship.SettingInitiative] != "active" || values[relationship.SettingAnalysisAppetite] != "detailed" {
-		t.Fatalf("values = %+v, want both mirrored", values)
+	if values[relationship.SettingAnalysisAppetite] != "detailed" {
+		t.Fatalf("values = %+v, want appetite mirrored", values)
+	}
+	if values[relationship.SettingInitiative] != "" {
+		t.Fatalf("initiative = %q, want empty (tier-derived, must not become sticky setting)", values[relationship.SettingInitiative])
 	}
 	found := false
 	for _, call := range trace.ToolCalls {
@@ -52,7 +58,7 @@ func TestMirrorCharacterSettingsSkipsUnchanged(t *testing.T) {
 	store := relationship.NewMemoryCharacterSettingStore()
 	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithCharacterSettings(mustSettings(t, store))
 	trace := &Trace{ID: "t-mirror-2"}
-	decision := relationship.Decision{Relationship: relationship.RelationshipView{InitiativeMode: "quiet"}}
+	decision := relationship.Decision{Relationship: relationship.RelationshipView{AnalysisAppetite: "detailed"}}
 	agent.mirrorCharacterSettings(context.Background(), "user-1", "m1", decision, trace)
 	calls := len(trace.ToolCalls)
 	agent.mirrorCharacterSettings(context.Background(), "user-1", "m1", decision, trace)
@@ -70,7 +76,7 @@ func TestLedgerRecordsCharacterSetting(t *testing.T) {
 	ledger := interaction.NewMemoryLedger()
 	_, err := ledger.Append(context.Background(), interaction.Event{
 		Kind: interaction.KindCharacterSetting, ID: "e1", UserID: "user-1", MatchID: "account",
-		InputText: "field=initiative from= to=active", Source: "ws",
+		InputText: "field=analysis_appetite from= to=detailed", Source: "ws",
 	})
 	if err != nil {
 		t.Fatalf("Append: %v", err)
