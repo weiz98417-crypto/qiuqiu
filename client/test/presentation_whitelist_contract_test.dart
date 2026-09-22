@@ -32,13 +32,13 @@ void main() {
   final jsonPhases =
       (presentationMap['phases'] as Map).cast<String, dynamic>();
 
-  test('model ships the full 12-group / 17-motion inventory', () {
-    expect(motionGroups.keys, hasLength(12));
+  test('model ships the original 5-group / 9-motion inventory (live2d-motion-revert)', () {
+    expect(motionGroups.keys, hasLength(5));
     final motionCount = motionGroups.values.fold<int>(
       0,
       (sum, group) => sum + (group as List).length,
     );
-    expect(motionCount, 17);
+    expect(motionCount, 9);
     expect(expressions, hasLength(7));
   });
 

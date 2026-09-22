@@ -582,7 +582,11 @@ function playMotion(name) {
         return;
     }
     var m = resolveMotion(name);
-    if (m) try { model.motion(m[0], m[1], 3); } catch(e) {}
+    if (m) {
+        try { model.motion(m[0], m[1], 3); } catch(e) {}
+        // 指令动作刚播过：闲置轮播让路（idle-life-signals）。
+        life.lastMotionAt = Date.now();
+    }
 }
 
 // Exact motion names play their single row; group names (`idle`, `listen`,
@@ -635,6 +639,79 @@ setInterval(function() {
     mouth.stretch += (target.stretch - mouth.stretch) * 0.4;
     applyMouth();
 }, 50);
+
+// ── 闲置生命感四件套（idle-life-signals）：眨眼 / 呼吸 / idle 变体轮播 /
+// 视线低幅游移。全部纯客户端、quiet 档不抑制（在场≠打扰）；与指令动作
+// 互斥——刚播过指令动作时轮播让路。参数写入与口型循环同模式（50ms 节拍）。
+var life = {
+    lastMotionAt: 0,
+    nextBlink: 0,
+    blinkT: -1,
+    breathPhase: Math.random() * 6.28,
+    nextGaze: 0,
+    gazeX: 0,
+    gazeY: 0,
+    gazeTX: 0,
+    gazeTY: 0,
+    nextIdle: 0
+};
+
+setInterval(function() {
+    if (!model || !mapReady) return;
+    var now = Date.now();
+    var core;
+    try { core = model.internalModel.coreModel; } catch(e) { return; }
+    if (!core) return;
+    // 呼吸：~4s 正弦，additive（不覆盖 motion 里可能有的呼吸曲线）。
+    life.breathPhase += 0.0785;
+    try {
+        core.addToParameterValueById('ParamBreath', (Math.sin(life.breathPhase) * 0.5 + 0.5) * 0.8);
+    } catch(e) {}
+    // 自动眨眼：2-6s 随机间隔，260ms 一次闭合。
+    if (life.blinkT >= 0) {
+        life.blinkT += 50;
+        var p = life.blinkT / 260;
+        var open = p < 0.5 ? (1 - p * 2) : (p - 0.5) * 2;
+        if (p >= 1) {
+            life.blinkT = -1;
+            open = 1;
+        }
+        open = Math.max(0, Math.min(1, open));
+        try {
+            core.setParameterValueById('ParamEyeLOpen', open);
+            core.setParameterValueById('ParamEyeROpen', open);
+        } catch(e) {}
+    } else if (now >= life.nextBlink) {
+        life.blinkT = 0;
+        life.nextBlink = now + 2000 + Math.random() * 4000;
+    }
+    // 视线低幅游移：每 5-10s 换目标点，缓动跟随（additive 不抢对视）。
+    if (now >= life.nextGaze) {
+        life.nextGaze = now + 5000 + Math.random() * 5000;
+        life.gazeTX = (Math.random() * 2 - 1) * 0.35;
+        life.gazeTY = (Math.random() * 2 - 1) * 0.2;
+    }
+    life.gazeX += (life.gazeTX - life.gazeX) * 0.02;
+    life.gazeY += (life.gazeTY - life.gazeY) * 0.02;
+    try {
+        core.addToParameterValueById('ParamEyeBallX', life.gazeX);
+        core.addToParameterValueById('ParamEyeBallY', life.gazeY);
+    } catch(e) {}
+}, 50);
+
+// idle 变体轮播：8-15s 随机播 idle 组一个变体（替换「永远第一个」的兜底）。
+// 说话中或 6s 内有指令动作时让路。
+setInterval(function() {
+    if (!model || !mapReady || speaking) return;
+    var now = Date.now();
+    if (life.lastMotionAt && now - life.lastMotionAt < 6000) return;
+    if (now < life.nextIdle) return;
+    life.nextIdle = now + 8000 + Math.random() * 7000;
+    var variants = groupVariants['idle'];
+    if (!variants || !variants.length) return;
+    var pick = variants[Math.floor(Math.random() * variants.length)];
+    try { model.motion(pick[0], pick[1], 3); } catch(e) {}
+}, 4000);
 
 loadModel();
 </script>
