@@ -1,0 +1,89 @@
+{
+  "version": "2026-07",
+  "id": "safety.revoke-redcard",
+  "suite": "safety",
+  "tags": [
+    "safety",
+    "revoke"
+  ],
+  "summary": "事实撤销后不引用旧口径。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "刚才那个判罚还算吗",
+        "intent": "recent_event_question",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "original",
+      "event": {
+        "eventType": "red_card",
+        "period": "first_half",
+        "clock": "60:03",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "score": {
+          "home": 0,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "两黄变一红罚下。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "probe",
+      "userId": "fan-1",
+      "text": "刚才那个判罚还算吗",
+      "expect": {
+        "intent": "recent_event_question"
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

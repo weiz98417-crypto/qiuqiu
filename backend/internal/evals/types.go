@@ -17,11 +17,25 @@ type Case struct {
 	Summary  string                 `json:"summary"`
 	Config   matchstate.MatchConfig `json:"config"`
 	Realizer *RealizerFixture       `json:"realizer,omitempty"`
-	Portrait *PortraitSeed          `json:"portrait,omitempty"`
-	Router   *RouterFixture         `json:"router,omitempty"`
-	Events   []EventStep            `json:"events,omitempty"`
-	Turns    []TurnStep             `json:"turns,omitempty"`
-	Final    FinalExpectation       `json:"final,omitempty"`
+	// Knowledge 夹具（knowledge-event-triggers / ADR-0017）：runner 把条目
+	// 写进临时目录再 Load，评测里知识域不再是"没接上"。
+	Knowledge []KnowledgeEntryFixture `json:"knowledge,omitempty"`
+	Portrait  *PortraitSeed           `json:"portrait,omitempty"`
+	Router    *RouterFixture          `json:"router,omitempty"`
+	Events    []EventStep             `json:"events,omitempty"`
+	Turns     []TurnStep              `json:"turns,omitempty"`
+	Final     FinalExpectation        `json:"final,omitempty"`
+}
+
+// KnowledgeEntryFixture 是一条策展知识条目的评测夹具（YAML 字段同型）。
+type KnowledgeEntryFixture struct {
+	ID         string   `json:"id"`
+	Topics     []string `json:"topics"`
+	Triggers   []string `json:"triggers,omitempty"`
+	Quote      string   `json:"quote,omitempty"`
+	Answer     string   `json:"answer"`
+	Source     string   `json:"source,omitempty"`
+	Confidence float64  `json:"confidence"`
 }
 
 type RealizerFixture struct {

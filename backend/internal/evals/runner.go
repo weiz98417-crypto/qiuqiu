@@ -4,10 +4,14 @@ import (
 	"context"
 	"errors"
 	"fmt"
+	"os"
+	"path/filepath"
 	"strings"
 	"time"
 
+	"gopkg.in/yaml.v3"
 	"qiuqiu/internal/companion"
+	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/observation"
@@ -24,6 +28,34 @@ func Run(ctx context.Context, cases []Case) Report {
 	report.FinishedAt = time.Now().UTC()
 	report.Scorecard = summarize(report.Cases)
 	return report
+}
+
+// materializeKnowledge 把夹具条目写进临时 YAML 目录再走正式 Load（与
+// 生产同一解析与校验路径），返回库与清理函数。
+func materializeKnowledge(entries []KnowledgeEntryFixture) (*knowledge.Library, func(), error) {
+	dir, err := os.MkdirTemp("", "evals-knowledge-")
+	if err != nil {
+		return nil, nil, err
+	}
+	cleanup := func() { _ = os.RemoveAll(dir) }
+	for _, entry := range entries {
+		body, err := yaml.Marshal(entry)
+		if err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+		path := filepath.Join(dir, strings.ReplaceAll(entry.ID, "/", "_")+".yaml")
+		if err := os.WriteFile(path, body, 0o644); err != nil {
+			cleanup()
+			return nil, nil, err
+		}
+	}
+	library, err := knowledge.Load(dir, nil)
+	if err != nil {
+		cleanup()
+		return nil, nil, err
+	}
+	return library, cleanup, nil
 }
 
 func runCase(ctx context.Context, evalCase Case) CaseResult {
@@ -43,6 +75,15 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	}
 	if evalCase.Router != nil {
 		agent.WithRouter(scriptedRouter{fixture: *evalCase.Router})
+	}
+	if len(evalCase.Knowledge) > 0 {
+		library, cleanup, err := materializeKnowledge(evalCase.Knowledge)
+		if err != nil {
+			result.addFailure("setup", fmt.Sprintf("knowledge fixture: %v", err))
+			return result.finish(startedAt)
+		}
+		defer cleanup()
+		agent.WithKnowledge(library)
 	}
 	matchID := "eval-" + evalCase.ID
 	if _, _, err := store.SetConfig(matchID, evalCase.Config); err != nil {

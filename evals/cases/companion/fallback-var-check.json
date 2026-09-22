@@ -1,0 +1,60 @@
+{
+  "version": "2026-07",
+  "id": "companion.fallback-var-check",
+  "suite": "companion",
+  "tags": [
+    "companion",
+    "fallback"
+  ],
+  "summary": "事件兜底罐头不漂移。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "ev",
+      "event": {
+        "eventType": "var_check",
+        "period": "first_half",
+        "clock": "31:00",
+        "description": "VAR 回看",
+        "visibility": "public"
+      }
+    }
+  ]
+}

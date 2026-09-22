@@ -10,6 +10,15 @@ import (
 	"strings"
 )
 
+// validSuites 枚举评测集目录（evals-248 扩容）：原三席 + 能力/风险扩容域。
+// router_net（真网路由档）不在 "all" 默认集合里，需显式 -suite router_net。
+var validSuites = map[string]bool{
+	"baseline": true, "boundary": true, "regression": true,
+	"safety": true, "persona": true, "memory": true, "companion": true,
+	"knowledge": true, "multi": true, "robust": true, "voice": true,
+	"identity": true, "router_net": true,
+}
+
 func LoadCases(root string) ([]Case, error) {
 	var cases []Case
 	seen := map[string]string{}
@@ -52,8 +61,8 @@ func (evalCase Case) Validate() error {
 	if strings.TrimSpace(evalCase.ID) == "" {
 		return fmt.Errorf("id is required")
 	}
-	if evalCase.Suite != "baseline" && evalCase.Suite != "boundary" && evalCase.Suite != "regression" {
-		return fmt.Errorf("suite must be baseline, boundary, or regression")
+	if !validSuites[evalCase.Suite] {
+		return fmt.Errorf("unknown suite %q (see validSuites)", evalCase.Suite)
 	}
 	if strings.TrimSpace(evalCase.Config.HomeTeam) == "" || strings.TrimSpace(evalCase.Config.AwayTeam) == "" {
 		return fmt.Errorf("config homeTeam and awayTeam are required")
@@ -112,8 +121,17 @@ func (evalCase Case) Validate() error {
 
 func FilterCases(cases []Case, suite string) []Case {
 	suite = strings.TrimSpace(suite)
+	// "all" 覆盖除真网档外的全部域：router_net 需真 key 且有费用/抖动，
+	// 只在显式点名时运行。
 	if suite == "" || suite == "all" {
-		return append([]Case(nil), cases...)
+		var selected []Case
+		for _, evalCase := range cases {
+			if evalCase.Suite == "router_net" {
+				continue
+			}
+			selected = append(selected, evalCase)
+		}
+		return selected
 	}
 	requested := map[string]bool{}
 	for _, value := range strings.Split(suite, ",") {

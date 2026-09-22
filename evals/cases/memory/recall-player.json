@@ -1,0 +1,88 @@
+{
+  "version": "2026-07",
+  "id": "memory.recall-player",
+  "suite": "memory",
+  "tags": [
+    "memory",
+    "recall"
+  ],
+  "summary": "跨场记忆引用：球员",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "realizer": {
+    "reply": "我记得呢，贝林厄姆是你自己说过的。"
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "我说过最喜欢哪个球员来着",
+        "intent": "personal_share",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "portrait": {
+    "userId": "fan-1",
+    "entries": [
+      {
+        "topic": "陪伴偏好",
+        "subTopic": "球员",
+        "content": "fan-1 的球员：贝林厄姆。"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "recall",
+      "userId": "fan-1",
+      "text": "我说过最喜欢哪个球员来着",
+      "expect": {
+        "intent": "personal_share",
+        "memoryMustMention": [
+          "贝林厄姆"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

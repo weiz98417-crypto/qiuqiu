@@ -1,0 +1,88 @@
+{
+  "version": "2026-07",
+  "id": "memory.recall-jersey",
+  "suite": "memory",
+  "tags": [
+    "memory",
+    "recall"
+  ],
+  "summary": "跨场记忆引用：球衣",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "realizer": {
+    "reply": "我记得呢，20是你自己说过的。"
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "我穿的是几号球衣来着",
+        "intent": "personal_share",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "portrait": {
+    "userId": "fan-1",
+    "entries": [
+      {
+        "topic": "陪伴偏好",
+        "subTopic": "球衣",
+        "content": "fan-1 的球衣：20。"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "recall",
+      "userId": "fan-1",
+      "text": "我穿的是几号球衣来着",
+      "expect": {
+        "intent": "personal_share",
+        "memoryMustMention": [
+          "20"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

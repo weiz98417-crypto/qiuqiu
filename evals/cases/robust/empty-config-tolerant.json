@@ -1,0 +1,39 @@
+{
+  "version": "2026-07",
+  "id": "robust.empty-config-tolerant",
+  "suite": "robust",
+  "tags": [
+    "robust",
+    "input"
+  ],
+  "summary": "无球员名单配置不崩。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国"
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "probe",
+      "userId": "fan-1",
+      "text": "今天双方名单有谁",
+      "expect": {
+        "forbidClaim": true
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

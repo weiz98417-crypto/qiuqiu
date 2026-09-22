@@ -1,0 +1,129 @@
+{
+  "version": "2026-07",
+  "id": "multi.chain-assist-then-scorer",
+  "suite": "multi",
+  "tags": [
+    "multi",
+    "followup"
+  ],
+  "summary": "多轮追问链：assist-then-scorer",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "助攻是谁",
+        "intent": "recent_event_question",
+        "confidence": 0.9
+      },
+      {
+        "matchText": "那进球的呢",
+        "intent": "recent_event_question",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里破门，法比安传中助攻。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "goal",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          },
+          {
+            "role": "assist",
+            "name": "法比安",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "q1",
+      "userId": "fan-1",
+      "text": "助攻是谁",
+      "expect": {
+        "intent": "recent_event_question",
+        "mustMention": [
+          "法比安"
+        ],
+        "retrievedEventKeys": [
+          "goal"
+        ]
+      }
+    },
+    {
+      "id": "q2",
+      "userId": "fan-1",
+      "text": "那进球的呢",
+      "expect": {
+        "intent": "recent_event_question",
+        "mustMention": [
+          "佩德里"
+        ],
+        "retrievedEventKeys": [
+          "goal"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 2
+  }
+}

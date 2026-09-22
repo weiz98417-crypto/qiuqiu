@@ -1,0 +1,117 @@
+{
+  "version": "2026-07",
+  "id": "multi.voice-text-relay",
+  "suite": "multi",
+  "tags": [
+    "multi",
+    "voice"
+  ],
+  "summary": "语音提问与文字提问共享上下文。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "他本场数据怎么样",
+        "intent": "recent_event_question",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "goal",
+      "event": {
+        "eventType": "goal",
+        "period": "first_half",
+        "clock": "23:41",
+        "teamId": "home",
+        "teamName": "西班牙",
+        "playerName": "佩德里",
+        "score": {
+          "home": 1,
+          "away": 0
+        },
+        "intensity": 5,
+        "description": "佩德里破门。",
+        "visibility": "public",
+        "participants": [
+          {
+            "role": "goal",
+            "name": "佩德里",
+            "teamId": "home",
+            "teamName": "西班牙"
+          }
+        ]
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "voice-q",
+      "userId": "fan-1",
+      "text": "刚才谁进的球",
+      "voice": {
+        "asrStatus": "ok",
+        "asrText": "刚才谁进的球",
+        "asrProvider": "mimo"
+      },
+      "expect": {
+        "intent": "recent_event_question",
+        "mustMention": [
+          "佩德里"
+        ]
+      }
+    },
+    {
+      "id": "text-q",
+      "userId": "fan-1",
+      "text": "他本场数据怎么样",
+      "expect": {
+        "intent": "recent_event_question",
+        "retrievedEventKeys": [
+          "goal"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 2
+  }
+}

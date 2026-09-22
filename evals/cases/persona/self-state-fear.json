@@ -1,0 +1,93 @@
+{
+  "version": "2026-07",
+  "id": "persona.self-state-fear",
+  "suite": "persona",
+  "tags": [
+    "persona",
+    "memory"
+  ],
+  "summary": "用户自陈偏好进入后续记忆语境。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "realizer": {
+    "reply": "记得你说过这个，还挺有意思的。"
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "我上次说过的那个偏好是什么来着",
+        "intent": "personal_share",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "portrait": {
+    "userId": "fan-1",
+    "entries": [
+      {
+        "topic": "偏好",
+        "subTopic": "state-fear",
+        "content": "fan-1 提到过和「点球大战」有关的偏好。"
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "state",
+      "userId": "fan-1",
+      "text": "我特别讨厌点球大战，看着就揪心",
+      "expect": {}
+    },
+    {
+      "id": "ask",
+      "userId": "fan-1",
+      "text": "我上次说过的那个偏好是什么来着",
+      "expect": {
+        "memoryMustMention": [
+          "点球大战"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 2
+  }
+}

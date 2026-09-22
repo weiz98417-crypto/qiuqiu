@@ -9,17 +9,17 @@ import (
 // AgentBoundaryRequest is the stable in-process DTO that can later cross a
 // process boundary if the companion agent moves out of the Go backend.
 type AgentBoundaryRequest struct {
-	SignalID            string              `json:"signalId"`
-	FactRefresh         string              `json:"factRefresh,omitempty"`
-	MatchID             string              `json:"matchId"`
-	UserID              string              `json:"userId"`
-	Text                string              `json:"text"`
-	Timezone            string              `json:"timezone,omitempty"`
-	Talkativeness       string              `json:"talkativeness,omitempty"`
+	SignalID            string                            `json:"signalId"`
+	FactRefresh         string                            `json:"factRefresh,omitempty"`
+	MatchID             string                            `json:"matchId"`
+	UserID              string                            `json:"userId"`
+	Text                string                            `json:"text"`
+	Timezone            string                            `json:"timezone,omitempty"`
+	Talkativeness       string                            `json:"talkativeness,omitempty"`
 	Settings            *relationship.PreferenceOverrides `json:"settings,omitempty"`
-	ProgressiveSchedule bool                `json:"progressiveSchedule,omitempty"`
-	Now                 time.Time           `json:"now"`
-	Voice               *VoiceTraceMetadata `json:"voice,omitempty"`
+	ProgressiveSchedule bool                              `json:"progressiveSchedule,omitempty"`
+	Now                 time.Time                         `json:"now"`
+	Voice               *VoiceTraceMetadata               `json:"voice,omitempty"`
 }
 
 func sanitizeVoiceMetadata(meta *VoiceTraceMetadata) *VoiceTraceMetadata {
@@ -98,6 +98,34 @@ func CompanionToolSchemas() []ToolSchema {
 			MutatesMatchFacts: false,
 			Input:             map[string]string{"kind": "string", "status": "string"},
 			Output:            map[string]string{"claim": "companion.FactClaim"},
+		},
+		{
+			Name:              "knowledge.answer",
+			Description:       "Answer a knowledge_question verbatim from the curated knowledge library (ADR-0017); never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"text": "string"},
+			Output:            map[string]string{"entryId": "string", "answer": "string"},
+		},
+		{
+			Name:              "knowledge.trigger",
+			Description:       "Look up a curated knowledge entry triggered by a judgment-class match event (knowledge-event-triggers); never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"eventType": "string"},
+			Output:            map[string]string{"entryId": "string", "quote": "string"},
+		},
+		{
+			Name:              "knowledge.trigger_fallback",
+			Description:       "Deterministic appendix fallback when the realized reply dropped the quote anchor; never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"entryId": "string"},
+			Output:            map[string]string{"appended": "string"},
+		},
+		{
+			Name:              "relationship.goal_comfort",
+			Description:       "Record that a goal-comfort prefix was emitted for the subscribed team (proactive-match-nodes); never mutates match facts.",
+			MutatesMatchFacts: false,
+			Input:             map[string]string{"team": "string"},
+			Output:            map[string]string{"ok": "bool"},
 		},
 		{
 			Name:              "conversation.read_recent",

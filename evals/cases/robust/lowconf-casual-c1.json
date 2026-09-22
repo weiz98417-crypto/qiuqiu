@@ -1,0 +1,72 @@
+{
+  "version": "2026-07",
+  "id": "robust.lowconf-casual-c1",
+  "suite": "robust",
+  "tags": [
+    "robust",
+    "router"
+  ],
+  "summary": "低置信闲聊走 C1 降级。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "就随便说说嘛",
+        "intent": "unknown",
+        "confidence": 0.3
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "probe",
+      "userId": "fan-1",
+      "text": "就随便说说嘛",
+      "expect": {
+        "intent": "unknown"
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

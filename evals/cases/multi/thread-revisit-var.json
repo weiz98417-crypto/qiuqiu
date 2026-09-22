@@ -1,0 +1,104 @@
+{
+  "version": "2026-07",
+  "id": "multi.thread-revisit-var",
+  "suite": "multi",
+  "tags": [
+    "multi",
+    "thread"
+  ],
+  "summary": "VAR 话题跨事件回访。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "realizer": {
+    "reply": "刚才的回看还没有新消息，有结果我第一时间说。"
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "VAR 在看什么",
+        "intent": "recent_event_question",
+        "confidence": 0.9
+      },
+      {
+        "matchText": "刚才说的事有结果了吗",
+        "intent": "personal_share",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "var",
+      "event": {
+        "eventType": "var_check",
+        "period": "first_half",
+        "clock": "30:00",
+        "description": "VAR 回看是否点球",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "ask1",
+      "userId": "fan-1",
+      "text": "VAR 在看什么",
+      "expect": {
+        "intent": "recent_event_question",
+        "mustMention": [
+          "VAR"
+        ],
+        "retrievedEventKeys": [
+          "var"
+        ]
+      }
+    },
+    {
+      "id": "ask2",
+      "userId": "fan-1",
+      "text": "刚才说的事有结果了吗",
+      "expect": {
+        "intent": "personal_share"
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 2
+  }
+}

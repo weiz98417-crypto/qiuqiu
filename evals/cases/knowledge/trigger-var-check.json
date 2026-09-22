@@ -1,0 +1,123 @@
+{
+  "version": "2026-07",
+  "id": "knowledge.trigger-var-check",
+  "suite": "knowledge",
+  "tags": [
+    "knowledge",
+    "trigger"
+  ],
+  "summary": "判罚事件 var_check 触发知识附句。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "knowledge": [
+    {
+      "id": "rule-var-scope",
+      "topics": [
+        "VAR",
+        "视频助理裁判"
+      ],
+      "triggers": [
+        "var_check"
+      ],
+      "quote": "VAR 只介入进球、点球、直接红牌和认错球员四类情况",
+      "answer": "VAR 只介入进球、点球、直接红牌和认错球员四类情况，其他判罚以场上裁判为准。",
+      "source": "IFAB VAR Protocol",
+      "confidence": 0.95
+    },
+    {
+      "id": "rule-offside",
+      "topics": [
+        "越位"
+      ],
+      "quote": "传球一瞬间比对方倒数第二名球员更靠近球门线就是越位",
+      "answer": "越位看的是传球一瞬间：接球人比对方倒数第二名球员更靠近球门线，就算越位。",
+      "source": "IFAB Laws of the Game, Law 11",
+      "confidence": 0.95
+    },
+    {
+      "id": "rule-red-card",
+      "topics": [
+        "红牌"
+      ],
+      "triggers": [
+        "red_card"
+      ],
+      "quote": "直接红牌针对严重犯规、暴力行为或破坏明显进球机会",
+      "answer": "直接红牌针对严重犯规、暴力行为或破坏明显进球机会，罚下后球队不能再补人。",
+      "source": "IFAB Laws of the Game, Law 12",
+      "confidence": 0.95
+    },
+    {
+      "id": "rule-penalty",
+      "topics": [
+        "点球"
+      ],
+      "triggers": [
+        "penalty",
+        "penalty_awarded"
+      ],
+      "quote": "防守方在本方禁区内犯规被判直接任意球时执行点球",
+      "answer": "点球的来源是防守方在本方禁区内犯规被判直接任意球。",
+      "source": "IFAB Laws of the Game, Law 14",
+      "confidence": 0.95
+    },
+    {
+      "id": "rule-handball",
+      "topics": [
+        "手球"
+      ],
+      "quote": "手球判罚看故意性：故意用手或手臂触球才会被判罚。",
+      "answer": "手球判罚看故意性：故意用手或手臂触球才会被判罚。",
+      "source": "IFAB Laws of the Game, Law 12",
+      "confidence": 0.9
+    }
+  ],
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    },
+    {
+      "key": "ev",
+      "event": {
+        "eventType": "var_check",
+        "period": "first_half",
+        "clock": "20:00",
+        "description": "VAR 正在回看禁区内是否手球",
+        "visibility": "public"
+      }
+    }
+  ]
+}

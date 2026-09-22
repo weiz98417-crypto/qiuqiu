@@ -1,0 +1,73 @@
+{
+  "version": "2026-07",
+  "id": "persona.control-silence-please",
+  "suite": "persona",
+  "tags": [
+    "persona",
+    "control"
+  ],
+  "summary": "安静档控制确报。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      },
+      {
+        "number": "19",
+        "name": "亚马尔",
+        "position": "RW"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "你们少说两句，我来观战",
+        "intent": "control_command",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "events": [
+    {
+      "key": "kickoff",
+      "event": {
+        "eventType": "kickoff",
+        "period": "first_half",
+        "clock": "00:30",
+        "description": "比赛开始。",
+        "visibility": "public"
+      }
+    }
+  ],
+  "turns": [
+    {
+      "id": "ctrl",
+      "userId": "fan-1",
+      "text": "你们少说两句，我来观战",
+      "expect": {
+        "intent": "control_command",
+        "exact": "收到，我会少说一点，关键变化再提醒你。"
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}
