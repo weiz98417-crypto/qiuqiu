@@ -46,6 +46,7 @@ class SessionService {
   static const _userIdKey = 'session_user_id';
   static const _sessionIdKey = 'session_id';
   static const _expiresAtKey = 'session_expires_at';
+  static const _loginIdentifierKey = 'session_login_identifier';
 
   final http.Client _client;
   final SessionSecretStore _secretStorage;
@@ -72,6 +73,78 @@ class SessionService {
       }
     }
     return _anonymous(baseUrl, deviceId);
+  }
+
+  /// 登录凭证缝（ADR-0020）：携带当前会话的 Bearer 调 /api/sessions/login，
+  /// 注册与切换双合一。成功后本地凭证被覆盖；userId 相比当前会话变化即
+  /// 发生了账号切换（调用方可据此提示）。
+  Future<SessionCredentials> login({
+    required String baseUrl,
+    required String deviceId,
+    required String identifier,
+    required String password,
+  }) async {
+    final current = await ensureSession(baseUrl: baseUrl, deviceId: deviceId);
+    final response = await _client
+        .post(
+          Uri.parse('${normalizeAPIBaseURL(baseUrl)}/api/sessions/login'),
+          headers: {
+            'Content-Type': 'application/json',
+            'Authorization': 'Bearer ${current.accessToken}',
+          },
+          body: jsonEncode({'identifier': identifier, 'password': password}),
+        )
+        .timeout(const Duration(seconds: 10));
+    if (response.statusCode < 200 || response.statusCode >= 300) {
+      throw SessionException(
+        'login failed: ${response.statusCode}',
+        statusCode: response.statusCode,
+      );
+    }
+    final decoded = jsonDecode(response.body);
+    if (decoded is! Map<String, dynamic>) {
+      throw const SessionException('invalid login response');
+    }
+    final credentials = SessionCredentials.fromJson(decoded);
+    if (!credentials.isUsable) {
+      throw const SessionException('incomplete login response');
+    }
+    await _save(credentials);
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setString(
+      _loginIdentifierKey,
+      identifier.trim().toLowerCase(),
+    );
+    return credentials;
+  }
+
+  /// 登出：吊销会话并清空本地凭证。下次 ensureSession 会按 deviceId 重新
+  /// 匿名——设备映射仍在，归还同一 usr_（登出不等于失忆）。
+  Future<void> logout({required String baseUrl}) async {
+    final stored = await _load();
+    if (stored != null && stored.refreshToken.isNotEmpty) {
+      try {
+        await _client
+            .post(
+              Uri.parse('${normalizeAPIBaseURL(baseUrl)}/api/sessions/revoke'),
+              headers: const {'Content-Type': 'application/json'},
+              body: jsonEncode({'refreshToken': stored.refreshToken}),
+            )
+            .timeout(const Duration(seconds: 10));
+      } catch (_) {
+        // 吊销失败也继续本地登出：令牌过期后服务端态自然收敛。
+      }
+    }
+    await _clear();
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.remove(_loginIdentifierKey);
+  }
+
+  /// 本机最近一次登录的 identifier（null = 未登录）。仅作设置页状态展示，
+  /// 会话有效性以 ensureSession 为准。
+  Future<String?> savedIdentifier() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getString(_loginIdentifierKey);
   }
 
   Future<SessionCredentials> _anonymous(String baseUrl, String deviceId) {
@@ -197,6 +270,7 @@ class SessionService {
     await prefs.remove(_expiresAtKey);
     await prefs.remove(_accessTokenKey);
     await prefs.remove(_refreshTokenKey);
+    await prefs.remove(_loginIdentifierKey);
   }
 
   void close() {

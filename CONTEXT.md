@@ -9,8 +9,12 @@ A persistent digital companion whose relationship with the user develops through
 _Avoid_: AI assistant, virtual girlfriend, commentator
 
 **Anonymous Identity（匿名身份）**:
-The user's persistent, login-free identity: exchanged from a device identifier, with the portrait, relationship stage, memories, and delivery history all attached to it. The device identifier is its only credential — losing it means the ballmate loses all shared memory.
+The user's persistent, login-free default identity: exchanged from a device identifier — its default credential — with the portrait, relationship stage, memories, and delivery history all attached to it. Losing the device identifier means the ballmate loses all shared memory; attaching a Verified Identity removes that risk.
 _Avoid_: 账号, 用户等级, 游客模式
+
+**Verified Identity（正式身份）**:
+The optional upgrade of an Anonymous Identity: a credential (currently email + password) bound to the same user — never a new one. Logging in on another device recovers the same ballmate relationship; logging out returns to the anonymous identity, which remains the product's default form.
+_Avoid_: 账号体系, 会员, 强制注册, 新身份
 
 **Character Stance（角色立场）**:
 QiuQiu's stable football values, tastes, and conversational boundaries that do not immediately change to match the user's opinion.

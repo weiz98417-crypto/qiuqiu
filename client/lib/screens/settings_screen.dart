@@ -1,6 +1,8 @@
 import 'package:flutter/material.dart';
 
 import '../services/preferences_service.dart';
+import '../services/session_service.dart';
+import 'login_screen.dart';
 import '../theme/app_theme.dart';
 
 class SettingsScreen extends StatefulWidget {
@@ -12,6 +14,10 @@ class SettingsScreen extends StatefulWidget {
   final VoidCallback? onOpenPortrait;
   /// 话痨档位变更回调（保存后触发）：走 WS set_talkativeness 即时持久化。
   final void Function(String tier)? onTalkativenessChanged;
+  /// 登录凭证缝（ADR-0020）：提供即展示「账号与同步」段。
+  final SessionService? sessions;
+  final String baseUrl;
+  final String deviceId;
 
   const SettingsScreen({
     super.key,
@@ -19,6 +25,9 @@ class SettingsScreen extends StatefulWidget {
     required this.onSave,
     this.onTalkativenessChanged,
     this.onOpenPortrait,
+    this.sessions,
+    this.baseUrl = '',
+    this.deviceId = '',
   });
 
   @override
@@ -29,6 +38,8 @@ class _SettingsScreenState extends State<SettingsScreen> {
   late final TextEditingController _nicknameController;
   late UserProfile _draft;
   bool _saving = false;
+  final ValueNotifier<String?> _loginIdentifier = ValueNotifier(null);
+  bool _submittingLogout = false;
 
   @override
   void initState() {
@@ -37,10 +48,63 @@ class _SettingsScreenState extends State<SettingsScreen> {
       text: widget.initialProfile.nickname,
     );
     _draft = widget.initialProfile;
+    widget.sessions?.savedIdentifier().then((identifier) {
+      _loginIdentifier.value = (identifier == null || identifier.isEmpty)
+          ? null
+          : identifier;
+    });
+  }
+
+  Future<void> _openLogin() async {
+    final sessions = widget.sessions;
+    if (sessions == null) return;
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => LoginScreen(
+          sessions: sessions,
+          baseUrl: widget.baseUrl,
+          deviceId: widget.deviceId,
+        ),
+      ),
+    );
+    _loginIdentifier.value = await sessions.savedIdentifier();
+  }
+
+  Future<void> _confirmLogout() async {
+    final sessions = widget.sessions;
+    if (sessions == null || _submittingLogout) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (context) => AlertDialog(
+        title: const Text('退出登录？'),
+        content: const Text(
+          '退出后球球在本机还是认识你，'
+          '但换设备前将无法通过邮箱找回记忆。',
+        ),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(context, false),
+            child: const Text('取消'),
+          ),
+          FilledButton(
+            onPressed: () => Navigator.pop(context, true),
+            child: const Text('退出'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _submittingLogout = true);
+    await sessions.logout(baseUrl: widget.baseUrl);
+    if (!mounted) return;
+    setState(() => _submittingLogout = false);
+    _loginIdentifier.value = await sessions.savedIdentifier();
   }
 
   @override
   void dispose() {
+    _loginIdentifier.dispose();
     _nicknameController.dispose();
     super.dispose();
   }
@@ -186,6 +250,41 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     subtitle: const Text('球球记住的印象可以修改，也可以让它忘掉'),
                     trailing: const Icon(Icons.chevron_right),
                     onTap: widget.onOpenPortrait,
+                  ),
+                ],
+                if (widget.sessions != null) ...[
+                  const SizedBox(height: AppSpacing.lg),
+                  const _SectionLabel(index: '08', label: '账号与同步'),
+                  const SizedBox(height: AppSpacing.xs),
+                  ValueListenableBuilder<String?>(
+                    valueListenable: _loginIdentifier,
+                    builder: (context, identifier, _) => Column(
+                      crossAxisAlignment: CrossAxisAlignment.start,
+                      children: [
+                        ListTile(
+                          contentPadding: EdgeInsets.zero,
+                          title: Text(identifier ?? '未登录'),
+                          subtitle: Text(
+                            identifier == null
+                                ? '登录后，换机或重装也能找回你的看球记忆'
+                                : '你的看球记忆已与这个邮箱同步',
+                          ),
+                        ),
+                        const SizedBox(height: AppSpacing.sm),
+                        if (identifier == null)
+                          OutlinedButton(
+                            onPressed: _openLogin,
+                            child: const Text('登录 / 注册'),
+                          )
+                        else
+                          OutlinedButton(
+                            onPressed: _submittingLogout ? null : _confirmLogout,
+                            child: Text(
+                              _submittingLogout ? '正在退出…' : '退出登录',
+                            ),
+                          ),
+                      ],
+                    ),
                   ),
                 ],
               ],

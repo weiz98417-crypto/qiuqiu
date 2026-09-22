@@ -965,6 +965,9 @@ class _MatchScreenState extends State<MatchScreen> {
           initialProfile: _profile,
           onSave: _preferences.save,
           onOpenPortrait: _deviceId.isEmpty ? null : _openPortrait,
+          sessions: _sessions,
+          baseUrl: normalizeAPIBaseURL(_socketUrl()),
+          deviceId: _deviceId,
         ),
       ),
     );
