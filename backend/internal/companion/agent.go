@@ -34,6 +34,7 @@ type Agent struct {
 	interactions               interaction.Ledger
 	memories                   memory.Memories
 	reminders                  proactive.Store
+	characterSettings          *relationship.CharacterSettings
 	subscriptions              proactive.SubscriptionStore
 	knowledge                  *knowledge.Library
 }
@@ -85,6 +86,17 @@ func (a *Agent) WithRouter(routerClient TurnRouter) *Agent {
 func (a *Agent) WithReminders(store proactive.Store) *Agent {
 	if store != nil {
 		a.reminders = store
+	}
+	return a
+}
+
+// WithCharacterSettings attaches the character-settings store
+// (polish-round-3): cue-driven preference changes are mirrored into it so
+// the three entrances share one state. Nil keeps cue words on the legacy
+// relationship-state path only.
+func (a *Agent) WithCharacterSettings(store *relationship.CharacterSettings) *Agent {
+	if store != nil {
+		a.characterSettings = store
 	}
 	return a
 }
@@ -650,6 +662,11 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		return Response{}, err
 	}
 	decision := a.applyDecision(ctx, req, intent, reply, requiredAnchors, recentPhraseHashes, routedCasual, claimPersisted, &trace)
+	// T2-cue 收敛（polish-round-3）：cue 驱动的偏好变化镜像进
+	// user_character_settings，三入口共用一份状态；Ledger 记账（source=cue）。
+	if a.characterSettings != nil && decision != nil {
+		a.mirrorCharacterSettings(ctx, req.UserID, req.MatchID, *decision, &trace)
+	}
 	routerReplyUsed := false
 	if allowRealize && decision != nil && decision.Speech == nil {
 		reply = ""

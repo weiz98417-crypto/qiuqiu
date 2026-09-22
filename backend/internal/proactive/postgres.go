@@ -198,6 +198,14 @@ func (s *PostgresSubscriptionStore) Append(ctx context.Context, sub Subscription
 	var id int64
 	var status string
 	var createdAt time.Time
+	// 上限在 store 层设防（TOCTOU 还债）。
+	var active int
+	if err := s.pool.QueryRow(ctx, `SELECT COUNT(*) FROM proactive_subscriptions WHERE user_id = $1 AND status = 'active'`, sub.UserID).Scan(&active); err != nil {
+		return Subscription{}, fmt.Errorf("subscription count: %w", err)
+	}
+	if active >= MaxSubscriptionsPerUser {
+		return Subscription{}, ErrSubscriptionLimit
+	}
 	err := s.pool.QueryRow(ctx, `
 INSERT INTO proactive_subscriptions (user_id, team_name)
 VALUES ($1, $2)

@@ -10,10 +10,11 @@ import (
 
 	"qiuqiu/internal/auth"
 	"qiuqiu/internal/config"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/relationship"
 )
 
-func handleCharacterAPI(manager *auth.Manager, cfg *config.Config, settings *relationship.CharacterSettings) http.HandlerFunc {
+func handleCharacterAPI(manager *auth.Manager, cfg *config.Config, settings *relationship.CharacterSettings, ledger interaction.Ledger) http.HandlerFunc {
 	return func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Cache-Control", "no-store")
 		if !applyCORS(w, r, cfg) {
@@ -55,6 +56,7 @@ func handleCharacterAPI(manager *auth.Manager, cfg *config.Config, settings *rel
 				http.Error(w, "invalid setting", http.StatusBadRequest)
 				return
 			}
+			recordCharacterChange(r.Context(), ledger, settings, userID, request.Field, request.Value, "http")
 			writeSettings(w, updated)
 		default:
 			w.Header().Set("Allow", "GET, OPTIONS, PATCH")

@@ -31,6 +31,7 @@ import (
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
+	"qiuqiu/internal/relationship"
 )
 
 // Scope mapping for console routes (ADR-0008): reads → TraceRead, writes →
@@ -56,6 +57,7 @@ type consoleAPI struct {
 	memories      *memory.Queue
 	operators     operatorauth.Directory
 	preferences   talkativenessReader
+	characterSettings *relationship.CharacterSettings
 	writes        *operatorwrite.Service
 	interruptions *interruptionRing
 	// ADR-0010 human channel: the HS256 signing secret (QIUQIU_JWT_SECRET).
@@ -97,11 +99,12 @@ type consoleProactiveCitation struct {
 }
 
 type consoleUser struct {
-	UserID            string `json:"userId"`
-	Online            bool   `json:"online"`
-	Talkativeness     string `json:"talkativeness"`
-	OpenThreads       int    `json:"openThreads"`
-	PortraitUpdatedAt string `json:"portraitUpdatedAt,omitempty"`
+	UserID            string            `json:"userId"`
+	Online            bool              `json:"online"`
+	Talkativeness     string            `json:"talkativeness"`
+	OpenThreads       int               `json:"openThreads"`
+	PortraitUpdatedAt string            `json:"portraitUpdatedAt,omitempty"`
+	Preferences       map[string]string `json:"preferences,omitempty"`
 }
 
 type consoleThread struct {
@@ -436,6 +439,21 @@ func (deps consoleAPI) consoleUser(ctx context.Context, entry conversation.Onlin
 		defer cancel()
 		if tier, err := deps.preferences.Talkativeness(prefCtx, entry.UserID); err == nil && tier != "" {
 			user.Talkativeness = tier
+		}
+	}
+	if deps.characterSettings != nil {
+		settingsCtx, settingsCancel := context.WithTimeout(ctx, 2*time.Second)
+		defer settingsCancel()
+		if values, err := deps.characterSettings.Get(settingsCtx, entry.UserID); err == nil {
+			prefs := map[string]string{}
+			for field, value := range values {
+				if value != "" {
+					prefs[string(field)] = value
+				}
+			}
+			if len(prefs) > 0 {
+				user.Preferences = prefs
+			}
 		}
 	}
 	if threads, err := deps.memories.Threads(ctx, entry.UserID); err == nil {

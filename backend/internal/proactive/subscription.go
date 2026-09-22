@@ -48,9 +48,9 @@ type SubscriptionStore interface {
 
 // MemorySubscriptionStore 测试/无库降级实现。
 type MemorySubscriptionStore struct {
-	mu    sync.Mutex
-	subs  []Subscription
-	next  int
+	mu   sync.Mutex
+	subs []Subscription
+	next int
 }
 
 func NewMemorySubscriptionStore() *MemorySubscriptionStore {
@@ -71,6 +71,16 @@ func (s *MemorySubscriptionStore) Append(_ context.Context, sub Subscription) (S
 			teamNameMatches(existing.TeamName, sub.TeamName) {
 			return existing, nil
 		}
+	}
+	// 上限在 store 层设防：并发订阅也无法绕过（TOCTOU 还债）。
+	active := 0
+	for _, existing := range s.subs {
+		if existing.UserID == sub.UserID && existing.Status == SubscriptionActive {
+			active++
+		}
+	}
+	if active >= MaxSubscriptionsPerUser {
+		return Subscription{}, ErrSubscriptionLimit
 	}
 	s.next++
 	sub.ID = fmt.Sprintf("sub-%d", s.next)
@@ -187,4 +197,17 @@ func (s *MemorySubscriptionStore) Active(_ context.Context) ([]Subscription, err
 		}
 	}
 	return out, nil
+}
+
+// PlanDue 是投递腿的可测核心：从在途提醒里筛出到点的、按 DeliverAt 升序
+// （season-subscription 还债——submitDueReminders 的筛选逻辑收进纯函数）。
+func PlanDue(pendings []Reminder, now time.Time) []Reminder {
+	due := make([]Reminder, 0, len(pendings))
+	for _, reminder := range pendings {
+		if reminder.Due(now) {
+			due = append(due, reminder)
+		}
+	}
+	sort.Slice(due, func(i, j int) bool { return due[i].DeliverAt.Before(due[j].DeliverAt) })
+	return due
 }

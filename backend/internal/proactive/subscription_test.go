@@ -41,3 +41,32 @@ func TestExpandSubscriptionsCreatesDedupedReminders(t *testing.T) {
 		}
 	}
 }
+
+func TestStoreLevelSubscriptionCap(t *testing.T) {
+	for _, store := range []SubscriptionStore{NewMemorySubscriptionStore()} {
+		ctx := context.Background()
+		for i := 0; i < MaxSubscriptionsPerUser; i++ {
+			if _, err := store.Append(ctx, Subscription{UserID: "u", TeamName: string(rune('A' + i)) + "队"}); err != nil {
+				t.Fatalf("seed %d: %v", i, err)
+			}
+		}
+		if _, err := store.Append(ctx, Subscription{UserID: "u", TeamName: "皇马"}); err != ErrSubscriptionLimit {
+			t.Fatalf("append beyond cap = %v, want ErrSubscriptionLimit", err)
+		}
+	}
+}
+
+func TestPlanDueFiltersAndSorts(t *testing.T) {
+	now := time.Date(2026, 9, 23, 12, 0, 0, 0, time.UTC)
+	early := now.Add(time.Hour)
+	pendings := []Reminder{
+		{ID: "future", Status: StatusPending, DeliverAt: early, ExpireAt: early.Add(time.Hour)},
+		{ID: "past", Status: StatusPending, DeliverAt: now.Add(-2 * time.Hour), ExpireAt: now.Add(-time.Hour)},
+		{ID: "due-late", Status: StatusPending, DeliverAt: now.Add(-30 * time.Minute), ExpireAt: now.Add(time.Hour)},
+		{ID: "due-early", Status: StatusPending, DeliverAt: now.Add(-40 * time.Minute), ExpireAt: now.Add(time.Hour)},
+	}
+	due := PlanDue(pendings, now)
+	if len(due) != 2 || due[0].ID != "due-early" || due[1].ID != "due-late" {
+		t.Fatalf("due = %+v, want sorted due-only pair", due)
+	}
+}

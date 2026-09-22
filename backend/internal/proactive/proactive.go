@@ -17,6 +17,10 @@ import (
 	"time"
 )
 
+// ErrSubscriptionLimit 是每用户订阅上限的拒绝信号（store 层设防，
+// handler 捕获后输出友好提示——season-subscription TOCTOU 还债）。
+var ErrSubscriptionLimit = fmt.Errorf("subscription limit reached")
+
 // 提醒时序：开球前 DefaultLeadMinutes 叫人；开球后 ExpireAfterKickoff 仍
 // 未送达即静默过期（Q13：不迟到的球友），过期事实转为记忆素材。
 const (

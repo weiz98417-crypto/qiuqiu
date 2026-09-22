@@ -551,7 +551,7 @@ func main() {
 	mux.HandleFunc("/health", hub.HandleHealth)
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
-	mux.HandleFunc("/api/me/character", handleCharacterAPI(sessionManager, cfg, characterSettings))
+	mux.HandleFunc("/api/me/character", handleCharacterAPI(sessionManager, cfg, characterSettings, interactionLedger))
 	// C3 球球懂我: the user-facing portrait page (read/edit/forget) on the
 	// privacy API's transport (session bearer auth, account-scoped).
 	mux.HandleFunc("/api/me/portrait", handlePortraitAPI(sessionManager, cfg, memoryQueue))

@@ -25,6 +25,7 @@ import (
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
 	"qiuqiu/internal/proactive"
@@ -51,6 +52,7 @@ type watchDeps struct {
 	reminders     proactive.Store
 	// characterSettings 是人格互动规范的持久化状态（三入口一状态）。
 	characterSettings *relationship.CharacterSettings
+	interactionLedger interaction.Ledger
 	// backchannelState 是伴随反应的连接内限频计数（ADR-0016）。
 	backchannelState backchannel.State
 	// submittedSignals 是用户轮次的信号去重器（server-residual-polish 1.3：
@@ -307,11 +309,8 @@ func (c *watchConnection) submitDueReminders(userID string) {
 		return
 	}
 	now := time.Now().UTC()
-	for _, reminder := range pendings {
+	for _, reminder := range proactive.PlanDue(pendings, now) {
 		reminder := reminder
-		if !reminder.Due(now) {
-			continue
-		}
 		reply := proactive.PreMatchReminderReply(reminder)
 		trace := companion.Trace{
 			// trace ID 即提醒 ID 的确定性投影：同一条提醒的重试投递共用
@@ -757,6 +756,8 @@ func (c *watchConnection) readMessages() {
 					log.Printf("character settings set for %q: %v", setUserID, err)
 				} else {
 					persisted = true
+					// T1 审计：入口层落账（polish-round-3）。
+					recordCharacterChange(settingsCtx, c.deps.interactionLedger, c.deps.characterSettings, setUserID, field, value, "ws")
 				}
 				settingsCancel()
 			}

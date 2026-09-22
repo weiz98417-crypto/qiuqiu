@@ -24,6 +24,8 @@ const (
 	KindPlaybackResult Kind = "playback_result"
 	KindTurnStale      Kind = "turn_stale"
 	KindBackchannel    Kind = "backchannel"
+	// KindCharacterSetting 是人格互动规范变更的账本事件（三入口共用）。
+	KindCharacterSetting Kind = "character_setting"
 )
 
 var (
