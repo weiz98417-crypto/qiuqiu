@@ -769,7 +769,10 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 			}
 			if ended := memoryQueue.TakeMatchEnds(); len(ended) > 0 {
 				for _, userID := range users {
-					reflect(userID, ended[0], "post_match")
+					// reflection-attribution：审计标签用用户实际看过的那场
+					// 终场（多场取最近互动的），没看任何一场则空标签——冲洗
+					// 与画像刷新照常，不把别人的比赛挂到用户头上。
+					reflect(userID, memoryQueue.RecentEndedMatchFor(userID, ended), "post_match")
 				}
 				lastIdle = time.Now()
 				continue

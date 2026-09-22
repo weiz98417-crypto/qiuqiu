@@ -115,6 +115,11 @@ type Queue struct {
 	citations      map[string][]int64
 	citationOrder  []string
 	recentMatchEnds map[string]time.Time
+	// userMatches 是反思归因（reflection-attribution）：每个用户最近互动
+	// 过的比赛，插入序、最新的在尾部。只服务 post_match 审计标签，是
+	// best-effort 提示而非正确性数据，与 citations 同样的有界纪律。
+	userMatches    map[string][]string
+	matchOrder     []string
 
 	// Console health (ADR-0008 overview memory cell): a bounded tail of the
 	// extraction decisions recorded by this process plus a live count of the
@@ -208,6 +213,7 @@ func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options 
 		backlogBatch:    20,
 		citations:       make(map[string][]int64),
 		recentMatchEnds: make(map[string]time.Time),
+		userMatches:     make(map[string][]string),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -231,6 +237,9 @@ const (
 	// maxRecentMatchEnds caps the pending match-end ledger the same way;
 	// the earliest-ended matches are dropped first.
 	maxRecentMatchEnds = 256
+	// maxUserMatches bounds the per-user match attribution window (most
+	// recent kept).
+	maxUserMatches = 8
 )
 
 // BacklogRetryDelay paces backlog replay: 30s, 1m, 2m, ... capped at 10m.
@@ -262,6 +271,9 @@ func (q *Queue) Observe(_ context.Context, moment Moment) error {
 	moment.Importance = clamp01(moment.Importance)
 	if moment.OccurredAt.IsZero() {
 		moment.OccurredAt = time.Now().UTC()
+	}
+	if matchID := strings.TrimSpace(moment.MatchID); !empty && matchID != "" {
+		q.rememberUserMatch(moment.UserID, matchID)
 	}
 	if !empty && moment.Importance >= MinExtractionImportance {
 		q.observeVector(moment)
@@ -871,6 +883,57 @@ func (q *Queue) TakeMatchEnds() []string {
 	}
 	q.recentMatchEnds = make(map[string]time.Time)
 	return ended
+}
+
+// rememberUserMatch records one match the user interacted under, most recent
+// last, bounded per user and across users (same best-effort discipline as
+// citations). Repeated observations of the current match are collapsed.
+func (q *Queue) rememberUserMatch(userID, matchID string) {
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	matches := q.userMatches[userID]
+	if len(matches) > 0 && matches[len(matches)-1] == matchID {
+		return
+	}
+	matches = append(matches, matchID)
+	if len(matches) > maxUserMatches {
+		matches = matches[len(matches)-maxUserMatches:]
+	}
+	if _, tracked := q.userMatches[userID]; !tracked {
+		q.matchOrder = append(q.matchOrder, userID)
+	}
+	q.userMatches[userID] = matches
+	for len(q.userMatches) > maxCitationUsers {
+		oldest := q.matchOrder[0]
+		q.matchOrder = q.matchOrder[1:]
+		delete(q.userMatches, oldest)
+	}
+}
+
+// RecentEndedMatchFor returns the most recently interacted match among the
+// ones that just ended, or "" when the user watched none of them. The
+// reflection beat uses this to label the post-match audit with the match the
+// user actually watched instead of an arbitrary ended match.
+func (q *Queue) RecentEndedMatchFor(userID string, ended []string) string {
+	if q == nil || len(ended) == 0 {
+		return ""
+	}
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	matches := q.userMatches[userID]
+	if len(matches) == 0 {
+		return ""
+	}
+	endedSet := make(map[string]bool, len(ended))
+	for _, matchID := range ended {
+		endedSet[matchID] = true
+	}
+	for index := len(matches) - 1; index >= 0; index-- {
+		if endedSet[matches[index]] {
+			return matches[index]
+		}
+	}
+	return ""
 }
 
 // ActiveUsers lists users with observations since their last reflection.

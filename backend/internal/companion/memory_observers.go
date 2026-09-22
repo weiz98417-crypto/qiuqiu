@@ -143,6 +143,9 @@ func userTurnMemoryMoments(msg MessageRequest, response Response) []memory.Momen
 			OccurredAt: occurred,
 		})
 	}
+	for index := range moments {
+		moments[index].MatchID = msg.MatchID
+	}
 	return moments
 }
 
@@ -173,6 +176,7 @@ func matchEventMemoryMoment(req MatchEventRequest) (memory.Moment, bool) {
 		Importance:     memory.ScoreImportance(memory.MomentMatchEvent, content, memory.StageNone),
 		LedgerSequence: event.RecordedSequence,
 		OccurredAt:     occurred,
+		MatchID:        event.MatchID,
 	}, true
 }
 

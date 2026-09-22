@@ -36,7 +36,9 @@ const (
 // Moment is one auditable observation. Importance is assigned at enqueue time
 // by ScoreImportance and is never rewritten by Memobase synthesis (ADR-0006).
 // LedgerSequence cites the fact ledger for provenance (0 when the source has
-// no numeric sequence, e.g. plain conversation turns).
+// no numeric sequence, e.g. plain conversation turns). MatchID attributes the
+// moment to the match it was observed under (reflection-attribution: post-match
+// reflection labels the audit with the match the user actually watched).
 type Moment struct {
 	UserID         string
 	Kind           MomentKind
@@ -44,6 +46,7 @@ type Moment struct {
 	Importance     float64
 	LedgerSequence int64
 	OccurredAt     time.Time
+	MatchID        string
 }
 
 // Query selects memories for context assembly. Focus is the raw user text or
