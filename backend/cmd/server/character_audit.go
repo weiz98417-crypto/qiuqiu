@@ -41,3 +41,21 @@ func recordCharacterChange(ctx context.Context, ledger interaction.Ledger, chara
 		log.Printf("character settings audit for %q: %v", userID, err)
 	}
 }
+
+// readPreferenceOverrides 每回合读取一次用户显式设置（粘性覆盖来源）；
+// store 缺席或读失败返回 nil = 无覆盖（行为与现状一致）。
+func readPreferenceOverrides(ctx context.Context, settings *relationship.CharacterSettings, userID string) *relationship.PreferenceOverrides {
+	if settings == nil || userID == "" {
+		return nil
+	}
+	readCtx, cancel := context.WithTimeout(ctx, 300*time.Millisecond)
+	defer cancel()
+	values, err := settings.Get(readCtx, userID)
+	if err != nil {
+		return nil
+	}
+	return &relationship.PreferenceOverrides{
+		InitiativeMode:   values[relationship.SettingInitiative],
+		AnalysisAppetite: values[relationship.SettingAnalysisAppetite],
+	}
+}

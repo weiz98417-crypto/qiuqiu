@@ -19,14 +19,14 @@ func TestCharacterSettingsRoundTrip(t *testing.T) {
 	if err != nil {
 		t.Fatalf("NewCharacterSettings: %v", err)
 	}
-	if _, err := settings.Set(t.Context(), "user-1", "analysis_appetite", "deep"); err != nil {
+	if _, err := settings.Set(t.Context(), "user-1", "analysis_appetite", "detailed"); err != nil {
 		t.Fatalf("Set: %v", err)
 	}
 	values, err := settings.Get(t.Context(), "user-1")
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if values[SettingAnalysisAppetite] != "deep" || values[SettingInitiative] != "" {
+	if values[SettingAnalysisAppetite] != "detailed" || values[SettingInitiative] != "" {
 		t.Fatalf("values = %+v", values)
 	}
 	if _, err := settings.Set(t.Context(), "user-1", "initiative", "max"); err == nil {

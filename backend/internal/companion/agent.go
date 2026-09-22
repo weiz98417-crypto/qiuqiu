@@ -560,6 +560,7 @@ func (a *Agent) handleMessage(ctx context.Context, req MessageRequest) (Response
 		Text:                req.Text,
 		Timezone:            req.Timezone,
 		Talkativeness:       req.Talkativeness,
+		Settings:            req.Settings,
 		ProgressiveSchedule: req.ProgressiveSchedule,
 		Now:                 req.Now,
 		Voice:               req.Voice,
@@ -1141,7 +1142,7 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 		OccurredAt:   trace.CreatedAt,
 		ReceivedAt:   time.Now().UTC(),
 		FactRevision: strings.Join(trace.RetrievedEvent, ","),
-		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness, Cues: userCues},
+		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness, Cues: userCues, Settings: req.Settings},
 		Grounding: relationship.GroundedContent{
 			Intent:             string(intent),
 			ReliableText:       reply,
@@ -1307,6 +1308,7 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 			TeamName:              ev.TeamName,
 			PlayerName:            ev.PlayerName,
 			RevisionOf:            ev.RevisionOf,
+			Memory:                a.memorySignals(ctx, userID),
 		},
 		Grounding: relationship.GroundedContent{
 			Intent:         string(IntentRecentEvent),

@@ -42,6 +42,16 @@ type UserSignal struct {
 	Text          string    `json:"text"`
 	Cues          []UserCue `json:"cues,omitempty"`
 	Talkativeness string    `json:"talkativeness,omitempty"`
+	// Settings 是用户显式设置的粘性覆盖（ADR-0018）：设置 > cue 推断 >
+	// talkativeness 推导；空槽位 = 未设置（行为=现状）。
+	Settings *PreferenceOverrides `json:"settings,omitempty"`
+}
+
+// PreferenceOverrides 是设置面的三个可调槽位中已接线的两个（banter 槽位
+// 暂不接线，见 character-settings spec）。
+type PreferenceOverrides struct {
+	InitiativeMode   string `json:"initiativeMode,omitempty"`
+	AnalysisAppetite string `json:"analysisAppetite,omitempty"`
 }
 
 type UserCueKind string
@@ -74,6 +84,7 @@ type MatchSignal struct {
 	EventType             string `json:"eventType"`
 	Intensity             int    `json:"intensity"`
 	Confirmed             bool   `json:"confirmed"`
+	Memory                MemorySignals `json:"memory,omitempty"`
 	OutputAllowed         bool   `json:"outputAllowed"`
 	Critical              bool   `json:"critical"`
 	UserSpeaking          bool   `json:"userSpeaking"`
@@ -269,6 +280,12 @@ type Decision struct {
 	PlaybackState string               `json:"playbackState,omitempty"`
 	ReasonCodes   []string             `json:"reasonCodes"`
 	CreatedAt     time.Time            `json:"createdAt"`
+}
+
+// MemorySignals 是决策层的记忆信号（ADR-0019）：空串 = 无该信号。
+type MemorySignals struct {
+	FavoriteTeam   string `json:"favoriteTeam,omitempty"`
+	FavoritePlayer string `json:"favoritePlayer,omitempty"`
 }
 
 type CommunicationAct string

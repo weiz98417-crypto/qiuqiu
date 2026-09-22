@@ -35,3 +35,20 @@ docker compose up -d
 
 Memobase 的 `memobase_postgres_data`（画像缓存，可由账本重建）同理可备份：
 `pg_dump -U memobase -d memobase`；丢失后果可接受，不强制定时。
+
+## 向量数据迁移与再生（semantic-memory）
+
+`embedding_moments` 表存的是 Moment 文本的 bge-m3 向量（语义召回缓存），
+**不进 git**。跨机器两种做法：
+
+1. 默认：不迁移。新机 `docker compose up` 后迁移脚本自动建表（046），
+   配好 `EMBEDDING_BASE_URL`（本地 Ollama bge-m3）后向量随新对话重新积累；
+   积累前语义召回自动降级为关键词路，功能不受影响。
+2. 要带走已积累的向量（换机前提：两端同为 bge-m3/1024 维，否则向量不可比）：
+
+   ```bash
+   pg_dump qiuqiu -t embedding_moments > vectors.sql   # 旧机导出
+   psql "$DATABASE_URL" -f vectors.sql                 # 新机导入
+   ```
+
+知识条目（backend/knowledge/*.yaml）是 repo 纯文本，随 git 走，零迁移。

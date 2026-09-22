@@ -11,3 +11,4 @@
 ## Sequencing
 
 打磨轮 3 先行；settings-in-policy、memory-in-policy、knowledge-players 依次随其后（各自 spec 已立）。
+- [ ] 1.8 deploy/README.md 增「向量数据迁移与再生」小节（Q8 定案：pg_dump 单表搬运 + 再生说明）。

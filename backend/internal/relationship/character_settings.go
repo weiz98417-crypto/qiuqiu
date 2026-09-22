@@ -21,13 +21,18 @@ type CharacterSettingField string
 const (
 	SettingInitiative       CharacterSettingField = "initiative"
 	SettingAnalysisAppetite CharacterSettingField = "analysis_appetite"
+	// SettingBanterLevel 已入库但 v1 不接线（policy 的调侃许可是按 scope
+	// 的 map，单值档位硬映射会发明语义——settings-in-policy S1）。
 	SettingBanterLevel      CharacterSettingField = "banter_level"
 )
 
 // 合法值白名单：cue 词 / WS / HTTP 三个入口共用同一校验。
+// 值域与 policy 对齐（settings-in-policy S1）：initiative = natural/quiet/
+// active（policy 无 normal），analysis_appetite = brief/detailed（policy
+// 只有二档）；banter 槽位 v1 不接线，白名单暂留占位。
 var characterSettingValues = map[CharacterSettingField]map[string]bool{
-	SettingInitiative:       {"quiet": true, "normal": true, "active": true},
-	SettingAnalysisAppetite: {"brief": true, "standard": true, "deep": true},
+	SettingInitiative:       {"natural": true, "quiet": true, "active": true},
+	SettingAnalysisAppetite: {"brief": true, "detailed": true},
 	SettingBanterLevel:      {"off": true, "light": true, "playful": true},
 }
 

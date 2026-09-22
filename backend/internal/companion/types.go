@@ -63,6 +63,8 @@ type MessageRequest struct {
 	Text                string
 	Timezone            string
 	Talkativeness       string
+	// Settings 是用户显式设置的粘性覆盖（settings-in-policy，ADR-0018）。
+	Settings            *relationship.PreferenceOverrides
 	ProgressiveSchedule bool
 	Now                 time.Time
 	Voice               *VoiceTraceMetadata

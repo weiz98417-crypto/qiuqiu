@@ -849,6 +849,8 @@ type voiceSessionOptions struct {
 	Timezone            string
 	FactRefresh         string
 	Talkativeness       string
+	// Settings 是用户显式设置的粘性覆盖（settings-in-policy，ADR-0018）。
+	Settings *relationship.PreferenceOverrides
 }
 
 func completeVoiceSession(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID string, now time.Time, signalID string, result voiceSessionResult, voiceMeta *companion.VoiceTraceMetadata) (voiceSessionResult, error) {

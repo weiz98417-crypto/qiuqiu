@@ -26,7 +26,7 @@ func TestMirrorCharacterSettingsWritesChangedFields(t *testing.T) {
 	agent := NewAgent(NewStoreMemoryTools(matchstate.NewStore())).WithCharacterSettings(mustSettings(t, store))
 	trace := &Trace{ID: "t-mirror"}
 	decision := relationship.Decision{
-		Relationship: relationship.RelationshipView{InitiativeMode: "active", AnalysisAppetite: "deep"},
+		Relationship: relationship.RelationshipView{InitiativeMode: "active", AnalysisAppetite: "detailed"},
 	}
 	agent.mirrorCharacterSettings(context.Background(), "user-1", "m1", decision, trace)
 
@@ -34,7 +34,7 @@ func TestMirrorCharacterSettingsWritesChangedFields(t *testing.T) {
 	if err != nil {
 		t.Fatalf("Get: %v", err)
 	}
-	if values[relationship.SettingInitiative] != "active" || values[relationship.SettingAnalysisAppetite] != "deep" {
+	if values[relationship.SettingInitiative] != "active" || values[relationship.SettingAnalysisAppetite] != "detailed" {
 		t.Fatalf("values = %+v, want both mirrored", values)
 	}
 	found := false

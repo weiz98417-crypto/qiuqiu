@@ -1,6 +1,10 @@
 package companion
 
-import "time"
+import (
+	"time"
+
+	"qiuqiu/internal/relationship"
+)
 
 // AgentBoundaryRequest is the stable in-process DTO that can later cross a
 // process boundary if the companion agent moves out of the Go backend.
@@ -12,6 +16,7 @@ type AgentBoundaryRequest struct {
 	Text                string              `json:"text"`
 	Timezone            string              `json:"timezone,omitempty"`
 	Talkativeness       string              `json:"talkativeness,omitempty"`
+	Settings            *relationship.PreferenceOverrides `json:"settings,omitempty"`
 	ProgressiveSchedule bool                `json:"progressiveSchedule,omitempty"`
 	Now                 time.Time           `json:"now"`
 	Voice               *VoiceTraceMetadata `json:"voice,omitempty"`

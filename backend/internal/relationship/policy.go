@@ -3,6 +3,8 @@ package relationship
 import (
 	"strings"
 	"time"
+
+	"qiuqiu/internal/teamalign"
 )
 
 const relationshipSchemaVersion = 1
@@ -46,6 +48,23 @@ func recordActions(state *MatchCompanionState, signalID string, actions []Commun
 }
 
 func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]CommunicationAct, []string) {
+	acts, codes := selectTurnActs(state, signal, now)
+	// 显式设置粘性覆盖（ADR-0018）：设置 > cue 推断 > talkativeness 推导；
+	// 在状态被读入决策视图前落定，reason code 随决策可解释。
+	if signal.User != nil && signal.User.Settings != nil {
+		if v := signal.User.Settings.InitiativeMode; v != "" {
+			state.Relationship.Preferences.InitiativeMode = v
+			codes = append(codes, "policy_user_setting:initiative")
+		}
+		if v := signal.User.Settings.AnalysisAppetite; v != "" {
+			state.Relationship.Preferences.AnalysisAppetite = v
+			codes = append(codes, "policy_user_setting:analysis_appetite")
+		}
+	}
+	return acts, codes
+}
+
+func selectTurnActs(state *StateBundle, signal Signal, now time.Time) ([]CommunicationAct, []string) {
 	if signal.Kind == SignalDeliveryResult && signal.Delivery != nil {
 		state.Match.PlaybackState = signal.Delivery.State
 		if signal.Delivery.Purpose == "first_meeting" && signal.Delivery.State == "text_delivered" {
@@ -70,6 +89,12 @@ func applyPolicy(state *StateBundle, signal Signal, now time.Time) ([]Communicat
 	}
 	if signal.Kind == SignalMatchEvent && signal.Match != nil {
 		updateAffect(&state.Match.Affect, *signal.Match, now)
+		// ADR-0019 记忆偏置：画像口味命中本场进球事件时放大 affect
+		// （±0.2/0.15 封顶），reason code 随决策可解释。
+		memoryCodes := applyMemoryBias(&state.Match.Affect, signal.Match)
+		if len(memoryCodes) > 0 {
+			return []CommunicationAct{ActReact}, append(memoryCodes, "match_event_affect_updated")
+		}
 		if !signal.Match.OutputAllowed {
 			return []CommunicationAct{ActSilence}, []string{"match_event_observed_output_disabled"}
 		}
@@ -591,4 +616,27 @@ func hasBoundary(boundaries []UserBoundary, scope, rule string) bool {
 // backend/internal/memory) without duplicating the marker lists.
 func InferUserCues(text string) []UserCue {
 	return inferUserCues(text)
+}
+
+// applyMemoryBias（ADR-0019）：画像口味命中本场进球事件时放大 affect——
+// 支持的队进球 +0.2、支持球员进球再 +0.15；未命中返回空 codes。偏置只动
+// affect 与优先级，沉默/边界/引用码纪律原样。
+func applyMemoryBias(affect *AffectState, match *MatchSignal) []string {
+	if match == nil || match.EventType != "goal" {
+		return nil
+	}
+	codes := []string{}
+	eventTeam := strings.TrimSpace(match.TeamName)
+	favorite := strings.TrimSpace(match.Memory.FavoriteTeam)
+	if eventTeam != "" && favorite != "" && teamalign.Aligns(eventTeam, favorite) {
+		affect.Valence = clamp(affect.Valence+0.2, -1, 1)
+		codes = append(codes, "policy_memory:favorite_team_goal")
+	}
+	player := strings.TrimSpace(match.Memory.FavoritePlayer)
+	eventPlayer := strings.TrimSpace(match.PlayerName)
+	if eventPlayer != "" && player != "" && teamalign.Aligns(eventPlayer, player) {
+		affect.Valence = clamp(affect.Valence+0.15, -1, 1)
+		codes = append(codes, "policy_memory:favorite_player_scored")
+	}
+	return codes
 }

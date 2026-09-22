@@ -562,6 +562,7 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 		}
 	}
 	tier, _ := c.userTalkativeness.Load().(string)
+	overrides := readPreferenceOverrides(c.connectionCtx, c.deps.characterSettings, userID)
 	turnGeneration := c.scheduleLookups.BeginTurn()
 	c.writer.SendJSON(map[string]interface{}{
 		"type":       "interrupt",
@@ -584,10 +585,10 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 						asrProvider,
 						time.Now(),
 						signalID,
-						voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier},
+						voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides},
 					)
 				}
-				return handleVoiceSessionWithSignalIDOptions(replyCtx, c.deps.agent, c.deps.asr, nil, c.matchID, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier})
+				return handleVoiceSessionWithSignalIDOptions(replyCtx, c.deps.agent, c.deps.asr, nil, c.matchID, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides})
 			},
 			func(observationID string) bool {
 				if err := c.deps.agent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
