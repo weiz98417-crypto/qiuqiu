@@ -71,8 +71,8 @@ A topic, question, promise, or emotional moment that remains relevant after the 
 _Avoid_: Pending task
 
 **Reflection（反思）**:
-A periodic synthesis of accumulated moments into a stable insight about the user or the relationship, which is itself stored as memory and cited by later turns.
-_Avoid_: Summary, analysis, journal
+The periodic background beat that flushes accumulated Shared Moments into profile synthesis and refreshes the Portrait, recording which ledger sequences it observed. What later turns cite is the refreshed Portrait — reflection itself leaves an audit trail, not a separate memory entry.
+_Avoid_: Summary, analysis, journal, standalone insight entry
 
 **Portrait（用户画像）**:
 The synthesized, user-inspectable picture of what QiuQiu knows and believes about the user — facts, preferences, emotional patterns. It must be wired into what QiuQiu actually says, never a decorative narrative.
