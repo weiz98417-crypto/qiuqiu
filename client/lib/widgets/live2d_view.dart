@@ -193,10 +193,11 @@ class Live2dViewState extends State<Live2dView> {
             initialData: kIsWeb
                 ? null
                 : InAppWebViewInitialData(
-                    data: _htmlContent,
+                    data: _htmlContent.replaceAll(
+                        'qiuqiu://asset/', 'http://10.0.2.2:8081/assets/assets/live2d/'),
                     mimeType: 'text/html',
                     encoding: 'utf8',
-                    baseUrl: WebUri('qiuqiu://asset/'),
+                    baseUrl: WebUri('http://10.0.2.2:8080/'),
                   ),
             initialSettings: InAppWebViewSettings(
               transparentBackground: true,
@@ -452,18 +453,21 @@ class Live2dViewState extends State<Live2dView> {
   canvas { display:block; width:100%; height:100%; }
 </style>
 <script src="qiuqiu://asset/cubismcore/live2dcubismcore.min.js"></script>
-<script src="qiuqiu://asset/live2d.min.js"></script>
-<script src="qiuqiu://asset/pixi.min.js"></script>
+<script src="qiuqiu://asset/live2d-display-bundle.js"></script>
 </head>
 <body>
 <canvas id="live2d"></canvas>
 <script>
-var app = new PIXI.Application({
-    view: document.getElementById('live2d'),
-    autoStart: true,
-    resizeTo: window,
-    backgroundAlpha: 0,
-});
+var app = null;
+function ensurePixiApp() {
+    if (app || !window.PIXI) return;
+    app = new PIXI.Application({
+        view: document.getElementById('live2d'),
+        autoStart: true,
+        resizeTo: window,
+        backgroundAlpha: 0,
+    });
+}
 
 var model = null;
 var speaking = false;
@@ -533,7 +537,7 @@ function applyPresentationMap(map) {
 }
 
 function resizeModel() {
-    if (!model) return;
+    if (!model || !app) return;
     model.anchor.set(0.5);
     model.x = app.screen.width / 2;
     model.y = app.screen.height * 0.38;
@@ -713,7 +717,11 @@ setInterval(function() {
     try { model.motion(pick[0], pick[1], 3); } catch(e) {}
 }, 4000);
 
-loadModel();
+(function boot() {
+    if (!(window.PIXI && window.Live2DModel && window.Live2DCubismCore)) { setTimeout(boot, 50); return; }
+    ensurePixiApp();
+    loadModel();
+})();
 </script>
 ''' + _lipSyncEngine;
 }
