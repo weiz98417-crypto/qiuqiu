@@ -970,7 +970,9 @@ func (c *watchConnection) serveHeartbeat() {
 		case <-c.connectionCtx.Done():
 			return
 		case <-ticker.C:
-			if c.claims.Subject != "" {
+			// 无会话管理器的部署形态（如匿名演示启动）跳过会话复查——
+			// nil Manager 上调用会 panic（真机 E2E 2026-09-24 实测）。
+			if c.deps.sessions != nil && c.claims.Subject != "" {
 				if err := c.deps.sessions.ValidateClaims(c.connectionCtx, c.claims); err != nil {
 					c.writer.SendJSON(map[string]string{"type": "auth_error", "reason": "session expired or revoked"})
 					c.connectionCancel()

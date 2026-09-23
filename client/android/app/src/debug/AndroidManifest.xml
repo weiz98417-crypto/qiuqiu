@@ -1,1 +1,4 @@
-<manifest xmlns:android="http://schemas.android.com/apk/res/android" />
+<manifest xmlns:android="http://schemas.android.com/apk/res/android">
+    <!-- 本地部署走 http://10.0.2.2:8080（ADR-0020 部署形态），debug 构建放开明文流量 -->
+    <application android:usesCleartextTraffic="true" />
+</manifest>
