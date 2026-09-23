@@ -1470,16 +1470,21 @@ func isCriticalMatchEvent(eventType string) bool {
 	}
 }
 
+// firstMeetingGreeting 是初见问候（确定性文案）：像真人第一次搭伴看球那样
+// 打招呼——口语、简短、带对方给到的信息，不客服腔。
 func firstMeetingGreeting(nickname, favoriteTeam string) string {
 	nickname = shortLabel(nickname, 20)
 	favoriteTeam = shortLabel(favoriteTeam, 24)
-	if nickname != "" && favoriteTeam != "" {
-		return fmt.Sprintf("嗨，%s，我叫球球。你看%s，那这场应该有得聊。", nickname, favoriteTeam)
+	switch {
+	case nickname != "" && favoriteTeam != "":
+		return fmt.Sprintf("嘿，%s！你也看%s的球？巧了，我叫球球，今晚这场一起看。", nickname, favoriteTeam)
+	case nickname != "":
+		return fmt.Sprintf("嘿，%s！我叫球球，今晚这场一起看，有好球咱一块儿喊。", nickname)
+	case favoriteTeam != "":
+		return fmt.Sprintf("%s的球迷？幸会，我叫球球。今晚这场一起看。", favoriteTeam)
+	default:
+		return "哟，来了？我叫球球。今晚这场一起看，进球咱一块儿喊。"
 	}
-	if nickname != "" {
-		return fmt.Sprintf("嗨，%s，我叫球球。第一次一起看球，先看着。", nickname)
-	}
-	return "嗨，我叫球球。第一次一起看球，先看着。"
 }
 
 func shortLabel(value string, limit int) string {
