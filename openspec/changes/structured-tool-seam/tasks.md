@@ -5,7 +5,7 @@
 - [x] 3.3 占位清理：llm 流式半成品与两处 setAuthHeaders、AgentBoundaryResponse、defaultMaxTokens 具名。
 - [x] 3.4 structured 包单测（强制工具选择/schema 反射/无工具调用报错/nil client）。
 - [x] 3.5 验证：全量 go test 绿 + 100 eval 绿。
-- [ ] 3.6 （待迁，单独立项）router 迁入 structured：payload 字节级变化需 boundary 路由 eval 全量重验。
+- [x] 3.6 router 迁入 structured：已随后续轮次落地（router.go 的 Route 现走 structured.Extract，自抄 payload/解析已删；2026-09-25 校验勾销——原挂账描述过期）。
 
 ## Sequencing
 

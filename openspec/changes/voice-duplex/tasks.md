@@ -6,6 +6,7 @@
   - 打断：`{'type':'interrupt'}` 通道存在但只由用户操作触发（match_session_controller.interrupt），**无 VAD 抢话自动触发**。
   - 回声规避：无任何实现（播放的 TTS 会被拾音）。
   - 结论：1.1 抢断判定（置信门+时长门+squash 窗）是核心缺口；1.3 需确认播放期 asr_chunk 在服务端的接纳；1.2 服务端中断语义已就绪可复用。
+  - **修订（2026-09-25 复核）**：上条「打断」盘点过时——`vadSpeaking()`（client/lib/services/match_session_controller.dart:830 起）在 phase==speaking（或首见问候期）且 VAD 判定说话时，**已自动**发 `{'type':'interrupt'}`+`PauseAudioCommand`，即无门控的自动抢断雏形已在主干。1.1 的施工方式据此修正为「在该既有路径上加置信门/时长门/squash 窗」，非从零新建；同时注意：无门控现状意味着播放期 TTS 回声即可触发抢断，是 1.1 落地前的现役风险（`duplex_playback_capture=off` 临时压制）。
 - [ ] 1.1 客户端播放期收音保持 + 抢断判定（置信门/时长门/squash 窗，config 可关）。
 - [ ] 1.2 stopPlayback→interrupt→用户话轮接管链路 + 恢复播放兜底。
 - [ ] 1.3 服务端：播放期 asr_chunk 接纳确认（或放开）；中断取消语义复用确认。
