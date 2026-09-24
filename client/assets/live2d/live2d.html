@@ -124,6 +124,8 @@
 })();
 </script>
 <script>
+// pixi v7 keeps the synchronous Application constructor (async init is v8);
+// the rebuilt bundle (pixi 7.4.3 legacy + lipsyncpatch) matches it.
 var app = new PIXI.Application({
     view: document.getElementById('live2d'),
     autoStart: true,

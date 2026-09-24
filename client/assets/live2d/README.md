@@ -12,6 +12,24 @@ The browser runtime uses Cubism 5 Web assets:
 
 The backend serves this folder at `/assets/`, plus `/live2d.html`, `/app.html`, and `/test-expressions.html`.
 
+## Display Bundle (rebuildable)
+
+`live2d-display-bundle.js` is built, not hand-maintained: source lives in
+`scripts/live2d-bundle/` (pixi.js-legacy 7.4.3 + pixi-live2d-display-lipsyncpatch
+0.5.0-ls-8, esbuild IIFE). Rebuild with:
+
+```
+cd scripts/live2d-bundle && npm install && npm run build
+```
+
+The build is deterministic — re-running it on the locked dependency set
+reproduces the same sha256 (printed by the build). The legacy pixi build
+provides a Canvas 2D fallback, so the model renders even on WebGL-less
+webviews (Android emulator). The bundle exposes the same globals the old
+hand-dropped 2023 bundle did (`window.PIXI`, `window.Live2DModel`), so
+`live2d.html` keeps consuming them unchanged; the only page-side adaptation
+was the pixi v7 async `app.init()` semantics.
+
 ## Lip Sync
 
 `vendor/wlipsync/` vendors wLipSync 1.3.1 (npm `wlipsync`, MIT) plus its example

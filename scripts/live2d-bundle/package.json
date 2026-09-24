@@ -1,0 +1,17 @@
+{
+  "name": "qiuqiu-live2d-bundle",
+  "version": "1.0.0",
+  "private": true,
+  "description": "Rebuildable live2d-display bundle: pixi.js-legacy (WebGL + Canvas 2D fallback) + pixi-live2d-display-lipsyncpatch (cubism4). Output replaces client/assets/live2d/live2d-display-bundle.js.",
+  "type": "module",
+  "scripts": {
+    "build": "node build.mjs"
+  },
+  "dependencies": {
+    "pixi.js-legacy": "7.4.3",
+    "pixi-live2d-display-lipsyncpatch": "0.5.0-ls-8"
+  },
+  "devDependencies": {
+    "esbuild": "0.25.12"
+  }
+}
