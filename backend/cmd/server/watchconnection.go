@@ -89,6 +89,8 @@ type watchConnection struct {
 	scheduleLookups      scheduleLookupLifecycle
 	proactiveGate        *conversation.ProactiveGate
 	interruptedReactions *interruptedReactionGuard
+	// clientPlaybackReports 登记本连接收到的播放实报，推断路径据此降级。
+	clientPlaybackReports *clientPlaybackReportSet
 
 	userSpeaking   atomic.Bool
 	userTurnActive atomic.Bool
@@ -106,6 +108,7 @@ func newWatchConnection(deps watchDeps, conn *websocket.Conn, claims auth.Claims
 	connection.writer = &wsWriter{conn: conn}
 	connection.identity = newConnectionIdentity(claims.Subject)
 	connection.userTalkativeness.Store(relationship.TalkativenessNormal)
+	connection.clientPlaybackReports = newClientPlaybackReportSet()
 	return connection
 }
 
@@ -200,6 +203,10 @@ func (c *watchConnection) releaseWatchSession() {
 // runs but no delivery reaction is emitted (the socket is closing).
 func (c *watchConnection) drainPendingDeliveries() {
 	for _, pending := range c.deliveryTracker.Drain() {
+		// 客户端已实报的回合不再补推断（实报优先，推断仅兜底）。
+		if c.clientPlaybackReports.has(pending.Trace.ID) {
+			continue
+		}
 		cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
 		if err := observeReplyDelivery(cleanupCtx, c.deps.agent, pending.Trace, pending.UserID, pending.MatchID, "interrupted", time.Now().UTC()); err != nil {
 			log.Printf("relationship interrupted delivery cleanup error: %v", err)
@@ -605,12 +612,12 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 			if errors.Is(err, context.Canceled) {
 				state = "interrupted"
 				cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-				_ = observeReplyOutcome(cleanupCtx, c.deps.agent, c.writer, c.interruptedReactions, result.Trace, userID, c.matchID, state, time.Now().UTC())
+				_ = c.observeInferredOutcome(cleanupCtx, result.Trace, userID, c.matchID, state, time.Now().UTC())
 				cleanupCancel()
 				return
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = observeReplyOutcome(cleanupCtx, c.deps.agent, c.writer, c.interruptedReactions, result.Trace, userID, c.matchID, state, time.Now().UTC())
+			_ = c.observeInferredOutcome(cleanupCtx, result.Trace, userID, c.matchID, state, time.Now().UTC())
 			cleanupCancel()
 			log.Printf("companion voice reply error: %v", err)
 			if result.ASRError != "" {
@@ -620,7 +627,7 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 		}
 		if replyCtx.Err() != nil {
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = observeReplyOutcome(cleanupCtx, c.deps.agent, c.writer, c.interruptedReactions, result.Trace, userID, c.matchID, "interrupted", time.Now().UTC())
+			_ = c.observeInferredOutcome(cleanupCtx, result.Trace, userID, c.matchID, "interrupted", time.Now().UTC())
 			cleanupCancel()
 			return
 		}
@@ -687,7 +694,7 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 				state = "interrupted"
 			}
 			cleanupCtx, cleanupCancel := context.WithTimeout(context.Background(), 3*time.Second)
-			_ = observeReplyOutcome(cleanupCtx, c.deps.agent, c.writer, c.interruptedReactions, result.Trace, userID, c.matchID, state, time.Now().UTC())
+			_ = c.observeInferredOutcome(cleanupCtx, result.Trace, userID, c.matchID, state, time.Now().UTC())
 			cleanupCancel()
 			if state == "failed" {
 				log.Printf("conversation response delivery error: %v", deliveryErr)
@@ -952,6 +959,20 @@ func (c *watchConnection) readMessages() {
 			if err != nil && !errors.Is(err, context.Canceled) {
 				log.Printf("reply display observation error: %v", err)
 			}
+		case "playback_result":
+			// 播放终态实报（delivery-outcome-uplink）：deliveryKey 定位投递
+			// 记录推进七态；迟到回执只记 client_late，不回改既有终态。
+			deliveryKey := strings.TrimSpace(str(req, "deliveryKey"))
+			playbackState := strings.TrimSpace(str(req, "state"))
+			reportUserID := c.identity.Get()
+			if deliveryKey == "" || reportUserID == "" || !validPlaybackResultState(playbackState) {
+				continue
+			}
+			updateCtx, updateCancel := context.WithTimeout(c.connectionCtx, 3*time.Second)
+			if _, err := recordPlaybackResult(updateCtx, c.deliveryTracker.Ledger(), c.deps.agent, c.clientPlaybackReports, reportUserID, c.matchID, deliveryKey, playbackState, strings.TrimSpace(str(req, "reason")), time.Now().UTC()); err != nil && !errors.Is(err, context.Canceled) {
+				log.Printf("playback result error: %v", err)
+			}
+			updateCancel()
 		}
 	}
 }

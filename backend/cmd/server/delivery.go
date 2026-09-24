@@ -2,12 +2,15 @@ package main
 
 import (
 	"context"
+	"fmt"
 	"log"
+	"strings"
 	"sync"
 	"time"
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/conversation"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/relationship"
 )
 
@@ -112,6 +115,30 @@ func (tracker *replyDeliveryTracker) Drain() []pendingReplyDelivery {
 	return pending
 }
 
+// deliverySourceInferred 标记推断路径写入的账本事件：推断结果不再冒充实报，
+// 与客户端实报（client/client_late）在同一 Source 字段区分。
+const deliverySourceInferred = "server_inferred"
+
+// playback_result 实报写入账本时的两种来源：实时实报推进投递七态；迟到
+// 回执（回合已终态或记录不存在）只追加账本，不回改既有终态。
+const (
+	playbackSourceClient     = "client"
+	playbackSourceClientLate = "client_late"
+)
+
+// playbackResultStates 是客户端实报态到投递七态的映射；reason 为可选归因。
+var playbackResultStates = map[string]conversation.DeliveryState{
+	"completed":   conversation.DeliveryCompleted,
+	"interrupted": conversation.DeliveryInterrupted,
+	"skipped":     conversation.DeliverySkipped,
+	"failed":      conversation.DeliveryFailed,
+}
+
+func validPlaybackResultState(state string) bool {
+	_, ok := playbackResultStates[state]
+	return ok
+}
+
 func observeReplyDelivery(ctx context.Context, agent *companion.Agent, trace companion.Trace, userID, matchID, state string, now time.Time) error {
 	if agent == nil || trace.RelationshipDecision == nil || trace.RelationshipDecision.ID == "" {
 		return nil
@@ -119,7 +146,7 @@ func observeReplyDelivery(ctx context.Context, agent *companion.Agent, trace com
 	_, err := agent.Plan(ctx, companion.TurnInput{Kind: companion.TurnKindDelivery, Delivery: &companion.DeliveryInput{
 		SignalID: "delivery:" + trace.ID + ":text:" + state,
 		TraceID:  trace.ID, UserID: userID, MatchID: matchID, DecisionID: trace.RelationshipDecision.ID,
-		State: state, Purpose: "user_reply", UsedMemoryIDs: trace.RelationshipDecision.UsedMemoryIDs, Now: now,
+		State: state, Purpose: "user_reply", Source: deliverySourceInferred, UsedMemoryIDs: trace.RelationshipDecision.UsedMemoryIDs, Now: now,
 	}})
 	return err
 }
@@ -272,6 +299,87 @@ func observeReplyOutcome(ctx context.Context, agent *companion.Agent, sink prese
 		guard.emit(sink, trace, affect)
 	}
 	return observeReplyDelivery(ctx, agent, trace, userID, matchID, state, now)
+}
+
+// observeInferredOutcome 是推断路径的降级入口：客户端已实报该回合的播放
+// 结果时不再写推断（账本以实报为准），无实报才走 observeReplyOutcome 兜底。
+func (c *watchConnection) observeInferredOutcome(ctx context.Context, trace companion.Trace, userID, matchID, state string, now time.Time) error {
+	if c.clientPlaybackReports.has(trace.ID) {
+		return nil
+	}
+	return observeReplyOutcome(ctx, c.deps.agent, c.writer, c.interruptedReactions, trace, userID, matchID, state, now)
+}
+
+// clientPlaybackReportSet 登记本连接收到过的播放实报（deliveryKey 与投递
+// 记录键都登记）；服务端推断路径据此降级为兜底。
+type clientPlaybackReportSet struct {
+	mu   sync.Mutex
+	seen map[string]struct{}
+}
+
+func newClientPlaybackReportSet() *clientPlaybackReportSet {
+	return &clientPlaybackReportSet{seen: make(map[string]struct{})}
+}
+
+func (s *clientPlaybackReportSet) note(keys ...string) {
+	if s == nil {
+		return
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	if s.seen == nil {
+		s.seen = make(map[string]struct{})
+	}
+	for _, key := range keys {
+		if key != "" {
+			s.seen[key] = struct{}{}
+		}
+	}
+}
+
+func (s *clientPlaybackReportSet) has(key string) bool {
+	if s == nil || key == "" {
+		return false
+	}
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	_, ok := s.seen[key]
+	return ok
+}
+
+// recordPlaybackResult 路由一条客户端播放实报：找到可推进的投递记录则推进
+// 七态并记 Source=client；记录已终态或已不存在（迟到回执）只追加
+// Source=client_late 账本事件，不回改既有终态。返回实报的账本来源。
+func recordPlaybackResult(ctx context.Context, ledger conversation.DeliveryLedger, agent *companion.Agent, reports *clientPlaybackReportSet, userID, matchID, deliveryKey, state, reason string, now time.Time) (string, error) {
+	target, ok := playbackResultStates[state]
+	if ledger == nil || !ok {
+		return "", fmt.Errorf("invalid playback result state %q", state)
+	}
+	source := playbackSourceClient
+	traceID := ""
+	if record, found := ledger.FindByDeliveryKey(deliveryKey); found {
+		if record.UserID != "" && record.UserID != userID {
+			return "", fmt.Errorf("playback result owner mismatch")
+		}
+		traceID = record.TraceID
+		if _, err := ledger.Transition(record.Key, target, now); err != nil {
+			// 已终态或不可推进：实报迟到，既有终态保持不变。
+			source = playbackSourceClientLate
+		}
+	} else {
+		// 记录已清理或非本连接的投递：只记账，不推进。
+		source = playbackSourceClientLate
+	}
+	reports.note(deliveryKey, traceID)
+	if err := agent.RecordMediaDelivery(ctx, interaction.Event{
+		ID:             strings.Join([]string{"playback", userID, matchID, deliveryKey, state, source}, ":"),
+		Kind:           interaction.KindPlaybackResult, UserID: userID, MatchID: matchID,
+		TraceID: traceID, DeliveryKey: deliveryKey, PlaybackState: state,
+		DeliveryReason: reason, Source: source, CreatedAt: now,
+	}); err != nil {
+		return source, err
+	}
+	return source, nil
 }
 
 type traceRecoverySource struct{ reader companion.TraceReader }

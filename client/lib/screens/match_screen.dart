@@ -693,6 +693,7 @@ class _MatchScreenState extends State<MatchScreen> {
         AudioPlaybackStatus.failed => 'failed',
       },
       traceId: state.traceId,
+      deliveryKey: state.deliveryKey,
       continuousEnabled: _continuousEnabled,
       error: state.error,
     ));
@@ -1052,6 +1053,7 @@ class _MatchScreenState extends State<MatchScreen> {
               audio,
               mime: metadata.mime,
               traceId: metadata.traceId,
+              deliveryKey: metadata.deliveryKey,
             ));
           case StartVadCommand():
             unawaited(_vad.startListening(VADMode.freeTalk));

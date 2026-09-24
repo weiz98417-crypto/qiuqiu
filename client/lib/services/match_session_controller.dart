@@ -455,12 +455,14 @@ class MatchSessionController extends ChangeNotifier {
       case PlaybackSessionEvent(
           :final status,
           :final traceId,
+          :final deliveryKey,
           :final continuousEnabled,
           :final error,
         ):
         return handlePlayback(
           status,
           traceId: traceId,
+          deliveryKey: deliveryKey,
           continuousEnabled: continuousEnabled,
           error: error,
         );
@@ -888,6 +890,16 @@ class MatchSessionController extends ChangeNotifier {
     return _state;
   }
 
+  /// 被顶替/静音跳过：既有 voice_playback 回执之外，补一条 playback_result
+  /// 实报（skipped）；缺 deliveryKey 的旧下发路径只走原回执。
+  void _sendSkippedPlaybackReceipts(PendingAudio metadata,
+      {required String reason}) {
+    final receipt = mutedPlaybackReceipt(metadata);
+    if (receipt != null) _commands.add(SendSocketCommand(receipt));
+    final result = playbackResultReceipt(metadata, reason: reason);
+    if (result != null) _commands.add(SendSocketCommand(result));
+  }
+
   bool receiveReply({
     required String text,
     required String detail,
@@ -990,14 +1002,12 @@ class MatchSessionController extends ChangeNotifier {
     final metadata =
         _pendingAudio.take() ?? const PendingAudio(mime: 'audio/wav');
     if (metadata.skip) {
-      final receipt = mutedPlaybackReceipt(metadata);
-      if (receipt != null) _commands.add(SendSocketCommand(receipt));
+      _sendSkippedPlaybackReceipts(metadata, reason: 'superseded');
       _publish(_state.copyWith(pendingAudioCount: _pendingAudio.length));
       return;
     }
     if (!soundEnabled) {
-      final receipt = mutedPlaybackReceipt(metadata);
-      if (receipt != null) _commands.add(SendSocketCommand(receipt));
+      _sendSkippedPlaybackReceipts(metadata, reason: 'muted');
       _publish(_state.copyWith(
         pendingAudioCount: _pendingAudio.length,
         phase: continuousEnabled
@@ -1015,6 +1025,7 @@ class MatchSessionController extends ChangeNotifier {
   MatchSessionState handlePlayback(
     String status, {
     String? traceId,
+    String? deliveryKey,
     required bool continuousEnabled,
     String? error,
   }) {
@@ -1024,6 +1035,19 @@ class MatchSessionController extends ChangeNotifier {
         'type': 'voice_playback',
         'traceId': normalizedTraceId,
         'state': status == 'failed' ? 'error' : status,
+      }));
+    }
+    // 播放终态实报：只随下发时带 deliveryKey 的音频发送，旧下发路径不发
+    // （向后兼容）；started 非终态不报。
+    final normalizedDeliveryKey = deliveryKey?.trim() ?? '';
+    final reportedState = playbackResultState(status);
+    if (normalizedDeliveryKey.isNotEmpty && reportedState != null) {
+      final reason = error?.trim() ?? '';
+      _commands.add(SendSocketCommand({
+        'type': 'playback_result',
+        'deliveryKey': normalizedDeliveryKey,
+        'state': reportedState,
+        if (reason.isNotEmpty) 'reason': reason,
       }));
     }
     switch (status) {
@@ -1237,11 +1261,13 @@ class SocketSessionEvent extends MatchSessionEvent {
 class PlaybackSessionEvent extends MatchSessionEvent {
   final String status;
   final String? traceId;
+  final String? deliveryKey;
   final bool continuousEnabled;
   final String? error;
   const PlaybackSessionEvent(
     this.status, {
     this.traceId,
+    this.deliveryKey,
     this.continuousEnabled = false,
     this.error,
   });
@@ -1389,6 +1415,31 @@ Map<String, dynamic>? mutedPlaybackReceipt(PendingAudio metadata) {
     'type': 'voice_playback',
     'traceId': traceId,
     'state': 'skipped',
+  };
+}
+
+/// 播放终态到 playback_result 实报态的映射：播完=completed、停播=
+/// interrupted、被顶替或静音=skipped、失败=failed；started 非终态不报。
+String? playbackResultState(String status) => switch (status) {
+      'ended' || 'completed' => 'completed',
+      'interrupted' => 'interrupted',
+      'blocked' => 'skipped',
+      'failed' => 'failed',
+      _ => null,
+    };
+
+/// 静音/顶替跳过时的 playback_result 实报：仅当下发带 deliveryKey 才生成，
+/// 旧下发路径不发（向后兼容）。
+Map<String, dynamic>? playbackResultReceipt(PendingAudio metadata,
+    {String? reason}) {
+  final deliveryKey = metadata.deliveryKey?.trim();
+  if (deliveryKey == null || deliveryKey.isEmpty) return null;
+  final normalizedReason = reason?.trim() ?? '';
+  return {
+    'type': 'playback_result',
+    'deliveryKey': deliveryKey,
+    'state': 'skipped',
+    if (normalizedReason.isNotEmpty) 'reason': normalizedReason,
   };
 }
 

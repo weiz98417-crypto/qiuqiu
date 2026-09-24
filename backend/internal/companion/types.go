@@ -89,13 +89,17 @@ const (
 )
 
 type DeliveryInput struct {
-	SignalID      string
-	TraceID       string
-	UserID        string
-	MatchID       string
-	DecisionID    string
-	State         string
-	Purpose       string
+	SignalID   string
+	TraceID    string
+	UserID     string
+	MatchID    string
+	DecisionID string
+	State      string
+	Purpose    string
+	// Source 覆写投递账本事件的来源标记；空则沿用 Purpose。推断路径用它
+	// 标 server_inferred，与客户端实报（client/client_late）在同一字段区分，
+	// 关系观察仍以 Purpose 为准。
+	Source        string
 	UsedMemoryIDs []string
 	Now           time.Time
 }

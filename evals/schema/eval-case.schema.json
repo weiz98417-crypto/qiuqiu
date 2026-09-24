@@ -5,8 +5,8 @@
   "required": ["version", "id", "suite", "summary", "config"],
   "properties": {
     "version": {"const": "2026-07"},
-    "id": {"type": "string", "pattern": "^(baseline|boundary|regression)\\.[a-z0-9-]+$"},
-    "suite": {"enum": ["baseline", "boundary", "regression"]},
+    "id": {"type": "string", "pattern": "^(baseline|boundary|companion|knowledge|memory|multi|persona|regression|robust|router_net|safety|voice)\\.[a-z0-9-]+$"},
+    "suite": {"enum": ["baseline", "boundary", "companion", "knowledge", "memory", "multi", "persona", "regression", "robust", "router_net", "safety", "voice"]},
     "tags": {"type": "array", "items": {"type": "string"}},
     "summary": {"type": "string"},
     "config": {"type": "object", "required": ["homeTeam", "awayTeam"]},

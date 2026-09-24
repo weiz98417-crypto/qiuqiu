@@ -424,7 +424,13 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 		if err != nil {
 			return TurnPlan{}, err
 		}
-		if err := a.recordInteraction(ctx, interaction.Event{ID: delivery.SignalID, Kind: interaction.KindDelivery, SignalID: delivery.SignalID, UserID: delivery.UserID, MatchID: delivery.MatchID, TraceID: delivery.TraceID, DecisionID: delivery.DecisionID, DeliveryKey: delivery.TraceID, DeliveryState: delivery.State, Source: delivery.Purpose, CreatedAt: delivery.Now}); err != nil {
+		// 账本事件来源可被显式覆写（推断路径标 server_inferred），未标记时
+		// 沿用 Purpose，实报路径的既有语义不变。
+		eventSource := delivery.Purpose
+		if delivery.Source != "" {
+			eventSource = delivery.Source
+		}
+		if err := a.recordInteraction(ctx, interaction.Event{ID: delivery.SignalID, Kind: interaction.KindDelivery, SignalID: delivery.SignalID, UserID: delivery.UserID, MatchID: delivery.MatchID, TraceID: delivery.TraceID, DecisionID: delivery.DecisionID, DeliveryKey: delivery.TraceID, DeliveryState: delivery.State, Source: eventSource, CreatedAt: delivery.Now}); err != nil {
 			return TurnPlan{}, err
 		}
 		return TurnPlan{Kind: input.Kind, Decision: &decision, Presentation: decision.Presentation}, nil

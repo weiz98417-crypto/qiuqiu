@@ -9,9 +9,18 @@ enum AudioPlaybackStatus { started, ended, interrupted, blocked, failed }
 class AudioState {
   final AudioPlaybackStatus status;
   final String? traceId;
+
+  /// 下发音频携带的投递键：随播放终态原样回传，供 playback_result 实报
+  /// 定位投递记录；旧下发路径缺此键时不实报。
+  final String? deliveryKey;
   final String? error;
 
-  const AudioState({required this.status, this.traceId, this.error});
+  const AudioState({
+    required this.status,
+    this.traceId,
+    this.deliveryKey,
+    this.error,
+  });
 }
 
 class AudioPlayerService {
@@ -28,6 +37,7 @@ class AudioPlayerService {
   bool _muted = false;
   bool _disposed = false;
   String? _currentTraceId;
+  String? _currentDeliveryKey;
 
   Stream<AudioState> get stateStream => _stateController.stream;
   bool get isMuted => _muted;
@@ -57,6 +67,7 @@ class AudioPlayerService {
     Uint8List audio, {
     required String mime,
     String? traceId,
+    String? deliveryKey,
   }) async {
     if (_muted || _disposed || audio.isEmpty) return;
     // 新播放前先停声并释放上一来源，长会话不再累积 AudioSource。
@@ -73,12 +84,18 @@ class AudioPlayerService {
       final handle = _soloud!.play(source);
       _activeHandles.add(handle);
       _currentTraceId = traceId;
-      _emit(AudioPlaybackStatus.started, traceId: traceId);
+      _currentDeliveryKey = deliveryKey;
+      _emit(
+        AudioPlaybackStatus.started,
+        traceId: traceId,
+        deliveryKey: deliveryKey,
+      );
       _watchCompletion();
     } catch (error) {
       _emit(
         AudioPlaybackStatus.failed,
         traceId: traceId,
+        deliveryKey: deliveryKey,
         error: error.toString(),
       );
     }
@@ -101,8 +118,14 @@ class AudioPlayerService {
       if (_activeHandles.isEmpty) {
         _completionTimer?.cancel();
         final traceId = _currentTraceId;
+        final deliveryKey = _currentDeliveryKey;
         _currentTraceId = null;
-        _emit(AudioPlaybackStatus.ended, traceId: traceId);
+        _currentDeliveryKey = null;
+        _emit(
+          AudioPlaybackStatus.ended,
+          traceId: traceId,
+          deliveryKey: deliveryKey,
+        );
       }
     });
   }
@@ -119,9 +142,15 @@ class AudioPlayerService {
     _activeHandles.clear();
     _sources.dispose();
     final traceId = _currentTraceId;
+    final deliveryKey = _currentDeliveryKey;
     _currentTraceId = null;
-    if (notify && traceId != null) {
-      _emit(AudioPlaybackStatus.interrupted, traceId: traceId);
+    _currentDeliveryKey = null;
+    if (notify && (traceId != null || deliveryKey != null)) {
+      _emit(
+        AudioPlaybackStatus.interrupted,
+        traceId: traceId,
+        deliveryKey: deliveryKey,
+      );
     }
   }
 
@@ -130,10 +159,20 @@ class AudioPlayerService {
     if (muted) await pause();
   }
 
-  void _emit(AudioPlaybackStatus status, {String? traceId, String? error}) {
+  void _emit(
+    AudioPlaybackStatus status, {
+    String? traceId,
+    String? deliveryKey,
+    String? error,
+  }) {
     if (!_disposed && !_stateController.isClosed) {
       _stateController.add(
-        AudioState(status: status, traceId: traceId, error: error),
+        AudioState(
+          status: status,
+          traceId: traceId,
+          deliveryKey: deliveryKey,
+          error: error,
+        ),
       );
     }
   }

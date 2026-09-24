@@ -7,6 +7,7 @@ import (
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/conversation"
+	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/relationship"
 )
@@ -69,5 +70,160 @@ func TestTerminalPlaybackStates(t *testing.T) {
 	}
 	if terminalPlaybackState("started") {
 		t.Fatal("started should not be terminal")
+	}
+}
+
+func TestPlaybackResultClientReportRoutesDelivery(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	deliveryLedger := conversation.NewMemoryDeliveryLedger()
+	interactionLedger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithInteractionLedger(interactionLedger)
+	tracker := newReplyDeliveryTrackerWithLedger(deliveryLedger)
+	trace := companion.Trace{ID: "trace-1", UserID: "user-1", MatchID: "match-1"}
+	if err := tracker.TrackWithPolicy(trace, trace.UserID, trace.MatchID, "goal:1:confirmed", false, time.Minute); err != nil {
+		t.Fatalf("track delivery: %v", err)
+	}
+	if err := tracker.Transition(trace.ID, conversation.DeliveryTextDelivered, now); err != nil {
+		t.Fatalf("transition text delivered: %v", err)
+	}
+
+	reports := newClientPlaybackReportSet()
+	source, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-1", "match-1", "goal:1:confirmed", "completed", "", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("record playback result: %v", err)
+	}
+	if source != playbackSourceClient {
+		t.Fatalf("source = %q, want %q", source, playbackSourceClient)
+	}
+	record, ok := deliveryLedger.Get(trace.ID)
+	if !ok || record.State != conversation.DeliveryCompleted {
+		t.Fatalf("record = %+v, want completed", record)
+	}
+	if !reports.has("goal:1:confirmed") || !reports.has(trace.ID) {
+		t.Fatal("client report should be registered under deliveryKey and trace id")
+	}
+	events, err := interactionLedger.List(ctx, "user-1", "match-1", 100)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ledger events = %+v err=%v, want exactly the client report", events, err)
+	}
+	event := events[0]
+	if event.Kind != interaction.KindPlaybackResult || event.PlaybackState != "completed" || event.Source != playbackSourceClient {
+		t.Fatalf("event = %+v, want playback_result completed from client", event)
+	}
+	if event.DeliveryKey != "goal:1:confirmed" || event.TraceID != trace.ID {
+		t.Fatalf("event correlation = %q/%q, want goal:1:confirmed/%s", event.DeliveryKey, event.TraceID, trace.ID)
+	}
+}
+
+func TestPlaybackResultLateReportDoesNotOverwriteTerminal(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	deliveryLedger := conversation.NewMemoryDeliveryLedger()
+	interactionLedger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithInteractionLedger(interactionLedger)
+	tracker := newReplyDeliveryTrackerWithLedger(deliveryLedger)
+	trace := companion.Trace{ID: "trace-late", UserID: "user-1", MatchID: "match-1"}
+	if err := tracker.TrackWithPolicy(trace, trace.UserID, trace.MatchID, "goal:2:confirmed", false, time.Minute); err != nil {
+		t.Fatalf("track delivery: %v", err)
+	}
+	if err := tracker.Transition(trace.ID, conversation.DeliveryTextDelivered, now); err != nil {
+		t.Fatalf("transition text delivered: %v", err)
+	}
+	if err := tracker.Transition(trace.ID, conversation.DeliveryAudioStarted, now); err != nil {
+		t.Fatalf("transition audio started: %v", err)
+	}
+	reports := newClientPlaybackReportSet()
+	if _, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-1", "match-1", "goal:2:confirmed", "completed", "", now); err != nil {
+		t.Fatalf("record playback result: %v", err)
+	}
+
+	source, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-1", "match-1", "goal:2:confirmed", "interrupted", "late", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("record late playback result: %v", err)
+	}
+	if source != playbackSourceClientLate {
+		t.Fatalf("source = %q, want %q", source, playbackSourceClientLate)
+	}
+	record, ok := deliveryLedger.Get(trace.ID)
+	if !ok || record.State != conversation.DeliveryCompleted {
+		t.Fatalf("record = %+v, want completed kept", record)
+	}
+	events, err := interactionLedger.List(ctx, "user-1", "match-1", 100)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("ledger events = %+v err=%v, want both reports kept", events, err)
+	}
+	sources := map[string]string{}
+	for _, event := range events {
+		sources[event.Source] = event.PlaybackState
+	}
+	if sources[playbackSourceClient] != "completed" || sources[playbackSourceClientLate] != "interrupted" {
+		t.Fatalf("sources = %+v, want client=completed and client_late=interrupted", sources)
+	}
+}
+
+func TestPlaybackResultUnknownDeliveryKeyRecordsLate(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	deliveryLedger := conversation.NewMemoryDeliveryLedger()
+	interactionLedger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithInteractionLedger(interactionLedger)
+
+	reports := newClientPlaybackReportSet()
+	source, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-1", "match-1", "stale-key", "skipped", "muted", now)
+	if err != nil {
+		t.Fatalf("record playback result: %v", err)
+	}
+	if source != playbackSourceClientLate {
+		t.Fatalf("source = %q, want %q", source, playbackSourceClientLate)
+	}
+	events, err := interactionLedger.List(ctx, "user-1", "match-1", 100)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ledger events = %+v err=%v, want the late report only", events, err)
+	}
+	event := events[0]
+	if event.Source != playbackSourceClientLate || event.DeliveryReason != "muted" || event.TraceID != "" {
+		t.Fatalf("event = %+v, want late report without trace correlation", event)
+	}
+	if validPlaybackResultState("started") || validPlaybackResultState("") {
+		t.Fatal("non-terminal playback states must not be reportable")
+	}
+}
+
+func TestInferredOutcomeSkippedAfterClientReport(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	interactionLedger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithInteractionLedger(interactionLedger)
+	connection := &watchConnection{
+		deps:                  watchDeps{agent: agent},
+		deliveryTracker:       newReplyDeliveryTracker(),
+		interruptedReactions:  newInterruptedReactionGuard(nil),
+		clientPlaybackReports: newClientPlaybackReportSet(),
+		identity:              newConnectionIdentity("user-1"),
+	}
+	trace := companion.Trace{ID: "trace-1", UserID: "user-1", MatchID: "match-1", RelationshipDecision: &relationship.Decision{ID: "decision-1"}}
+
+	// 无实报：推断照旧写入，且账本标 server_inferred（failed 不触发打断
+	// 表演，连接级 writer 缺省无碍）。
+	if err := connection.observeInferredOutcome(ctx, trace, "user-1", "match-1", "failed", now); err != nil {
+		t.Fatalf("observe inferred outcome: %v", err)
+	}
+	events, err := interactionLedger.List(ctx, "user-1", "match-1", 100)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ledger events = %+v err=%v, want the inferred delivery", events, err)
+	}
+	if events[0].Kind != interaction.KindDelivery || events[0].Source != deliverySourceInferred {
+		t.Fatalf("event = %+v, want delivery from %q", events[0], deliverySourceInferred)
+	}
+
+	// 实报在先：推断与其连带的打断反应都不再发生。
+	connection.clientPlaybackReports.note(trace.ID)
+	if err := connection.observeInferredOutcome(ctx, trace, "user-1", "match-1", "interrupted", now.Add(time.Second)); err != nil {
+		t.Fatalf("observe inferred outcome after report: %v", err)
+	}
+	events, err = interactionLedger.List(ctx, "user-1", "match-1", 100)
+	if err != nil || len(events) != 1 {
+		t.Fatalf("ledger events = %+v err=%v, want the client report to suppress inference", events, err)
 	}
 }
