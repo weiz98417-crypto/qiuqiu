@@ -91,10 +91,6 @@ func selectTurnActs(state *StateBundle, signal Signal, now time.Time) ([]Communi
 		updateAffect(&state.Match.Affect, *signal.Match, now)
 		// ADR-0019 记忆偏置：画像口味命中本场进球事件时放大 affect
 		// （±0.2/0.15 封顶），reason code 随决策可解释。
-		memoryCodes := applyMemoryBias(&state.Match.Affect, signal.Match)
-		if len(memoryCodes) > 0 {
-			return []CommunicationAct{ActReact}, append(memoryCodes, "match_event_affect_updated")
-		}
 		if !signal.Match.OutputAllowed {
 			return []CommunicationAct{ActSilence}, []string{"match_event_observed_output_disabled"}
 		}
@@ -122,7 +118,11 @@ func selectTurnActs(state *StateBundle, signal Signal, now time.Time) ([]Communi
 			observedAt := now
 			state.Match.Initiative.LastNormalAt = &observedAt
 		}
-		return []CommunicationAct{ActReact}, []string{"match_event_affect_updated"}
+		// ADR-0019 记忆偏置：过全部限制门之后施加（队伍命中 0.2 优先，
+		// 球员命中 0.15，不叠加），reason code 随决策可解释。
+		codes := []string{"match_event_affect_updated"}
+		codes = append(codes, applyMemoryBias(&state.Match.Affect, signal.Match)...)
+		return []CommunicationAct{ActReact}, codes
 	}
 	if signal.Kind != SignalUserTurn || signal.User == nil {
 		return nil, nil
