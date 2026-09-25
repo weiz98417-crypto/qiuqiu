@@ -150,4 +150,9 @@ var (
 	ErrUnavailable = errors.New("memory: adapter unavailable")
 	// ErrNotFound marks a requested row (thread id) that does not exist.
 	ErrNotFound = errors.New("memory: row not found")
+	// ErrSlotOccupied marks a portrait ADD landing on a slot that still has
+	// an open row (migration 052's partial unique index, enforced on both
+	// stores): a decider misjudgment must surface as an error — the
+	// maintainer audits and skips instead of silently rewriting semantics.
+	ErrSlotOccupied = errors.New("memory: portrait slot already has an open row")
 )

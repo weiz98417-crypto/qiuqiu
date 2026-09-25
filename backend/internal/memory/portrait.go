@@ -65,9 +65,11 @@ type PortraitOverlayStore interface {
 	// open-ended tombstone row is written; nothing is ever hard-deleted.
 	Delete(ctx context.Context, userID, topic, subTopic string) error
 	// ApplyPortraitOp lands one conflict-op decision deterministically:
-	// ADD inserts a fresh row (ValidFrom=now); UPDATE closes TargetID and
-	// opens the new version in one transaction; DELETE only closes TargetID
-	// (the tombstone row stays, never hard-deleted); NOOP writes nothing.
+	// ADD inserts a fresh row (ValidFrom=now) and requires the slot to be
+	// free of open rows; UPDATE closes TargetID and opens the new version in
+	// one transaction; DELETE closes TargetID and appends an open tombstone
+	// (same semantics as the user-side Delete) in one transaction; NOOP
+	// writes nothing.
 	ApplyPortraitOp(ctx context.Context, userID string, decision OpDecision, claim PortraitClaim) (PortraitOverlay, error)
 }
 
@@ -220,8 +222,10 @@ func (m *MemoryPortraitOverlays) Delete(_ context.Context, userID, topic, subTop
 }
 
 // ApplyPortraitOp lands one op decision with the same determinism as the SQL
-// path: UPDATE closes the target and opens the new version, DELETE only
-// closes the target, ADD opens a fresh row, NOOP writes nothing.
+// path: ADD opens a fresh row (the slot must carry no open row — 同槽开放行
+// 检查，migration 052 部分唯一索引的内存侧前置), UPDATE closes the target
+// and opens the new version, DELETE closes the target and appends an open
+// tombstone, NOOP writes nothing.
 func (m *MemoryPortraitOverlays) ApplyPortraitOp(_ context.Context, userID string, decision OpDecision, claim PortraitClaim) (PortraitOverlay, error) {
 	if m == nil {
 		return PortraitOverlay{}, ErrUnavailable
@@ -233,6 +237,12 @@ func (m *MemoryPortraitOverlays) ApplyPortraitOp(_ context.Context, userID strin
 	case PortraitOpNoop:
 		return PortraitOverlay{}, nil
 	case PortraitOpAdd:
+		// 同槽开放行检查：判定器把 UPDATE 误判成 ADD（或对已遗忘槽位盲目
+		// ADD）在这里显式报错——不静默转语义、不并出第二条开放行（Postgres
+		// 侧同语义由 migration 052 的部分唯一索引兜底）。
+		if m.slotOccupiedLocked(userID, claim.Topic, claim.SubTopic) {
+			return PortraitOverlay{}, ErrSlotOccupied
+		}
 		overlay := claim.overlay(m.nextIDLocked(), now)
 		m.rows[userID] = append(m.rows[userID], overlay)
 		return overlay, nil
@@ -244,13 +254,49 @@ func (m *MemoryPortraitOverlays) ApplyPortraitOp(_ context.Context, userID strin
 		m.rows[userID] = append(m.rows[userID], overlay)
 		return overlay, nil
 	case PortraitOpDelete:
+		// 封口 + 开放墓碑两行（同用户侧 Delete 语义）：目标行封口后追加
+		// 一条 deleted 墓碑，ResolvePortrait 靠它遮蔽未来同槽重提取。
+		target := m.findLocked(userID, decision.TargetID)
+		if target == nil {
+			return PortraitOverlay{}, ErrNotFound
+		}
 		if err := m.closeLocked(userID, decision.TargetID, now); err != nil {
 			return PortraitOverlay{}, err
 		}
-		return PortraitOverlay{}, nil
+		tombstone := PortraitOverlay{
+			ID:        m.nextIDLocked(),
+			Topic:     target.Topic,
+			SubTopic:  target.SubTopic,
+			Deleted:   true,
+			UpdatedAt: now,
+		}
+		m.rows[userID] = append(m.rows[userID], tombstone)
+		return tombstone, nil
 	default:
 		return PortraitOverlay{}, ErrNotFound
 	}
+}
+
+// findLocked returns a pointer to the live row with the given id, or nil.
+func (m *MemoryPortraitOverlays) findLocked(userID string, id int64) *PortraitOverlay {
+	for index := range m.rows[userID] {
+		row := &m.rows[userID][index]
+		if row.ID == id {
+			return row
+		}
+	}
+	return nil
+}
+
+// slotOccupiedLocked reports whether the slot still carries any open row
+// （含墓碑行——遗忘槽位不因盲目 ADD 复活，与部分唯一索引同口径）。
+func (m *MemoryPortraitOverlays) slotOccupiedLocked(userID, topic, subTopic string) bool {
+	for _, row := range m.rows[userID] {
+		if row.Topic == topic && row.SubTopic == subTopic && row.ValidTo.IsZero() {
+			return true
+		}
+	}
+	return false
 }
 
 // closeLocked stamps ValidTo on one live row (墓碑保留：行永不移除)。Targeting

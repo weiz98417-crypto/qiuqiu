@@ -22,12 +22,20 @@ type ambientClassifier interface {
 	Classify(ctx context.Context, pcm []byte) ([]ambient.Event, error)
 }
 
+// ambientRelayMaxInFlight 是旁路在途上限：sidecar 健康但慢时，批量
+// asr_chunk 的无上限投递会堆积协程把它打挂；饱和即丢弃，不反压主路。
+const ambientRelayMaxInFlight = 4
+
 // ambientRelay 是一条观赛连接的气氛旁路：nil 即旁路停用。
 type ambientRelay struct {
 	classifier  ambientClassifier
 	coordinator observation.Coordinator
-	// dropped 累计旁路静默丢弃的事件数（sidecar 失败整批计 1、落库失败逐条计）。
+	// dropped 累计旁路静默丢弃的事件数（sidecar 失败整批计 1、落库失败
+	// 逐条计、在途饱和整片计 1）。
 	dropped atomic.Int64
+	// 在途信号量（容量 ambientRelayMaxInFlight）：Forward 时同步占位，
+	// deliver 返回时释放。
+	inFlight chan struct{}
 }
 
 // newAmbientRelay 装配旁路；classifier 与 coordinator 任一为空则返回 nil
@@ -36,7 +44,11 @@ func newAmbientRelay(classifier ambientClassifier, coordinator observation.Coord
 	if classifier == nil || coordinator == nil {
 		return nil
 	}
-	return &ambientRelay{classifier: classifier, coordinator: coordinator}
+	return &ambientRelay{
+		classifier:  classifier,
+		coordinator: coordinator,
+		inFlight:    make(chan struct{}, ambientRelayMaxInFlight),
+	}
 }
 
 // Dropped 返回旁路静默丢弃计数（摘除场景测试与运维观测用）。
@@ -50,9 +62,16 @@ func (r *ambientRelay) Dropped() int64 {
 // Forward 把一个音频分片旁送给 sidecar：立即返回，判定与落库都在独立
 // 协程里完成（分片字节数组归旁路所有，ASR 主路继续用自己那份）。
 // 身份未识别或比赛为空时跳过——气氛旁证仅观赛会话内生效，且必须落在
-// user+match 作用域内。
+// user+match 作用域内。在途超过 ambientRelayMaxInFlight 时整片静默丢弃
+// 并计入 dropped（宁失明不反压）。
 func (r *ambientRelay) Forward(userID, matchID string, pcm []byte) {
 	if r == nil || len(pcm) == 0 || userID == "" || matchID == "" {
+		return
+	}
+	select {
+	case r.inFlight <- struct{}{}:
+	default:
+		r.dropped.Add(1)
 		return
 	}
 	go r.deliver(userID, matchID, pcm)
@@ -62,6 +81,7 @@ func (r *ambientRelay) Forward(userID, matchID string, pcm []byte) {
 // 用独立预算的 background context：连接拆除不打断在途的短调用，也不让
 // 旁路反过来拖住连接生命周期。
 func (r *ambientRelay) deliver(userID, matchID string, pcm []byte) {
+	defer func() { <-r.inFlight }()
 	ctx, cancel := context.WithTimeout(context.Background(), 2*time.Second)
 	defer cancel()
 	events, err := r.classifier.Classify(ctx, pcm)

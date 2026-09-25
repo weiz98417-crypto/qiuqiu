@@ -52,6 +52,11 @@ func TestPostgresPortraitOverlayTemporalIntegration(t *testing.T) {
 	if added.ID == 0 || added.ValidFrom.IsZero() || !added.ValidTo.IsZero() {
 		t.Fatalf("ADD row = %+v, want ledger id, valid_from stamped, valid_to open", added)
 	}
+	// 同槽开放行检查（migration 052）：槽内已有开放行时 ADD 显式报
+	// ErrSlotOccupied——误判在落地前拦下，不等索引冲突裸上抛。
+	if _, err := records.ApplyPortraitOp(ctx, userID, OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); !errors.Is(err, ErrSlotOccupied) {
+		t.Fatalf("ADD into an occupied slot = %v, want ErrSlotOccupied", err)
+	}
 
 	// UPDATE：旧条目封口 + 新条目生效，封口行留在库里可回放。
 	upserted, err := records.ApplyPortraitOp(ctx, userID, OpDecision{Op: PortraitOpUpdate, TargetID: added.ID}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"})
@@ -70,13 +75,22 @@ func TestPostgresPortraitOverlayTemporalIntegration(t *testing.T) {
 		t.Fatalf("sealed row = %+v, want the 巴萨 row closed by valid_to", history[0])
 	}
 
-	// DELETE：单行封口，行保留（墓碑纪律）；目标不存在/已封口报 ErrNotFound。
+	// DELETE：封口 + 开放墓碑两行（同用户侧 Delete 语义），行保留（墓碑
+	// 纪律）；目标不存在/已封口报 ErrNotFound。
 	if _, err := records.ApplyPortraitOp(ctx, userID, OpDecision{Op: PortraitOpDelete, TargetID: upserted.ID}, PortraitClaim{}); err != nil {
 		t.Fatalf("ApplyPortraitOp DELETE: %v", err)
 	}
 	history, _ = records.PortraitHistory(ctx, userID)
-	if len(history) != 2 {
-		t.Fatalf("history after DELETE = %+v, want the row preserved", history)
+	if len(history) != 3 {
+		t.Fatalf("history after DELETE = %+v, want the sealed row plus an open tombstone", history)
+	}
+	tombstone := history[2]
+	if !tombstone.Deleted || tombstone.Content != "" || !tombstone.ValidTo.IsZero() || tombstone.SubTopic != "user_stated" {
+		t.Fatalf("tombstone = %+v, want deleted=true, empty content, open-ended, on the target's slot", tombstone)
+	}
+	// 遗忘槽位不因 ADD 复活：开放墓碑占住同槽，ADD 同样被拒。
+	if _, err := records.ApplyPortraitOp(ctx, userID, OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我又有主队了。"}); !errors.Is(err, ErrSlotOccupied) {
+		t.Fatalf("ADD into a tombstoned slot = %v, want ErrSlotOccupied", err)
 	}
 	if _, err := records.ApplyPortraitOp(ctx, userID, OpDecision{Op: PortraitOpDelete, TargetID: upserted.ID}, PortraitClaim{}); !errors.Is(err, ErrNotFound) {
 		t.Fatalf("double DELETE = %v, want ErrNotFound", err)
@@ -93,11 +107,12 @@ func TestPostgresPortraitOverlayTemporalIntegration(t *testing.T) {
 		t.Fatalf("Put again: %v", err)
 	}
 	current, _ = records.CurrentPortrait(ctx, userID)
-	if len(current) != 1 || current[0].Content != "亚马尔" {
-		t.Fatalf("current after re-edit = %+v, want only the fresh version", current)
+	// 当前视图含开放墓碑行（遮蔽合成重提取）：亚马尔新行 + 墓碑两行并存。
+	if len(current) != 2 || current[1].Content != "亚马尔" || !current[0].Deleted {
+		t.Fatalf("current after re-edit = %+v, want the fresh version plus the tombstone", current)
 	}
 	history, _ = records.PortraitHistory(ctx, userID)
-	if len(history) != 4 {
+	if len(history) != 5 {
 		t.Fatalf("history after re-edit = %+v, want the closed 皇马 and 佩德里 rows replayable", history)
 	}
 
@@ -107,11 +122,11 @@ func TestPostgresPortraitOverlayTemporalIntegration(t *testing.T) {
 		t.Fatalf("seal row: %v", err)
 	}
 	current, _ = records.CurrentPortrait(ctx, userID)
-	if len(current) != 0 {
-		t.Fatalf("current after sealing = %+v, want nothing inside the window", current)
+	if len(current) != 1 || !current[0].Deleted {
+		t.Fatalf("current after sealing = %+v, want only the open tombstone", current)
 	}
 	history, _ = records.PortraitHistory(ctx, userID)
-	if len(history) != 4 {
+	if len(history) != 5 {
 		t.Fatalf("history after sealing = %+v, want every row regardless of window", history)
 	}
 
@@ -132,7 +147,7 @@ func TestPostgresPortraitOverlayTemporalIntegration(t *testing.T) {
 		t.Fatalf("ApplyPortraitOp under a completed tombstone = %v, want ErrDataDeleted", err)
 	}
 	history, _ = records.PortraitHistory(ctx, userID)
-	if errors.Is(err, privacy.ErrDataDeleted) || len(history) != 4 {
+	if errors.Is(err, privacy.ErrDataDeleted) || len(history) != 5 {
 		t.Fatalf("history must be untouched by refused writes, got %+v err=%v", history, err)
 	}
 

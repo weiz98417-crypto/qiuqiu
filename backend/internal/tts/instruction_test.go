@@ -128,17 +128,26 @@ func TestInstructionForSnapshotLocksFullTable(t *testing.T) {
 }
 
 func TestInstructionForShortUtteranceAppendsCompactDirection(t *testing.T) {
-	acts := []relationship.CommunicationAct{
-		relationship.ActReact, relationship.ActOpinion, relationship.ActRecall,
-		relationship.ActTease, relationship.ActRepair, relationship.ActAsk,
-		relationship.ActAnalyze, relationship.ActChat, relationship.ActAcknowledge,
+	// 短反应类动作（react/acknowledge/chat 类）：短句追加紧凑尾巴。
+	shortReaction := []relationship.CommunicationAct{
+		relationship.ActReact, relationship.ActChat, relationship.ActAcknowledge,
+	}
+	// repair/opinion 等完整语义动作：措辞再短也走全句，不被压成急促念白。
+	fullSentence := []relationship.CommunicationAct{
+		relationship.ActOpinion, relationship.ActRecall, relationship.ActTease,
+		relationship.ActRepair, relationship.ActAsk, relationship.ActAnalyze,
 		relationship.ActDisagree,
 	}
 	for band, state := range bandStates {
-		for _, act := range acts {
+		for _, act := range shortReaction {
 			got := InstructionFor(state, act, 8)
 			if want := instructionGolden[band][act] + shortUtteranceDirection; got != want {
 				t.Fatalf("short InstructionFor(%v, %v) =\n%q\nwant\n%q", band, act, got, want)
+			}
+		}
+		for _, act := range fullSentence {
+			if got := InstructionFor(state, act, 8); got != instructionGolden[band][act] {
+				t.Fatalf("short %v must keep the full sentence, got\n%q", act, got)
 			}
 		}
 	}
@@ -148,7 +157,7 @@ func TestInstructionForShortUtteranceAppendsCompactDirection(t *testing.T) {
 	if got := InstructionFor(bandStates[bandExcited], relationship.ActReact, 10); got != want {
 		t.Fatalf("compact direction drifted: %q", got)
 	}
-	// 阈值边界：0 视为长度未知不加尾巴，阈值内加、阈值外加。
+	// 阈值边界：0 视为长度未知不加尾巴，阈值内加、阈值外加（react）。
 	state := bandStates[bandCalm]
 	if got := InstructionFor(state, relationship.ActReact, 0); got != instructionGolden[bandCalm][relationship.ActReact] {
 		t.Fatalf("utterLen 0 must skip the compact tail, got %q", got)

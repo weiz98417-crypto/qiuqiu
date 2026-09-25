@@ -35,8 +35,9 @@ func TestSynthesizeReplyTurnsPresentationIntoMiMoPerformanceDirection(t *testing
 }
 
 // 情绪状态与回合动作必须一起进指令：兴奋档 × recall 的指令段与既有数值
-// 档方向（excited/energy/speed）在同一句指令里并存；短句追加紧凑尾巴，
-// 姿态只取首个非 silence 动作（tease 不改变 recall 的指令段）。
+// 档方向（excited/energy/speed）在同一句指令里并存；紧凑尾巴只落在短反应
+// 类动作上——recall 即使短句也走全句；姿态只取首个非 silence 动作（tease
+// 不改变 recall 的指令段）。
 func TestSynthesizeReplyCarriesAffectAndActInstruction(t *testing.T) {
 	synthesizer := &instructionCapturingTTS{}
 	presentation := relationship.PresentationPlan{
@@ -49,13 +50,24 @@ func TestSynthesizeReplyCarriesAffectAndActInstruction(t *testing.T) {
 	if _, err := synthesizeReply(context.Background(), synthesizer, "进了进了！", presentation, []relationship.CommunicationAct{relationship.ActRecall, relationship.ActTease}); err != nil {
 		t.Fatalf("synthesizeReply: %v", err)
 	}
-	for _, expected := range []string{"像忍不住又提了一遍进球", "兴奋还没退", "反应一闪而过", "兴奋和即时反应感", "能量偏高", "语速稍快"} {
+	for _, expected := range []string{"像忍不住又提了一遍进球", "兴奋还没退", "兴奋和即时反应感", "能量偏高", "语速稍快"} {
 		if !strings.Contains(synthesizer.instruction, expected) {
 			t.Fatalf("instruction %q does not contain %q", synthesizer.instruction, expected)
 		}
 	}
+	// recall 是完整语义动作：短句不吃紧凑尾巴。
+	if strings.Contains(synthesizer.instruction, "反应一闪而过") {
+		t.Fatalf("recall must keep the full sentence on short utterances: %q", synthesizer.instruction)
+	}
 	if strings.Contains(synthesizer.instruction, "笑意压不住") {
 		t.Fatalf("instruction must follow the primary act only: %q", synthesizer.instruction)
+	}
+	// 短反应类动作（react 类）：短句追加紧凑尾巴。
+	if _, err := synthesizeReply(context.Background(), synthesizer, "进了进了！", presentation, []relationship.CommunicationAct{relationship.ActReact}); err != nil {
+		t.Fatalf("synthesizeReply react: %v", err)
+	}
+	if !strings.Contains(synthesizer.instruction, "反应一闪而过") {
+		t.Fatalf("react short utterance must append the compact tail: %q", synthesizer.instruction)
 	}
 }
 

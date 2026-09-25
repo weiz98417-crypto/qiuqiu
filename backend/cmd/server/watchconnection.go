@@ -1068,14 +1068,16 @@ func (c *watchConnection) readMessages() {
 			updateCancel()
 		case "duplex_event":
 			// 播放期抢话遥测实报（voice-duplex 1.4）：判定在客户端，服务端
-			// 只收事件落结构化日志，不参与判定、不改变话轮调度。
+			// 只收事件落结构化日志，不参与判定、不改变话轮调度。转写正文
+			// 不入日志：只记 rune 数。
 			event := strings.TrimSpace(str(req, "event"))
 			if event == "" {
 				continue
 			}
 			streak, _ := intField(req, "streak")
-			log.Printf("voice duplex event: user=%q match=%q event=%q transcript=%q streak=%d",
-				c.identity.Get(), c.matchID, event, strings.TrimSpace(str(req, "transcript")), streak)
+			transcript := strings.TrimSpace(str(req, "transcript"))
+			log.Printf("voice duplex event: user=%q match=%q event=%q transcript_len=%d streak=%d",
+				c.identity.Get(), c.matchID, event, len([]rune(transcript)), streak)
 		}
 	}
 }

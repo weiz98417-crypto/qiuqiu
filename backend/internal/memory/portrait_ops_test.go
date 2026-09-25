@@ -70,19 +70,23 @@ func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 		t.Fatalf("closed row = %+v, want the 巴萨 row sealed with valid_to", history[0])
 	}
 
-	// DELETE：主张明示条目作废——单行封口，墓碑保留、永不物理删。
+	// DELETE：主张明示条目作废——封口 + 开放墓碑两行，墓碑遮蔽同槽、
+	// 永不物理删。
 	decider = scriptedDecider{decision: OpDecision{Op: PortraitOpDelete, TargetID: 2, Reason: "不再成立"}}
 	deleter := NewPortraitMaintainer(store, decider, nil)
 	if _, err := deleter.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我没有主队了。"}); err != nil {
 		t.Fatalf("DELETE consolidate: %v", err)
 	}
 	current, _ = store.CurrentPortrait(ctx, "user-1")
-	if len(current) != 0 {
-		t.Fatalf("after DELETE current = %+v, want no live row", current)
+	if len(current) != 1 || !current[0].Deleted || current[0].Content != "" {
+		t.Fatalf("after DELETE current = %+v, want only the open tombstone row", current)
 	}
 	history, _ = store.PortraitHistory(ctx, "user-1")
-	if len(history) != 2 || history[1].ID != 2 || history[1].ValidTo.IsZero() {
-		t.Fatalf("after DELETE history = %+v, want the 皇马 row sealed but preserved", history)
+	if len(history) != 3 || history[1].ID != 2 || history[1].ValidTo.IsZero() {
+		t.Fatalf("after DELETE history = %+v, want the 皇马 row sealed and preserved", history)
+	}
+	if history[2].ID != 3 || !history[2].Deleted || history[2].Content != "" || !history[2].ValidTo.IsZero() {
+		t.Fatalf("tombstone row = %+v, want deleted=true, empty content, open-ended", history[2])
 	}
 
 	// NOOP：重复主张不写。
@@ -92,26 +96,101 @@ func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 		t.Fatalf("NOOP consolidate: %v", err)
 	}
 	history, _ = store.PortraitHistory(ctx, "user-1")
-	if len(history) != 2 {
+	if len(history) != 3 {
 		t.Fatalf("after NOOP history = %+v, want nothing written", history)
 	}
 }
 
 // TestPortraitMaintainerBlindAddWithoutDecider 是 success criteria 的删除测
-// 试：删操作集（不挂判定器），Reflection 回到盲 ADD——两条矛盾主张并存、
-// 无消解，冲突知识集中在操作集一处。
+// 试：删操作集（不挂判定器），Reflection 回到盲 ADD——首条主张无消解原样，
+// 同槽再来的主张撞上同槽开放行检查（migration 052）显式被拒并审计
+// skipped，不再静默并出第二条矛盾行。
 func TestPortraitMaintainerBlindAddWithoutDecider(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
-	maintainer := NewPortraitMaintainer(store, nil, nil)
-	for _, content := range []string{"我最支持的球队是巴萨。", "我现在最支持的球队是皇马。"} {
-		if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: content}); err != nil {
-			t.Fatalf("blind ADD consolidate: %v", err)
-		}
+	audit := &noopAudit{}
+	maintainer := NewPortraitMaintainer(store, nil, audit)
+	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
+		t.Fatalf("blind ADD consolidate: %v", err)
+	}
+	// 同槽第二条主张降级 UPDATE：收口旧行、写入新行（历史 upsert 行为）。
+	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); err != nil {
+		t.Fatalf("blind ADD into an occupied slot falls back to UPDATE: %v", err)
 	}
 	current, _ := store.CurrentPortrait(ctx, "user-1")
-	if len(current) != 2 {
-		t.Fatalf("blind ADD current = %+v, want both contradictory rows kept", current)
+	if len(current) != 1 || current[0].Content != "我现在最支持的球队是皇马。" {
+		t.Fatalf("blind ADD current = %+v, want the second claim live via UPDATE", current)
+	}
+	history, _ := store.PortraitHistory(ctx, "user-1")
+	if len(history) != 2 {
+		t.Fatalf("history = %+v, want the superseded first claim kept for replay", history)
+	}
+}
+
+// TestPortraitMaintainerRejectsMisjudgedAdd 锁 migration 052 的落地语义：
+// 判定器在同槽已有开放行时判 ADD（本应 UPDATE）——落地显式报
+// ErrSlotOccupied，审计记 skipped，不静默转语义、不并出第二条开放行。
+func TestPortraitMaintainerRejectsMisjudgedAdd(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryPortraitOverlays()
+	audit := &noopAudit{}
+	seeder := NewPortraitMaintainer(store, nil, audit)
+	if _, err := seeder.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
+		t.Fatalf("seed ADD: %v", err)
+	}
+	misjudging := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, Reason: "误判"}}, audit)
+	if _, err := misjudging.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); !errors.Is(err, ErrSlotOccupied) {
+		t.Fatalf("misjudged ADD = %v, want ErrSlotOccupied", err)
+	}
+	current, _ := store.CurrentPortrait(ctx, "user-1")
+	if len(current) != 1 || current[0].Content != "我最支持的球队是巴萨。" {
+		t.Fatalf("current after misjudged ADD = %+v, want the original row untouched", current)
+	}
+	if skips := countSkips(audit.entries); skips != 1 {
+		t.Fatalf("audit = %+v, want one skipped decision recorded", audit.entries)
+	}
+}
+
+func countSkips(entries []ExtractionAudit) int {
+	skips := 0
+	for _, entry := range entries {
+		if entry.ReasonCode == ReasonPortraitOpSkipped {
+			skips++
+		}
+	}
+	return skips
+}
+
+// TestPortraitOpDeleteTombstoneMasksReExtraction 锁操作 DELETE 的开放墓碑
+// 语义：墓碑行（deleted=true、content 空、valid_to 开放）存在，且经
+// ResolvePortrait 遮蔽未来同槽重提取——Memobase 从旧 blob 重新合成同一
+// 事实也进不了下一回合。
+func TestPortraitOpDeleteTombstoneMasksReExtraction(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryPortraitOverlays()
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
+		t.Fatalf("seed ADD: %v", err)
+	}
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpDelete, TargetID: 1}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我没有主队了。"}); err != nil {
+		t.Fatalf("op DELETE: %v", err)
+	}
+	history, err := store.PortraitHistory(ctx, "user-1")
+	if err != nil || len(history) != 2 {
+		t.Fatalf("history after op DELETE = %+v err=%v, want the sealed row plus a tombstone", history, err)
+	}
+	if tombstone := history[1]; !tombstone.Deleted || tombstone.Content != "" || !tombstone.ValidTo.IsZero() {
+		t.Fatalf("tombstone = %+v, want deleted=true, empty content, open-ended", tombstone)
+	}
+	current, err := store.CurrentPortrait(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("CurrentPortrait: %v", err)
+	}
+	merged := ResolvePortrait(
+		[]PortraitEntry{{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}},
+		current,
+	)
+	if len(merged) != 0 {
+		t.Fatalf("re-extracted slot survived the tombstone: %+v", merged)
 	}
 }
 
@@ -324,7 +403,7 @@ func TestLLMPortraitOpsRejectsMalformedVerdict(t *testing.T) {
 
 // TestQueueReflectNowConsolidatesClaimsThroughOpSet 锁 Reflection 写路径：
 // user_fact 主张进待合并账本，beat 内经冲突操作集并入权威层——带判定器走
-// UPDATE 消解，不带判定器回到盲 ADD。
+// UPDATE 消解，不带判定器回到盲 ADD（同槽第二条降级 UPDATE）。
 func TestQueueReflectNowConsolidatesClaimsThroughOpSet(t *testing.T) {
 	server, _ := stubMemobaseServer(func(r recordedRequest) (int, []byte) {
 		switch {
@@ -375,7 +454,8 @@ func TestQueueReflectNowConsolidatesClaimsThroughOpSet(t *testing.T) {
 		t.Fatalf("history after two beats = %+v, want the old claim sealed and preserved", history)
 	}
 
-	// 不带判定器（删操作集）：回到盲 ADD，两条矛盾主张并存。
+	// 不带判定器（删操作集）：回到盲 ADD——同槽第二条降级 UPDATE（收口旧行、
+	// 写入新行，历史 upsert 行为），无 key 环境的主张链不断。
 	blindQueue, blindOverlays := newQueueWith(nil)
 	for _, content := range []string{"我最支持的球队是巴萨。", "我现在最支持的球队是皇马。"} {
 		if err := blindQueue.Observe(ctx, Moment{UserID: "user-1", Kind: MomentUserFact, Content: content, Importance: 0.7}); err != nil {
@@ -386,8 +466,8 @@ func TestQueueReflectNowConsolidatesClaimsThroughOpSet(t *testing.T) {
 		t.Fatalf("blind ReflectNow: %v", err)
 	}
 	blindCurrent, _ := blindOverlays.CurrentPortrait(ctx, "user-1")
-	if len(blindCurrent) != 2 {
-		t.Fatalf("blind ADD current = %+v, want both contradictory rows", blindCurrent)
+	if len(blindCurrent) != 1 || blindCurrent[0].Content != "我现在最支持的球队是皇马。" {
+		t.Fatalf("blind ADD current = %+v, want the second claim live via UPDATE", blindCurrent)
 	}
 }
 

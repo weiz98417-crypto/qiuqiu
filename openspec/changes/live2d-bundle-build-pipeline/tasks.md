@@ -8,6 +8,7 @@
   - bundle 侧全绿（CDP webview 探针实证）：`PIXI.VERSION=7.4.3`、`typeof PIXI.Application==='function'`、`Live2DModel` 就绪、**`window.modelReady=true`（模型加载与 ticker 运行成功）**、canvas 基元渲染工作（事件浮动字幕可见）、旧 bundle 的「WebGL unsupported」抛错消除。
   - **模型本体不上屏是本机模拟器环境限制，非 bundle 问题**：Cubism 模型渲染管线必须 WebGL（pixi-live2d-display 硬限制，Canvas 2D 只能画 pixi 基元）；本机 webview 在 `-gpu host`/`angle_indirect` 下 `getContext('webgl')===null`（CDP 实证），`swiftshader_indirect` 两次进程崩溃（Windows GDI）。**形象上屏验证待真机**——真机 webview 有 WebGL，bundle 侧已无拦路者。
   - 附带发现：native 侧 live2d.html 灌自 APK assets（qiuqiu:// scheme 重写 :8081），bundle/模型走 :8081 静态服务器（build/web），两者均已在本次部署链验证。
+  - **像素级终验（2026-09-25 收口轮，真浏览器）**：桌面 Chrome（IAB 内核）打开陪看页——球球形象完整上屏（紫发双马尾模型渲染无误），iframe 状态 `modelReady=true / PIXI 7.4.3 / WebGL AVAILABLE`；注入进球后比分同步、回合气泡、canvas FX 特效（focus 瞄准镜）全部可见。**「模拟器无 WebGL」定性为环境限制而非资产缺陷**：本机构建链在 WebGL 可用环境全链工作，真机（有 WebGL 的 webview）预期一致。模拟器退役，后续验证以浏览器为基座（用户裁决）。
 - [x] 1.5 构建可复现验证（哈希一致）+ pr tier：go 段 28 包全绿；Playwright 段首跑 21 失败为本会话占用的 :8080/:8081 干扰所致，清场后重跑确认。
 
 ## Sequencing

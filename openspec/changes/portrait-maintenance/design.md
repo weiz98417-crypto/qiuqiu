@@ -13,7 +13,7 @@ type OpDecision struct {
 ```
 
 - 判定：`structured.Extract[OpDecision]`（复用既有缝，第三家生产消费者；directordraft 第一、router 第二——structured-tool-seam 3.6 迁移已随后续轮次落地，2026-09-25 校验）——输入新主张文本 + 同 topic 现存有效条目列表，输出操作。
-- 落地：纯 SQL/Go，确定性——LLM 只判关系，不写库。UPDATE 写两行变更（旧 valid_to 封口 + 新条目 valid_from=now），DELETE 单行封口，墓碑行永不物理删除。
+- 落地：纯 SQL/Go，确定性——LLM 只判关系，不写库。UPDATE 写两行变更（旧 valid_to 封口 + 新条目 valid_from=now），DELETE 写两行变更（旧条目封口 + 开放墓碑行——同用户侧 Delete 语义，遮蔽未来同槽重提取；migration 052 的同槽开放行部分唯一索引要求先封口后插入），墓碑行永不物理删除。ADD 落地前检查同槽开放行，误判 ADD（同槽已有开放行）显式报错 + 审计 skipped，不静默转语义。
 
 ## 权威层语境（migration 041）
 

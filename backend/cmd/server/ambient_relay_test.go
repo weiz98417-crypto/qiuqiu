@@ -70,8 +70,10 @@ func waitForReplication(t *testing.T, probe func() bool) {
 	t.Fatal("timed out waiting for ambient relay replication")
 }
 
-// TestAmbientEventsNeverEnterTheFactLedger 是宪法负例（ADR-0002）：
-// 气氛事件注入整条旁路后，matchstate 事实账本零新行——欢呼变不成比分。
+// TestAmbientEventsNeverEnterTheFactLedger 是 tripwire（ADR-0002）：本测试
+// 锁的是「旁路现状不触碰事实账本」这一构造性为真的事实——若未来有人把
+// 旁路接进 matchstate，则在此爆炸。真正的锁在 observation 层测试：旁证只
+// 能落 kind=ambient 槽位、不带 claim 语义（欢呼变不成比分）。
 func TestAmbientEventsNeverEnterTheFactLedger(t *testing.T) {
 	ctx := context.Background()
 	factStore := matchstate.NewStore()
@@ -182,8 +184,10 @@ func TestASRMainPathSurvivesUnreachableSidecar(t *testing.T) {
 	case <-time.After(time.Second):
 		t.Fatal("ASR main path stalled while sidecar was unreachable")
 	}
-	// 旁路失败静默计数，不产生任何观察行。
-	waitForReplication(t, func() bool { return client.Failures() > 0 })
+	// 旁路失败静默计数，不产生任何观察行。直接等 dropped 计数（client 的
+	// Failures 在 Classify 内部先落，早于旁路协程的记账步，全量并发下有
+	// 观察窗口差）。
+	waitForReplication(t, func() bool { return relay.Dropped() > 0 })
 	if active, err := coordinator.ActiveObservations(context.Background(), "user-1", "match-1"); err != nil || len(active) != 0 {
 		t.Fatalf("failed sidecar calls left observation rows: %+v err = %v", active, err)
 	}
@@ -216,6 +220,38 @@ func TestWatchChunkHookForwardsAndStaysSilent(t *testing.T) {
 	if classifier.callCount() != 1 {
 		t.Fatalf("classifier calls = %d, want 1（nil relay 必须整体跳过）", classifier.callCount())
 	}
+}
+
+// TestRelayCapsInFlightForwardsOnSlowSidecar 是在途上限测试：sidecar 健康
+// 但慢时，批量 asr_chunk 连续投递超过上限后，超出部分被静默丢弃并计入
+// dropped，不堆积协程；在途释放后新分片重新可投递。
+func TestRelayCapsInFlightForwardsOnSlowSidecar(t *testing.T) {
+	coordinator := observation.NewMemoryCoordinator()
+	classifier := &stubClassifier{events: []ambient.Event{
+		{Kind: ambient.KindCheer, Confidence: 0.9, TS: time.Now().UTC()},
+	}}
+	classifier.gate = make(chan struct{})
+	relay := newAmbientRelay(classifier, coordinator)
+
+	const forwards = ambientRelayMaxInFlight + 3
+	for i := 0; i < forwards; i++ {
+		relay.Forward("user-1", "match-1", []byte{1, 0})
+	}
+	// 信号量占位在 Forward 内同步完成：上限之内的分片照常旁送，超出部分
+	// 的丢弃是确定性的。
+	waitForReplication(t, func() bool {
+		return classifier.callCount() == ambientRelayMaxInFlight
+	})
+	if dropped := relay.Dropped(); dropped != forwards-ambientRelayMaxInFlight {
+		t.Fatalf("dropped = %d, want %d", dropped, forwards-ambientRelayMaxInFlight)
+	}
+	// 放行在途：槽位释放后新分片重新可投递（轮询投递至被接受，释放竞态
+	// 期的尝试可能产生少量额外丢弃，不影响上面的确定性断言）。
+	close(classifier.gate)
+	waitForReplication(t, func() bool {
+		relay.Forward("user-1", "match-1", []byte{1, 0})
+		return classifier.callCount() > ambientRelayMaxInFlight
+	})
 }
 
 // TestRelayForwardDoesNotBlockOnSlowSidecar 锁「不阻塞」纪律：Forward 必须

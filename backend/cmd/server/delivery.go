@@ -351,8 +351,11 @@ func (s *clientPlaybackReportSet) has(key string) bool {
 // 七态并记 Source=client；记录已终态或已不存在（迟到回执）只追加
 // Source=client_late 账本事件，不回改既有终态。返回实报的账本来源。
 func recordPlaybackResult(ctx context.Context, ledger conversation.DeliveryLedger, agent *companion.Agent, reports *clientPlaybackReportSet, userID, matchID, deliveryKey, state, reason string, now time.Time) (string, error) {
+	if ledger == nil {
+		return "", fmt.Errorf("playback result ledger unavailable")
+	}
 	target, ok := playbackResultStates[state]
-	if ledger == nil || !ok {
+	if !ok {
 		return "", fmt.Errorf("invalid playback result state %q", state)
 	}
 	source := playbackSourceClient
@@ -372,14 +375,27 @@ func recordPlaybackResult(ctx context.Context, ledger conversation.DeliveryLedge
 	}
 	reports.note(deliveryKey, traceID)
 	if err := agent.RecordMediaDelivery(ctx, interaction.Event{
-		ID:             strings.Join([]string{"playback", userID, matchID, deliveryKey, state, source}, ":"),
-		Kind:           interaction.KindPlaybackResult, UserID: userID, MatchID: matchID,
+		ID:   playbackEventID("playback", userID, matchID, deliveryKey, state, source, reason),
+		Kind: interaction.KindPlaybackResult, UserID: userID, MatchID: matchID,
 		TraceID: traceID, DeliveryKey: deliveryKey, PlaybackState: state,
 		DeliveryReason: reason, Source: source, CreatedAt: now,
 	}); err != nil {
 		return source, err
 	}
 	return source, nil
+}
+
+// playbackEventID 构造 playback_result 账本事件的幂等键：组件逐段转义后以
+// ':' 连接。deliveryKey 与 reason 都是客户端透传的自由文本，裸拼会因组件
+// 内含 ':' 折叠出碰撞；「interrupted→恢复→再 interrupted」两次实报仅
+// reason 不同也必须拿到不同 ID——账本 sameEvent 按 DeliveryReason 比较，
+// 同 ID 不同 reason 会撞 ErrConflict 丢掉第二条实报，故 reason 并入 ID。
+func playbackEventID(parts ...string) string {
+	escaped := make([]string, len(parts))
+	for index, part := range parts {
+		escaped[index] = strings.ReplaceAll(strings.ReplaceAll(part, "%", "%25"), ":", "%3A")
+	}
+	return strings.Join(escaped, ":")
 }
 
 type traceRecoverySource struct{ reader companion.TraceReader }

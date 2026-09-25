@@ -21,9 +21,9 @@ import (
 type PortraitOp string
 
 const (
-	PortraitOpAdd    PortraitOp = "ADD"    // 新信息且无冲突：开新条目
+	PortraitOpAdd    PortraitOp = "ADD"    // 新信息且无冲突：开新条目（槽内不得有开放行）
 	PortraitOpUpdate PortraitOp = "UPDATE" // 同槽新值取代旧值：旧条目封口 + 新条目生效
-	PortraitOpDelete PortraitOp = "DELETE" // 主张明示旧条目作废：旧条目封口（墓碑保留）
+	PortraitOpDelete PortraitOp = "DELETE" // 主张明示旧条目作废：旧条目封口 + 开放墓碑遮蔽同槽
 	PortraitOpNoop   PortraitOp = "NOOP"   // 重复或无新信息：不写
 )
 
@@ -116,6 +116,11 @@ func (m *PortraitMaintainer) Consolidate(ctx context.Context, userID string, cla
 			m.recordAudit(ctx, userID, claim, decision, ReasonPortraitOpSkipped)
 			return decision, err
 		}
+	} else if row, ok := openSlotRow(m, ctx, userID, claim); ok {
+		// 盲 ADD 撞同槽开放行时降级 UPDATE（保持历史 upsert 行为）：
+		// 无 key 环境（pr tier/本地）没有判定器，第二条主张不能静默丢弃；
+		// 判定器在场的误判 ADD 仍由 store 的同槽唯一约束拒收。
+		decision = OpDecision{Op: PortraitOpUpdate, TargetID: row, Reason: "无判定器，同槽已有开放行，按 UPDATE 收口"}
 	}
 	if _, err := m.store.ApplyPortraitOp(ctx, userID, decision, claim); err != nil {
 		m.recordAudit(ctx, userID, claim, decision, ReasonPortraitOpSkipped)
@@ -127,6 +132,21 @@ func (m *PortraitMaintainer) Consolidate(ctx context.Context, userID string, cla
 	}
 	m.recordAudit(ctx, userID, claim, decision, ReasonPortraitOpApplied)
 	return decision, nil
+}
+
+// openSlotRow 在无判定器的盲 ADD 前探测同槽开放行；命中则返回其行 id，
+// 由调用方降级为 UPDATE（收口旧行、写入新行），第二条主张不再被丢弃。
+func openSlotRow(m *PortraitMaintainer, ctx context.Context, userID string, claim PortraitClaim) (int64, bool) {
+	current, err := m.store.CurrentPortrait(ctx, userID)
+	if err != nil {
+		return 0, false
+	}
+	for _, overlay := range current {
+		if !overlay.Deleted && overlay.Topic == claim.Topic && overlay.SubTopic == claim.SubTopic {
+			return overlay.ID, true
+		}
+	}
+	return 0, false
 }
 
 // validTopicEntries 取同 topic 的现存有效条目（非墓碑、窗内）作为判定输入。

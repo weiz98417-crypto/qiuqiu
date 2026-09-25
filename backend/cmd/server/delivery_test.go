@@ -162,6 +162,97 @@ func TestPlaybackResultLateReportDoesNotOverwriteTerminal(t *testing.T) {
 	}
 }
 
+// TestPlaybackResultSameKeyDifferentReasonsBothLand 锁事件 ID 构造纪律：
+// interrupted→恢复播放→再 interrupted 的两次实报仅 DeliveryReason 不同——
+// 幂等键必须并入 reason（组件转义防折叠），否则账本 sameEvent 冲突会把
+// 第二条实报静默丢掉。
+func TestPlaybackResultSameKeyDifferentReasonsBothLand(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	deliveryLedger := conversation.NewMemoryDeliveryLedger()
+	interactionLedger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithInteractionLedger(interactionLedger)
+	tracker := newReplyDeliveryTrackerWithLedger(deliveryLedger)
+	trace := companion.Trace{ID: "trace-interrupted-twice", UserID: "user-1", MatchID: "match-1"}
+	if err := tracker.TrackWithPolicy(trace, trace.UserID, trace.MatchID, "goal:9", false, time.Minute); err != nil {
+		t.Fatalf("track delivery: %v", err)
+	}
+	if err := tracker.Transition(trace.ID, conversation.DeliveryTextDelivered, now); err != nil {
+		t.Fatalf("transition text delivered: %v", err)
+	}
+	if err := tracker.Transition(trace.ID, conversation.DeliveryAudioStarted, now); err != nil {
+		t.Fatalf("transition audio started: %v", err)
+	}
+	reports := newClientPlaybackReportSet()
+	// 第一次打断：实时实报推进七态。
+	if _, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-1", "match-1", "goal:9", "interrupted", "来电打断", now); err != nil {
+		t.Fatalf("first interrupted report: %v", err)
+	}
+	// 恢复播放后再次打断：记录已处 interrupted，同态幂等转换放行，第二条
+	// 实报必须凭不同 reason 拿到不同 ID 入账本。
+	source, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-1", "match-1", "goal:9", "interrupted", "再次卡顿打断", now.Add(time.Second))
+	if err != nil {
+		t.Fatalf("second interrupted report: %v", err)
+	}
+	if source != playbackSourceClient {
+		t.Fatalf("source = %q, want %q", source, playbackSourceClient)
+	}
+	events, err := interactionLedger.List(ctx, "user-1", "match-1", 100)
+	if err != nil || len(events) != 2 {
+		t.Fatalf("ledger events = %+v err=%v, want both reports kept", events, err)
+	}
+	reasons := map[string]bool{}
+	for _, event := range events {
+		reasons[event.DeliveryReason] = true
+	}
+	if !reasons["来电打断"] || !reasons["再次卡顿打断"] {
+		t.Fatalf("reasons = %v, want both distinct reasons in the ledger", reasons)
+	}
+}
+
+// TestPlaybackEventIDEscapesComponents 锁 ID 构造的转义纪律：组件内的 ':'
+// 逐段转义，不同组件组合不得折叠出同一个幂等键。
+func TestPlaybackEventIDEscapesComponents(t *testing.T) {
+	if playbackEventID("u", "m", "a:b", "completed", "client") == playbackEventID("u", "m", "a", "b:completed", "client") {
+		t.Fatal("unescaped components collide into one id")
+	}
+	if got, want := playbackEventID("u", "m", "k", "completed", "client", "r"), "u:m:k:completed:client:r"; got != want {
+		t.Fatalf("event id = %q, want %q", got, want)
+	}
+}
+
+// TestPlaybackResultOwnerMismatchRefused 锁 owner 纪律：实报的 deliveryKey
+// 属于其他用户的投递记录时拒写——既不推进七态、不登记实报集合，也不落
+// 任何账本事件。
+func TestPlaybackResultOwnerMismatchRefused(t *testing.T) {
+	ctx := context.Background()
+	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)
+	deliveryLedger := conversation.NewMemoryDeliveryLedger()
+	interactionLedger := interaction.NewMemoryLedger()
+	agent := companion.NewAgent(companion.NewStoreMemoryTools(matchstate.NewStore())).WithInteractionLedger(interactionLedger)
+	tracker := newReplyDeliveryTrackerWithLedger(deliveryLedger)
+	trace := companion.Trace{ID: "trace-owner", UserID: "user-1", MatchID: "match-1"}
+	if err := tracker.TrackWithPolicy(trace, trace.UserID, trace.MatchID, "goal:owner", false, time.Minute); err != nil {
+		t.Fatalf("track delivery: %v", err)
+	}
+
+	reports := newClientPlaybackReportSet()
+	if _, err := recordPlaybackResult(ctx, deliveryLedger, agent, reports, "user-2", "match-1", "goal:owner", "completed", "", now); err == nil {
+		t.Fatal("owner mismatch must be refused")
+	}
+	record, ok := deliveryLedger.Get(trace.ID)
+	if !ok || record.State != conversation.DeliveryPlanned {
+		t.Fatalf("record = %+v ok=%v, want the owner's record untouched", record, ok)
+	}
+	if reports.has("goal:owner") || reports.has(trace.ID) {
+		t.Fatal("refused report must not register in the client report set")
+	}
+	events, err := interactionLedger.List(ctx, "user-2", "match-1", 100)
+	if err != nil || len(events) != 0 {
+		t.Fatalf("ledger events = %+v err=%v, want nothing written for the mismatched user", events, err)
+	}
+}
+
 func TestPlaybackResultUnknownDeliveryKeyRecordsLate(t *testing.T) {
 	ctx := context.Background()
 	now := time.Date(2026, 9, 25, 20, 0, 0, 0, time.UTC)

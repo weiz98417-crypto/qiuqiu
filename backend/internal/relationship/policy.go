@@ -119,7 +119,10 @@ func selectTurnActs(state *StateBundle, signal Signal, now time.Time) ([]Communi
 			state.Match.Initiative.LastNormalAt = &observedAt
 		}
 		// ADR-0019 记忆偏置：过全部限制门之后施加（队伍命中 0.2 优先，
-		// 球员命中 0.15，不叠加），reason code 随决策可解释。
+		// 球员命中 0.15，不叠加），reason code 随决策可解释。上方任一门
+		// （输出关闭/安静档/冷却）压成 ActSilence 的事件提前返回、不施加
+		// 偏置——被压制的事件只走既有 affect 动力学、不完全放大，系有意
+		// 行为：偏置是「这场球值得开口」的加成，不是无条件放大。
 		codes := []string{"match_event_affect_updated"}
 		codes = append(codes, applyMemoryBias(&state.Match.Affect, signal.Match)...)
 		return []CommunicationAct{ActReact}, codes

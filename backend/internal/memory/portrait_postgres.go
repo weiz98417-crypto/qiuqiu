@@ -158,11 +158,12 @@ func (r *PostgresRecords) Delete(ctx context.Context, userID, topic, subTopic st
 }
 
 // ApplyPortraitOp lands one conflict-op decision deterministically: ADD opens
-// a fresh row (valid_from=now); UPDATE closes the target and opens the new
-// version in one transaction; DELETE only closes the target (墓碑保留，永不
-// 物理删); NOOP writes nothing. Targeting an unknown or already-closed row is
-// ErrNotFound — the caller must notice the vanished target instead of
-// silently writing a duplicate truth.
+// a fresh row (the slot must carry no open row — 同槽开放行检查，migration
+// 052 部分唯一索引的落地侧前置); UPDATE closes the target and opens the new
+// version in one transaction; DELETE closes the target and appends an open
+// tombstone (同用户侧 Delete 语义) in one transaction; NOOP writes nothing.
+// Targeting an unknown or already-closed row is ErrNotFound — the caller must
+// notice the vanished target instead of silently writing a duplicate truth.
 func (r *PostgresRecords) ApplyPortraitOp(ctx context.Context, userID string, decision OpDecision, claim PortraitClaim) (PortraitOverlay, error) {
 	if r == nil || r.pool == nil {
 		return PortraitOverlay{}, ErrUnavailable
@@ -174,6 +175,20 @@ func (r *PostgresRecords) ApplyPortraitOp(ctx context.Context, userID string, de
 	case PortraitOpNoop:
 		return PortraitOverlay{}, nil
 	case PortraitOpAdd:
+		// 同槽开放行检查：判定器把 UPDATE 误判成 ADD（或对已遗忘槽位盲目
+		// ADD）在这里显式报错，而不是等索引冲突裸上抛——两侧同语义。
+		var occupied bool
+		if err := r.pool.QueryRow(ctx, `
+			SELECT EXISTS(
+				SELECT 1 FROM portrait_overlays
+				WHERE user_id = $1 AND topic = $2 AND sub_topic = $3 AND valid_to IS NULL
+			)
+		`, userID, claim.Topic, claim.SubTopic).Scan(&occupied); err != nil {
+			return PortraitOverlay{}, err
+		}
+		if occupied {
+			return PortraitOverlay{}, ErrSlotOccupied
+		}
 		return insertOverlay(ctx, r.pool, userID, claim)
 	case PortraitOpUpdate:
 		tx, err := r.pool.Begin(ctx)
@@ -193,16 +208,27 @@ func (r *PostgresRecords) ApplyPortraitOp(ctx context.Context, userID string, de
 		}
 		return overlay, nil
 	case PortraitOpDelete:
-		tag, err := r.pool.Exec(ctx, `
-			UPDATE portrait_overlays
-			SET valid_to = now(), updated_at = now()
-			WHERE id = $2 AND user_id = $1 AND valid_to IS NULL
-		`, userID, decision.TargetID)
+		// 封口 + 开放墓碑两行（同用户侧 Delete 语义，同事务）：目标行封口
+		// 后按目标行自己的槽位追加一条 deleted 墓碑，ResolvePortrait 靠它
+		// 遮蔽未来同槽重提取。先封口后插入的顺序与部分唯一索引兼容。
+		tx, err := r.pool.Begin(ctx)
 		if err != nil {
 			return PortraitOverlay{}, err
 		}
-		if tag.RowsAffected() == 0 {
-			return PortraitOverlay{}, ErrNotFound
+		defer tx.Rollback(ctx)
+		if err := closeOverlayRow(ctx, tx, userID, decision.TargetID); err != nil {
+			return PortraitOverlay{}, err
+		}
+		if _, err := tx.Exec(ctx, `
+			INSERT INTO portrait_overlays (user_id, topic, sub_topic, content, deleted, valid_from)
+			SELECT user_id, topic, sub_topic, '', TRUE, now()
+			FROM portrait_overlays
+			WHERE id = $2 AND user_id = $1
+		`, userID, decision.TargetID); err != nil {
+			return PortraitOverlay{}, err
+		}
+		if err := tx.Commit(ctx); err != nil {
+			return PortraitOverlay{}, err
 		}
 		return PortraitOverlay{}, nil
 	default:

@@ -294,11 +294,14 @@ class VADService {
       }
     } else if (_voiceActivity.hasConfirmedSpeech) {
       // 静默兜底定时器：时长取降级链当前生效阈值（voice-turn-detection 1.3，
-      // 参数化不硬编码）；正常路径由链逐帧判定先行收口。
-      _silenceTimer ??= Timer(
-        _turnChain.effectiveSilenceThreshold,
-        () => unawaited(_finishSentence()),
-      );
+      // 参数化不硬编码）；正常路径由链逐帧判定先行收口。定时器触发路径带
+      // 同款过门守卫（voice-duplex 1.1）：播放期起音未过门的段（回声候选）
+      // 不得被定时器收口成话轮；门 fired（守卫已放行）或空闲期照常收口。
+      _silenceTimer ??= Timer(_turnChain.effectiveSilenceThreshold, () {
+        if (_autoFinishGuard.onsetPassed) {
+          unawaited(_finishSentence());
+        }
+      });
     }
 
     // 说完判定降级链（voice-turn-detection 1.3）：逐帧喂 RMS，链判完即收口。

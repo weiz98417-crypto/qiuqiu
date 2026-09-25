@@ -1,3 +1,6 @@
+import 'dart:typed_data';
+
+import 'package:flutter/services.dart';
 import 'package:flutter_test/flutter_test.dart';
 import 'package:qiuqiu/services/duplex_gate.dart';
 import 'package:qiuqiu/services/turn_detector.dart';
@@ -38,6 +41,8 @@ class _AutoFinishPipeline {
 }
 
 void main() {
+  TestWidgetsFlutterBinding.ensureInitialized();
+
   test('voice capture requests acoustic echo cancellation', () {
     expect(voiceRecordConfig.echoCancel, isTrue);
     expect(voiceRecordConfig.noiseSuppress, isTrue);
@@ -102,4 +107,113 @@ void main() {
     expect(pipeline.guard.onsetPassed, isTrue);
     expect(pipeline.finished, isTrue);
   });
+
+  test('静默定时器不收口播放期未过门的回声段', () async {
+    final states = await _runSilenceTimerScenario((vad, states) async {
+      vad.notifyPlaybackStarted();
+      for (var i = 0; i < 40; i++) {
+        vad.onAudioData(_pcmFrame(0.018)); // 歧义带回声：起音未过门
+      }
+      vad.notifyPlaybackEnded();
+      for (var i = 0; i < 5; i++) {
+        vad.onAudioData(_pcmFrame(0.001)); // 回声停：静默帧挂起定时器
+      }
+    });
+    // hasConfirmedSpeech 锁存曾让定时器把回声段收口成话轮——守卫必须拦下。
+    expect(states, isNot(contains(VADState.sentenceEnd)));
+    expect(states, contains(VADState.listening)); // 采集仍在，未被收口
+  });
+
+  test('门 fired 段静默定时器照常收口话轮', () async {
+    final states = await _runSilenceTimerScenario((vad, states) async {
+      vad.notifyPlaybackStarted();
+      for (var i = 0; i < 40; i++) {
+        vad.onAudioData(_pcmFrame(0.018)); // 回声段：守卫拦截
+      }
+      for (var i = 0; i < 12; i++) {
+        vad.onAudioData(_pcmFrame(0.03)); // 真抢断：响帧凑满时长门 → fired
+      }
+      vad.notifyPlaybackEnded();
+      for (var i = 0; i < 5; i++) {
+        vad.onAudioData(_pcmFrame(0.001)); // 说完静默：定时器收口
+      }
+    });
+    expect(states, contains(VADState.sentenceEnd));
+  });
+
+  test('空闲期静默定时器照常收口话轮', () async {
+    final states = await _runSilenceTimerScenario((vad, states) async {
+      for (var i = 0; i < 10; i++) {
+        vad.onAudioData(_pcmFrame(0.03)); // 空闲期起音：恒过门
+      }
+      for (var i = 0; i < 5; i++) {
+        vad.onAudioData(_pcmFrame(0.001));
+      }
+    });
+    expect(states, contains(VADState.sentenceEnd));
+  });
+}
+
+/// record 插件平台通道桩：驱动真实 VADService 时把平台调用拦在测试进程内，
+/// 权限恒通过、起流/停流为空操作。音频帧经 onAudioData 直接喂入，不依赖
+/// 事件通道回放；事件通道按名注册空桩（recorderId 取自 create 参数）。
+class _RecordPlatformStub {
+  _RecordPlatformStub() {
+    _messenger.setMockMethodCallHandler(
+      const MethodChannel('com.llfbandit.record/messages'),
+      _onMethodCall,
+    );
+  }
+
+  TestDefaultBinaryMessenger get _messenger =>
+      TestDefaultBinaryMessengerBinding.instance.defaultBinaryMessenger;
+
+  Future<Object?> _onMethodCall(MethodCall call) async {
+    if (call.method == 'create') {
+      final recorderId = call.arguments['recorderId'] as String;
+      for (final prefix in const ['events', 'eventsRecord']) {
+        _messenger.setMockMethodCallHandler(
+          MethodChannel('com.llfbandit.record/$prefix/$recorderId'),
+          (_) async => null,
+        );
+      }
+    }
+    if (call.method == 'hasPermission') return true;
+    return null;
+  }
+}
+
+/// 50ms@16kHz 单帧 PCM（800 个 16bit 采样），恒定幅值近似目标 RMS；
+/// VAD 以「一次 onAudioData 调用 = 一帧」计数，字节数不影响判定节奏。
+Uint8List _pcmFrame(double rms) {
+  final amplitude = ((rms.clamp(0.0, 1.0)) * 32767).round();
+  final bytes = Uint8List(1600);
+  final view = ByteData.view(bytes.buffer);
+  for (var offset = 0; offset < bytes.length; offset += 2) {
+    view.setInt16(offset, amplitude, Endian.little);
+  }
+  return bytes;
+}
+
+/// 静默定时器路径（`_silenceTimer → _finishSentence`）的真实服务测试：
+/// 判定链关回退（tuned 且无兜底）后链悬而不决，静默定时器成为唯一自动
+/// 收口路径——守卫是否覆盖定时器触发由此可单独观测。
+Future<List<VADState>> _runSilenceTimerScenario(
+  Future<void> Function(VADService vad, List<VADState> states) scenario,
+) async {
+  _RecordPlatformStub();
+  final vad = VADService();
+  addTearDown(vad.dispose);
+  vad.configureTurnDetection(const TurnDetectionParams(
+    strategy: TurnSilenceStrategy.tuned,
+    tunedThreshold: Duration(milliseconds: 20),
+    fallbackEnabled: false,
+  ));
+  final states = <VADState>[];
+  vad.events.listen((event) => states.add(event.state));
+  await vad.startListening(VADMode.freeTalk);
+  await scenario(vad, states);
+  // 静默定时器 20ms + 收口后 160ms 重开采，留足真实时钟余量。
+  await Future<void>.delayed(const Duration(milliseconds: 250));
+  return states;
 }

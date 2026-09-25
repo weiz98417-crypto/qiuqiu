@@ -21,6 +21,16 @@ const compactUtteranceRunes = 12
 // 一闪而过的念法。
 const shortUtteranceDirection = "反应一闪而过：口型短促紧凑，一口气带过，不拖长音、不加语气词。"
 
+// shortReactionActs 是短反应类动作集合：紧凑尾巴只服务微反应式的短句
+// （react/acknowledge/chat 类）。repair/opinion 等承载完整语义的动作即使
+// 措辞很短也走全句——「一口气带过、不加语气词」会压掉诚恳修补与观点
+// 表达的完整口吻，其余动作同理（尾巴按动作类施加，不按长度一刀切）。
+var shortReactionActs = map[relationship.CommunicationAct]bool{
+	relationship.ActReact:       true,
+	relationship.ActChat:        true,
+	relationship.ActAcknowledge: true,
+}
+
 // affectBand 是情绪档：AffectState 连续数值的确定性离散化。
 type affectBand string
 
@@ -117,15 +127,16 @@ var instructionTable = map[affectBand]map[relationship.CommunicationAct]string{
 
 // InstructionFor 把情绪状态 × 沟通动作 × 语句长度折算成表演指令。未知
 // 动作回落 react 的中性姿态；平静×react 返回空串（调用方直接省略该段，
-// 不占指令通道）；短句（utterLen ≤ 阈值）追加紧凑尾巴——微反应式短
-// 反应要一闪而过，不是小声念长句。
+// 不占指令通道）；紧凑尾巴只对短反应类动作（react/acknowledge/chat 类）
+// 的短句追加——微反应要一闪而过；repair/opinion 等完整语义动作走全句，
+// 不因措辞短被压成急促念白。
 func InstructionFor(affect relationship.AffectState, act relationship.CommunicationAct, utterLen int) string {
 	band := classifyAffect(affect)
 	cell, ok := instructionTable[band][act]
 	if !ok {
 		cell = instructionTable[band][relationship.ActReact]
 	}
-	if utterLen > 0 && utterLen <= compactUtteranceRunes {
+	if utterLen > 0 && utterLen <= compactUtteranceRunes && shortReactionActs[act] {
 		return cell + shortUtteranceDirection
 	}
 	return cell
