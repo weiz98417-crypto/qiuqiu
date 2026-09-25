@@ -1,0 +1,103 @@
+{
+  "version": "2026-07",
+  "id": "memory.taste-team-switch",
+  "suite": "memory",
+  "tags": [
+    "memory",
+    "portrait"
+  ],
+  "summary": "画像冲突操作集：换主队后旧主张不再织进措辞。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "realizer": {
+    "reply": "知道你的口味，这就细说。"
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "照我的口味说说这场比赛",
+        "intent": "personal_share",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "portrait": {
+    "userId": "fan-1",
+    "entries": [
+      {
+        "topic": "basic_info",
+        "subTopic": "favorite_team",
+        "content": "我最喜欢的球队是皇马。"
+      }
+    ]
+  },
+  "turns": [
+    {
+      "id": "claim-barca",
+      "userId": "fan-1",
+      "text": "我最支持的球队是巴萨。",
+      "portraitClaim": {
+        "topic": "basic_info",
+        "subTopic": "favorite_team",
+        "content": "我最支持的球队是巴萨。",
+        "decision": {
+          "op": "ADD",
+          "reason": "新槽位主张，无冲突"
+        }
+      }
+    },
+    {
+      "id": "claim-real-madrid",
+      "userId": "fan-1",
+      "text": "其实说错了，我现在最支持的是皇马。",
+      "portraitClaim": {
+        "topic": "basic_info",
+        "subTopic": "favorite_team",
+        "content": "我现在最支持的球队是皇马。",
+        "decision": {
+          "op": "UPDATE",
+          "targetId": 1,
+          "reason": "同槽位换主队，巴萨条目作废"
+        }
+      }
+    },
+    {
+      "id": "ask",
+      "userId": "fan-1",
+      "text": "照我的口味说说这场比赛",
+      "expect": {
+        "intent": "personal_share",
+        "memoryMustMention": [
+          "皇马"
+        ],
+        "memoryMustNotMention": [
+          "巴萨"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

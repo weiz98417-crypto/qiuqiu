@@ -108,6 +108,17 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			UpdatedAt: seededAt,
 		})
 	}
+	// 本地画像权威层（portrait-maintenance 阶段一）：声明了 portraitClaim
+	// 的用例才挂 overlay 层与脚本判定器——老用例零漂移。维护走生产同一
+	// PortraitMaintainer（判定是脚本 LLM，先例=scriptedRouter）。
+	var overlays *memory.MemoryPortraitOverlays
+	for _, turn := range evalCase.Turns {
+		if turn.PortraitClaim != nil {
+			overlays = memory.NewMemoryPortraitOverlays()
+			memorySeam.WithPortraitOverlays(overlays)
+			break
+		}
+	}
 
 	eventIDs := map[string]string{}
 	applyEventStep := func(step EventStep) {
@@ -176,6 +187,9 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			gradeTurn(&stepResult, response, turn.Expect, eventIDs, realized, memorySeam)
 			for _, subTopic := range turn.ForgetPortrait {
 				memorySeam.ForgetPortraitEntries(turn.UserID, subTopic)
+			}
+			if turn.PortraitClaim != nil {
+				applyPortraitClaim(&result, overlays, turn.UserID, *turn.PortraitClaim)
 			}
 		}
 		result.Steps = append(result.Steps, stepResult)
@@ -497,6 +511,50 @@ func summarize(cases []CaseResult) Scorecard {
 		scorecard.Suites[suite] = float64(suitePassed[suite]) / float64(total)
 	}
 	return scorecard
+}
+
+// applyPortraitClaim runs one fixture claim through the production op-set
+// maintainer with the scripted decision standing in for the judge LLM; a
+// failure is a case failure, not a silent skip.
+func applyPortraitClaim(result *CaseResult, overlays *memory.MemoryPortraitOverlays, userID string, step PortraitClaimStep) {
+	if overlays == nil {
+		result.addFailure("setup", "portraitClaim requires the case to declare at least one portraitClaim step (overlay layer missing)")
+		return
+	}
+	decision, err := opDecisionFromFixture(step.Decision)
+	if err != nil {
+		result.addFailure("setup", err.Error())
+		return
+	}
+	maintainer := memory.NewPortraitMaintainer(overlays, scriptedPortraitOps{decision: decision}, nil)
+	if _, err := maintainer.Consolidate(context.Background(), userID, memory.PortraitClaim{
+		Topic:    step.Topic,
+		SubTopic: step.SubTopic,
+		Content:  step.Content,
+	}); err != nil {
+		result.addFailure("setup", fmt.Sprintf("portraitClaim %s: %v", step.Content, err))
+	}
+}
+
+func opDecisionFromFixture(fixture OpDecisionFixture) (memory.OpDecision, error) {
+	op := memory.PortraitOp(strings.ToUpper(strings.TrimSpace(fixture.Op)))
+	switch op {
+	case memory.PortraitOpAdd, memory.PortraitOpUpdate, memory.PortraitOpDelete, memory.PortraitOpNoop:
+	default:
+		return memory.OpDecision{}, fmt.Errorf("portraitClaim op %q must be ADD, UPDATE, DELETE, or NOOP", fixture.Op)
+	}
+	return memory.OpDecision{Op: op, TargetID: fixture.TargetID, Reason: fixture.Reason}, nil
+}
+
+// scriptedPortraitOps stands in for the judge LLM (pr tier 脚本 LLM，同
+// scriptedRouter 先例)：the fixture decision is echoed verbatim; the
+// maintainer still validates the target against the store.
+type scriptedPortraitOps struct {
+	decision memory.OpDecision
+}
+
+func (s scriptedPortraitOps) DecidePortraitOp(context.Context, memory.PortraitClaim, []memory.PortraitOverlay) (memory.OpDecision, error) {
+	return s.decision, nil
 }
 
 // scriptedRealizer stands in for the LLM realizer and captures every

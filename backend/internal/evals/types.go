@@ -109,8 +109,29 @@ type TurnStep struct {
 	// ForgetPortrait removes the named sub-topics from this user's portrait
 	// AFTER the turn executes (the C3 page's delete flow), so the next turn
 	// can assert the fact is gone from the realization context.
-	ForgetPortrait []string        `json:"forgetPortrait,omitempty"`
-	Expect         TurnExpectation `json:"expect"`
+	ForgetPortrait []string `json:"forgetPortrait,omitempty"`
+	// PortraitClaim merges one new user claim into the local authoritative
+	// overlay layer AFTER the turn executes (portrait-maintenance 阶段一，
+	// Reflection 写路径的评测替身)：decision 是脚本化判定（pr tier 脚本
+	// LLM，先例=scriptedRouter），替代真判定器。
+	PortraitClaim *PortraitClaimStep `json:"portraitClaim,omitempty"`
+	Expect        TurnExpectation    `json:"expect"`
+}
+
+// PortraitClaimStep mirrors memory.PortraitClaim plus its scripted
+// memory.OpDecision；TargetID 指 MemoryPortraitOverlays 里此前主张的行 id
+// （id 从 1 起按插入序分配，用例内确定）。
+type PortraitClaimStep struct {
+	Topic    string            `json:"topic"`
+	SubTopic string            `json:"subTopic"`
+	Content  string            `json:"content"`
+	Decision OpDecisionFixture `json:"decision"`
+}
+
+type OpDecisionFixture struct {
+	Op       string `json:"op"`
+	TargetID int64  `json:"targetId,omitempty"`
+	Reason   string `json:"reason,omitempty"`
 }
 
 type TurnExpectation struct {

@@ -18,11 +18,27 @@ type Fake struct {
 	moments   []Moment
 	portraits map[string]Portrait
 	threads   []Thread
-	nextID    int
+	// overlays 是可选的本地画像权威层（migrations/041+051）：挂上后
+	// Portrait 先合成层再叠窗口内 overlay，与 Queue.assemblePortrait 同构；
+	// 缺席时行为与 051 之前完全一致（纯合成层，evals 老用例零漂移）。
+	overlays PortraitOverlayStore
+	nextID   int
 }
 
 func NewFake() *Fake {
 	return &Fake{portraits: make(map[string]Portrait)}
+}
+
+// WithPortraitOverlays attaches the local overlay layer; chaining keeps the
+// constructor call sites one-liners.
+func (f *Fake) WithPortraitOverlays(store PortraitOverlayStore) *Fake {
+	if f == nil || store == nil {
+		return f
+	}
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	f.overlays = store
+	return f
 }
 
 func (f *Fake) Observe(_ context.Context, moment Moment) error {
@@ -81,32 +97,75 @@ func (f *Fake) Recall(_ context.Context, query Query) []Recall {
 	return recalls
 }
 
-func (f *Fake) Portrait(_ context.Context, userID string) (Portrait, error) {
+func (f *Fake) Portrait(ctx context.Context, userID string) (Portrait, error) {
 	if f == nil {
 		return Portrait{}, ErrUnavailable
 	}
 	f.mu.Lock()
 	defer f.mu.Unlock()
+	if f.overlays == nil {
+		// 未挂权威层：行为与 051 之前逐字节一致（SetPortrait 原样返回，
+		// 否则从 moments 合成），老用例零漂移。
+		if portrait, ok := f.portraits[userID]; ok {
+			return portrait, nil
+		}
+		entries := make([]PortraitEntry, 0, 4)
+		for _, moment := range f.moments {
+			if moment.UserID != userID {
+				continue
+			}
+			if moment.Kind != MomentUserFact && moment.Kind != MomentPromise {
+				continue
+			}
+			entries = append(entries, PortraitEntry{
+				Topic:     "basic_info",
+				SubTopic:  string(moment.Kind),
+				Content:   moment.Content,
+				UpdatedAt: moment.OccurredAt.UTC(),
+				Source:    PortraitSourceSynthesis,
+			})
+		}
+		updatedAt := latestMomentAt(f.moments, userID)
+		if len(entries) == 0 {
+			return Portrait{}, nil
+		}
+		return Portrait{Block: RenderPortraitBlock(entries, updatedAt), Entries: entries, UpdatedAt: updatedAt}, nil
+	}
+	// 权威层叠加路径（与 Queue.assemblePortrait 同构）：窗口内 overlay 覆盖
+	// 同槽合成条目，用户编辑源标记为 user。存储故障降级为少一层，绝不失败
+	// 整个 Portrait。
+	var entries []PortraitEntry
+	var updatedAt time.Time
 	if portrait, ok := f.portraits[userID]; ok {
-		return portrait, nil
-	}
-	entries := make([]PortraitEntry, 0, 4)
-	for _, moment := range f.moments {
-		if moment.UserID != userID {
-			continue
+		entries = portrait.Entries
+		updatedAt = portrait.UpdatedAt
+	} else {
+		entries = make([]PortraitEntry, 0, 4)
+		for _, moment := range f.moments {
+			if moment.UserID != userID {
+				continue
+			}
+			if moment.Kind != MomentUserFact && moment.Kind != MomentPromise {
+				continue
+			}
+			entries = append(entries, PortraitEntry{
+				Topic:     "basic_info",
+				SubTopic:  string(moment.Kind),
+				Content:   moment.Content,
+				UpdatedAt: moment.OccurredAt.UTC(),
+				Source:    PortraitSourceSynthesis,
+			})
 		}
-		if moment.Kind != MomentUserFact && moment.Kind != MomentPromise {
-			continue
-		}
-		entries = append(entries, PortraitEntry{
-			Topic:     "basic_info",
-			SubTopic:  string(moment.Kind),
-			Content:   moment.Content,
-			UpdatedAt: moment.OccurredAt.UTC(),
-			Source:    PortraitSourceSynthesis,
-		})
+		updatedAt = latestMomentAt(f.moments, userID)
 	}
-	updatedAt := latestMomentAt(f.moments, userID)
+	if current, err := f.overlays.CurrentPortrait(ctx, userID); err == nil {
+		for _, overlay := range current {
+			if !overlay.Deleted && overlay.UpdatedAt.After(updatedAt) {
+				updatedAt = overlay.UpdatedAt
+			}
+		}
+		entries = ResolvePortrait(entries, current)
+	}
 	if len(entries) == 0 {
 		return Portrait{}, nil
 	}

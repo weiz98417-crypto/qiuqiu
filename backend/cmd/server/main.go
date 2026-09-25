@@ -484,6 +484,13 @@ func main() {
 		}
 		defer memoryThreads.Close()
 		queueOptions := []memory.QueueOption{memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads), memory.WithPortraitOverlays(memoryRecords)}
+		// 画像冲突操作集（portrait-maintenance 阶段一）：Reflection 把新主
+		// 张并入权威层前先经 structured seam 判定 ADD/UPDATE/DELETE/NOOP。
+		// 未配判定模型（CI/evals）即盲 ADD——冲突知识集中在操作集一处，是
+		// 加深而不是旁路。
+		if cfg.MiMoAPIKey != "" {
+			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel))))
+		}
 		queueOptions = append(queueOptions, vectorOptions...)
 		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, queueOptions...)
 		memoryPreferenceStore = memoryRecords
@@ -491,6 +498,9 @@ func main() {
 		// No database: the C3 portrait overlay layer lives in-process so the
 		// 球球懂我 page still edits real state for the running server.
 		queueOptions := append([]memory.QueueOption{memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays())}, vectorOptions...)
+		if cfg.MiMoAPIKey != "" {
+			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel))))
+		}
 		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, queueOptions...)
 	}
 	companionAgent.WithMemories(memoryQueue)

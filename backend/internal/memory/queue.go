@@ -97,12 +97,12 @@ const MaxBacklogAttempts = 10
 // user. The open-thread ledger (C2) stays local: Threads/AppendThread
 // delegate to the ThreadStore behind WithThreads instead of Memobase.
 type Queue struct {
-	adapter      *Memobase
-	audit        AuditSink
-	reflections  ReflectionSink
-	backlog      BacklogStore
-	threads      ThreadStore
-	portraits    PortraitOverlayStore
+	adapter     *Memobase
+	audit       AuditSink
+	reflections ReflectionSink
+	backlog     BacklogStore
+	threads     ThreadStore
+	portraits   PortraitOverlayStore
 
 	// 向量召回路（openspec/changes/semantic-memory）：双路之一，任何故障
 	// 弃权即现状行为。
@@ -112,19 +112,29 @@ type Queue struct {
 	// 排，0=关（默认）。
 	recallDecayDays float64
 
+	// 画像冲突操作集（portrait-maintenance 阶段一）：判定器 + 权威层存储
+	// 合成维护器；判定器缺席时新主张盲 ADD（现状行为）。
+	portraitOps PortraitOpDecider
+	maintainer  *PortraitMaintainer
+
+	// 待合并主张账本：与 citations 同款有界纪律（best-effort 反思提示，
+	// 绝不是正确性数据）。
+	claims     map[string][]PortraitClaim
+	claimOrder []string
+
 	items        chan enqueueItem
 	dropped      atomic.Int64
 	backlogBatch int
 
-	pendingMu      sync.Mutex
-	citations      map[string][]int64
-	citationOrder  []string
+	pendingMu       sync.Mutex
+	citations       map[string][]int64
+	citationOrder   []string
 	recentMatchEnds map[string]time.Time
 	// userMatches 是反思归因（reflection-attribution）：每个用户最近互动
 	// 过的比赛，插入序、最新的在尾部。只服务 post_match 审计标签，是
 	// best-effort 提示而非正确性数据，与 citations 同样的有界纪律。
-	userMatches    map[string][]string
-	matchOrder     []string
+	userMatches map[string][]string
+	matchOrder  []string
 
 	// Console health (ADR-0008 overview memory cell): a bounded tail of the
 	// extraction decisions recorded by this process plus a live count of the
@@ -193,6 +203,18 @@ func WithPortraitOverlays(store PortraitOverlayStore) QueueOption {
 	}
 }
 
+// WithPortraitOps attaches the conflict-op decider (portrait-maintenance 阶段
+// 一). Only effective together with a portrait overlay store: the two compose
+// into the maintainer Reflection uses to land new claims. Absent decider =
+// blind ADD (现状行为；success criteria 的删除测试).
+func WithPortraitOps(decider PortraitOpDecider) QueueOption {
+	return func(q *Queue) {
+		if decider != nil {
+			q.portraitOps = decider
+		}
+	}
+}
+
 // WithVectorRecall 启用 pgvector 召回路（openspec/changes/semantic-memory）：
 // Observe 异步嵌 Moment，Recall 与 contains 路双路合并。store 或 embedder
 // 为 nil 即不启用（行为=现状）。
@@ -214,8 +236,8 @@ type Embedder interface {
 // 向量路的两个独立预算：嵌入/检索本地 Ollama 毫秒级，200ms 覆盖抖动；
 // 超时即弃权（降级矩阵 Q12）。
 const (
-	vectorQueryTimeout  = 200 * time.Millisecond
-	vectorEmbedTimeout  = 3 * time.Second
+	vectorQueryTimeout = 200 * time.Millisecond
+	vectorEmbedTimeout = 3 * time.Second
 )
 
 // NewQueue wires the async pipeline. audit and backlog may be nil (dev mode
@@ -230,11 +252,19 @@ func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options 
 		citations:       make(map[string][]int64),
 		recentMatchEnds: make(map[string]time.Time),
 		userMatches:     make(map[string][]string),
+		claims:          make(map[string][]PortraitClaim),
 	}
 	for _, option := range options {
 		if option != nil {
 			option(queue)
 		}
+	}
+	// 权威层存储在位即建维护器：判定器缺席=盲 ADD（现状行为，success
+	// criteria 的删除测试），存储缺席=无从落地。维护器经 portraitAuditSink
+	// 把操作判定送进与提取判定同一条 recordAudit 路径（账本 + console
+	// health tail 一起进）。
+	if queue.portraits != nil {
+		queue.maintainer = NewPortraitMaintainer(queue.portraits, queue.portraitOps, queue.portraitAuditSink())
 	}
 	return queue
 }
@@ -293,6 +323,16 @@ func (q *Queue) Observe(_ context.Context, moment Moment) error {
 	}
 	if !empty && moment.Importance >= MinExtractionImportance {
 		q.observeVector(moment)
+	}
+	if !empty && moment.Kind == MomentUserFact {
+		// 权威层维护素材：用户自述的长期主张进待合并账本，由下一次
+		// Reflection beat 经冲突操作集并入 portrait_overlays（与 Memobase
+		// 提取互不相干，本地权威层独立存在）。
+		q.trackClaim(moment.UserID, PortraitClaim{
+			Topic:    PortraitClaimTopic,
+			SubTopic: PortraitClaimSubTopic,
+			Content:  moment.Content,
+		})
 	}
 	if !q.adapter.Configured() {
 		return nil
@@ -514,7 +554,7 @@ func (q *Queue) assemblePortrait(ctx context.Context, userID string) Portrait {
 		updatedAt = portrait.UpdatedAt
 	}
 	if q.portraits != nil {
-		overlays, err := q.portraits.List(ctx, userID)
+		overlays, err := q.portraits.CurrentPortrait(ctx, userID)
 		if err != nil {
 			log.Printf("memory: portrait overlays for %q: %v", userID, err)
 		} else {
@@ -617,7 +657,7 @@ func (q *Queue) ForgetPortrait(ctx context.Context, userID string) error {
 			})
 		}
 	}
-	overlays, err := q.portraits.List(ctx, userID)
+	overlays, err := q.portraits.CurrentPortrait(ctx, userID)
 	if err != nil {
 		return err
 	}
@@ -842,6 +882,23 @@ func (q *Queue) recordAudit(ctx context.Context, entry ExtractionAudit) {
 	}
 }
 
+// portraitAuditSink adapts q.recordAudit (ledger write plus in-process health
+// tail) to the AuditSink seam the maintainer consumes; recordAudit already
+// logs its own failures, so the adapter never errors.
+func (q *Queue) portraitAuditSink() AuditSink {
+	return auditSinkFunc(func(ctx context.Context, entry ExtractionAudit) error {
+		q.recordAudit(ctx, entry)
+		return nil
+	})
+}
+
+// auditSinkFunc is the function-to-AuditSink adapter.
+type auditSinkFunc func(ctx context.Context, entry ExtractionAudit) error
+
+func (f auditSinkFunc) RecordExtraction(ctx context.Context, entry ExtractionAudit) error {
+	return f(ctx, entry)
+}
+
 // rememberAuditTail keeps the last healthAuditTail decisions in-process so
 // Health() can expose the audit tail read-only (ADR-0008), with or without a
 // database-backed audit sink.
@@ -874,8 +931,9 @@ func rejectionAudit(moment Moment, reasonCode string) ExtractionAudit {
 }
 
 // ReflectNow runs one reflection beat for a user: flush pending extractions,
-// refresh the portrait, and persist an audit record citing the ledger
-// sequences observed since the previous beat.
+// consolidate pending user claims into the authoritative portrait layer via
+// the conflict op set, refresh the portrait, and persist an audit record
+// citing the ledger sequences observed since the previous beat.
 func (q *Queue) ReflectNow(ctx context.Context, userID, matchID, trigger string) (Portrait, error) {
 	if q == nil || !q.adapter.Configured() {
 		return Portrait{}, ErrUnavailable
@@ -887,6 +945,10 @@ func (q *Queue) ReflectNow(ctx context.Context, userID, matchID, trigger string)
 		status = "flush_failed"
 		detail = errorText(err)
 	}
+	// 画像维护（portrait-maintenance 阶段一）：本 beat 累积的新主张经冲突
+	// 操作集并入权威层。失败审计后继续——维护是尽力而为，绝不阻断
+	// Reflection 主体（5.4 的 sleep-time 巩固沿用同一纪律）。
+	q.consolidatePortraitClaims(ctx, userID)
 	portrait, portraitErr := q.adapter.Portrait(ctx, userID)
 	if portraitErr != nil {
 		if status == "refreshed" {
@@ -1078,6 +1140,75 @@ func (q *Queue) takeCitations(userID string) []int64 {
 		return append([]int64(nil), cited...)
 	}
 	return nil
+}
+
+// Reflection 合并用户自述长期主张的固定槽位：判定器在同 topic 内做冲突
+// 消解，槽位本身保持稳定（「支持A队」→「支持B队」落在同一槽）。
+const (
+	PortraitClaimTopic    = "preferences"
+	PortraitClaimSubTopic = "user_stated"
+)
+
+// 与 citations 同款的有界纪律：主张是 best-effort 反思素材，超界逐出最早
+// 用户/最旧主张，内存平坦。
+const (
+	maxClaimsPerUser = 16
+)
+
+// trackClaim records one pending claim; the oldest claim is dropped beyond
+// maxClaimsPerUser and the longest-unreflected users are evicted whole.
+func (q *Queue) trackClaim(userID string, claim PortraitClaim) {
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	if _, tracked := q.claims[userID]; !tracked {
+		q.claimOrder = append(q.claimOrder, userID)
+	}
+	q.claims[userID] = append(q.claims[userID], claim)
+	if len(q.claims[userID]) > maxClaimsPerUser {
+		q.claims[userID] = q.claims[userID][len(q.claims[userID])-maxClaimsPerUser:]
+	}
+	for len(q.claims) > maxCitationUsers {
+		oldest := q.claimOrder[0]
+		q.claimOrder = q.claimOrder[1:]
+		delete(q.claims, oldest)
+	}
+}
+
+// takeClaims returns and clears the user's pending claims, insertion order.
+func (q *Queue) takeClaims(userID string) []PortraitClaim {
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	claims := q.claims[userID]
+	delete(q.claims, userID)
+	for index, pending := range q.claimOrder {
+		if pending == userID {
+			q.claimOrder = append(q.claimOrder[:index], q.claimOrder[index+1:]...)
+			break
+		}
+	}
+	if len(claims) > 0 {
+		return append([]PortraitClaim(nil), claims...)
+	}
+	return nil
+}
+
+// consolidatePortraitClaims lands every pending claim through the conflict op
+// set. Without a maintainer (no overlay store, or no decider wired — the
+// success criteria's deletion test) there is nothing to consolidate here.
+func (q *Queue) consolidatePortraitClaims(ctx context.Context, userID string) {
+	if q == nil || q.maintainer == nil {
+		return
+	}
+	for _, claim := range q.takeClaims(userID) {
+		consolidateCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+		decision, err := q.maintainer.Consolidate(consolidateCtx, userID, claim)
+		cancel()
+		if err != nil {
+			log.Printf("memory: portrait claim consolidate for user %q (%s/%s): %v", userID, claim.Topic, claim.SubTopic, err)
+			continue
+		}
+		log.Printf("memory: portrait claim %s (target=%d) for user %q: %s", decision.Op, decision.TargetID, userID, decision.Reason)
+	}
 }
 
 // momentID derives a stable audit identifier from the moment content.

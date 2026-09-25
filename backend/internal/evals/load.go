@@ -97,6 +97,20 @@ func (evalCase Case) Validate() error {
 				return fmt.Errorf("turn %q forgetPortrait entries must be non-empty", turn.ID)
 			}
 		}
+		if turn.PortraitClaim != nil {
+			claim := turn.PortraitClaim
+			if strings.TrimSpace(claim.Topic) == "" || strings.TrimSpace(claim.SubTopic) == "" || strings.TrimSpace(claim.Content) == "" {
+				return fmt.Errorf("turn %q portraitClaim needs topic, subTopic, and content", turn.ID)
+			}
+			switch op := strings.ToUpper(strings.TrimSpace(claim.Decision.Op)); op {
+			case "ADD", "UPDATE", "DELETE", "NOOP":
+				if (op == "UPDATE" || op == "DELETE") && claim.Decision.TargetID <= 0 {
+					return fmt.Errorf("turn %q portraitClaim %s needs a positive targetId", turn.ID, op)
+				}
+			default:
+				return fmt.Errorf("turn %q portraitClaim op must be ADD, UPDATE, DELETE, or NOOP", turn.ID)
+			}
+		}
 	}
 	if evalCase.Portrait != nil {
 		if strings.TrimSpace(evalCase.Portrait.UserID) == "" {

@@ -144,14 +144,14 @@ func TestQueuePortraitMutationsNeedAnOverlayStore(t *testing.T) {
 	}
 }
 
-// failingListOverlays simulates the overlay store failing on its List half
-// so the whole-portrait forget hits a partial-delete state.
+// failingListOverlays simulates the overlay store failing on its current-read
+// half so the whole-portrait forget hits a partial-delete state.
 type failingListOverlays struct {
 	MemoryPortraitOverlays
 	listErr error
 }
 
-func (f *failingListOverlays) List(context.Context, string) ([]PortraitOverlay, error) {
+func (f *failingListOverlays) CurrentPortrait(context.Context, string) ([]PortraitOverlay, error) {
 	return nil, f.listErr
 }
 
@@ -169,7 +169,7 @@ func TestForgetPortraitSurfacesAdapterFailureInsteadOfHalfDelete(t *testing.T) {
 	if err := queue.ForgetPortrait(ctx, "user-1"); err == nil {
 		t.Fatal("ForgetPortrait with an unreachable adapter must error, not report a half-done privacy delete as success")
 	}
-	remaining, err := overlays.List(ctx, "user-1")
+	remaining, err := overlays.CurrentPortrait(ctx, "user-1")
 	if err != nil || len(remaining) != 1 || remaining[0].Deleted {
 		t.Fatalf("overlays after failed forget = %+v err=%v, want the entry untouched", remaining, err)
 	}
@@ -208,7 +208,7 @@ func TestForgetPortraitStillSucceedsForDevLocalOnlyAndHealthyAdapter(t *testing.
 	if err := devQueue.ForgetPortrait(ctx, "user-1"); err != nil {
 		t.Fatalf("ForgetPortrait without Memobase = %v, want the local-only delete to succeed", err)
 	}
-	remaining, _ := localOnly.List(ctx, "user-1")
+	remaining, _ := localOnly.CurrentPortrait(ctx, "user-1")
 	if len(remaining) != 1 || !remaining[0].Deleted {
 		t.Fatalf("overlays after dev forget = %+v, want the tombstoned slot", remaining)
 	}
@@ -332,7 +332,7 @@ func TestMemoryPortraitOverlaysRoundTrip(t *testing.T) {
 	if err := store.Delete(ctx, "user-1", "preferences", "reply_style"); err != nil {
 		t.Fatalf("Delete: %v", err)
 	}
-	overlays, err := store.List(ctx, "user-1")
+	overlays, err := store.CurrentPortrait(ctx, "user-1")
 	if err != nil {
 		t.Fatalf("List: %v", err)
 	}

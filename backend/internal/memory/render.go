@@ -32,6 +32,7 @@ var portraitSubTopicLabels = map[string]string{
 	"prediction_habits":  "预测习惯",
 	"recurring_topics":   "常聊话题",
 	"feedback_history":   "反馈记录",
+	"user_stated":        "用户自述",
 }
 
 // PortraitTopicLabel maps a Memobase profile topic to its Chinese label.
