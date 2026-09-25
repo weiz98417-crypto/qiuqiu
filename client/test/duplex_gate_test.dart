@@ -85,6 +85,20 @@ void main() {
     expect(decisions.last, PlaybackInterruptDecision.rejected);
   });
 
+  test('fired 段内锁存：歧义带帧不回退 armed、不清零持续时长', () {
+    // 7 帧安静 + 8 帧响（凑满 400ms 触发 fired）+ 2 帧歧义带（0.018，
+    // 高于 continue 阈值低于播放期能量门）——fired 后决策保持 fired。
+    final decisions = evaluatePlaybackInterrupt(
+      [0.001, 0.001, 0.001, 0.001, 0.001, 0.001, 0.001] +
+          List.filled(8, 0.03) +
+          [0.018, 0.018],
+      playbackActive: true,
+    );
+    expect(decisions[14], PlaybackInterruptDecision.fired);
+    expect(decisions[15], PlaybackInterruptDecision.fired);
+    expect(decisions[16], PlaybackInterruptDecision.fired);
+  });
+
   test('播放结束解除门，再次播放重新进入 squash 窗', () {
     final gate = PlaybackInterruptGate(params: params);
     gate.playbackStarted();

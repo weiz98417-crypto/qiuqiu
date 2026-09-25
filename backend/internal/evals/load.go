@@ -8,6 +8,8 @@ import (
 	"path/filepath"
 	"sort"
 	"strings"
+
+	"qiuqiu/internal/memory"
 )
 
 // validSuites 枚举评测集目录（evals-248 扩容）：原三席 + 能力/风险扩容域。
@@ -101,6 +103,13 @@ func (evalCase Case) Validate() error {
 			claim := turn.PortraitClaim
 			if strings.TrimSpace(claim.Topic) == "" || strings.TrimSpace(claim.SubTopic) == "" || strings.TrimSpace(claim.Content) == "" {
 				return fmt.Errorf("turn %q portraitClaim needs topic, subTopic, and content", turn.ID)
+			}
+			// 生产 wiring 锁（portrait-maintenance 阶段一）：Reflection 只把
+			// 主张写进固定槽（memory.PortraitClaimTopic/SubTopic），eval 用例
+			// 声明其它槽位锁的就是生产走不到的遮蔽路径——加载期直接拒绝。
+			if claim.Topic != memory.PortraitClaimTopic || claim.SubTopic != memory.PortraitClaimSubTopic {
+				return fmt.Errorf("turn %q portraitClaim slot %s/%s must be the production slot %s/%s",
+					turn.ID, claim.Topic, claim.SubTopic, memory.PortraitClaimTopic, memory.PortraitClaimSubTopic)
 			}
 			switch op := strings.ToUpper(strings.TrimSpace(claim.Decision.Op)); op {
 			case "ADD", "UPDATE", "DELETE", "NOOP":

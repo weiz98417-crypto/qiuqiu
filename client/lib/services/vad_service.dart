@@ -58,6 +58,42 @@ class VoiceActivityGate {
   }
 }
 
+/// 自动收口过门守卫（voice-duplex 1.1）：播放窗内起音且门未 fired 的段是
+/// 回声候选——回声不是话轮，不得被 15s maxDuration 兜底或 turn chain 逐帧
+/// 判定自动收口成回合。纯判定状态机（单测直接驱动），VADService 每帧喂
+/// 起音/门状态，两条自动收口路径开跑前先问 [onsetPassed]。
+class AutoFinishGuard {
+  // 本段起音是否过门：空闲期起音=true；播放期起音且门未 fired=false。
+  // 空闲期与按键说话恒为 true，历史行为不变。
+  bool _onsetPassed = true;
+
+  /// 本段起音是否过门：false 时 maxDuration/turn chain 两条自动收口路径
+  /// 全部跳过。
+  bool get onsetPassed => _onsetPassed;
+
+  /// 逐帧喂入：起音帧按播放窗状态定段；门 fired 整段恢复过门（升级为
+  /// 合法抢断话轮）。gated=false（空闲期/按键说话）恒过门。
+  void observe({
+    required bool speechStarted,
+    required bool gated,
+    required bool playbackActive,
+    required bool gateFired,
+  }) {
+    if (gateFired) {
+      _onsetPassed = true;
+      return;
+    }
+    if (speechStarted) {
+      _onsetPassed = !gated || !playbackActive;
+    }
+  }
+
+  /// 话轮收口/重新开采后重置，下一段默认过门（空闲期行为）。
+  void reset() {
+    _onsetPassed = true;
+  }
+}
+
 class VADService {
   final _eventController = StreamController<VADEvent>.broadcast(sync: true);
   final _audioChunkController =
@@ -66,6 +102,9 @@ class VADService {
   final _audioBuffer = <Uint8List>[];
   final _preRoll = Queue<Uint8List>();
   final _voiceActivity = VoiceActivityGate();
+  // 自动收口过门守卫：播放窗内起音且门未 fired 的段（回声候选）不得被
+  // maxDuration 兜底或 turn chain 逐帧判定收口成话轮。
+  final AutoFinishGuard _autoFinishGuard = AutoFinishGuard();
   // 播放期抢断判定门（voice-duplex 1.1）：能量参数与空闲期同一来源。
   final PlaybackInterruptGate _playbackGate = PlaybackInterruptGate();
   // 说完判定降级链（voice-turn-detection 1.3）：模型/规则阶段预留，静默档
@@ -144,6 +183,7 @@ class VADService {
     }
 
     _voiceActivity.reset();
+    _autoFinishGuard.reset();
     _preRoll.clear();
     _silenceTimer?.cancel();
     try {
@@ -194,6 +234,46 @@ class VADService {
     }
 
     final activity = _voiceActivity.observe(rms);
+
+    // 播放期抢断门逐帧观测（voice-duplex 1.1）：先于自动收口守卫计算决策，
+    // 让「本段起音是否过门」覆盖 maxDuration 与 turn chain 两条自动路径。
+    final gated = _mode == VADMode.freeTalk && _playbackCaptureEnabled;
+    final decision = gated
+        ? _playbackGate.observe(rms)
+        : PlaybackInterruptDecision.inactive;
+    if (activity.started) {
+      // 起音帧定段：空闲期起音直通过门；播放期起音且门未 fired（squash
+      // 压制或 armed 候选）= 回声候选段，不参与自动收口。
+      _autoFinishGuard.observe(
+        speechStarted: true,
+        gated: gated,
+        playbackActive: _playbackGate.playbackActive,
+        gateFired: false,
+      );
+    }
+    if (decision == PlaybackInterruptDecision.fired) {
+      // 门 fired：本段升级为合法抢断话轮，恢复自动收口资格。
+      _autoFinishGuard.observe(
+        speechStarted: false,
+        gated: gated,
+        playbackActive: _playbackGate.playbackActive,
+        gateFired: true,
+      );
+    }
+
+    if (_mode == VADMode.pushToTalk) {
+      _audioBuffer.add(pcm);
+      _emitAudioChunk(pcm);
+    } else if (!hadConfirmedSpeech) {
+      _preRoll.addLast(pcm);
+      while (_preRoll.length > preRollFrames) {
+        _preRoll.removeFirst();
+      }
+    } else {
+      _audioBuffer.add(pcm);
+      _emitAudioChunk(pcm);
+    }
+
     if (activity.detected) {
       _silenceTimer?.cancel();
       _silenceTimer = null;
@@ -206,7 +286,10 @@ class VADService {
           _preRoll.clear();
         }
       }
-      if (_voiceActivity.speechFrames >= maxDurationMs ~/ 50) {
+      // 15s 兜底自动收口：起音未过门的段（播放期回声候选）跳过——回声
+      // 不是话轮，不得被时长兜底提交成回合。
+      if (_autoFinishGuard.onsetPassed &&
+          _voiceActivity.speechFrames >= maxDurationMs ~/ 50) {
         unawaited(_finishSentence());
       }
     } else if (_voiceActivity.hasConfirmedSpeech) {
@@ -219,9 +302,11 @@ class VADService {
     }
 
     // 说完判定降级链（voice-turn-detection 1.3）：逐帧喂 RMS，链判完即收口。
-    // 覆盖包间隔不齐时定时器漏计的边缘，判完点以链的逐帧结论为准。
+    // 覆盖包间隔不齐时定时器漏计的边缘，判完点以链的逐帧结论为准。起音
+    // 未过门的段（播放期回声候选）不观测——回声帧不得驱动话轮判定。
     if (_mode == VADMode.freeTalk &&
         !_turnChain.decided &&
+        _autoFinishGuard.onsetPassed &&
         _voiceActivity.hasConfirmedSpeech) {
       final turn = _turnChain.observe(rms);
       if (turn.decided) {
@@ -229,15 +314,9 @@ class VADService {
       }
     }
 
-    // 播放期抢断门（voice-duplex 1.1）：空闲期 speech_start 照常立即上报；
-    // 播放期须过 squash 窗、能量门与时长门，门拒绝时保持静默——播放与
-    // ASR 采集都不受影响（收音本来就在传）。总开关关闭或按键说话（显式
-    // 意图）不走门。
-    final gated =
-        _mode == VADMode.freeTalk && _playbackCaptureEnabled;
-    final decision = gated
-        ? _playbackGate.observe(rms)
-        : PlaybackInterruptDecision.inactive;
+    // 空闲期 speech_start 照常立即上报；播放期须过 squash 窗、能量门与
+    // 时长门，门拒绝时保持静默——播放与 ASR 采集都不受影响（收音本来就
+    // 在传）。总开关关闭或按键说话（显式意图）不走门。
     if (decision == PlaybackInterruptDecision.rejected ||
         decision == PlaybackInterruptDecision.inactive) {
       _gatedSpeechAnnounced = false;
@@ -297,6 +376,7 @@ class VADService {
     _silenceTimer?.cancel();
     _silenceTimer = null;
     _voiceActivity.reset();
+    _autoFinishGuard.reset();
     _turnChain.reset();
     _preRoll.clear();
     unawaited(_stopCapture());

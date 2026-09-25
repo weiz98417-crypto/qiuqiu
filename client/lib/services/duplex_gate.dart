@@ -124,13 +124,15 @@ class PlaybackInterruptGate {
       // 已被 squash 的段保持忽略，直到段收口。
       return PlaybackInterruptDecision.suppressed;
     }
+    if (_firedSegment) {
+      // 段内锁存：fired 后即使能量回落到歧义带，决策也保持 fired——
+      // 不回退 armed、不清零持续时长（抢断只触发一次，段内状态不回退）。
+      return PlaybackInterruptDecision.fired;
+    }
     if (!loud) {
       // 段内能量回落到门下：持续时长重新计（宁保守勿误断）。
       _speechFrames = 0;
       return PlaybackInterruptDecision.armed;
-    }
-    if (_firedSegment) {
-      return PlaybackInterruptDecision.fired;
     }
     _speechFrames++;
     return params.frameDuration * _speechFrames >= params.minSpeechDuration

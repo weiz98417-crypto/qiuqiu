@@ -50,6 +50,12 @@ func (a *Agent) activeMatchingObservation(ctx context.Context, req AgentBoundary
 		now = time.Now()
 	}
 	for _, pending := range observations {
+		// 气氛旁证行（kind=ambient）永不参与温热保持：它是声学旁证、
+		// 不携带主张语义，绝不能被当成「用户坚持的主张」回应——否则
+		// 一阵欢呼加上一条解析失败的主张就会误触 warm hold。
+		if pending.Kind == observation.KindAmbient {
+			continue
+		}
 		if claimMatchesObservation(claim, pending, now) {
 			return pending, true
 		}

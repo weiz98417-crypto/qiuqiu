@@ -46,8 +46,8 @@
     "userId": "fan-1",
     "entries": [
       {
-        "topic": "basic_info",
-        "subTopic": "favorite_team",
+        "topic": "preferences",
+        "subTopic": "user_stated",
         "content": "我最喜欢的球队是皇马。"
       }
     ]
@@ -58,8 +58,8 @@
       "userId": "fan-1",
       "text": "我最支持的球队是巴萨。",
       "portraitClaim": {
-        "topic": "basic_info",
-        "subTopic": "favorite_team",
+        "topic": "preferences",
+        "subTopic": "user_stated",
         "content": "我最支持的球队是巴萨。",
         "decision": {
           "op": "ADD",
@@ -72,8 +72,8 @@
       "userId": "fan-1",
       "text": "其实说错了，我现在最支持的是皇马。",
       "portraitClaim": {
-        "topic": "basic_info",
-        "subTopic": "favorite_team",
+        "topic": "preferences",
+        "subTopic": "user_stated",
         "content": "我现在最支持的球队是皇马。",
         "decision": {
           "op": "UPDATE",

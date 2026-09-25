@@ -20,7 +20,7 @@ voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d
 | 6 | `audio_delivered` | `submitUserTurn` 投递成功后 | 响应投递完成；WS 路径的 TTS 合成与音频下行都在投递服务内，此行覆盖到下行完成 | signal 锚点 |
 | 7 | `tts_synthesized` | `completeVoiceSessionWithOptions`（操作台 HTTP 语音路径） | TTS 合成完成 | 该次话轮 `now` 入参 |
 
-- 锚点表：连接内 `voiceLatencyAnchors`（signalID / `utt:<utteranceId>` 两类键，FIFO 上限 64，只影响迟到消息的日志行）。
+- 锚点表：连接内 `voiceLatencyAnchors`（signalID / `utt:<utteranceId>` 两类键，满 64 即整表重置——在途话轮锚点随之丢弃，延迟日志行静默缺失，观测性已知边界；只影响迟到消息的日志行）。
 - 覆盖任务 1.1 要求的五段：user_speech 到达（1/2）→ ASR finish（3/4）→ turn 决策（5）→ TTS 合成调用（7，操作台路径；WS 路径并入 6）→ 音频下行（6）。
 - 端到端分解的前两段（采集→上行）在客户端，随真机会话从同一日志行 + 客户端时间戳对齐采集。
 
@@ -29,7 +29,7 @@ voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d
 `backend/cmd/server/voice_latency_test.go`：
 
 - 日志行字段完整（user/match/signal/stage/elapsed_ms 五字段齐备）。
-- 锚点缺失（零值）跳过日志行，不出噪音行；锚点表 FIFO 淘汰。
+- 锚点缺失（零值）跳过日志行，不出噪音行；锚点表满 64 即整表重置。
 - `asr_start`/`asr_finish` handler 走真实 `readMessages` 打出 `speech_received`/`asr_finish`。
 - `user_speech` 全链路（真实调度器+伴答 agent+mock TTS）打出 `speech_received` → `turn_decided` → `audio_delivered`。
 - 操作台语音路径打出 `tts_synthesized`。

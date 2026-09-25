@@ -53,8 +53,8 @@ class TurnDecisionContext {
 typedef TurnStageDelegate = bool? Function(TurnDecisionContext context);
 
 /// 静默档策略：tuned=调参档（阈值可配/可带语速自适应），fixed=固定档
-/// （降级回退，等价历史行为）。回退触发条件即 strategy/fallbackEnabled
-/// 两个配置位，由设置层注入。
+/// （降级回退，等价历史行为）。两档实为同一静默档，只是阈值来源不同；
+/// 回退触发条件即 strategy/fallbackEnabled 两个配置位，由设置层注入。
 enum TurnSilenceStrategy { tuned, fixed }
 
 /// 话轮判定参数：全部可配置，不硬编码 1400。
@@ -75,8 +75,10 @@ class TurnDetectionParams {
   /// 降级固定档阈值（历史基线 1400ms）。
   final Duration fallbackThreshold;
 
-  /// 降级回退开关：关闭后 strategy=tuned 且调参档无结论时链不再回退固定档
-  /// （交给上层超时），开启时固定档是链的最后一环。
+  /// 降级回退开关：模型/规则插槽未决（或未接入）时，静默档是否兜底判完。
+  /// 关闭后仅 strategy=tuned 受影响——链停在未判、交给上层超时；
+  /// strategy=fixed 或开关开启时静默档始终是链的最后一环。注意 tuned/fixed
+  /// 实为同一静默档，只是阈值来源不同，并非链上的两环。
   final bool fallbackEnabled;
 
   /// 犹豫小停顿的最短时长（低于它的单帧抖动不算犹豫）。
@@ -258,6 +260,18 @@ class TurnDetectionChain {
     );
     final consulted = _consultStages(context);
     if (consulted == null) {
+      if (params.strategy == TurnSilenceStrategy.tuned &&
+          !params.fallbackEnabled) {
+        // 调参档关闭回退：模型/规则插槽未决（或未接入）时链停在未判，
+        // 交给上层超时，不再下探静默档兜底（fallbackEnabled 契约，预注册
+        // 降级链 API 的最后一环开关）。
+        return TurnObservation(
+          stage: TurnDetectionStage.silence,
+          decided: false,
+          speechConfirmed: true,
+          effectiveSilenceThreshold: threshold,
+        );
+      }
       // 模型/规则未决：静默档兜底判完（降级链最后一环）。
       return _fire(TurnDetectionStage.silence, threshold);
     }

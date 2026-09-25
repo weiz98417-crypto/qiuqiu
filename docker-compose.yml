@@ -129,10 +129,12 @@ services:
   # 永不作 Match Fact、永不进事实账本。
   # image 为 SenseVoice 官方/社区镜像占位名（QwenAudio org）——真镜像的部署与
   # 调参不在本轮，pr tier 用 backend/cmd/ambient-fake 提供同形状确定性服务。
-  # backend 对本服务无 depends_on：摘除本服务（或拉取失败）时气氛旁路静默
-  # 消失，观赛主链路无感。
+  # backend 对本服务无 depends_on。profile 隔离：默认不启动（真镜像尚未
+  # 落地，占位镜像 pull 失败不能拖累 `docker compose up -d` 整栈），部署轮
+  # 用 `docker compose --profile ambient up -d` 显式拉起，或届时换真镜像。
   sensevoice-aed:
     image: ${SENSEVOICE_AED_IMAGE:-ghcr.io/qwen-audio/sensevoice-aed:latest}
+    profiles: ["ambient"]
     environment:
       - AMBIENT_AED_PORT=8090
     ports:

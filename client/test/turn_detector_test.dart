@@ -170,6 +170,40 @@ void main() {
       expect(observations.last.decided, isTrue);
       expect(observations.last.stage, TurnDetectionStage.silence);
     });
+
+    test('tuned 关回退：插槽未决时链停在未判，不兜底 fire', () {
+      final chain = TurnDetectionChain(
+        params: const TurnDetectionParams(
+          strategy: TurnSilenceStrategy.tuned,
+          tunedThreshold: Duration(milliseconds: 800),
+          fallbackEnabled: false,
+        ),
+        modelStage: (context) => null,
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03); // 语音确认
+      }
+      // 远超 800ms 生效阈值仍未判：关回退后交给上层超时，不再下探静默档。
+      for (var i = 0; i < 40; i++) {
+        expect(chain.observe(0.001).decided, isFalse);
+      }
+      expect(chain.decided, isFalse);
+    });
+
+    test('fixed 照常判完：关回退对固定档无影响', () {
+      final chain = TurnDetectionChain(
+        params: const TurnDetectionParams(fallbackEnabled: false),
+        modelStage: (context) => null,
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03); // 语音确认
+      }
+      for (var i = 0; i < 27; i++) {
+        expect(chain.observe(0.001).decided, isFalse);
+      }
+      expect(chain.observe(0.001).decided, isTrue);
+      expect(chain.decided, isTrue);
+    });
   });
 
   group('标注用例锁（与评估 harness 同源）', () {

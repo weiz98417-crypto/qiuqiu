@@ -129,8 +129,9 @@ func newWatchConnection(deps watchDeps, conn *websocket.Conn, claims auth.Claims
 // elapsed 的日志，真机 p90 由后续真机会话按此采集。操作台 HTTP 语音路径的
 // TTS 阶段见 completeVoiceSessionWithOptions 的 tts_synthesized 行。
 
-// maxVoiceLatencyAnchors 锚点表上限：话轮级条目按 FIFO 淘汰，只影响迟到
-// 消息的日志行，不影响业务。
+// maxVoiceLatencyAnchors 锚点表上限：满 64 即整表重置（在途话轮锚点随之
+// 丢弃，延迟日志行静默缺失——观测性已知边界），只影响迟到消息的日志行，
+// 不影响业务。
 const maxVoiceLatencyAnchors = 64
 
 // voiceLatencyAnchorKey 归一锚点键：信号直接用 signalID，转写会话加 utt:

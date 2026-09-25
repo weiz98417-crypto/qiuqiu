@@ -27,6 +27,10 @@ NULL=全域有效（存量数据迁移后全部 NULL，语义不变）；窗内�
 
 挂 Reflection beat 尾部顺序执行，失败不阻断 Reflection 主体（巩固是尽力而为，账本记录跳过原因）。近重复判定阈值与衰减窗口（如 90 天未确认）实施时以 eval 校准，参数进 config 不硬编码。
 
+## 残余风险
+
+阶段一固定槽（`preferences/user_stated`）不遮蔽 Memobase 合成槽：`favorite_team` 等合成条目由 Memobase 自行维护，固定槽里的冲突操作集封不掉它们的 `valid_to`，合成条目过期后仍可能织入措辞（eval 用例 taste-team-switch 只锁固定槽内的墓碑纪律，不覆盖该交叉路径）。收口计划归 5.4：合成槽与 `user_stated` 的对齐/失效联动（同槽互斥或合成条目失效联动），落地前措辞侧以「固定槽新值优先」缓解。
+
 ## 测试面
 
 - 操作集：单测锁四种落地（含墓碑保留断言）；eval 用例走既有记忆 eval 形态（portrait 驱动措辞的确定性断言）。
