@@ -23,3 +23,5 @@
 - 新增表驱动鉴权分支测试（transport_test.go），llm/router/asr/tts 既有测试作为行为等价回归网。
 
 > 2026-09 修订（structured-tool-seam）：llm 的流式半成品 StreamWithMessages 因长期零消费方删除，"SSE 暂留 llm"的假设随之撤销——需要流式时从传输层重建；invopop/jsonschema 之上的 structured.Extract 成为 openaicompat 的第三个消费者。
+
+> 2026-09 修订（tts-provider-seam）：TTS 从「仅鉴权复用」扩大为收敛进 Provider seam——`internal/tts` 定义 `Synthesizer` 接口（整段 `Synthesize` + `VoiceOpts`，另预留 `SynthesizeStream` 流式位，现役 adapter 返回 ErrNotSupported 不做假流式），Miimo 现役实现与确定性 fake 是它的两个 adapter，供应商知识（URL/model/voice/WAV 组包/熔断器）收敛进 adapter，调用方只见接口。本修订不触碰上列被否决方案「统一信封覆盖 asr/tts」：TTS 的 audio 载荷形状原样（`message.audio.data` 出），收敛的只是调用点与供应商知识。ASR 维持现状——音频上传方向、分片流式转写语义与 seam 的整段合成形状不匹配，等出现第二个 ASR 供应商需求再议。

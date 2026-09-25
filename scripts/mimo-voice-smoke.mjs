@@ -48,6 +48,32 @@ if (!tts.ok || !audioBytes) {
   process.exit(1);
 }
 
+// 情绪样本（tts-provider-seam 4.5）：指令走 messages 首位 user message——
+// 与 backend/internal/tts 的 Miimo adapter 组包形状一致，守卫 instruction
+// 通道端到端可用（只验证出音频，不做 ASR 回环，避免情绪语调干扰锚词）。
+const emotionInstruction = '这一句是即时的情绪爆发，兴奋到声线发亮，像刚看到进球一样喊出来，但收住不破音。';
+const emotionText = '进了进了！这球太漂亮了！';
+const ttsEmotional = await post({
+  model: 'mimo-v2.5-tts',
+  messages: [
+    { role: 'user', content: emotionInstruction },
+    { role: 'assistant', content: emotionText },
+  ],
+  audio: { format: 'wav', voice: process.env.MIMO_VOICE || 'Chloe' },
+});
+const emotionalAudio = ttsEmotional.json?.choices?.[0]?.message?.audio?.data || '';
+const emotionalBytes = emotionalAudio ? Buffer.from(emotionalAudio.includes(',') ? emotionalAudio.split(',').at(-1) : emotionalAudio, 'base64').length : 0;
+if (!ttsEmotional.ok || !emotionalBytes) {
+  console.error(JSON.stringify({
+    ok: false,
+    step: 'tts-emotional',
+    status: ttsEmotional.status,
+    ms: ttsEmotional.ms,
+    error: JSON.stringify(ttsEmotional.json).slice(0, 500),
+  }, null, 2));
+  process.exit(1);
+}
+
 const asr = await post({
   model: 'mimo-v2.5-asr',
   messages: [{
@@ -65,6 +91,7 @@ const acceptable = asr.ok && matchedAnchors.length >= 1;
 console.log(JSON.stringify({
   ok: acceptable,
   tts: { status: tts.status, ms: tts.ms, audioBytes },
+  ttsEmotional: { status: ttsEmotional.status, ms: ttsEmotional.ms, audioBytes: emotionalBytes },
   asr: { status: asr.status, ms: asr.ms, text: recognized, matchedAnchors },
 }, null, 2));
 

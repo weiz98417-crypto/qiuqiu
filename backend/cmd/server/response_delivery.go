@@ -54,8 +54,8 @@ func (sink websocketResponseSink) DeliverStatus(_ context.Context, status conver
 
 type responseSpeechSynthesizer struct{ synthesizer speechSynthesizer }
 
-func (adapter responseSpeechSynthesizer) SynthesizeResponse(ctx context.Context, text string, presentation relationship.PresentationPlan) (conversation.SynthesizedAudio, error) {
-	result, err := synthesizeReply(ctx, adapter.synthesizer, text, "", presentation)
+func (adapter responseSpeechSynthesizer) SynthesizeResponse(ctx context.Context, text string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct) (conversation.SynthesizedAudio, error) {
+	result, err := synthesizeReply(ctx, adapter.synthesizer, text, presentation, acts)
 	if err != nil {
 		return conversation.SynthesizedAudio{}, err
 	}

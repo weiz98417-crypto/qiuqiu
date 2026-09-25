@@ -47,7 +47,7 @@ type responseSynthesizerStub struct {
 	calls int
 }
 
-func (stub *responseSynthesizerStub) SynthesizeResponse(context.Context, string, relationship.PresentationPlan) (SynthesizedAudio, error) {
+func (stub *responseSynthesizerStub) SynthesizeResponse(context.Context, string, relationship.PresentationPlan, []relationship.CommunicationAct) (SynthesizedAudio, error) {
 	stub.calls++
 	return stub.audio, stub.err
 }

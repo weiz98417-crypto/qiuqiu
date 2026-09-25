@@ -49,7 +49,9 @@ type SynthesizedAudio struct {
 }
 
 type ResponseAudioSynthesizer interface {
-	SynthesizeResponse(context.Context, string, relationship.PresentationPlan) (SynthesizedAudio, error)
+	// acts 是该回合决策的沟通动作序列：与表演计划内嵌的情绪状态一起，
+	// 构成语音表演指令映射（情绪×动作→指令）的两个输入。
+	SynthesizeResponse(context.Context, string, relationship.PresentationPlan, []relationship.CommunicationAct) (SynthesizedAudio, error)
 }
 
 type MediaDeliveryEvent struct {
@@ -278,7 +280,11 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 	if service.synthesizer == nil {
 		return service.completeWithFallback(ctx, request, result, "tts unavailable", nil)
 	}
-	audio, synthErr := service.synthesizer.SynthesizeResponse(ctx, request.Reply, request.Presentation)
+	var acts []relationship.CommunicationAct
+	if request.Trace.RelationshipDecision != nil {
+		acts = request.Trace.RelationshipDecision.Actions
+	}
+	audio, synthErr := service.synthesizer.SynthesizeResponse(ctx, request.Reply, request.Presentation, acts)
 	if synthErr != nil {
 		if ctx.Err() != nil {
 			service.interrupt(request.Trace.ID)

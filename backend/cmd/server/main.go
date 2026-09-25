@@ -47,9 +47,9 @@ type speechRecognizer interface {
 	Transcribe(ctx context.Context, audio []byte, hints []string) (*asr.Result, error)
 }
 
-type speechSynthesizer interface {
-	Synthesize(ctx context.Context, text, voiceID string) (*tts.SynthesizeResult, error)
-}
+// speechSynthesizer 收敛为 tts.Synthesizer seam 的别名（ADR-0012 修订）：
+// 供应商知识与表现选项都走 seam，本包不再自定义合成接口。
+type speechSynthesizer = tts.Synthesizer
 
 type todayFixturesClient interface {
 	GetTodayFixturesContext(context.Context) ([]datasource.Fixture, error)
@@ -891,7 +891,7 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 	result.Presentation = response.Presentation
 	result.ScheduleLookup = response.ScheduleLookup
 	if synthesizer != nil {
-		ttsResult, err := synthesizeReply(ctx, synthesizer, result.Reply, "", result.Presentation)
+		ttsResult, err := synthesizeReply(ctx, synthesizer, result.Reply, result.Presentation, turnActs(result.Trace))
 		if err != nil {
 			result.TTSError = err.Error()
 			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)

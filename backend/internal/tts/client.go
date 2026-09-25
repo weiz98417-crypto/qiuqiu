@@ -1,3 +1,7 @@
+// Package tts 承载 TTS Provider seam：Synthesizer 接口是唯一调用面，
+// 供应商知识（URL/model/voice/WAV 组包/熔断器）收敛在各 adapter 内
+// （ADR-0012 修订）。Miimo adapter 是现役生产实现；NewMockClient 是
+// 确定性测试替身。
 package tts
 
 import (
@@ -18,6 +22,9 @@ import (
 
 var ErrNotConfigured = errors.New("tts provider is not configured")
 
+// Client 是 Miimo TTS adapter：POST {baseURL}/chat/completions，整段
+// base64 WAV 返回（非流式），自然语言指令以额外 user message 拼进
+// messages（Miimo 唯一的风格通道）。
 type Client struct {
 	apiKey     string
 	baseURL    string
@@ -41,6 +48,8 @@ func NewClient(apiKey string) *Client {
 	}
 }
 
+// NewMockClient 是 fake adapter：回放注入的确定性音频字节，不发网络
+// 请求、不失败，供离线链路与情绪映射测试使用。
 func NewMockClient(audio []byte) *Client {
 	return &Client{mockAudio: append([]byte(nil), audio...)}
 }
@@ -84,14 +93,10 @@ type SynthesizeResult struct {
 	MimeType  string
 }
 
-// Synthesize calls MiMo Text-to-Speech API.
-// voiceID overrides the configured MiMo voice when supplied.
-func (c *Client) Synthesize(ctx context.Context, text, voiceID string) (*SynthesizeResult, error) {
-	return c.SynthesizeWithInstruction(ctx, text, voiceID, "")
-}
-
-// SynthesizeWithInstruction asks MiMo to perform the text according to a natural-language direction.
-func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, instruction string) (*SynthesizeResult, error) {
+// Synthesize 调 Miimo TTS 合成整段音频。VoiceOpts.Instruction 作为表演
+// 指令占据 messages 首位（user），待合成文本是 assistant message；
+// VoiceOpts 的空字段回落 adapter 默认（wav / 冰糖）。
+func (c *Client) Synthesize(ctx context.Context, text string, opts VoiceOpts) (*SynthesizeResult, error) {
 	start := time.Now()
 	if c == nil {
 		return nil, ErrNotConfigured
@@ -105,12 +110,13 @@ func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, i
 	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("tts unavailable: %w", err)
 	}
-	voice := strings.TrimSpace(voiceID)
+	voice := strings.TrimSpace(opts.Voice)
+	// cgSg 前缀是旧预制音色 id：平台已不支持，原样回落默认音色。
 	if voice == "" || strings.HasPrefix(voice, "cgSg") {
 		voice = c.voice
 	}
 	messages := make([]map[string]string, 0, 2)
-	if instruction = strings.TrimSpace(instruction); instruction != "" {
+	if instruction := strings.TrimSpace(opts.Instruction); instruction != "" {
 		messages = append(messages, map[string]string{"role": "user", "content": instruction})
 	}
 	messages = append(messages, map[string]string{"role": "assistant", "content": text})
@@ -118,7 +124,7 @@ func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, i
 		"model":    defaultString(c.model, "mimo-v2.5-tts"),
 		"messages": messages,
 		"audio": map[string]string{
-			"format": "wav",
+			"format": defaultString(opts.Format, "wav"),
 			"voice":  defaultString(voice, "冰糖"),
 		},
 	}
@@ -172,6 +178,12 @@ func (c *Client) SynthesizeWithInstruction(ctx context.Context, text, voiceID, i
 		Duration:  time.Since(start),
 		MimeType:  "audio/wav",
 	}, nil
+}
+
+// SynthesizeStream 如实暴露 Miimo 的整段合成现实：没有流式能力，返回
+// ErrNotSupported，不实现假流式。
+func (c *Client) SynthesizeStream(ctx context.Context, text string, opts VoiceOpts) (<-chan []byte, error) {
+	return nil, ErrNotSupported
 }
 
 func decodeBase64(value string) ([]byte, error) {

@@ -26,9 +26,14 @@ func TestConfiguredSpeechSynthesizerRestrictsRuntimeMockToDevelopment(t *testing
 	if development == nil {
 		t.Fatal("development runtime TTS mock was not configured")
 	}
-	result, err := development.Synthesize(context.Background(), "测试", "")
+	result, err := development.Synthesize(context.Background(), "测试", tts.VoiceOpts{})
 	if err != nil || len(result.AudioData) == 0 {
 		t.Fatalf("development runtime TTS mock failed: result=%+v err=%v", result, err)
+	}
+	// MiMo key 在手时返回真 adapter，同为 seam 实现——供应商选择只发生
+	// 在这一处工厂里。
+	if real := configuredSpeechSynthesizer(&config.Config{MiMoAPIKey: "key"}); real == nil {
+		t.Fatal("MiMo key must configure the real tts adapter")
 	}
 
 	if production := configuredSpeechSynthesizer(&config.Config{Environment: "production"}); production != nil {
@@ -430,11 +435,15 @@ func (failingASR) Transcribe(ctx context.Context, audio []byte, hints []string) 
 
 type failingTTS struct{}
 
-func (failingTTS) Synthesize(ctx context.Context, text, voiceID string) (*tts.SynthesizeResult, error) {
+func (failingTTS) Synthesize(ctx context.Context, text string, opts tts.VoiceOpts) (*tts.SynthesizeResult, error) {
 	_ = ctx
 	_ = text
-	_ = voiceID
+	_ = opts
 	return nil, errors.New("tts unavailable")
+}
+
+func (failingTTS) SynthesizeStream(context.Context, string, tts.VoiceOpts) (<-chan []byte, error) {
+	return nil, tts.ErrNotSupported
 }
 
 type voiceScheduleReader struct{}

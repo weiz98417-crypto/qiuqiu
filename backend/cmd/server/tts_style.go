@@ -4,29 +4,53 @@ import (
 	"context"
 	"strings"
 
+	"qiuqiu/internal/companion"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 )
 
-type instructedSpeechSynthesizer interface {
-	SynthesizeWithInstruction(ctx context.Context, text, voiceID, instruction string) (*tts.SynthesizeResult, error)
+// synthesizeReply 是两条语音回复链路（HTTP 语音会话与 WS 投递服务）共用
+// 的合成入口：把表演计划与回合沟通动作折算成一条自然语言表演指令，经
+// seam 的 VoiceOpts.Instruction 下发；没有风格通道的 adapter 自行忽略。
+func synthesizeReply(ctx context.Context, synthesizer speechSynthesizer, text string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct) (*tts.SynthesizeResult, error) {
+	return synthesizer.Synthesize(ctx, text, tts.VoiceOpts{
+		Instruction: mimoPerformanceInstruction(presentation, acts, len([]rune(text))),
+	})
 }
 
-func synthesizeReply(ctx context.Context, synthesizer speechSynthesizer, text, voiceID string, presentation relationship.PresentationPlan) (*tts.SynthesizeResult, error) {
-	if instructed, ok := synthesizer.(instructedSpeechSynthesizer); ok {
-		return instructed.SynthesizeWithInstruction(ctx, text, voiceID, mimoPerformanceInstruction(presentation))
-	}
-	return synthesizer.Synthesize(ctx, text, voiceID)
-}
-
-func mimoPerformanceInstruction(presentation relationship.PresentationPlan) string {
+// mimoPerformanceInstruction 拼装 Miimo 表演指令：基础人设恒定；情绪×动
+// 作段由 tts.InstructionFor 给出（Affect State 来源是表演计划内嵌的该回
+// 合情绪）；数值档（风格/能量/语速）继续由表演计划驱动——两段互补，前
+// 者命名情绪与姿态，后者做数值微调。
+func mimoPerformanceInstruction(presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, utterLen int) string {
 	parts := []string{
 		"使用当前固定音色，以20岁左右中文女生的感觉表演。声线甜美清亮但不过度夹，像熟悉的朋友陪着看球。普通话口语自然，不要播音腔。句内要有自然快慢变化，陈述句句尾自然回落，保留轻微呼吸和自然停顿；激动时有爆发力但不要尖叫或破音。",
+		tts.InstructionFor(presentation.Affect, primaryAct(acts), utterLen),
 		voiceStyleDirection(presentation.VoiceStyle),
 		voiceEnergyDirection(presentation.VoiceEnergy),
 		voiceSpeedDirection(presentation.VoiceSpeed),
 	}
 	return strings.Join(parts, "")
+}
+
+// primaryAct 归一回合动作为语音姿态：取首个非 silence 的动作；无动作的
+// 回合（如赛程查询）回落 react 的中性姿态。
+func primaryAct(acts []relationship.CommunicationAct) relationship.CommunicationAct {
+	for _, act := range acts {
+		if act != "" && act != relationship.ActSilence {
+			return act
+		}
+	}
+	return relationship.ActReact
+}
+
+// turnActs 取该回合决策的沟通动作序列，供语音指令映射使用；无决策回合
+// 返回 nil。
+func turnActs(trace companion.Trace) []relationship.CommunicationAct {
+	if trace.RelationshipDecision == nil {
+		return nil
+	}
+	return trace.RelationshipDecision.Actions
 }
 
 func voiceStyleDirection(style string) string {

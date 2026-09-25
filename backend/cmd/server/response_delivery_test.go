@@ -169,6 +169,6 @@ func (reader recoveryTraceReader) GetTrace(_ context.Context, matchID, traceID s
 
 type responseSynthesizerForTest struct{}
 
-func (responseSynthesizerForTest) SynthesizeResponse(context.Context, string, relationship.PresentationPlan) (conversation.SynthesizedAudio, error) {
+func (responseSynthesizerForTest) SynthesizeResponse(context.Context, string, relationship.PresentationPlan, []relationship.CommunicationAct) (conversation.SynthesizedAudio, error) {
 	return conversation.SynthesizedAudio{Data: []byte("audio"), MIME: "audio/mpeg"}, nil
 }
