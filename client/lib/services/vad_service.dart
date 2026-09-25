@@ -7,6 +7,7 @@ import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 
 import 'duplex_gate.dart';
+import 'turn_detector.dart';
 
 typedef VoiceActivityDecision = ({bool detected, bool started});
 
@@ -67,6 +68,10 @@ class VADService {
   final _voiceActivity = VoiceActivityGate();
   // 播放期抢断判定门（voice-duplex 1.1）：能量参数与空闲期同一来源。
   final PlaybackInterruptGate _playbackGate = PlaybackInterruptGate();
+  // 说完判定降级链（voice-turn-detection 1.3）：模型/规则阶段预留，静默档
+  // 默认固定 1400ms（评估后的过渡档，参数化可配，不硬编码在判定处）。
+  // 只改 params 不换链实例，故 final。
+  final TurnDetectionChain _turnChain = TurnDetectionChain();
   bool _gatedSpeechAnnounced = false;
 
   /// duplex_playback_capture 总开关：关闭即半双工降级，播放期不再走
@@ -75,6 +80,12 @@ class VADService {
 
   void setPlaybackCaptureEnabled(bool enabled) {
     _playbackCaptureEnabled = enabled;
+  }
+
+  /// 说完判定参数注入（voice-turn-detection 1.3）：静默阈值/策略/回退开关
+  /// 全部可配置；只替换参数，不动链上已预留的模型/规则插槽。
+  void configureTurnDetection(TurnDetectionParams params) {
+    _turnChain.params = params;
   }
 
   StreamSubscription<Uint8List>? _recordSubscription;
@@ -87,7 +98,6 @@ class VADService {
   bool _audioSessionConfigured = false;
   String _selectedInputDeviceId = '';
 
-  static const int silenceTimeoutMs = 1400;
   static const int maxDurationMs = 15000;
   static const int preRollFrames = 4;
 
@@ -200,10 +210,23 @@ class VADService {
         unawaited(_finishSentence());
       }
     } else if (_voiceActivity.hasConfirmedSpeech) {
+      // 静默兜底定时器：时长取降级链当前生效阈值（voice-turn-detection 1.3，
+      // 参数化不硬编码）；正常路径由链逐帧判定先行收口。
       _silenceTimer ??= Timer(
-        const Duration(milliseconds: silenceTimeoutMs),
+        _turnChain.effectiveSilenceThreshold,
         () => unawaited(_finishSentence()),
       );
+    }
+
+    // 说完判定降级链（voice-turn-detection 1.3）：逐帧喂 RMS，链判完即收口。
+    // 覆盖包间隔不齐时定时器漏计的边缘，判完点以链的逐帧结论为准。
+    if (_mode == VADMode.freeTalk &&
+        !_turnChain.decided &&
+        _voiceActivity.hasConfirmedSpeech) {
+      final turn = _turnChain.observe(rms);
+      if (turn.decided) {
+        unawaited(_finishSentence());
+      }
     }
 
     // 播放期抢断门（voice-duplex 1.1）：空闲期 speech_start 照常立即上报；
@@ -252,6 +275,8 @@ class VADService {
     if (hasSpeech || _mode == VADMode.pushToTalk) {
       _emit(const VADEvent.sentenceEnd());
     }
+    // 话轮收口：判定链重置，等待下一个话轮（voice-turn-detection 1.3）。
+    _turnChain.reset();
 
     if (_mode == VADMode.pushToTalk) {
       _sessionActive = false;
@@ -272,6 +297,7 @@ class VADService {
     _silenceTimer?.cancel();
     _silenceTimer = null;
     _voiceActivity.reset();
+    _turnChain.reset();
     _preRoll.clear();
     unawaited(_stopCapture());
     _emit(const VADEvent.idle());

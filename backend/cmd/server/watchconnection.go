@@ -16,6 +16,7 @@ import (
 	"net/http"
 	"strconv"
 	"strings"
+	"sync"
 	"sync/atomic"
 	"time"
 
@@ -100,6 +101,11 @@ type watchConnection struct {
 	// cooldown scale and the relationship InitiativeMode.
 	userTalkativeness atomic.Value
 
+	// voiceLatencyAnchors 记录每个话轮信号/转写会话的服务端到达时刻，供
+	// 延迟分解日志取 elapsed（voice-transport-upgrade 1.1，待真机会话采集）。
+	voiceLatencyMu      sync.Mutex
+	voiceLatencyAnchors map[string]time.Time
+
 	transcriptions *transcriptionSessions
 }
 
@@ -109,7 +115,56 @@ func newWatchConnection(deps watchDeps, conn *websocket.Conn, claims auth.Claims
 	connection.identity = newConnectionIdentity(claims.Subject)
 	connection.userTalkativeness.Store(relationship.TalkativenessNormal)
 	connection.clientPlaybackReports = newClientPlaybackReportSet()
+	connection.voiceLatencyAnchors = make(map[string]time.Time)
 	return connection
+}
+
+// ── 语音链路延迟分解日志（voice-transport-upgrade 1.1）──────────────────────
+//
+// 与 duplex_event 同风格的结构化日志点，不建新系统：speech_received →
+// asr_finish → asr_final → turn_decided → audio_delivered 各打一行带
+// elapsed 的日志，真机 p90 由后续真机会话按此采集。操作台 HTTP 语音路径的
+// TTS 阶段见 completeVoiceSessionWithOptions 的 tts_synthesized 行。
+
+// maxVoiceLatencyAnchors 锚点表上限：话轮级条目按 FIFO 淘汰，只影响迟到
+// 消息的日志行，不影响业务。
+const maxVoiceLatencyAnchors = 64
+
+// voiceLatencyAnchorKey 归一锚点键：信号直接用 signalID，转写会话加 utt:
+// 前缀防跨类型撞键。
+func voiceLatencyAnchorKey(kind, id string) string {
+	return kind + ":" + id
+}
+
+func (c *watchConnection) storeVoiceLatencyAnchor(key string, at time.Time) {
+	if key == "" || at.IsZero() {
+		return
+	}
+	c.voiceLatencyMu.Lock()
+	defer c.voiceLatencyMu.Unlock()
+	if len(c.voiceLatencyAnchors) >= maxVoiceLatencyAnchors {
+		c.voiceLatencyAnchors = make(map[string]time.Time)
+	}
+	c.voiceLatencyAnchors[key] = at
+}
+
+func (c *watchConnection) voiceLatencyAnchor(key string) time.Time {
+	if key == "" {
+		return time.Time{}
+	}
+	c.voiceLatencyMu.Lock()
+	defer c.voiceLatencyMu.Unlock()
+	return c.voiceLatencyAnchors[key]
+}
+
+// logVoiceLatency 打一行语音链路延迟分解日志；锚点缺失（如非本连接发起的
+// 话轮）直接跳过，避免没有 elapsed 基准的噪音行。
+func (c *watchConnection) logVoiceLatency(stage, signalID string, startedAt time.Time) {
+	if startedAt.IsZero() {
+		return
+	}
+	log.Printf("voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d",
+		c.identity.Get(), c.matchID, signalID, stage, time.Since(startedAt).Milliseconds())
 }
 
 func handleWatchConnection(deps watchDeps) http.HandlerFunc {
@@ -416,7 +471,17 @@ func (c *watchConnection) startMessagePumps() {
 		c.connectionCtx,
 		c.deps.asr,
 		asr.StreamOptions{},
-		func(message map[string]interface{}) { _ = c.writer.SendJSON(message) },
+		func(message map[string]interface{}) {
+			// 延迟分解：asr_final = 转写终稿下行的时刻（voice-transport-
+			// upgrade 1.1），锚点取该转写会话 asr_start 的到达时刻。
+			if message["type"] == "transcript_final" {
+				if utteranceID, ok := message["utteranceId"].(string); ok {
+					c.logVoiceLatency("asr_final", utteranceID,
+						c.voiceLatencyAnchor(voiceLatencyAnchorKey("utt", utteranceID)))
+				}
+			}
+			_ = c.writer.SendJSON(message)
+		},
 		func(completion transcriptionCompletion) {
 			c.submitUserTurn(completion.UserID, completion.Text, "", completion.SignalID, completion.Provider, completion.Timezone)
 		},
@@ -640,6 +705,8 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 			cleanupCancel()
 			return
 		}
+		// 延迟分解：turn_decided = 话轮决策（含 ASR/事实刷新）完成的时刻。
+		c.logVoiceLatency("turn_decided", signalID, c.voiceLatencyAnchor(signalID))
 		// presentation-mapping 3.2 (ADR-0007): the reply completes into a
 		// voice-session wait for the user, so the plan that rides with
 		// the reply decays to the listening pose instead of the
@@ -688,6 +755,11 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 				return nil
 			},
 		}, playback)
+		// 延迟分解：audio_delivered = 响应投递完成（WS 路径的 TTS 合成与
+		// 音频下行都在投递服务内，此行覆盖到下行完成）。
+		if deliveryErr == nil {
+			c.logVoiceLatency("audio_delivered", signalID, c.voiceLatencyAnchor(signalID))
+		}
 		if deliveryErr != nil {
 			state := "failed"
 			if errors.Is(deliveryErr, context.Canceled) {
@@ -881,6 +953,11 @@ func (c *watchConnection) readMessages() {
 			}
 			generatedSignalID := fmt.Sprintf("turn_%s_%d", userID, time.Now().UnixNano())
 			turnSignalID := stableSignalID(str(req, "signalId"), generatedSignalID)
+			// 延迟分解：speech_received = user_speech 到达（voice-transport-
+			// upgrade 1.1），锚点供后续 turn_decided / audio_delivered 取 elapsed。
+			arrivedAt := time.Now()
+			c.storeVoiceLatencyAnchor(turnSignalID, arrivedAt)
+			c.logVoiceLatency("speech_received", turnSignalID, arrivedAt)
 			c.submitUserTurn(userID, text, audioB64, turnSignalID, "", strings.TrimSpace(str(req, "timezone")))
 		case "asr_start":
 			userID, identityMatches := connectionUserID(c.identity, c.deps.cfg, str(req, "userId"))
@@ -891,6 +968,12 @@ func (c *watchConnection) readMessages() {
 			utteranceID := strings.TrimSpace(str(req, "utteranceId"))
 			generatedSignalID := fmt.Sprintf("turn_%s_%d", userID, time.Now().UnixNano())
 			signalID := stableSignalID(str(req, "signalId"), generatedSignalID)
+			// 延迟分解：speech_received = 流式转写会话开始（等价 user_speech
+			// 到达），双锚点分别供话轮链路与 asr_finish/asr_final 取 elapsed。
+			arrivedAt := time.Now()
+			c.storeVoiceLatencyAnchor(signalID, arrivedAt)
+			c.storeVoiceLatencyAnchor(voiceLatencyAnchorKey("utt", utteranceID), arrivedAt)
+			c.logVoiceLatency("speech_received", signalID, arrivedAt)
 			if err := validateTranscriptionStart(req); err != nil {
 				c.writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
 				continue
@@ -912,6 +995,9 @@ func (c *watchConnection) readMessages() {
 			}
 		case "asr_finish":
 			utteranceID := strings.TrimSpace(str(req, "utteranceId"))
+			// 延迟分解：asr_finish = 客户端说完信号到达（相对 asr_start 锚点）。
+			c.logVoiceLatency("asr_finish", utteranceID,
+				c.voiceLatencyAnchor(voiceLatencyAnchorKey("utt", utteranceID)))
 			if err := c.transcriptions.Finish(utteranceID); err != nil {
 				c.writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
 			}

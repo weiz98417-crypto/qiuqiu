@@ -905,6 +905,10 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 			result.Trace.Voice.TTSStatus = "ok"
 			result.Trace.Voice.TTSMime = result.AudioMIME
 			result.Trace.Voice.TTSByteCount = len(result.AudioData)
+			// 延迟分解：tts_synthesized（voice-transport-upgrade 1.1，操作台
+			// HTTP 语音路径；WS 路径的合成在投递服务内，由 audio_delivered 覆盖）。
+			log.Printf("voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d",
+				userID, matchID, signalID, "tts_synthesized", time.Since(now).Milliseconds())
 			_ = agent.RecordMediaDelivery(ctx, interaction.Event{ID: "tts:" + userID + ":" + matchID + ":" + result.Trace.ID + ":audio_ready", Kind: interaction.KindMediaDelivery, UserID: userID, MatchID: matchID, TraceID: result.Trace.ID, DeliveryKey: result.Trace.ID, MediaType: result.AudioMIME, DeliveryState: "audio_ready", Source: "tts", CreatedAt: time.Now().UTC()})
 		}
 	}
