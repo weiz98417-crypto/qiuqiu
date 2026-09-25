@@ -25,6 +25,11 @@ services:
       - PRIVACY_RETENTION_DAYS=${PRIVACY_RETENTION_DAYS:-30}
       - PENDING_OBSERVATION_COORDINATION=${PENDING_OBSERVATION_COORDINATION:-true}
       - FACT_LEDGER_PUBLIC_READS=${FACT_LEDGER_PUBLIC_READS:-true}
+      # 气氛旁路（openspec/changes/ambient-audio-observation）：默认关闭；指向
+      # http://sensevoice-aed:8090 开启（pr/本地可用 backend/cmd/ambient-fake 替代）。
+      # sidecar 不可达时旁路静默失败，backend 对其无 depends_on、无健康依赖。
+      - AMBIENT_AED_URL=${AMBIENT_AED_URL:-}
+      - AMBIENT_AED_TIMEOUT_MS=${AMBIENT_AED_TIMEOUT_MS:-500}
       - MEMOBASE_URL=${MEMOBASE_URL:-http://memobase:8000}
       - MEMOBASE_TOKEN=${MEMOBASE_TOKEN:-secret}
       - MEMOBASE_EXTRACTION_TIMEOUT_MS=${MEMOBASE_EXTRACTION_TIMEOUT_MS:-10000}
@@ -115,6 +120,30 @@ services:
       interval: 5s
       timeout: 5s
       retries: 5
+    restart: unless-stopped
+
+  # SenseVoice AED sidecar（openspec/changes/ambient-audio-observation）：无状态
+  # 音频事件检测（欢呼/嘘声/音量骤变），POST /aevents 收 pcm16/16k 单声道分片、
+  # 返回 JSON 事件数组 {kind, confidence, ts}；不落盘、会话外不接收。
+  # ADR-0002 宪法线：气氛信号只进 observation store 作旁证（最低权重档），
+  # 永不作 Match Fact、永不进事实账本。
+  # image 为 SenseVoice 官方/社区镜像占位名（QwenAudio org）——真镜像的部署与
+  # 调参不在本轮，pr tier 用 backend/cmd/ambient-fake 提供同形状确定性服务。
+  # backend 对本服务无 depends_on：摘除本服务（或拉取失败）时气氛旁路静默
+  # 消失，观赛主链路无感。
+  sensevoice-aed:
+    image: ${SENSEVOICE_AED_IMAGE:-ghcr.io/qwen-audio/sensevoice-aed:latest}
+    environment:
+      - AMBIENT_AED_PORT=8090
+    ports:
+      - "${SENSEVOICE_AED_PORT:-8090}:8090"
+    healthcheck:
+      # 占位形态：与 backend/cmd/ambient-fake 的 GET /healthz 对齐；真镜像的
+      # 健康检查命令待部署轮落定（healthcheck 仅观测，backend 不依赖其结论）。
+      test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
     restart: unless-stopped
 
 volumes:

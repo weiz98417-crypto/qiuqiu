@@ -226,8 +226,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     });
                   },
                 ),
+                // 气氛感知（ambient-audio-observation 6.3）：只做说明、不做
+                // 独立开关——气氛旁路跟随观赛会话生效，sidecar 摘除后旁路
+                // 静默消失；文案即 design.md 的隐私口径。
+                const _PreferenceNote(
+                  index: '07',
+                  title: '气氛感知',
+                  subtitle:
+                      '观看比赛时，球球会分析现场声音的气氛（欢呼/嘘声）来陪你看球；音频不会被保存，比赛结束后不留任何声音记录。',
+                ),
                 const SizedBox(height: AppSpacing.lg),
-                const _SectionLabel(index: '07', label: '支持球队'),
+                const _SectionLabel(index: '08', label: '支持球队'),
                 const SizedBox(height: AppSpacing.sm),
                 DropdownMenu<String>(
                   width: double.infinity,
@@ -253,7 +262,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 if (widget.onOpenPortrait != null) ...[
                   const SizedBox(height: AppSpacing.lg),
-                  const _SectionLabel(index: '08', label: '球球懂我'),
+                  const _SectionLabel(index: '09', label: '球球懂我'),
                   const SizedBox(height: AppSpacing.xs),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -265,7 +274,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
                 if (widget.sessions != null) ...[
                   const SizedBox(height: AppSpacing.lg),
-                  const _SectionLabel(index: '09', label: '账号与同步'),
+                  const _SectionLabel(index: '10', label: '账号与同步'),
                   const SizedBox(height: AppSpacing.xs),
                   ValueListenableBuilder<String?>(
                     valueListenable: _loginIdentifier,
@@ -329,6 +338,52 @@ class _SectionLabel extends StatelessWidget {
         ),
         Text(label, style: Theme.of(context).textTheme.titleLarge),
       ],
+    );
+  }
+}
+
+/// 说明行：与 _PreferenceSwitch 同版式但不带开关——用于跟随会话生效、
+/// 不提供独立开关的能力说明（如气氛感知的隐私口径）。
+class _PreferenceNote extends StatelessWidget {
+  final String index;
+  final String title;
+  final String subtitle;
+
+  const _PreferenceNote({
+    required this.index,
+    required this.title,
+    required this.subtitle,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return DecoratedBox(
+      decoration: const BoxDecoration(
+        border: Border(top: BorderSide(color: AppColors.line)),
+      ),
+      child: ListTile(
+        contentPadding: EdgeInsets.zero,
+        minTileHeight: 72,
+        title: Row(
+          children: [
+            SizedBox(
+              width: 40,
+              child: Text(
+                index,
+                style: Theme.of(context).textTheme.labelLarge?.copyWith(
+                  color: AppColors.orange,
+                  fontFeatures: const [FontFeature.tabularFigures()],
+                ),
+              ),
+            ),
+            Text(title),
+          ],
+        ),
+        subtitle: Padding(
+          padding: const EdgeInsets.only(left: 40, top: AppSpacing.xxs),
+          child: Text(subtitle),
+        ),
+      ),
     );
   }
 }

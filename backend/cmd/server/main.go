@@ -17,6 +17,7 @@ import (
 
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/auth"
+	"qiuqiu/internal/ambient"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
@@ -340,6 +341,16 @@ func main() {
 		}
 		go runObservationExpiry(cleanupCtx, observationCoordinator)
 	}
+	// 气氛旁路（ambient-audio-observation）：AMBIENT_AED_URL 留空即停用；
+	// 事件只作 observation store 的 kind=ambient 旁证（最低权重档），永不作
+	// Match Fact（ADR-0002）。sidecar 不可达时旁路静默失败，主链路无感。
+	var ambientSidecar *ambientRelay
+	if strings.TrimSpace(cfg.AmbientAEDURL) != "" {
+		ambientSidecar = newAmbientRelay(
+			ambient.NewClient(cfg.AmbientAEDURL).WithTimeout(cfg.AmbientAEDTimeout()),
+			observationCoordinator,
+		)
+	}
 	// 意图注册表漂移断言（openspec/changes/intent-registry）：启动即校验
 	// 注册表镜像与 router 硬编码事实一致，不一致 fail-fast。
 	if err := companion.ValidateIntentRegistry(); err != nil {
@@ -636,6 +647,7 @@ func main() {
 		agent: companionAgent, tts: ttsClient, asr: asrClient, cfg: cfg, memories: memoryQueue,
 		reminders: reminderStore,
 		submittedSignals: submittedUserSignals,
+		ambient:          ambientSidecar,
 	}))
 
 	addr := ":" + cfg.Port

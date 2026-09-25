@@ -59,6 +59,9 @@ type watchDeps struct {
 	// submittedSignals 是用户轮次的信号去重器（server-residual-polish 1.3：
 	// 此前是包级 global，现由 main() 构造注入）。
 	submittedSignals *signalDeduper
+	// ambient 是气氛旁路接线器（ambient-audio-observation）：nil 即旁路
+	// 停用；ASR 主路不感知 sidecar 存活，旁路失败静默计数。
+	ambient *ambientRelay
 }
 
 // watchConnection 承载一条 /ws/match/ 连接跨四相的全部状态。字段与拆分前
@@ -990,6 +993,9 @@ func (c *watchConnection) readMessages() {
 				c.writer.SendJSON(transcriptErrorMessage(utteranceID, errors.New("invalid audio chunk"), false))
 				continue
 			}
+			// 气氛旁路（ambient-audio-observation）：合法分片原样并行旁送
+			// AED sidecar——不阻塞 ASR 主路，旁路失败静默丢弃+计数。
+			c.relayAmbientChunk(audio)
 			if err := c.transcriptions.Append(utteranceID, sequence, audio); err != nil {
 				c.writer.SendJSON(transcriptErrorMessage(utteranceID, err, false))
 			}

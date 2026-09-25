@@ -11,6 +11,7 @@ import (
 	"strings"
 	"time"
 
+	"qiuqiu/internal/ambient"
 	"qiuqiu/internal/router"
 )
 
@@ -48,6 +49,11 @@ type Config struct {
 	PrivacyRetentionDays           int
 	PendingObservationCoordination bool
 	FactLedgerPublicReads          bool
+	// 气氛旁路（openspec/changes/ambient-audio-observation）：SenseVoice AED
+	// sidecar 端点，留空即整体停用（旁路静默消失，主链路无感）；pr tier 指向
+	// cmd/ambient-fake 假 sidecar。
+	AmbientAEDURL                  string
+	AmbientAEDTimeoutMS            int
 	MemobaseURL                    string
 	MemobaseToken                  string
 	MemobaseExtractionTimeoutMS    int
@@ -102,6 +108,8 @@ func Load() *Config {
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
 		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),
+		AmbientAEDURL:                  strings.TrimSpace(getEnv("AMBIENT_AED_URL", "")),
+		AmbientAEDTimeoutMS:            getEnvInt("AMBIENT_AED_TIMEOUT_MS", 500),
 		MemobaseURL:                    getEnv("MEMOBASE_URL", "http://localhost:8019"),
 		MemobaseToken:                  strings.TrimSpace(os.Getenv("MEMOBASE_TOKEN")),
 		MemobaseExtractionTimeoutMS:    getEnvInt("MEMOBASE_EXTRACTION_TIMEOUT_MS", 10000),
@@ -119,6 +127,15 @@ func (c *Config) CompanionRealizerTimeout() time.Duration {
 
 func (c *Config) MemobaseExtractionTimeout() time.Duration {
 	return time.Duration(c.MemobaseExtractionTimeoutMS) * time.Millisecond
+}
+
+// AmbientAEDTimeout 返回气氛旁路的 sidecar 调用预算（design.md：超时短，
+// 如 500ms）；非正数回退默认值，配置错误不让旁路失去边界。
+func (c *Config) AmbientAEDTimeout() time.Duration {
+	if c.AmbientAEDTimeoutMS <= 0 {
+		return ambient.DefaultTimeout
+	}
+	return time.Duration(c.AmbientAEDTimeoutMS) * time.Millisecond
 }
 
 func (c *Config) WSReadLimit() int64 {
