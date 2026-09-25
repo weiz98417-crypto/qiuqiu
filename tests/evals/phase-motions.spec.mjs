@@ -28,7 +28,7 @@ test.beforeEach(async ({ page, request }) => {
   // live2d 页自己的 qLipSync AudioContext。
   await page.addInitScript(() => {
     if (window !== window.top) return;
-    const frames = [0, 0, 0.024, 0.018, 0.026, 0.017, 0.022, 0.019, 0, 0];
+    const frames = [0, 0, 0.035, 0.028, 0.038, 0.029, 0.034, 0.031, 0.036, 0.033, 0.035, 0.03, 0.034, 0.032, 0, 0];
     const track = {
       label: '测试麦克风',
       getSettings: () => ({ deviceId: 'test-microphone' }),

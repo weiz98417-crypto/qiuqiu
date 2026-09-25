@@ -6,6 +6,8 @@ import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
 import 'package:record/record.dart';
 
+import 'duplex_gate.dart';
+
 typedef VoiceActivityDecision = ({bool detected, bool started});
 
 const voiceRecordConfig = RecordConfig(
@@ -63,6 +65,17 @@ class VADService {
   final _audioBuffer = <Uint8List>[];
   final _preRoll = Queue<Uint8List>();
   final _voiceActivity = VoiceActivityGate();
+  // 播放期抢断判定门（voice-duplex 1.1）：能量参数与空闲期同一来源。
+  final PlaybackInterruptGate _playbackGate = PlaybackInterruptGate();
+  bool _gatedSpeechAnnounced = false;
+
+  /// duplex_playback_capture 总开关：关闭即半双工降级，播放期不再走
+  /// 抢断门，speech_start 照历史行为立即上报。
+  bool _playbackCaptureEnabled = true;
+
+  void setPlaybackCaptureEnabled(bool enabled) {
+    _playbackCaptureEnabled = enabled;
+  }
 
   StreamSubscription<Uint8List>? _recordSubscription;
   Timer? _silenceTimer;
@@ -147,6 +160,11 @@ class VADService {
     }
   }
 
+  /// 播放起止由播放状态机回报：开始记 squash 窗锚点，结束即解除门。
+  void notifyPlaybackStarted() => _playbackGate.playbackStarted();
+
+  void notifyPlaybackEnded() => _playbackGate.playbackEnded();
+
   void _processAudio(Uint8List pcm) {
     if (!_sessionActive || !_captureActive || pcm.isEmpty) return;
     final rms = _calculateRms(pcm);
@@ -177,7 +195,6 @@ class VADService {
           }
           _preRoll.clear();
         }
-        _emit(const VADEvent.speaking());
       }
       if (_voiceActivity.speechFrames >= maxDurationMs ~/ 50) {
         unawaited(_finishSentence());
@@ -187,6 +204,27 @@ class VADService {
         const Duration(milliseconds: silenceTimeoutMs),
         () => unawaited(_finishSentence()),
       );
+    }
+
+    // 播放期抢断门（voice-duplex 1.1）：空闲期 speech_start 照常立即上报；
+    // 播放期须过 squash 窗、能量门与时长门，门拒绝时保持静默——播放与
+    // ASR 采集都不受影响（收音本来就在传）。总开关关闭或按键说话（显式
+    // 意图）不走门。
+    final gated =
+        _mode == VADMode.freeTalk && _playbackCaptureEnabled;
+    final decision = gated
+        ? _playbackGate.observe(rms)
+        : PlaybackInterruptDecision.inactive;
+    if (decision == PlaybackInterruptDecision.rejected ||
+        decision == PlaybackInterruptDecision.inactive) {
+      _gatedSpeechAnnounced = false;
+    }
+    final speechStartPasses = !gated || !_playbackGate.playbackActive;
+    final shouldAnnounce = (activity.started && speechStartPasses) ||
+        (decision == PlaybackInterruptDecision.fired && !_gatedSpeechAnnounced);
+    if (shouldAnnounce) {
+      _gatedSpeechAnnounced = true;
+      _emit(const VADEvent.speaking());
     }
   }
 

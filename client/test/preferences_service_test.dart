@@ -136,6 +136,20 @@ void main() {
     expect(profile.subtitlesEnabled, isTrue);
   });
 
+  test('duplex_playback_capture 默认开启，关闭后可持久化恢复', () async {
+    SharedPreferences.setMockInitialValues({});
+
+    final fresh = await PreferencesService().load();
+    expect(fresh.duplexPlaybackCapture, isTrue);
+
+    final preferences = PreferencesService();
+    await preferences
+        .save(fresh.copyWith(duplexPlaybackCapture: false, soundEnabled: true));
+
+    final reloaded = await PreferencesService().load();
+    expect(reloaded.duplexPlaybackCapture, isFalse);
+  });
+
   test('turning off one output keeps the other available', () {
     const silent = UserProfile(
       nickname: '',

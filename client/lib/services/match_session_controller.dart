@@ -167,6 +167,16 @@ class MatchSessionController extends ChangeNotifier {
   String? _activeMatchReactionEventId;
   bool _matchEndHandled = false;
 
+  /// duplex_playback_capture 总开关（voice-duplex 1.1）：false 即半双工，
+  /// 播放期 VAD 不再自动打断。自动降级与设置页开关共用同一入口，可再开。
+  bool _duplexPlaybackCapture = true;
+
+  /// 自打断检测（voice-duplex 1.4）：抢断发出后等待下一话轮转写定谳，
+  /// 连续误打断达到阈值自动降级半双工。
+  bool _awaitingSelfInterruptVerdict = false;
+  String _interruptedSpokenText = '';
+  int _selfInterruptStreak = 0;
+
   /// presentation-map.json rows (ADR-0007): phase transitions resolve through
   /// the single source instead of scattered hardcodes. Starts on the
   /// synchronous fallback mirror until [ensurePresentationMapLoaded] swaps in
@@ -175,10 +185,26 @@ class MatchSessionController extends ChangeNotifier {
 
   static const int maxReconnectVoiceFallbacks = 4;
 
+  /// 自打断判定参数（voice-duplex 1.4）：转写长度达到 shortTranscriptChars
+  /// 直接判真话轮；低于它要看过半字符落在刚播文本里。连续
+  /// selfInterruptDegradeThreshold 次误打断自动降级半双工。
+  static const int selfInterruptShortTranscriptChars = 4;
+  static const double selfInterruptMinOverlap = 0.5;
+  static const int selfInterruptDegradeThreshold = 3;
+
   MatchSessionController({MatchViewData initialMatch = const MatchViewData()})
       : _state = MatchSessionState(match: initialMatch);
 
   MatchSessionState get state => _state;
+
+  bool get duplexPlaybackCapture => _duplexPlaybackCapture;
+
+  /// duplex_playback_capture 总开关。重新开启时清空误打断连击——降级
+  /// 是对连续回声的临时响应，不追责到下一次会话。
+  void setDuplexPlaybackCapture(bool enabled) {
+    _duplexPlaybackCapture = enabled;
+    if (enabled) _selfInterruptStreak = 0;
+  }
 
   /// Loads presentation-map.json once so the phase rows below render from the
   /// single-source table (the fallback mirror is locked to the same JSON by
@@ -303,6 +329,9 @@ class MatchSessionController extends ChangeNotifier {
     _manualReconnectInProgress = false;
     _activeMatchReactionEventId = null;
     _matchEndHandled = false;
+    _awaitingSelfInterruptVerdict = false;
+    _interruptedSpokenText = '';
+    _selfInterruptStreak = 0;
     _publish(_state.copyWith(
       presence: MatchSessionPresence.left,
       connected: false,
@@ -661,6 +690,9 @@ class MatchSessionController extends ChangeNotifier {
   }
 
   MatchSessionState beginSpeaking(String traceId) {
+    // 新回复开播：上一轮抢断的自打断判定窗口随之关闭。
+    _awaitingSelfInterruptVerdict = false;
+    _interruptedSpokenText = '';
     _publish(_state.copyWith(
       phase: MatchSessionPhase.speaking,
       activeTraceId: traceId,
@@ -747,6 +779,7 @@ class MatchSessionController extends ChangeNotifier {
       motion: performance?.$2,
       clearNotice: true,
     ));
+    if (_awaitingSelfInterruptVerdict) _resolveSelfInterruptVerdict(text);
     return _state;
   }
 
@@ -760,6 +793,8 @@ class MatchSessionController extends ChangeNotifier {
 
   MatchSessionState transcriptFallbackUnavailable() {
     _publish(_state.copyWith(notice: '实时转写中断，句尾会自动重试。'));
+    // 转写彻底失败等价「转写为空」：仍是抢断后的有效定谳信号。
+    if (_awaitingSelfInterruptVerdict) _resolveSelfInterruptVerdict('');
     return _state;
   }
 
@@ -830,12 +865,21 @@ class MatchSessionController extends ChangeNotifier {
   }
 
   MatchSessionState vadSpeaking({required bool continuousEnabled}) {
+    // 半双工降级（duplex_playback_capture=off）：播放期 VAD 事件整体
+    // 忽略——user_activity speaking 会在服务端取消排程话轮，等价打断，
+    // 所以连活动上报一并跳过。手动打断路径不受影响。
+    if (!_duplexPlaybackCapture &&
+        (_state.phase == MatchSessionPhase.speaking ||
+            _state.awaitingFirstMeetingGreeting)) {
+      return _state;
+    }
     _commands.add(const SendSocketCommand(
         {'type': 'user_activity', 'state': 'speaking'}));
     if (_state.phase == MatchSessionPhase.speaking ||
         _state.awaitingFirstMeetingGreeting) {
       _commands.add(const SendSocketCommand({'type': 'interrupt'}));
       _commands.add(const PauseAudioCommand());
+      _armSelfInterruptCheck();
       _finishFirstMeetingGreeting(continuousEnabled);
     }
     _commands.add(const CancelPresentationReturnCommand());
@@ -848,6 +892,46 @@ class MatchSessionController extends ChangeNotifier {
       clearTrace: true,
     ));
     return _state;
+  }
+
+  /// 抢断发出即挂起定谳窗口：刚播文本留作回声比对基准。
+  void _armSelfInterruptCheck() {
+    _awaitingSelfInterruptVerdict = true;
+    _interruptedSpokenText = _state.replyText.trim();
+  }
+
+  /// 自打断定谳（voice-duplex 1.4）：抢断后的话轮转写为空/极短且与刚播
+  /// 文本高度重叠，判为回声误打断——上报遥测、恢复被停的播放并累计连击；
+  /// 连续达到阈值自动降级半双工，可在设置里重新开启。
+  void _resolveSelfInterruptVerdict(String transcript) {
+    _awaitingSelfInterruptVerdict = false;
+    final normalized = transcript.trim();
+    final playedText = _interruptedSpokenText;
+    _interruptedSpokenText = '';
+    if (!looksLikeSelfInterrupt(
+      transcript: normalized,
+      playedText: playedText,
+      shortTranscriptChars: selfInterruptShortTranscriptChars,
+      minOverlap: selfInterruptMinOverlap,
+    )) {
+      _selfInterruptStreak = 0;
+      return;
+    }
+    _selfInterruptStreak += 1;
+    _commands.add(SendSocketCommand({
+      'type': 'duplex_event',
+      'event': 'self_interrupt_suspected',
+      'transcript': normalized,
+      'streak': _selfInterruptStreak,
+    }));
+    _commands.add(const ResumeInterruptedPlaybackCommand());
+    if (_selfInterruptStreak < selfInterruptDegradeThreshold) return;
+    _duplexPlaybackCapture = false;
+    _selfInterruptStreak = 0;
+    _commands.add(const SendSocketCommand(
+        {'type': 'duplex_event', 'event': 'duplex_degraded'}));
+    _publish(_state.copyWith(
+        notice: '连续误打断，已暂时改回半双工；可在设置里重新打开抢话。'));
   }
 
   MatchSessionState vadSentenceStreamed() {
@@ -1056,6 +1140,9 @@ class MatchSessionController extends ChangeNotifier {
             ? _phasePerformance(MatchSessionPhase.speaking)
             : null;
         _commands.add(const CancelPresentationReturnCommand());
+        // 新回复开播：上一轮抢断的自打断判定窗口随之关闭。
+        _awaitingSelfInterruptVerdict = false;
+        _interruptedSpokenText = '';
         _publish(_state.copyWith(
           phase: MatchSessionPhase.speaking,
           activeTraceId: normalizedTraceId,
@@ -1206,6 +1293,12 @@ class SendSocketCommand extends MatchSessionCommand {
 
 class PauseAudioCommand extends MatchSessionCommand {
   const PauseAudioCommand();
+}
+
+/// 自打断兜底（voice-duplex 1.4）：被误停的那句由界面用暂存副本重新
+/// 入队播放，音频字节在界面层，控制器只发意图。
+class ResumeInterruptedPlaybackCommand extends MatchSessionCommand {
+  const ResumeInterruptedPlaybackCommand();
 }
 
 class PlayAudioCommand extends MatchSessionCommand {
@@ -1441,6 +1534,29 @@ Map<String, dynamic>? playbackResultReceipt(PendingAudio metadata,
     'state': 'skipped',
     if (normalizedReason.isNotEmpty) 'reason': normalizedReason,
   };
+}
+
+/// 自打断疑似判定（纯函数）：抢断后的话轮转写为空，或长度不足
+/// shortTranscriptChars 且过半字符落在刚播文本里，即视为回声。
+bool looksLikeSelfInterrupt({
+  required String transcript,
+  required String playedText,
+  int shortTranscriptChars = 4,
+  double minOverlap = 0.5,
+}) {
+  final normalized = transcript.trim();
+  if (normalized.isEmpty) return true;
+  if (normalized.length >= shortTranscriptChars) return false;
+  return textOverlapRatio(normalized, playedText) >= minOverlap;
+}
+
+/// 字符重叠率：转写中有多少字符出现在刚播文本里（按字符集合去重）。
+double textOverlapRatio(String transcript, String playedText) {
+  final characters = transcript.trim().runes.toSet();
+  if (characters.isEmpty) return 0;
+  final played = playedText.trim().runes.toSet();
+  final hits = characters.where(played.contains).length;
+  return hits / characters.length;
 }
 
 bool isRetractedMatchReaction(String? eventId, Set<String> retractedEventIds) {

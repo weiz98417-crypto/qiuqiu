@@ -10,6 +10,7 @@ class PreferencesService {
   static const _keyFavoriteTeam = 'favorite_team';
   static const _keyTalkativeness = 'talkativeness';
   static const _keyContinuousConversation = 'continuous_conversation';
+  static const _keyDuplexPlaybackCapture = 'duplex_playback_capture';
   static const _keySubtitles = 'subtitles';
   static const _keySound = 'sound';
   static const _keyFirstMeetingCompleted = 'first_meeting_completed';
@@ -86,6 +87,7 @@ class PreferencesService {
       favoriteTeam: prefs.getString(_keyFavoriteTeam) ?? '',
       talkativeness: prefs.getString(_keyTalkativeness) ?? 'normal',
       continuousConversation: prefs.getBool(_keyContinuousConversation) ?? true,
+      duplexPlaybackCapture: prefs.getBool(_keyDuplexPlaybackCapture) ?? true,
       subtitlesEnabled: prefs.getBool(_keySubtitles) ?? true,
       soundEnabled: prefs.getBool(_keySound) ?? true,
     ).ensureOutputAvailable();
@@ -104,6 +106,10 @@ class PreferencesService {
     await prefs.setBool(
       _keyContinuousConversation,
       profile.continuousConversation,
+    );
+    await prefs.setBool(
+      _keyDuplexPlaybackCapture,
+      profile.duplexPlaybackCapture,
     );
     await prefs.setBool(_keySubtitles, profile.subtitlesEnabled);
     await prefs.setBool(_keySound, profile.soundEnabled);
@@ -135,6 +141,10 @@ class UserProfile {
   final String favoriteTeam;
   final String talkativeness;
   final bool continuousConversation;
+
+  /// duplex_playback_capture（voice-duplex 1.1）：球球说话时允许抢话
+  /// 打断。关闭即半双工——播放期不自动打断，收音照常。
+  final bool duplexPlaybackCapture;
   final bool subtitlesEnabled;
   final bool soundEnabled;
 
@@ -143,6 +153,7 @@ class UserProfile {
     required this.favoriteTeam,
     required this.talkativeness,
     this.continuousConversation = true,
+    this.duplexPlaybackCapture = true,
     this.subtitlesEnabled = true,
     this.soundEnabled = true,
   });
@@ -173,6 +184,7 @@ class UserProfile {
     String? favoriteTeam,
     String? talkativeness,
     bool? continuousConversation,
+    bool? duplexPlaybackCapture,
     bool? subtitlesEnabled,
     bool? soundEnabled,
   }) {
@@ -182,6 +194,8 @@ class UserProfile {
       talkativeness: talkativeness ?? this.talkativeness,
       continuousConversation:
           continuousConversation ?? this.continuousConversation,
+      duplexPlaybackCapture:
+          duplexPlaybackCapture ?? this.duplexPlaybackCapture,
       subtitlesEnabled: subtitlesEnabled ?? this.subtitlesEnabled,
       soundEnabled: soundEnabled ?? this.soundEnabled,
     );

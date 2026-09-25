@@ -476,4 +476,160 @@ void main() {
     controller.selectAudioInput('mic-2');
     expect(controller.state.selectedAudioInputId, 'mic-2');
   });
+
+  group('voice-duplex 播放期抢断', () {
+    /// 一轮「播放→过门抢断→转写定谳」的最小闭环，返回定谳产生的命令。
+    List<MatchSessionCommand> replayGatedCycle(
+      MatchSessionController controller, {
+      String transcript = '精彩',
+    }) {
+      controller.setReply('这球太精彩了');
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      controller.takeCommands();
+      controller.transcriptFinal(transcript);
+      return controller.takeCommands();
+    }
+
+    test('抢断正例：过门事件下发 interrupt 并停播，长转写定谳为真', () {
+      final controller = MatchSessionController();
+      controller.setReply('这球太精彩了');
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+
+      controller.vadSpeaking(continuousEnabled: true);
+      final commands = controller.takeCommands();
+      expect(
+        commands
+            .whereType<SendSocketCommand>()
+            .map((command) => command.message['type']),
+        containsAll(['user_activity', 'interrupt']),
+      );
+      expect(commands.whereType<PauseAudioCommand>(), isNotEmpty);
+      expect(commands.whereType<ResumeInterruptedPlaybackCommand>(), isEmpty);
+
+      // 抢断后的真话轮：长转写直接定谳为真，无遥测也不恢复播放。
+      controller.transcriptFinal('你觉得这球判罚有问题吗');
+      expect(controller.takeCommands(), isEmpty);
+    });
+
+    test('自打断：极短且高度重叠的转写判回声，遥测并恢复播放', () {
+      final controller = MatchSessionController();
+      final commands = replayGatedCycle(controller);
+
+      final telemetry = commands.whereType<SendSocketCommand>().singleWhere(
+            (command) => command.message['type'] == 'duplex_event',
+          );
+      expect(telemetry.message['event'], 'self_interrupt_suspected');
+      expect(telemetry.message['streak'], 1);
+      expect(
+        commands.whereType<ResumeInterruptedPlaybackCommand>(),
+        isNotEmpty,
+      );
+      expect(controller.duplexPlaybackCapture, isTrue);
+    });
+
+    test('抢断后转写彻底失败等价「转写为空」，同样判回声', () {
+      final controller = MatchSessionController();
+      controller.setReply('这球太精彩了');
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      controller.takeCommands();
+
+      controller.transcriptFallbackUnavailable();
+      final commands = controller.takeCommands();
+      expect(
+        commands.whereType<ResumeInterruptedPlaybackCommand>(),
+        isNotEmpty,
+      );
+    });
+
+    test('连续误打断达到阈值自动降级半双工，可再手动开启', () {
+      final controller = MatchSessionController();
+      replayGatedCycle(controller);
+      replayGatedCycle(controller);
+      expect(controller.duplexPlaybackCapture, isTrue);
+
+      replayGatedCycle(controller);
+      expect(controller.duplexPlaybackCapture, isFalse);
+      expect(controller.state.notice, isNotEmpty);
+
+      // 降级后播放期 VAD 事件整体忽略：连 user_activity 都不发。
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.takeCommands(), isEmpty);
+      expect(controller.state.phase, MatchSessionPhase.speaking);
+
+      // 手动重新开启后恢复抢断，连击清零。
+      controller.setDuplexPlaybackCapture(true);
+      final resumed = replayGatedCycle(controller);
+      expect(
+        resumed.whereType<ResumeInterruptedPlaybackCommand>(),
+        isNotEmpty,
+      );
+    });
+
+    test('正常话轮重置误打断连击', () {
+      final controller = MatchSessionController();
+      replayGatedCycle(controller);
+      replayGatedCycle(controller);
+      // 第三次抢断后给了长转写：定谳为真并清零连击。
+      controller.setReply('这球太精彩了');
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      controller.takeCommands();
+      controller.transcriptFinal('我觉得这球应该算进球');
+      expect(controller.takeCommands(), isEmpty);
+
+      final commands = replayGatedCycle(controller);
+      final telemetry = commands.whereType<SendSocketCommand>().singleWhere(
+            (command) => command.message['type'] == 'duplex_event',
+          );
+      expect(telemetry.message['streak'], 1);
+      expect(controller.duplexPlaybackCapture, isTrue);
+    });
+
+    test('duplex_playback_capture=off：播放期不自动打断，空闲期不受影响',
+        () {
+      final controller = MatchSessionController();
+      controller.setDuplexPlaybackCapture(false);
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.takeCommands(), isEmpty);
+      expect(controller.state.phase, MatchSessionPhase.speaking);
+
+      // 空闲期说话不受开关影响：先回到空闲态再走 VAD。
+      controller.vadIdle();
+      controller.beginListening();
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.state.phase, MatchSessionPhase.userSpeaking);
+      expect(
+        controller.takeCommands(),
+        contains(isA<SendSocketCommand>()),
+      );
+    });
+  });
+
+  test('自打断判定纯函数边界', () {
+    expect(looksLikeSelfInterrupt(transcript: '', playedText: ''), isTrue);
+    expect(
+      looksLikeSelfInterrupt(transcript: '精彩', playedText: '这球太精彩了'),
+      isTrue,
+    );
+    expect(
+      looksLikeSelfInterrupt(transcript: '你好', playedText: '这球太精彩了'),
+      isFalse,
+    );
+    expect(
+      looksLikeSelfInterrupt(transcript: '这句话足够长了', playedText: ''),
+      isFalse,
+    );
+    expect(textOverlapRatio('精彩', '这球太精彩了'), closeTo(1.0, 1e-9));
+    expect(textOverlapRatio('今天天气不错', '完全无关'), closeTo(0.0, 1e-9));
+  });
 }

@@ -245,3 +245,43 @@ func receiveProtocolMessage(t *testing.T, messages <-chan map[string]interface{}
 		return nil
 	}
 }
+
+// voice-duplex 1.3：播放期收音本来就在传——转写会话没有「播放期」概念，
+// 只要会话在，chunk 持续接纳（TTS 播放与否服务端不可见也不关心）；抢断
+// 后客户端 asr_cancel 的残句会话直接作废，不补投用户话轮。
+func TestTranscriptionSessionsAcceptPlaybackPeriodChunksAndCancelWithoutTurn(t *testing.T) {
+	messages := make(chan map[string]interface{}, 4)
+	completions := make(chan transcriptionCompletion, 1)
+	sessions := newTranscriptionSessions(
+		context.Background(),
+		asr.NewMockClient("这球太顶了"),
+		asr.StreamOptions{PartialBytes: 4, MaxBytes: 64},
+		func(message map[string]interface{}) { messages <- message },
+		func(completion transcriptionCompletion) { completions <- completion },
+	)
+	defer sessions.Close()
+
+	if err := sessions.Start("utterance-live", "signal-live", "user-1", "", nil); err != nil {
+		t.Fatalf("Start: %v", err)
+	}
+	for sequence := 0; sequence < 3; sequence++ {
+		if err := sessions.Append("utterance-live", sequence, []byte{byte(sequence), 0, 1, 0}); err != nil {
+			t.Fatalf("Append %d: %v", sequence, err)
+		}
+		if message := receiveProtocolMessage(t, messages); message["type"] != "transcript_partial" {
+			t.Fatalf("chunk %d did not yield a partial: %#v", sequence, message)
+		}
+	}
+
+	if err := sessions.Cancel("utterance-live"); err != nil {
+		t.Fatalf("Cancel: %v", err)
+	}
+	if err := sessions.Append("utterance-live", 3, []byte{3, 0, 1, 0}); err == nil {
+		t.Fatal("canceled session still accepted chunks")
+	}
+	select {
+	case completion := <-completions:
+		t.Fatalf("canceled utterance produced a voice turn: %+v", completion)
+	case <-time.After(50 * time.Millisecond):
+	}
+}

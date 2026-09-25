@@ -195,6 +195,17 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 _PreferenceSwitch(
                   index: '04',
+                  title: '抢话打断',
+                  subtitle: '球球说话时你直接开口，她会停下来听你说',
+                  value: _draft.duplexPlaybackCapture,
+                  onChanged: (value) {
+                    setState(() {
+                      _draft = _draft.copyWith(duplexPlaybackCapture: value);
+                    });
+                  },
+                ),
+                _PreferenceSwitch(
+                  index: '05',
                   title: '字幕',
                   subtitle: '把球球说的话同步显示在画面里',
                   value: _draft.subtitlesEnabled,
@@ -205,7 +216,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
                 _PreferenceSwitch(
-                  index: '05',
+                  index: '06',
                   title: '声音',
                   subtitle: '关闭后仍保留字幕和文字对话',
                   value: _draft.soundEnabled,
@@ -216,7 +227,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                   },
                 ),
                 const SizedBox(height: AppSpacing.lg),
-                const _SectionLabel(index: '06', label: '支持球队'),
+                const _SectionLabel(index: '07', label: '支持球队'),
                 const SizedBox(height: AppSpacing.sm),
                 DropdownMenu<String>(
                   width: double.infinity,
@@ -242,7 +253,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 if (widget.onOpenPortrait != null) ...[
                   const SizedBox(height: AppSpacing.lg),
-                  const _SectionLabel(index: '07', label: '球球懂我'),
+                  const _SectionLabel(index: '08', label: '球球懂我'),
                   const SizedBox(height: AppSpacing.xs),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -254,7 +265,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
                 if (widget.sessions != null) ...[
                   const SizedBox(height: AppSpacing.lg),
-                  const _SectionLabel(index: '08', label: '账号与同步'),
+                  const _SectionLabel(index: '09', label: '账号与同步'),
                   const SizedBox(height: AppSpacing.xs),
                   ValueListenableBuilder<String?>(
                     valueListenable: _loginIdentifier,

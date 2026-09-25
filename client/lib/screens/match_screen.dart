@@ -88,6 +88,10 @@ class _MatchScreenState extends State<MatchScreen> {
   String _deviceId = '';
   SocketStatus _lastSocketStatus = SocketStatus.connecting;
 
+  /// 最近一次下发的播放音频：自打断兜底（voice-duplex 1.4）恢复播放时
+  /// 重新入队。播放器 pause 即销毁句柄，无法原地续播，只能整句重放。
+  (Uint8List, PendingAudio)? _lastPlayback;
+
   bool get _continuousEnabled => _profile.continuousConversation;
   bool get _insideMatch =>
       _sessionController.state.presence == MatchSessionPresence.active;
@@ -208,6 +212,13 @@ class _MatchScreenState extends State<MatchScreen> {
     }
   }
 
+  /// duplex_playback_capture 同步（voice-duplex）：设置页开关落到控制器
+  /// 与 VAD 两侧；自动降级后在此重新打开即可恢复抢话。
+  void _applyDuplexPlaybackCapture(UserProfile profile) {
+    _sessionController.setDuplexPlaybackCapture(profile.duplexPlaybackCapture);
+    _vad.setPlaybackCaptureEnabled(profile.duplexPlaybackCapture);
+  }
+
   Future<void> _initialize() async {
     final profile = await _preferences.load();
     final deviceId = await _preferences.loadOrCreateAnonymousUserId();
@@ -215,6 +226,7 @@ class _MatchScreenState extends State<MatchScreen> {
     final firstMeetingCompleted = await _preferences.hasCompletedFirstMeeting();
     await _audio.setMuted(!profile.soundEnabled);
     if (!mounted) return;
+    _applyDuplexPlaybackCapture(profile);
     setState(() {
       _profile = profile;
     });
@@ -675,6 +687,12 @@ class _MatchScreenState extends State<MatchScreen> {
     if (state.status == AudioPlaybackStatus.failed) {
       debugPrint('Audio playback failed: ${state.error}');
     }
+    // 播放起止回报给 VAD：抢断门以播放开始为 squash 窗锚点（voice-duplex）。
+    if (state.status == AudioPlaybackStatus.started) {
+      _vad.notifyPlaybackStarted();
+    } else {
+      _vad.notifyPlaybackEnded();
+    }
     // Lip sync follows the platform audio playback lifecycle.
     final live2d = _live2dKey.currentState;
     if (live2d != null) {
@@ -976,6 +994,7 @@ class _MatchScreenState extends State<MatchScreen> {
     final continuousChanged =
         saved.continuousConversation != _profile.continuousConversation;
     setState(() => _profile = saved);
+    _applyDuplexPlaybackCapture(saved);
     await _audio.setMuted(!saved.soundEnabled);
     if (_insideMatch && continuousChanged) {
       if (saved.continuousConversation) {
@@ -1028,6 +1047,15 @@ class _MatchScreenState extends State<MatchScreen> {
     _sessionController.setMotion(motion);
   }
 
+  /// 自打断兜底（voice-duplex 1.4）：被判回声误停的那句重新走
+  /// queue→consume→play 下发链路，字幕与嘴型随播放态自然恢复。
+  void _resumeInterruptedPlayback() {
+    final playback = _lastPlayback;
+    if (playback == null) return;
+    _sessionController.queueAudioMetadata(playback.$2);
+    _handleAudioBytes(playback.$1);
+  }
+
   void _runSessionCommands() {
     while (true) {
       final commands = _sessionController.takeCommands();
@@ -1045,6 +1073,7 @@ class _MatchScreenState extends State<MatchScreen> {
           case PauseAudioCommand():
             unawaited(_audio.pause());
           case PlayAudioCommand(:final audio, :final metadata):
+            _lastPlayback = (audio, metadata);
             _live2dKey.currentState?.queueLipSyncAudio(
               audio,
               mime: metadata.mime,
@@ -1055,6 +1084,8 @@ class _MatchScreenState extends State<MatchScreen> {
               traceId: metadata.traceId,
               deliveryKey: metadata.deliveryKey,
             ));
+          case ResumeInterruptedPlaybackCommand():
+            _resumeInterruptedPlayback();
           case StartVadCommand():
             unawaited(_vad.startListening(VADMode.freeTalk));
           case StartStreamingCaptureCommand():
