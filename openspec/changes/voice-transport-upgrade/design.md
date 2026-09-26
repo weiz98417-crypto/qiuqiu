@@ -38,3 +38,20 @@ voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d
 
 - 真机 p90：抢话响应（speech_received → audio_delivered）与端到端（采集→播放起）按上述日志行采集，数据落回本文档后开决策门（p90 ≤ 800ms 且弱网可用 → WS 增强；超标 → WebRTC 评估）。
 - 弱网模拟与 90 分钟压测留尾同批执行。
+
+## 浏览器预采（2026-09-27，headless Chrome 假麦克风 + 16k pcm 帧注入，n=15/30）
+
+环境：桌面 Chromium（IAB）、服务端与浏览器同机。两口径各采一轮（no-key mock 链 / real-key 真 MIMO ASR+TTS），latency event 日志分段解析：
+
+| 段 | no-key (n=30) | real-key (n=15) | 解读 |
+|---|---|---|---|
+| speech_received 锚点 | 0ms | 0ms | 锚点即零 |
+| asr_finish（起音锚→finish 到达） | p50 4473 / p90 4785 | p50 4374 / p90 4630 | **被浏览器定时器钳制支配**：16×50ms 帧实际跑 ~3s + 1.4s 静默判句，非设备代表值 |
+| asr_final − asr_finish | —（无 key 无转写） | p50 ≈ 297ms | 真 MIMO ASR 往返，本机唯一干净的服务端分段 |
+| turn_decided | 未触发（无转写无回合） | n=4/15 | 合成音调转写出乱码/空文本，多数回合走 text_fallback 不出音频 |
+| turn_decided→audio_delivered | — | n=1 ≈ 0ms | 样本太薄；no-key 文本段此前实测 0–14ms |
+| speech_received→turn_decided | — | p50/p90 ≈ 5957–6061ms（n=4） | 被上游节流淹没，无法归因服务端 |
+
+**结论：800ms 抢话门无法在浏览器假麦克风环境评估**——三重污染：①Chromium 后台定时器钳制把起音→上行膨胀约 5×；②合成音调无语音内容，MIMO ASR 转写多为空/乱码，回合链大量走 fallback；③真 TTS 首包段样本不足。本环境可守卫的只有「服务端管线内部段」（turn 管道 0–14ms 量级，远低于预算）。
+
+**决策门执行**：p90 ≤ 800ms 的正式对照留待真机会话（用户真人对麦克风抢话，真 ASR/TTS 链），采集 harness 与解析脚本已就绪（本节表格即其输出格式）；届时数据落回本节后开门——达标走 WS 增强，超标评估 WebRTC。弱网模拟与压测留尾不变。
