@@ -18,6 +18,7 @@ import '../services/match_view_data.dart';
 import '../services/match_overview_service.dart';
 import '../services/portrait_service.dart';
 import '../services/streaming_transcription.dart';
+import '../services/turn_detector.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
@@ -59,6 +60,9 @@ class _MatchScreenState extends State<MatchScreen> {
   final MatchOverviewService _overviewService = MatchOverviewService();
   late final MatchSessionController _sessionController;
   final VADService _vad = VADService();
+  // 远程轮次模型插槽（voice-turn-detection 决策 c）：提前问经既有 WS
+  // turn_query 上行、turn_result 下行回填，挂入 VAD 判定链的 model 阶段。
+  late final RemoteTurnModel _remoteTurn;
   final StreamingTranscription _streamingTranscription =
       StreamingTranscription();
   final TextEditingController _textController = TextEditingController();
@@ -142,6 +146,10 @@ class _MatchScreenState extends State<MatchScreen> {
     _sessionController = MatchSessionController(
       initialMatch: widget.initialMatch ?? const MatchViewData(),
     );
+    // 远程轮次模型：发送器绑既有 WS，插槽挂入 VAD 判定链（null 结果/断线
+    // 时插槽自动下探静默档，无需独立开关）。
+    _remoteTurn = RemoteTurnModel(send: _socket.send);
+    _vad.attachTurnModel(_remoteTurn.call);
     _sessionController.addListener(_onSessionStateChanged);
     // 表演映射单一源（ADR-0007）：相位行从 presentation-map.json 解析。
     unawaited(_sessionController.ensurePresentationMapLoaded());
@@ -349,6 +357,15 @@ class _MatchScreenState extends State<MatchScreen> {
       case 'transcript_final':
       case 'transcript_error':
         _handleTranscriptMessage(message);
+        break;
+      case 'turn_result':
+        // 轮次检测结论回填（voice-turn-detection 决策 c）：isComplete 可为
+        // null（服务端未配置 sidecar/转发失败），插槽按未决下探静默档。
+        _remoteTurn.acceptResult(
+          utteranceId: message['utteranceId'] as String? ?? '',
+          isComplete:
+              message['isComplete'] is bool ? message['isComplete'] as bool : null,
+        );
         break;
       case 'match_snapshot':
         final snapshot = _map(message['data']);
@@ -558,12 +575,17 @@ class _MatchScreenState extends State<MatchScreen> {
   void _startStreamingCapture() {
     if (_userId.trim().isEmpty) return;
     final signalId = _nextSignalId();
-    _streamingTranscription.startCapture(
-      utteranceId: 'utterance_$signalId',
+    final utteranceId = 'utterance_$signalId';
+    if (_streamingTranscription.startCapture(
+      utteranceId: utteranceId,
       signalId: signalId,
       userId: _userId,
       send: _socket.send,
-    );
+    )) {
+      // 模型插槽绑定本话轮（voice-turn-detection 决策 c）：提前问与
+      // turn_result 回填都挂这个 utteranceId，绑定即清上一话轮的在途状态。
+      _remoteTurn.beginUtterance(utteranceId);
+    }
   }
 
   void _handleAudioChunk(Uint8List audio) {
@@ -580,6 +602,12 @@ class _MatchScreenState extends State<MatchScreen> {
             activeUtteranceId != update.utteranceId;
     switch (update.kind) {
       case TranscriptUpdateKind.partialTranscript:
+        // 模型插槽文本源（voice-turn-detection 决策 c）：提前问用最近一次
+        // partial 文本；文本更新会作废插槽里未消费的旧结论。
+        _remoteTurn.noteText(
+          utteranceId: update.utteranceId,
+          text: update.text,
+        );
         _sessionController.transcriptPartial(
           update.text,
           anotherUtteranceActive: anotherUtteranceIsBeingSpoken,
@@ -1126,6 +1154,7 @@ class _MatchScreenState extends State<MatchScreen> {
     _textController.dispose();
     _sessionController.removeListener(_onSessionStateChanged);
     _sessionController.dispose();
+    _remoteTurn.dispose();
     _vad.dispose();
     unawaited(_audio.dispose());
     unawaited(_socket.dispose());

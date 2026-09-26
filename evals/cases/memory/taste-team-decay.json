@@ -1,0 +1,86 @@
+{
+  "version": "2026-07",
+  "id": "memory.taste-team-decay",
+  "suite": "memory",
+  "tags": [
+    "memory",
+    "portrait"
+  ],
+  "summary": "画像按年龄衰减：窗口外未被续期的偏好不再织进措辞（portrait-maintenance 阶段二）。",
+  "config": {
+    "homeTeam": "西班牙",
+    "awayTeam": "德国",
+    "homePlayers": [
+      {
+        "number": "10",
+        "name": "佩德里",
+        "position": "CM"
+      },
+      {
+        "number": "8",
+        "name": "法比安",
+        "position": "CM"
+      }
+    ],
+    "awayPlayers": [
+      {
+        "number": "10",
+        "name": "穆西亚拉",
+        "position": "AM"
+      }
+    ]
+  },
+  "realizer": {
+    "reply": "知道你的口味，这就细说。"
+  },
+  "router": {
+    "routes": [
+      {
+        "matchText": "照我的口味说说这场比赛",
+        "intent": "personal_share",
+        "confidence": 0.9
+      }
+    ]
+  },
+  "portrait": {
+    "userId": "fan-2",
+    "decayDays": 90,
+    "entries": []
+  },
+  "turns": [
+    {
+      "id": "claim-barca",
+      "userId": "fan-2",
+      "text": "那会儿我最支持的球队是巴萨。",
+      "portraitClaim": {
+        "topic": "preferences",
+        "subTopic": "user_stated",
+        "content": "我最支持的球队是巴萨。",
+        "decision": {
+          "op": "ADD",
+          "reason": "新槽位主张"
+        }
+      }
+    },
+    {
+      "id": "decayed",
+      "userId": "fan-2",
+      "advanceDays": 95,
+      "text": "最近没怎么关注这些了。"
+    },
+    {
+      "id": "ask",
+      "userId": "fan-2",
+      "text": "照我的口味说说这场比赛",
+      "expect": {
+        "intent": "personal_share",
+        "memoryMustNotMention": [
+          "巴萨"
+        ]
+      }
+    }
+  ],
+  "final": {
+    "minimumTraces": 1
+  }
+}

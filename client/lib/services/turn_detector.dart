@@ -2,13 +2,16 @@
 //
 // 预注册晋级判据（proposal 修订 2026-09-25）：纯能量 VAD 的标注评估若
 // 误判率 >15% 或轮次延迟 p90 >1.2s，则晋级自部署轮次模型。本模块把判定
-// 点收拢成纯函数降级链——模型（预留插槽）→ 完形度规则（预留插槽）→ 静默
-// 档（实装）——逐帧输入 RMS，输出判定阶段与结论；不碰时钟、不碰采集，
-// 评估 harness（client/tool/turn_detection_eval.dart）直接喂标注帧序列。
+// 点收拢成纯函数降级链——模型（远程插槽，决策 c）→ 完形度规则（预留插槽）
+// → 静默档（实装）——逐帧输入 RMS，输出判定阶段与结论；不碰时钟、不碰
+// 采集，评估 harness（client/tool/turn_detection_eval.dart）直接喂标注帧
+// 序列。
 //
 // 帧假设与 duplex_gate 一致：16kHz 采集每个 PCM 块记作一帧（50ms）。
 // 本文件保持 flutter 无关（纯 Dart），供 `dart run` 评估脚本复用；
 // 与 vad_service 的能量阈值同值，由 flutter 测试锁等值防漂移。
+
+import 'dart:async';
 
 /// 空闲期起判阈值（RMS）：与 VoiceActivityGate.defaultStartThreshold 同值。
 const double turnStartRmsThreshold = 0.015;
@@ -18,6 +21,12 @@ const double turnContinueRmsThreshold = 0.006;
 
 /// 单帧时长：16kHz 采集的 50ms 帧节奏。
 const int turnFrameMs = 50;
+
+/// model 插槽提前问门槛（voice-turn-detection 决策 c）：静默累计超过该值
+/// 即开始先行咨询远程轮次模型（结果 true 提前判完，赶在静默阈值前）。
+/// 值取 600ms——低于生效阈值下限（调参档 800ms），给 500ms 的 sidecar 预算
+/// 留出往返余量。
+const int turnModelEarlyQueryMs = 600;
 
 /// 话轮判定阶段，降级链从上到下逐级回退。
 enum TurnDetectionStage {
@@ -138,11 +147,19 @@ class TurnObservation {
 ///   被吸收的犹豫小停顿逐次抬高生效阈值（+25%，封顶 adaptiveCap）；
 /// - 模型/规则插槽：在静默档即将判完的那一帧先行咨询，返回 true 即采纳、
 ///   false 即否决（本轮不判，静默重新计满再生效）、null 即下探静默档。
+///   接入远程模型时链可开启提前问（[modelEarlyQueryAfter]）：静默累计
+///   超过门槛即先行咨询模型，true 提前判完，其余语义不变。
 class TurnDetectionChain {
   TurnDetectionParams params;
 
-  /// 预留插槽：自部署轮次模型（voice-turn-detection 决策 c 落地时注入）。
-  final TurnStageDelegate? modelStage;
+  /// model 插槽：自部署轮次模型（voice-turn-detection 决策 c）。运行时
+  /// 可注入/摘除（VADService.attachTurnModel），不换链实例。
+  TurnStageDelegate? modelStage;
+
+  /// model 阶段提前问门槛：静默累计超过该值即开始先行咨询 model 插槽
+  /// （远程模型自带节流去重，逐帧透传 null 无谓开销）。零（默认）=关闭
+  /// 提前问，保持预注册插槽语义——只在静默档阈值帧随插槽链咨询。
+  Duration modelEarlyQueryAfter;
 
   /// 预留插槽：完形度规则（降级链中间档，未接入）。
   final TurnStageDelegate? ruleStage;
@@ -160,11 +177,20 @@ class TurnDetectionChain {
   TurnDetectionChain({
     this.params = const TurnDetectionParams(),
     this.modelStage,
+    this.modelEarlyQueryAfter = Duration.zero,
     this.ruleStage,
   });
 
   bool get speechConfirmed => _confirmed > 0;
   bool get decided => _decided;
+
+  /// 插槽否决是否仍在压制静默档（否决后尚未再累计满一段生效阈值）。
+  /// 静默兜底定时器触发时若否决仍在，应重新武装定时器而非收口
+  /// （voice-turn-detection 决策 c：模型认为没说完，能量线不得抢判）。
+  bool get vetoActive =>
+      _vetoedAtSilenceMs >= 0 &&
+      _silenceRunFrames * turnFrameMs - _vetoedAtSilenceMs <
+          effectiveSilenceThreshold.inMilliseconds;
 
   /// 静默档当前生效阈值（基础档 × 自适应展开）。
   Duration get effectiveSilenceThreshold {
@@ -236,14 +262,6 @@ class TurnDetectionChain {
   TurnObservation _observeSilenceRun() {
     final threshold = effectiveSilenceThreshold;
     final silenceMs = _silenceRunFrames * turnFrameMs;
-    if (silenceMs < threshold.inMilliseconds) {
-      return TurnObservation(
-        stage: TurnDetectionStage.silence,
-        decided: false,
-        speechConfirmed: true,
-        effectiveSilenceThreshold: threshold,
-      );
-    }
     if (_vetoedAtSilenceMs >= 0 &&
         silenceMs - _vetoedAtSilenceMs < threshold.inMilliseconds) {
       // 插槽否决后尚未再累计满一段生效阈值：保持不判。
@@ -258,49 +276,67 @@ class TurnDetectionChain {
       utteranceDuration: Duration(milliseconds: _utteranceFrames * turnFrameMs),
       trailingSilence: Duration(milliseconds: silenceMs),
     );
-    final consulted = _consultStages(context);
-    if (consulted == null) {
-      if (params.strategy == TurnSilenceStrategy.tuned &&
-          !params.fallbackEnabled) {
-        // 调参档关闭回退：模型/规则插槽未决（或未接入）时链停在未判，
-        // 交给上层超时，不再下探静默档兜底（fallbackEnabled 契约，预注册
-        // 降级链 API 的最后一环开关）。
+    // model 阶段提前问（voice-turn-detection 决策 c 接线）：静默累计超过
+    // modelEarlyQueryAfter 即先行咨询，true 提前判完、false 走既有否决
+    // 语义、null 透传。门槛为零（默认）时保持预注册语义——只在阈值帧咨询。
+    final earlyQueryMs = modelEarlyQueryAfter.inMilliseconds;
+    if (modelStage != null &&
+        (earlyQueryMs > 0
+            ? silenceMs >= earlyQueryMs
+            : silenceMs >= threshold.inMilliseconds)) {
+      final verdict = modelStage!(context);
+      if (verdict != null) {
+        if (verdict) {
+          return _fire(TurnDetectionStage.model, threshold);
+        }
+        _vetoedAtSilenceMs = silenceMs;
         return TurnObservation(
-          stage: TurnDetectionStage.silence,
+          stage: TurnDetectionStage.model,
           decided: false,
           speechConfirmed: true,
           effectiveSilenceThreshold: threshold,
         );
       }
-      // 模型/规则未决：静默档兜底判完（降级链最后一环）。
-      return _fire(TurnDetectionStage.silence, threshold);
     }
-    final (stage, verdict) = consulted;
-    if (verdict) {
-      return _fire(stage, threshold);
+    if (silenceMs < threshold.inMilliseconds) {
+      return TurnObservation(
+        stage: TurnDetectionStage.silence,
+        decided: false,
+        speechConfirmed: true,
+        effectiveSilenceThreshold: threshold,
+      );
     }
-    _vetoedAtSilenceMs = silenceMs;
-    return TurnObservation(
-      stage: stage,
-      decided: false,
-      speechConfirmed: true,
-      effectiveSilenceThreshold: threshold,
-    );
-  }
-
-  /// 从上到下咨询插槽：返回给出结论的阶段与其判定；全未决返回 null。
-  (TurnDetectionStage, bool)? _consultStages(TurnDecisionContext context) {
-    final model = modelStage;
-    if (model != null) {
-      final verdict = model(context);
-      if (verdict != null) return (TurnDetectionStage.model, verdict);
-    }
+    // 阈值帧：规则插槽（model 本帧已问过或未接入）→ 静默档兜底。
     final rule = ruleStage;
     if (rule != null) {
       final verdict = rule(context);
-      if (verdict != null) return (TurnDetectionStage.completenessRule, verdict);
+      if (verdict != null) {
+        if (verdict) {
+          return _fire(TurnDetectionStage.completenessRule, threshold);
+        }
+        _vetoedAtSilenceMs = silenceMs;
+        return TurnObservation(
+          stage: TurnDetectionStage.completenessRule,
+          decided: false,
+          speechConfirmed: true,
+          effectiveSilenceThreshold: threshold,
+        );
+      }
     }
-    return null;
+    if (params.strategy == TurnSilenceStrategy.tuned &&
+        !params.fallbackEnabled) {
+      // 调参档关闭回退：模型/规则插槽未决（或未接入）时链停在未判，
+      // 交给上层超时，不再下探静默档兜底（fallbackEnabled 契约，预注册
+      // 降级链 API 的最后一环开关）。
+      return TurnObservation(
+        stage: TurnDetectionStage.silence,
+        decided: false,
+        speechConfirmed: true,
+        effectiveSilenceThreshold: threshold,
+      );
+    }
+    // 模型/规则未决：静默档兜底判完（降级链最后一环）。
+    return _fire(TurnDetectionStage.silence, threshold);
   }
 
   TurnObservation _fire(
@@ -342,4 +378,157 @@ List<TurnObservation> evaluateTurnDetection(
     ruleStage: ruleStage,
   );
   return [for (final rms in rmsFrames) chain.observe(rms)];
+}
+
+/// turn_query 上行发送器：走既有 WS（WebSocketService.send），
+/// 返回 false 表示连接不可用（消息未入队）。
+typedef TurnQuerySender = bool Function(Map<String, dynamic> message);
+
+/// 远程轮次模型插槽（voice-turn-detection 决策 c 的客户端接线端）：
+/// 把链上 model 阶段的咨询转成 turn_query 上行，服务端转发 sidecar 后以
+/// turn_result 回填（acceptResult），下一次链咨询取走结论。
+///
+/// 咨询节奏（grilling 已定契约）：
+/// - 提前问：链以 modelEarlyQueryAfter=600ms 开启提前咨询；本类内部再
+///   守 [queryStartAfter] 门槛、[resendThrottle] 节流与单飞（同一话轮
+///   同时至多一条在途查询）；
+/// - 文本源：最近一次 transcript partial（noteText 注入）；无文本不判，
+///   null 下探静默档；
+/// - 结论消费：结论绑定其判定时的文本，文本不变期间持续有效——链每次
+///   咨询都取到同一结论（false 反复否决不重发请求，true 判完后话轮收口）；
+///   partial 文本更新即作废（重询带新文本）；utteranceId 关联，错话轮的
+///   迟到结果丢弃；
+/// - 挂起保险：同文本连续否决达到 [maxFalseVerdicts] 后本话轮放弃远程
+///   判定（null 下探静默档）——防止模型误判把话轮无限挂起；
+/// - 降级：isComplete=null（服务端未配置/失败）与发送失败在话轮内粘滞
+///   （null 不重询，链稳定下探静默档）；在途超时只按未决处理（可再询）。
+/// 全部降级路径都不产生客户端特殊分支——插槽 null 语义即降级链本身。
+class RemoteTurnModel {
+  RemoteTurnModel({
+    required this.send,
+    this.queryStartAfter = const Duration(milliseconds: turnModelEarlyQueryMs),
+    this.resendThrottle = const Duration(milliseconds: 300),
+    this.queryTimeout = const Duration(milliseconds: 450),
+    this.maxFalseVerdicts = 2,
+  });
+
+  final TurnQuerySender send;
+
+  /// 起查门槛：静默累计低于该值不询（与链的提前问门槛同值，双保险）。
+  final Duration queryStartAfter;
+
+  /// 节流：两次查询的最小间隔。
+  final Duration resendThrottle;
+
+  /// 在途超时：超过即按未决（可再询），与链阈值帧前的时间预算匹配。
+  final Duration queryTimeout;
+
+  /// 同文本连续否决上限：达到后本话轮放弃远程判定（防误判无限挂起）。
+  /// 2 次否决在默认 1400ms 档覆盖约 3.4s 的思考停顿（600ms 起查 + 两段
+  /// 生效阈值），足以覆盖评估 A 类的 600-1200ms 停顿分布。
+  final int maxFalseVerdicts;
+
+  final Stopwatch _clock = Stopwatch()..start();
+  Timer? _timeoutTimer;
+  String? _utteranceId;
+  String _text = '';
+  bool? _verdict;
+  int _falseRepeats = 0;
+  bool _queryInFlight = false;
+  bool _unavailable = false;
+  int? _lastQueryAtMs;
+
+  /// 链上 model 插槽的咨询入口（TurnStageDelegate 形状）。
+  bool? call(TurnDecisionContext context) {
+    if (_utteranceId == null || _unavailable) return null;
+    final verdict = _verdict;
+    if (verdict != null) {
+      // 结论绑定其判定时的文本：文本不变期间重复咨询取同一结论（否决
+      // 持续有效，不重发请求），文本更新由 noteText 作废。
+      if (!verdict) {
+        _falseRepeats++;
+        if (_falseRepeats > maxFalseVerdicts) {
+          // 连续否决超限：本话轮放弃远程判定，交回静默档。
+          _verdict = null;
+          _unavailable = true;
+          return null;
+        }
+      }
+      return verdict;
+    }
+    if (_queryInFlight) return null;
+    if (context.trailingSilence < queryStartAfter) return null;
+    final nowMs = _clock.elapsedMilliseconds;
+    final lastQueryAtMs = _lastQueryAtMs;
+    if (lastQueryAtMs != null &&
+        nowMs - lastQueryAtMs < resendThrottle.inMilliseconds) {
+      return null;
+    }
+    final text = _text.trim();
+    if (text.isEmpty) return null;
+    final sent = send({
+      'type': 'turn_query',
+      'utteranceId': _utteranceId,
+      'text': text,
+    });
+    _lastQueryAtMs = nowMs;
+    if (!sent) {
+      // WS 不可达：本话轮放弃远程判定（音频同样没在流），null 粘滞。
+      _unavailable = true;
+      return null;
+    }
+    _queryInFlight = true;
+    _timeoutTimer?.cancel();
+    _timeoutTimer = Timer(queryTimeout, _resolveQueryTimeout);
+    return null;
+  }
+
+  /// turn_result 下行回填：utteranceId 不匹配的迟到结果丢弃；
+  /// isComplete=null 视为模型路不可用（话轮内粘滞）。
+  void acceptResult({required String utteranceId, required bool? isComplete}) {
+    if (utteranceId.isEmpty || utteranceId != _utteranceId) return;
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+    _queryInFlight = false;
+    if (isComplete == null) {
+      _unavailable = true;
+      return;
+    }
+    _verdict = isComplete;
+  }
+
+  /// 最近一次 transcript partial 注入；文本变化即作废未消费的结论，
+  /// 并清零连续否决计数（新文本重新获得完整的否决额度）。
+  void noteText({required String utteranceId, required String text}) {
+    if (utteranceId.isEmpty || utteranceId != _utteranceId) return;
+    if (text != _text) {
+      _verdict = null;
+      _falseRepeats = 0;
+      _text = text;
+    }
+  }
+
+  /// 绑定新话轮（asr_start 时刻）：全部在途状态随之清零。
+  void beginUtterance(String utteranceId) {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+    _utteranceId = utteranceId;
+    _text = '';
+    _verdict = null;
+    _falseRepeats = 0;
+    _queryInFlight = false;
+    _unavailable = false;
+    _lastQueryAtMs = null;
+  }
+
+  void _resolveQueryTimeout() {
+    // 超时未回：只按未决处理（可再询），不粘滞——可能是瞬时拥塞，
+    // 服务端恢复后下一个节流窗自动续上。
+    _queryInFlight = false;
+  }
+
+  void dispose() {
+    _timeoutTimer?.cancel();
+    _timeoutTimer = null;
+  }
 }

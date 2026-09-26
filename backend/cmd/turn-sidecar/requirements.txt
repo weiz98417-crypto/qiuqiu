@@ -1,0 +1,10 @@
+# 轮次检测 sidecar 依赖（voice-turn-detection 决策 c）。
+# onnxruntime 用 CPU 版即可（q8 模型 BERT 级，CPU 实时可跑）；
+# transformers 只为 AutoTokenizer/apply_chat_template，不装 torch；
+# jinja2 是 apply_chat_template 的硬依赖（缺它运行期 ImportError）。
+fastapi>=0.110
+uvicorn[standard]>=0.29
+onnxruntime>=1.17
+transformers>=4.40
+jinja2>=3.1
+pydantic>=2.6

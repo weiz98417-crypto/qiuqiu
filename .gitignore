@@ -55,3 +55,6 @@ graphify-out/
 /qiuqiu-backend-*
 client/assets/live2d/*.zip
 artifacts/
+
+# 轮次模型 sidecar 本地环境（voice-turn-detection：uv venv，模型本体在仓库外）
+scripts/turn-model/.venv/

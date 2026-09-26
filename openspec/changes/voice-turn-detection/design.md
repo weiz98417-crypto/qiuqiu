@@ -73,6 +73,63 @@
 
 **本轮实施边界**（按 change 边界「不引入 ONNX/模型依赖」）：只落决策记录、升级触发条件与降级链骨架（模型/规则为预留插槽），模型接入另起实施轮。
 
+## 实施（2026-09-27：决策 c 模型本体接线——LiveKit EOU 多语版 sidecar + 客户端 model 插槽远程化）
+
+### 选型与部署形态
+
+**LiveKit smart-turn 线，`livekit/turn-detector` revision `v0.4.1-intl`（multilingual，zh 在官方支持表）**。ONNX q8 量化（396MB，Qwen2.5-0.5B 级），CPU 实时可跑，与 bge-m3 同自托管纪律。推理逻辑逐行对齐 LiveKit agents `livekit-plugins-turn-detector/base.py`（@1.5.0 与 main 同形）：文本归一（NFKC/小写/去标点）→ 合并相邻同角色 → `apply_chat_template` 去尾部 `<|im_end|>` → tokenizer 左截断编码（max_length=128）→ onnx 前向取末位概率。
+
+- 模型清单（10 文件）：`onnx/model_q8.onnx`（396,316,457B）+ tokenizer 全家桶（tokenizer.json 11.4MB / tokenizer_config / special_tokens_map / added_tokens / vocab / merges / config）+ `languages.json`（官方逐语言校准阈值）+ `ort_config.json`。
+- 下载：`scripts/turn-model/download.mjs`（纯 node，registry 无关）——hf-mirror.com 拉取（huggingface.co 不可达，已实测）、Range 断点续传、sha256 校验清单锁定自 HF tree API 的 LFS oid。实测全量 **35.2s**，全部校验通过。落盘仓库外 `E:\tools\turn-model\v0.4.1-intl\`（gitignored，env 可覆盖）。
+- sidecar：`backend/cmd/turn-sidecar/`（Python：FastAPI + onnxruntime + transformers(tokenizers)），`POST /turn {text, chatCtx?} → {probability, isComplete}`、`GET /healthz`；端口 8091，模型目录 env `TURN_MODEL_DIR`；推理串行锁（CPU 前向排队，延迟可预期）。compose 新服务 `turn-sidecar` profiles:["turn"]（与 sensevoice-aed 同款隔离纪律，模型 volume 只读挂载，backend 无 depends_on）。
+
+### 实测延迟（396MB q8，CPU，本机 2026-09-27）
+
+端到端 HTTP（含归一+模板+编码+前向）：**p50 24.6ms / p90 34.1ms / max 40ms**（n=20 混合样本）。远低于任务预估的 100-500ms——「提前问 600ms 起查」的 500ms 服务端预算（QIUQIU_TURN_SIDECAR_TIMEOUT_MS）内绰绰有余，结论可在静默阈值帧前赶回。
+
+### 判完阈值：预注册「0.5 起」被实测否决，改用官方逐语言校准值
+
+实测该模型家族的概率量程是 0~1 全幅（en 完整句 0.30-0.86，zh 完整句 0.07-0.47），**0.5 阈值会把一切话轮判「没说完」**（所有否决→话轮挂到上层超时）。`languages.json` 是官方内部评测的逐语言校准（zh：threshold 0.0066，TPR 0.993 / TNR 0.866），sidecar 默认取 `TURN_LANGUAGE`（默认 zh）的校准值，`TURN_COMPLETE_THRESHOLD` 显式覆盖。
+
+### 服务端契约（watchconnection 新 WS case，对齐 duplex_event 写法）
+
+上行 `turn_query {utteranceId, text}` → 服务端只做转发（独立协程 + 500ms 预算 + 熔断 3 次开 10s，在途上限 4）→ 下行 `turn_result {utteranceId, isComplete, probability}`。**降级链闭环的下行语义（grilling 已定）**：`QIUQIU_TURN_SIDECAR_URL` 留空（默认）时服务端对 turn_query 直接回 `turn_result{isComplete:null}`；sidecar 超时/熔断/坏响应同样回 null——客户端 model 插槽收到 null 即下探静默档，**客户端零特殊分支**。转写文本不入日志（与 duplex_event 同纪律）。实现：`backend/cmd/server/turn_relay.go` + `watchconnection.go` 16-case；配置 `backend/internal/config/config.go`（QIUQIU_TURN_SIDECAR_URL / QIUQIU_TURN_SIDECAR_TIMEOUT_MS，默认空/500）。
+
+### 客户端接线（model 插槽的远程版）
+
+- **提前问**（决策点前置到静默 600ms，而非只在阈值帧）：链新增 opt-in 字段 `modelEarlyQueryAfter`（零=保持预注册插槽语义，既有测试/harness 不受影响；VADService.attachTurnModel 注入远程模型时置 600ms），静默累计过门槛即逐帧咨询 model 阶段，true 提前判完（~650-900ms，对比固定档 1400ms）、false 走既有否决语义、null 透传。
+- **RemoteTurnModel**（turn_detector.dart，纯 Dart）：turn_query 上行经既有 WS；节流 300ms + 单飞 + 起查门槛双保险；文本源=最近一次 transcript partial（无文本不判）；**结论绑定其判定时的文本**——文本不变期间重复咨询取同一结论（否决持续有效、不重发请求），partial 更新即作废；utteranceId 关联，错话轮迟到结果丢弃；null 结论与发送失败话轮内粘滞（不重询，稳定下探静默档）；在途超时 450ms 只按未决（可再询）。
+- **两处配套语义修正**（接线中发现，皆有测试锁定）：
+  1. **静默兜底定时器让位否决**：vad_service 的静默定时器原与静默档同阈值同判——model 否决期内会被能量线抢判。现触发时先问 `chain.vetoActive`，否决压制中重新武装定时器（决策 c 的「模型说没说完就不能被能量线兜底抢判」）。
+  2. **同文本连续否决上限（2 次）**：RemoteTurnModel 防误判保险——模型对同文本持续 false 时话轮不能无限挂起，超限后本话轮放弃远程判定交回静默档（默认档覆盖约 3.4s 思考停顿，超出评估 A 类 600-1200ms 分布）。
+- 客户端不新增设置开关：开关即服务端 URL（留空=链自动退回纯静默档）。
+
+### 真模型冒烟（中文两态，校准阈值档）
+
+| 样本 | probability | isComplete |
+| --- | --- | --- |
+| 我觉得裁判这次吹得（前缀，没说完） | 0.0000 | false |
+| 我觉得裁判这次吹得没问题（说完） | 0.3555 | true |
+| 今晚这场的氛围真是（前缀，没说完） | 0.0001 | false |
+| 今晚这场的氛围真是没得说（说完） | 0.3601 | true |
+| 下半场刚开始对就是（前缀，没说完） | 0.0005 | false |
+| 下半场刚开始对就是那次反击（说完） | 0.1369 | true |
+| 主教练下半场的换人调整（前缀，没说完） | 0.1625 | **true（误判）** |
+| 主教练下半场的换人调整直接改变了比赛节奏（说完） | 0.1734 | true |
+
+对照实验（同管线）：同模型英文对（0.30-0.86 完整 vs 0.0004-0.047 前缀）与 en 版模型（v1.2.2-en）均教科书式两态分离——**管线实现正确，zh 合成观赛片段上模型质量中等**（部分前缀分数与完整句重叠），与官方 TNR 0.866 一致量级。预注册的「中文话轮自评」结论：**zh 可用但弱于 en**，A 类深截断（词组中断）可保护，犹豫式碎片（嗯怎么说呢）有误判；后续以 voice-duplex 1.4 同款真机 telemetry 复核，阈值经 env 调优，zh 不可用则按预注册回退 TEN Turn Detection 自托管。
+
+### 测试与验证（2026-09-27 实测）
+
+- Go：`cmd/server` turn_query 四路单测（未配置回 null / 正常转发 / sidecar 失败回 null / 坏消息丢弃，真实 WS + httptest fake sidecar，对齐 voice_latency_test 风格）+ config 默认值单测；`go test ./...` 30 包全绿。
+- Dart：链提前问四路（默认链不受影响 / true 提前判完 / false 压制与过期 / null 下探）+ 持续否决不判完 + RemoteTurnModel 九路（起查/单飞/无文本/结论有效期/错话轮/null 粘滞/发送失败/超时再询/文本作废/否决超限）；`flutter test` 198 例全绿；`dart analyze` 零新增（4 条既有 info 均在未触碰文件）。
+
+### 已知限制
+
+- 评估 harness（turn_detection_eval.dart）与标注用例未注入模型阶段重跑——模型判定依赖 WS/ASR partial 时序，纯帧序列 harness 表达不了（与 evals runner 表达不了 WS 时序同理沿先例）；模型接入的验收改由真机 telemetry 对比承担（抢断/误断率 vs 纯 VAD 基线）。
+- 提前问文本源是 ASR partial（非终稿），模型在部分转写上的分布与训练整句有差——冒烟已按 partial 形态（前缀）评测。
+- zh 模型质量中等（见上），误判代价不对称：false 否决（模型说没说完）最多损失否决额度后回落静默档；true 误判（提前判完）靠否决额度上限 + maxDuration 兜底，真机数据决定阈值与是否换 TEN 线。
+
 ## 实施（任务 1.3：判定处挂降级链，静默阈值参数化）
 
 ### 降级链形状

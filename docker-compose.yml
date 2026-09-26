@@ -30,6 +30,11 @@ services:
       # sidecar 不可达时旁路静默失败，backend 对其无 depends_on、无健康依赖。
       - AMBIENT_AED_URL=${AMBIENT_AED_URL:-}
       - AMBIENT_AED_TIMEOUT_MS=${AMBIENT_AED_TIMEOUT_MS:-500}
+      # 轮次检测 sidecar（openspec/changes/voice-turn-detection 决策 c）：默认
+      # 关闭；指向 http://turn-sidecar:8091 开启。URL 留空时 turn_query 一律回
+      # isComplete:null，客户端 model 插槽下探静默档（降级链闭环，无需开关）。
+      - QIUQIU_TURN_SIDECAR_URL=${QIUQIU_TURN_SIDECAR_URL:-}
+      - QIUQIU_TURN_SIDECAR_TIMEOUT_MS=${QIUQIU_TURN_SIDECAR_TIMEOUT_MS:-500}
       - MEMOBASE_URL=${MEMOBASE_URL:-http://memobase:8000}
       - MEMOBASE_TOKEN=${MEMOBASE_TOKEN:-secret}
       - MEMOBASE_EXTRACTION_TIMEOUT_MS=${MEMOBASE_EXTRACTION_TIMEOUT_MS:-10000}
@@ -143,6 +148,33 @@ services:
       # 占位形态：与 backend/cmd/ambient-fake 的 GET /healthz 对齐；真镜像的
       # 健康检查命令待部署轮落定（healthcheck 仅观测，backend 不依赖其结论）。
       test: ["CMD-SHELL", "wget -qO- http://127.0.0.1:8090/healthz >/dev/null 2>&1 || exit 1"]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # 轮次检测 sidecar（openspec/changes/voice-turn-detection 决策 c）：LiveKit
+  # EOU 多语版（v0.4.1-intl）的本地 ONNX 推理，POST /turn 收话轮文本、返回
+  # {probability, isComplete}；无状态、不落盘。模型文件不入镜像：先用
+  # scripts/turn-model/download.mjs 拉到宿主机（默认 E:\tools\turn-model\），
+  # 再 volume 挂到 TURN_MODEL_DIR。backend 对本服务无 depends_on；未配置
+  # QIUQIU_TURN_SIDECAR_URL 时客户端判定链自动下探静默档。
+  # profile 隔离与 sensevoice-aed 同款纪律：默认不启动，用
+  # `docker compose --profile turn up -d` 显式拉起。
+  turn-sidecar:
+    build:
+      context: ./backend/cmd/turn-sidecar
+    profiles: ["turn"]
+    environment:
+      - TURN_MODEL_DIR=/models/turn-detector
+      - TURN_SIDECAR_PORT=8091
+      - TURN_COMPLETE_THRESHOLD=${TURN_COMPLETE_THRESHOLD:-0.5}
+    volumes:
+      - ${TURN_MODEL_ROOT:-E:\tools\turn-model}/v0.4.1-intl:/models/turn-detector:ro
+    ports:
+      - "${TURN_SIDECAR_PORT:-8091}:8091"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8091/healthz')\""]
       interval: 30s
       timeout: 5s
       retries: 3

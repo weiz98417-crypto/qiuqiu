@@ -62,6 +62,10 @@ type watchDeps struct {
 	// ambient 是气氛旁路接线器（ambient-audio-observation）：nil 即旁路
 	// 停用；ASR 主路不感知 sidecar 存活，旁路失败静默计数。
 	ambient *ambientRelay
+	// turnSidecar 是轮次检测 sidecar 客户端（voice-turn-detection 决策 c）：
+	// URL 未配置时 Enabled=false，turn_query 一律回 isComplete:null（客户端
+	// model 插槽下探静默档，降级链闭环）。
+	turnSidecar *turnSidecarClient
 }
 
 // watchConnection 承载一条 /ws/match/ 连接跨四相的全部状态。字段与拆分前
@@ -96,6 +100,10 @@ type watchConnection struct {
 	// clientPlaybackReports 登记本连接收到的播放实报，推断路径据此降级。
 	clientPlaybackReports *clientPlaybackReportSet
 
+	// turnInFlight 是 turn_query 转发的在途信号量（voice-turn-detection
+	// 决策 c，容量 turnRelayMaxInFlight）：饱和即回 null，不反压读循环。
+	turnInFlight chan struct{}
+
 	userSpeaking   atomic.Bool
 	userTurnActive atomic.Bool
 	// Talkativeness tier (C2 drift fix): the client sends the 话痨程度
@@ -119,6 +127,7 @@ func newWatchConnection(deps watchDeps, conn *websocket.Conn, claims auth.Claims
 	connection.userTalkativeness.Store(relationship.TalkativenessNormal)
 	connection.clientPlaybackReports = newClientPlaybackReportSet()
 	connection.voiceLatencyAnchors = make(map[string]time.Time)
+	connection.turnInFlight = make(chan struct{}, turnRelayMaxInFlight)
 	return connection
 }
 
@@ -193,7 +202,7 @@ func handleWatchConnection(deps watchDeps) http.HandlerFunc {
 		defer connection.scheduleLookups.Cancel()
 		defer connection.drainPendingDeliveries()
 
-		// ── 相 3：message-pump——比赛事件外推、15-case 读循环、语音转写会话。──
+		// ── 相 3：message-pump——比赛事件外推、16-case 读循环、语音转写会话。──
 		connection.startMessagePumps()
 		defer connection.transcriptions.Close()
 
@@ -468,7 +477,7 @@ func backchannelTalkativeness(store interface{ Load() any }) string {
 	return tier
 }
 
-// startMessagePumps 装配语音转写会话并拉起两条协程：比赛事件外推与 15-case
+// startMessagePumps 装配语音转写会话并拉起两条协程：比赛事件外推与 16-case
 // 读循环。两者都随 connectionCtx 收敛，写出口共用同一条 wsWriter。
 func (c *watchConnection) startMessagePumps() {
 	c.transcriptions = newTranscriptionSessions(
@@ -779,9 +788,10 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 	})
 }
 
-// readMessages is the inbound 15-case read loop: identity binding, session
-// lifecycle, talkativeness, activity/interrupt, ASR streaming, playback and
-// display acknowledgements. It closes the connection context on exit.
+// readMessages is the inbound 16-case read loop: identity binding, session
+// lifecycle, talkativeness, activity/interrupt, ASR streaming, turn detection
+// queries, playback and display acknowledgements. It closes the connection
+// context on exit.
 func (c *watchConnection) readMessages() {
 	defer c.connectionCancel()
 	for {
@@ -1078,6 +1088,13 @@ func (c *watchConnection) readMessages() {
 			transcript := strings.TrimSpace(str(req, "transcript"))
 			log.Printf("voice duplex event: user=%q match=%q event=%q transcript_len=%d streak=%d",
 				c.identity.Get(), c.matchID, event, len([]rune(transcript)), streak)
+		case "turn_query":
+			// 轮次检测提前问（voice-turn-detection 决策 c）：客户端 model
+			// 插槽在静默累计 600ms 起咨询，服务端只做转发——sidecar 结论以
+			// turn_result 回同一 utteranceId；未配置/失败回 isComplete:null，
+			// 客户端插槽下探静默档。文本不入日志（与 duplex_event 同纪律）。
+			utteranceID := strings.TrimSpace(str(req, "utteranceId"))
+			c.handleTurnQuery(utteranceID, str(req, "text"))
 		}
 	}
 }

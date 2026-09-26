@@ -54,6 +54,19 @@ type Config struct {
 	// cmd/ambient-fake 假 sidecar。
 	AmbientAEDURL                  string
 	AmbientAEDTimeoutMS            int
+	// 轮次检测 sidecar（openspec/changes/voice-turn-detection 决策 c）：LiveKit
+	// EOU 多语版本地推理服务（backend/cmd/turn-sidecar），端点留空即 model
+	// 插槽降级——turn_query 一律回 isComplete:null，客户端下探静默档。
+	TurnSidecarURL                 string
+	TurnSidecarTimeoutMS           int
+	// 画像巩固（openspec/changes/portrait-maintenance 阶段二）：条目 ValidFrom
+	// 超过 PortraitDecayDays 天未被更新主张续期 → Reflection 尾部扫描软封口
+	// （valid_to=now，永不物理删）；<=0 关闭衰减。
+	PortraitDecayDays int
+	// 可遮蔽的 Memobase 合成槽（CSV，"topic/subTopic"）：判定器输出
+	// shadowSlots 时按此清单过滤，墓碑 overlay 让 ResolvePortrait 每次读取
+	// 都遮蔽合成条目（不怕 Memobase 重提取）。
+	PortraitShadowSlots []string
 	MemobaseURL                    string
 	MemobaseToken                  string
 	MemobaseExtractionTimeoutMS    int
@@ -110,6 +123,10 @@ func Load() *Config {
 		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),
 		AmbientAEDURL:                  strings.TrimSpace(getEnv("AMBIENT_AED_URL", "")),
 		AmbientAEDTimeoutMS:            getEnvInt("AMBIENT_AED_TIMEOUT_MS", 500),
+		TurnSidecarURL:                 strings.TrimSpace(getEnv("QIUQIU_TURN_SIDECAR_URL", "")),
+		TurnSidecarTimeoutMS:           getEnvInt("QIUQIU_TURN_SIDECAR_TIMEOUT_MS", 500),
+		PortraitDecayDays:              getEnvInt("PORTRAIT_DECAY_DAYS", 90),
+		PortraitShadowSlots:            splitCSV(getEnv("PORTRAIT_SHADOW_SLOTS", "basic_info/favorite_team,basic_info/favorite_player")),
 		MemobaseURL:                    getEnv("MEMOBASE_URL", "http://localhost:8019"),
 		MemobaseToken:                  strings.TrimSpace(os.Getenv("MEMOBASE_TOKEN")),
 		MemobaseExtractionTimeoutMS:    getEnvInt("MEMOBASE_EXTRACTION_TIMEOUT_MS", 10000),
@@ -136,6 +153,16 @@ func (c *Config) AmbientAEDTimeout() time.Duration {
 		return ambient.DefaultTimeout
 	}
 	return time.Duration(c.AmbientAEDTimeoutMS) * time.Millisecond
+}
+
+// TurnSidecarTimeout 返回轮次检测 sidecar 的调用预算：提前问窗口是静默
+// 600ms 到生效阈值，500ms 起的短超时保证结论赶不回时客户端按超时下探
+// 静默档；非正数回退默认值，配置错误不让判定链失去边界。
+func (c *Config) TurnSidecarTimeout() time.Duration {
+	if c.TurnSidecarTimeoutMS <= 0 {
+		return 500 * time.Millisecond
+	}
+	return time.Duration(c.TurnSidecarTimeoutMS) * time.Millisecond
 }
 
 func (c *Config) WSReadLimit() int64 {

@@ -110,11 +110,17 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	}
 	// 本地画像权威层（portrait-maintenance 阶段一）：声明了 portraitClaim
 	// 的用例才挂 overlay 层与脚本判定器——老用例零漂移。维护走生产同一
-	// PortraitMaintainer（判定是脚本 LLM，先例=scriptedRouter）。
+	// PortraitMaintainer（判定是脚本 LLM，先例=scriptedRouter）。overlay
+	// 时钟从用例基准时钟出发、AdvanceDays 可推进（阶段二衰减用例的表达
+	// 力缝），与 turn 的 Now 共用同一时间线。
 	var overlays *memory.MemoryPortraitOverlays
+	var evalAdvance time.Duration
+	evalBase := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
 	for _, turn := range evalCase.Turns {
 		if turn.PortraitClaim != nil {
-			overlays = memory.NewMemoryPortraitOverlays()
+			overlays = memory.NewMemoryPortraitOverlays().WithClock(func() time.Time {
+				return evalBase.Add(evalAdvance)
+			})
 			memorySeam.WithPortraitOverlays(overlays)
 			break
 		}
@@ -161,6 +167,19 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 	baseTime := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
 	for index, turn := range evalCase.Turns {
 		turnStartedAt := time.Now()
+		if turn.AdvanceDays > 0 {
+			// 阶段二衰减：本回合前推进用例时钟——overlay 时钟与回合 Now 同
+			// 一时间线；声明了 decayDays 的用例随后代跑生产同一 DecayBefore
+			// （eval 不跑 queue beat，先例=applyPortraitClaim 代跑主张落地）。
+			evalAdvance += time.Duration(turn.AdvanceDays) * 24 * time.Hour
+			if overlays != nil && evalCase.Portrait != nil && evalCase.Portrait.DecayDays > 0 {
+				if closed, err := overlays.DecayBefore(ctx, evalCase.Portrait.UserID, evalCase.Portrait.DecayDays); err != nil {
+					result.addFailure("setup", fmt.Sprintf("portrait decay: %v", err))
+				} else if closed == 0 {
+					result.addFailure("setup", "portrait decay closed 0 rows — advance/decay window misaligned")
+				}
+			}
+		}
 		if realizer != nil {
 			// Capture is per-turn: a stale request from an earlier turn must
 			// never satisfy (or fail) this turn's memory expectations.
@@ -171,7 +190,7 @@ func runCase(ctx context.Context, evalCase Case) CaseResult {
 			UserID:  turn.UserID,
 			Text:    turn.Text,
 			Voice:   turn.Voice,
-			Now:     baseTime.Add(time.Duration(index) * time.Second),
+			Now:     baseTime.Add(time.Duration(index) * time.Second).Add(evalAdvance),
 		})
 		stepResult := StepResult{ID: turn.ID, Kind: "turn", LatencyMS: int(time.Since(turnStartedAt).Milliseconds())}
 		if err != nil {

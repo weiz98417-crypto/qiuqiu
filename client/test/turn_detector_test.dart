@@ -248,4 +248,289 @@ void main() {
       );
     });
   });
+
+  group('决策 c 接线：model 插槽提前问', () {
+    test('默认链不受影响：model 只在静默阈值帧被咨询', () {
+      var calls = 0;
+      final chain = TurnDetectionChain(
+        params: tuned(1400),
+        modelStage: (context) {
+          calls++;
+          return null;
+        },
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03);
+      }
+      // 前 27 帧（1350ms < 1400ms）：不咨询。
+      for (var i = 0; i < 27; i++) {
+        chain.observe(0.001);
+      }
+      expect(calls, 0);
+      // 第 28 帧（阈值）：首次咨询。
+      chain.observe(0.001);
+      expect(calls, 1);
+    });
+
+    test('提前问 true 提前判完：赶在静默阈值之前', () {
+      // 在途（null）→ 结果回填（true）→ 下一帧采纳，650ms 判完 < 1400ms。
+      bool? verdict;
+      final chain = TurnDetectionChain(
+        params: tuned(1400),
+        modelStage: (context) => verdict,
+        modelEarlyQueryAfter: const Duration(
+          milliseconds: turnModelEarlyQueryMs,
+        ),
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03);
+      }
+      for (var i = 0; i < 11; i++) {
+        expect(chain.observe(0.001).decided, isFalse); // 550ms
+      }
+      expect(chain.observe(0.001).decided, isFalse); // 600ms 首询，在途
+      verdict = true; // turn_result 回填
+      final observation = chain.observe(0.001); // 650ms 消费结论
+      expect(observation.decided, isTrue);
+      expect(observation.stage, TurnDetectionStage.model);
+    });
+
+    test('提前问 false 否决：压制静默档至否决过期，过期帧按未决下探', () {
+      bool? verdict;
+      final chain = TurnDetectionChain(
+        params: tuned(800),
+        modelStage: (context) => verdict,
+        modelEarlyQueryAfter: const Duration(milliseconds: 600),
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03);
+      }
+      verdict = null;
+      for (var i = 0; i < 11; i++) {
+        expect(chain.observe(0.001).decided, isFalse); // 550ms
+      }
+      verdict = false;
+      expect(chain.observe(0.001).decided, isFalse); // 600ms 首询否决
+      // 否决压制期（到 600+800=1400ms）静默档不得兜底。
+      verdict = null;
+      for (var i = 0; i < 15; i++) {
+        expect(chain.observe(0.001).decided, isFalse); // 650→1350ms
+      }
+      // 1400ms：否决恰好过期，二次咨询返回 null → 下探静默档判完。
+      final observation = chain.observe(0.001);
+      expect(observation.decided, isTrue);
+      expect(observation.stage, TurnDetectionStage.silence);
+    });
+
+    test('模型持续否决（文本不变）链不判完：等待用户继续或上层超时', () {
+      // 远程模型对同文本重复返回 false（RemoteTurnModel 结论在文本不变时
+      // 持续有效）：链每个否决周期持续等待，静默档不得兜底抢判；最终由
+      // 用户继续说话（静默清零）或 maxDuration 兜底收口。
+      final chain = TurnDetectionChain(
+        params: tuned(800),
+        modelStage: (context) => false,
+        modelEarlyQueryAfter: const Duration(milliseconds: 600),
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03);
+      }
+      for (var i = 0; i < 40; i++) {
+        expect(chain.observe(0.001).decided, isFalse); // 2000ms 仍未判
+      }
+      expect(chain.decided, isFalse);
+      // 用户继续说话：静默清零，否决解除。
+      chain.observe(0.03);
+      expect(chain.vetoActive, isFalse);
+    });
+
+    test('提前问 null 下探：静默档兜底判完（降级链闭环）', () {
+      final chain = TurnDetectionChain(
+        params: tuned(1400),
+        modelStage: (context) => null,
+        modelEarlyQueryAfter: const Duration(milliseconds: 600),
+      );
+      for (var i = 0; i < 2; i++) {
+        chain.observe(0.03);
+      }
+      for (var i = 0; i < 27; i++) {
+        expect(chain.observe(0.001).decided, isFalse);
+      }
+      final observation = chain.observe(0.001);
+      expect(observation.decided, isTrue);
+      expect(observation.stage, TurnDetectionStage.silence);
+    });
+  });
+
+  group('RemoteTurnModel', () {
+    TurnDecisionContext ctx(int silenceMs) => TurnDecisionContext(
+          utteranceDuration: const Duration(seconds: 2),
+          trailingSilence: Duration(milliseconds: silenceMs),
+        );
+
+    test('静默 600ms 起查：低于门槛不查，达标即查且单飞', () {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(send: (message) {
+        sent.add(message);
+        return true;
+      });
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '我觉得裁判这次吹得');
+      expect(model.call(ctx(550)), isNull);
+      expect(sent, isEmpty);
+      expect(model.call(ctx(600)), isNull);
+      expect(sent.length, 1);
+      expect(sent.first['type'], 'turn_query');
+      expect(sent.first['utteranceId'], 'utt-1');
+      expect(sent.first['text'], '我觉得裁判这次吹得');
+      // 在途单飞：不重发。
+      expect(model.call(ctx(700)), isNull);
+      expect(sent.length, 1);
+    });
+
+    test('无转写文本不查询（null 下探静默档）', () {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(send: (message) {
+        sent.add(message);
+        return true;
+      });
+      model.beginUtterance('utt-1');
+      expect(model.call(ctx(900)), isNull);
+      expect(sent, isEmpty);
+    });
+
+    test('结论回填：文本不变期间持续有效；错话轮的迟到结果丢弃', () {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(send: (message) {
+        sent.add(message);
+        return true;
+      });
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      // 错话轮结果：不回填。
+      model.acceptResult(utteranceId: 'utt-2', isComplete: true);
+      expect(model.call(ctx(700)), isNull);
+      // 本话轮结果：回填后文本不变期间重复咨询取同一结论，不重发请求。
+      model.acceptResult(utteranceId: 'utt-1', isComplete: false);
+      expect(model.call(ctx(700)), isFalse);
+      expect(model.call(ctx(1200)), isFalse);
+      expect(sent.length, 1);
+    });
+
+    test('null 结论（服务端未配置/失败）话轮内粘滞不再询', () {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(send: (message) {
+        sent.add(message);
+        return true;
+      });
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      model.acceptResult(utteranceId: 'utt-1', isComplete: null);
+      // 粘滞：越过节流窗也只回 null，不重发。
+      expect(model.call(ctx(1200)), isNull);
+      expect(sent.length, 1);
+    });
+
+    test('发送失败（WS 不可达）话轮内粘滞', () {
+      var sendCalls = 0;
+      final model = RemoteTurnModel(
+        send: (message) {
+          sendCalls++;
+          return false;
+        },
+      );
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      expect(model.call(ctx(1200)), isNull);
+      expect(sendCalls, 1);
+    });
+
+    test('在途超时按未决处理：越过节流窗后可再询', () async {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(
+        send: (message) {
+          sent.add(message);
+          return true;
+        },
+        resendThrottle: const Duration(milliseconds: 5),
+        queryTimeout: const Duration(milliseconds: 10),
+      );
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      await Future<void>.delayed(const Duration(milliseconds: 30));
+      // 超时未回：pending 清空，重发（结果从未到达，不粘滞）。
+      expect(model.call(ctx(700)), isNull);
+      expect(sent.length, 2);
+    });
+
+    test('连续否决超限后放弃远程判定（防误判把话轮无限挂起）', () {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(send: (message) {
+        sent.add(message);
+        return true;
+      });
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull); // 查询 1
+      model.acceptResult(utteranceId: 'utt-1', isComplete: false);
+      expect(model.call(ctx(700)), isFalse); // 否决 1
+      expect(model.call(ctx(2100)), isFalse); // 否决 2
+      // 第 3 次咨询：连续否决超限，null 下探静默档，且不重发请求。
+      expect(model.call(ctx(3500)), isNull);
+      expect(sent.length, 1);
+    });
+
+    test('partial 文本更新作废未消费结论，重询带新文本', () async {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(
+        send: (message) {
+          sent.add(message);
+          return true;
+        },
+        resendThrottle: const Duration(milliseconds: 5),
+      );
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      model.acceptResult(utteranceId: 'utt-1', isComplete: true);
+      // 文本未变：结论仍有效，直接消费。
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isTrue);
+      // 文本变了：旧结论作废，越过节流窗后带新文本重询。
+      model.noteText(utteranceId: 'utt-1', text: '好进了这次进攻');
+      await Future<void>.delayed(const Duration(milliseconds: 10));
+      expect(model.call(ctx(800)), isNull);
+      expect(sent.length, 2);
+      expect(sent.last['text'], '好进了这次进攻');
+    });
+
+    test('beginUtterance 绑定新话轮即清在途状态', () {
+      final sent = <Map<String, dynamic>>[];
+      final model = RemoteTurnModel(send: (message) {
+        sent.add(message);
+        return true;
+      });
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      model.beginUtterance('utt-2');
+      // 旧话轮文本与在途查询全部清零：新话轮无文本不查。
+      expect(model.call(ctx(900)), isNull);
+      expect(sent.length, 1);
+      model.noteText(utteranceId: 'utt-2', text: '下半场刚开始');
+      expect(model.call(ctx(600)), isNull);
+      expect(sent.last['utteranceId'], 'utt-2');
+    });
+
+    test('dispose 取消在途超时定时器不抛异常', () {
+      final model = RemoteTurnModel(send: (message) => true);
+      model.beginUtterance('utt-1');
+      model.noteText(utteranceId: 'utt-1', text: '好进了');
+      expect(model.call(ctx(600)), isNull);
+      expect(model.dispose, returnsNormally);
+    });
+  });
 }

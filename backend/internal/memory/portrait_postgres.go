@@ -126,6 +126,27 @@ func (r *PostgresRecords) Put(ctx context.Context, userID, topic, subTopic, cont
 	return overlay, nil
 }
 
+// DecayBefore 软封口窗口（天）之前打开且至今仍开放的条目（阶段二按年龄
+// 衰减）；墓碑行（deleted=TRUE）是遮蔽物，不衰减。判定基准=数据库时钟
+// （now()），单条 UPDATE 完成，返回封口行数。
+func (r *PostgresRecords) DecayBefore(ctx context.Context, userID string, days int) (int, error) {
+	if r == nil || r.pool == nil {
+		return 0, ErrUnavailable
+	}
+	if err := privacy.CheckDeletion(ctx, r.pool, userID); err != nil {
+		return 0, err
+	}
+	tag, err := r.pool.Exec(ctx, `
+		UPDATE portrait_overlays
+		SET valid_to = now(), updated_at = now()
+		WHERE user_id = $1 AND deleted = FALSE AND valid_to IS NULL AND valid_from < now() - make_interval(days => $2)
+	`, userID, days)
+	if err != nil {
+		return 0, err
+	}
+	return int(tag.RowsAffected()), nil
+}
+
 // Delete tombstones one profile slot: live versions are closed and one
 // open-ended tombstone row is written. Rows are never hard-deleted here so
 // Memobase re-extraction can never resurrect the fact into a prompt.

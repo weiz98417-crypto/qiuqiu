@@ -115,7 +115,10 @@ type Queue struct {
 	// 画像冲突操作集（portrait-maintenance 阶段一）：判定器 + 权威层存储
 	// 合成维护器；判定器缺席时新主张盲 ADD（现状行为）。
 	portraitOps PortraitOpDecider
-	maintainer  *PortraitMaintainer
+	// 衰减窗口天数（阶段二按年龄巩固）：<=0 或存储缺席即关闭。零值默认
+	// 关闭，由 main.go 按 config 注入。
+	portraitDecayDays int
+	maintainer        *PortraitMaintainer
 
 	// 待合并主张账本：与 citations 同款有界纪律（best-effort 反思提示，
 	// 绝不是正确性数据）。
@@ -212,6 +215,14 @@ func WithPortraitOps(decider PortraitOpDecider) QueueOption {
 		if decider != nil {
 			q.portraitOps = decider
 		}
+	}
+}
+
+// WithPortraitDecay sets the age-based decay window (days) for the phase-two
+// sweep at the Reflection tail; <=0 disables the sweep.
+func WithPortraitDecay(days int) QueueOption {
+	return func(q *Queue) {
+		q.portraitDecayDays = days
 	}
 }
 
@@ -949,6 +960,7 @@ func (q *Queue) ReflectNow(ctx context.Context, userID, matchID, trigger string)
 	// 操作集并入权威层。失败审计后继续——维护是尽力而为，绝不阻断
 	// Reflection 主体（5.4 的 sleep-time 巩固沿用同一纪律）。
 	q.consolidatePortraitClaims(ctx, userID)
+	q.decayPortraitEntries(ctx, userID)
 	portrait, portraitErr := q.adapter.Portrait(ctx, userID)
 	if portraitErr != nil {
 		if status == "refreshed" {
@@ -1208,6 +1220,41 @@ func (q *Queue) consolidatePortraitClaims(ctx context.Context, userID string) {
 			continue
 		}
 		log.Printf("memory: portrait claim %s (target=%d) for user %q: %s", decision.Op, decision.TargetID, userID, decision.Reason)
+	}
+}
+
+// decayPortraitEntries 是阶段二的 sleep-time 巩固：窗口（天）之外未被更新
+// 主张续期的条目在 Reflection 尾部软封口——「确认」没有逐条信号面，按年龄
+// 衰减、经 UPDATE 刷新 ValidFrom 天然续期（grilling 定案）。失败记审计后
+// 继续，绝不阻断 beat。
+func (q *Queue) decayPortraitEntries(ctx context.Context, userID string) {
+	if q == nil || q.portraitDecayDays <= 0 || q.portraits == nil {
+		return
+	}
+	decayCtx, cancel := context.WithTimeout(ctx, 10*time.Second)
+	defer cancel()
+	closed, err := q.portraits.DecayBefore(decayCtx, userID, q.portraitDecayDays)
+	if err != nil {
+		log.Printf("memory: portrait decay for user %q: %v", userID, err)
+		q.recordAudit(ctx, ExtractionAudit{
+			MomentID:   "portrait:decay:" + userID,
+			UserID:     userID,
+			Kind:       MomentUserFact,
+			ReasonCode: "portrait_decay_skipped",
+			Detail:     errorText(err),
+			CreatedAt:  time.Now().UTC(),
+		})
+		return
+	}
+	if closed > 0 {
+		q.recordAudit(ctx, ExtractionAudit{
+			MomentID:   "portrait:decay:" + userID,
+			UserID:     userID,
+			Kind:       MomentUserFact,
+			ReasonCode: "portrait_decay_applied",
+			Detail:     fmt.Sprintf("closed=%d window_days=%d", closed, q.portraitDecayDays),
+			CreatedAt:  time.Now().UTC(),
+		})
 	}
 }
 

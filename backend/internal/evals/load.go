@@ -125,9 +125,8 @@ func (evalCase Case) Validate() error {
 		if strings.TrimSpace(evalCase.Portrait.UserID) == "" {
 			return fmt.Errorf("portrait userId is required")
 		}
-		if len(evalCase.Portrait.Entries) == 0 {
-			return fmt.Errorf("portrait requires at least one entry")
-		}
+		// entries 允许为空：纯 portraitClaim 驱动的用例（阶段一/二）从空权
+		// 威层起步，种子层只服务合成语境断言。
 		for _, entry := range evalCase.Portrait.Entries {
 			if strings.TrimSpace(entry.Topic) == "" || strings.TrimSpace(entry.SubTopic) == "" || strings.TrimSpace(entry.Content) == "" {
 				return fmt.Errorf("portrait entries need topic, subTopic, and content")

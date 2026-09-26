@@ -127,6 +127,32 @@ class VADService {
     _turnChain.params = params;
   }
 
+  /// 武装静默兜底定时器：触发时若链已判完（帧路径先收口）直接让位；若
+  /// model/规则插槽的否决仍在压制（voice-turn-detection 决策 c，模型认为
+  /// 没说完），重新武装等下一结论，不得被能量线兜底抢判；否则照常收口。
+  void _armSilenceTimer() {
+    _silenceTimer = Timer(_turnChain.effectiveSilenceThreshold, () {
+      if (_turnChain.decided) return;
+      if (_turnChain.vetoActive) {
+        _armSilenceTimer();
+        return;
+      }
+      if (_autoFinishGuard.onsetPassed) {
+        unawaited(_finishSentence());
+      }
+    });
+  }
+
+  /// 决策 c 的远程轮次模型接线：非空即挂入链上 model 插槽并开启提前问
+  /// （静默累计 [turnModelEarlyQueryMs] 起咨询，节流去重在 RemoteTurnModel
+  /// 内部）；null=摘除插槽，链回到降级默认形（只在阈值帧咨询）。
+  void attachTurnModel(TurnStageDelegate? modelStage) {
+    _turnChain.modelStage = modelStage;
+    _turnChain.modelEarlyQueryAfter = modelStage == null
+        ? Duration.zero
+        : const Duration(milliseconds: turnModelEarlyQueryMs);
+  }
+
   StreamSubscription<Uint8List>? _recordSubscription;
   Timer? _silenceTimer;
   VADMode _mode = VADMode.pushToTalk;
@@ -297,11 +323,7 @@ class VADService {
       // 参数化不硬编码）；正常路径由链逐帧判定先行收口。定时器触发路径带
       // 同款过门守卫（voice-duplex 1.1）：播放期起音未过门的段（回声候选）
       // 不得被定时器收口成话轮；门 fired（守卫已放行）或空闲期照常收口。
-      _silenceTimer ??= Timer(_turnChain.effectiveSilenceThreshold, () {
-        if (_autoFinishGuard.onsetPassed) {
-          unawaited(_finishSentence());
-        }
-      });
+      if (_silenceTimer == null) _armSilenceTimer();
     }
 
     // 说完判定降级链（voice-turn-detection 1.3）：逐帧喂 RMS，链判完即收口。

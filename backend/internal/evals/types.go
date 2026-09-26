@@ -70,6 +70,10 @@ type RouterRoute struct {
 type PortraitSeed struct {
 	UserID  string              `json:"userId"`
 	Entries []PortraitSeedEntry `json:"entries"`
+	// DecayDays 是阶段二衰减窗口的用例内声明：AdvanceDays 推进时钟后，
+	// runner 代跑生产同一 DecayBefore（eval 不跑 queue beat，先例=
+	// applyPortraitClaim 代跑主张落地）。<=0 即用例不触发衰减。
+	DecayDays int `json:"decayDays,omitempty"`
 }
 
 type PortraitSeedEntry struct {
@@ -115,7 +119,11 @@ type TurnStep struct {
 	// Reflection 写路径的评测替身)：decision 是脚本化判定（pr tier 脚本
 	// LLM，先例=scriptedRouter），替代真判定器。
 	PortraitClaim *PortraitClaimStep `json:"portraitClaim,omitempty"`
-	Expect        TurnExpectation    `json:"expect"`
+	// AdvanceDays 推进用例时钟（portrait-maintenance 阶段二）：本回合执行
+	// 前把权威层的时钟前跳 N 天，供按年龄衰减用例表达「90 天后旧偏好不再
+	// 出现」。负值视为 0。
+	AdvanceDays int `json:"advanceDays,omitempty"`
+	Expect      TurnExpectation `json:"expect"`
 }
 
 // PortraitClaimStep mirrors memory.PortraitClaim plus its scripted

@@ -1,6 +1,7 @@
 package memory
 
 import (
+	"fmt"
 	"context"
 	"errors"
 	"os"
@@ -164,5 +165,69 @@ func TestPostgresPortraitOverlayTemporalIntegration(t *testing.T) {
 	}
 	if count != 0 {
 		t.Fatalf("rows after DeleteUserOverlays = %d, want the physical delete to remove them all", count)
+	}
+}
+
+// TestPostgresPortraitOverlayDecayIntegration 锁阶段二按年龄衰减的 SQL 侧：
+// make_interval 窗口外的开放条目被软封口（valid_to 落库）、墓碑行不动、
+// 窗口内条目不动——与 Memory 实现同语义（valid_to=now 由数据库时钟给出）。
+func TestPostgresPortraitOverlayDecayIntegration(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+	ctx := context.Background()
+	migrated, err := matchstate.OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("apply migrations: %v", err)
+	}
+	defer migrated.Close()
+	records, err := OpenRecords(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("OpenRecords: %v", err)
+	}
+	defer records.Close()
+	userID := fmt.Sprintf("decay-it-%d", time.Now().UnixNano())
+
+	seed := func(topic, subTopic, content string, ageDays int) {
+		t.Helper()
+		if _, err := records.pool.Exec(ctx, `
+			INSERT INTO portrait_overlays (user_id, topic, sub_topic, content, deleted, valid_from)
+			VALUES ($1, $2, $3, $4, FALSE, now() - make_interval(days => $5))
+		`, userID, topic, subTopic, content, ageDays); err != nil {
+			t.Fatalf("seed %s/%s: %v", topic, subTopic, err)
+		}
+	}
+	seed("preferences", "user_stated", "我最支持的球队是巴萨。", 95)
+	seed("basic_info", "favorite_team", "皇家马德里", 10)
+	seed("basic_info", "old_slot", "", 120)
+	if _, err := records.pool.Exec(ctx, `UPDATE portrait_overlays SET deleted = TRUE WHERE user_id = $1 AND sub_topic = 'old_slot'
+		`, userID); err != nil {
+		t.Fatalf("seed tombstone: %v", err)
+	}
+
+	closed, err := records.DecayBefore(ctx, userID, 90)
+	if err != nil {
+		t.Fatalf("DecayBefore: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want exactly the aged open row", closed)
+	}
+	var sealedSubTopics []string
+	rows, err := records.pool.Query(ctx, `SELECT sub_topic FROM portrait_overlays WHERE user_id = $1 AND valid_to IS NOT NULL
+		`, userID)
+	if err != nil {
+		t.Fatalf("query sealed rows: %v", err)
+	}
+	defer rows.Close()
+	for rows.Next() {
+		var subTopic string
+		if err := rows.Scan(&subTopic); err != nil {
+			t.Fatalf("scan: %v", err)
+		}
+		sealedSubTopics = append(sealedSubTopics, subTopic)
+	}
+	if len(sealedSubTopics) != 1 || sealedSubTopics[0] != "user_stated" {
+		t.Fatalf("sealed rows = %v, want only the aged user_stated row", sealedSubTopics)
 	}
 }

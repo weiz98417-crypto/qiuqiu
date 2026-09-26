@@ -144,3 +144,27 @@ func TestLoadReadsPrivacyRetentionDays(t *testing.T) {
 		t.Fatal("negative privacy retention should fail validation")
 	}
 }
+
+// 轮次检测 sidecar 配置（voice-turn-detection 决策 c）：URL 留空即 model
+// 插槽降级；超时非正数回退 500ms 默认预算。
+func TestTurnSidecarDefaultsToDisabledWithFallbackTimeout(t *testing.T) {
+	t.Setenv("QIUQIU_TURN_SIDECAR_URL", "")
+	t.Setenv("QIUQIU_TURN_SIDECAR_TIMEOUT_MS", "")
+	cfg := Load()
+	if cfg.TurnSidecarURL != "" {
+		t.Fatalf("turn sidecar url = %q, want empty (model slot degraded by default)", cfg.TurnSidecarURL)
+	}
+	if got := cfg.TurnSidecarTimeout(); got != 500*time.Millisecond {
+		t.Fatalf("default turn sidecar timeout = %s, want 500ms", got)
+	}
+
+	t.Setenv("QIUQIU_TURN_SIDECAR_URL", "http://127.0.0.1:8091")
+	t.Setenv("QIUQIU_TURN_SIDECAR_TIMEOUT_MS", "300")
+	cfg = Load()
+	if cfg.TurnSidecarURL != "http://127.0.0.1:8091" {
+		t.Fatalf("configured turn sidecar url = %q", cfg.TurnSidecarURL)
+	}
+	if got := cfg.TurnSidecarTimeout(); got != 300*time.Millisecond {
+		t.Fatalf("configured turn sidecar timeout = %s, want 300ms", got)
+	}
+}

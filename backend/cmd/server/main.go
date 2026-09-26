@@ -351,6 +351,10 @@ func main() {
 			observationCoordinator,
 		)
 	}
+	// 轮次检测 sidecar（voice-turn-detection 决策 c）：QIUQIU_TURN_SIDECAR_URL
+	// 留空即 model 插槽降级（turn_query 回 isComplete:null，客户端下探静默
+	// 档）；sidecar 不可达时同样按 null 兜底，主链路无感。
+	turnSidecar := newTurnSidecarClient(cfg.TurnSidecarURL, cfg.TurnSidecarTimeout())
 	// 意图注册表漂移断言（openspec/changes/intent-registry）：启动即校验
 	// 注册表镜像与 router 硬编码事实一致，不一致 fail-fast。
 	if err := companion.ValidateIntentRegistry(); err != nil {
@@ -500,8 +504,9 @@ func main() {
 		// 未配判定模型（CI/evals）即盲 ADD——冲突知识集中在操作集一处，是
 		// 加深而不是旁路。
 		if cfg.MiMoAPIKey != "" {
-			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel))))
+			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel), shadowSlotsFromConfig(cfg))))
 		}
+		queueOptions = append(queueOptions, memory.WithPortraitDecay(cfg.PortraitDecayDays))
 		queueOptions = append(queueOptions, vectorOptions...)
 		memoryQueue = memory.NewQueue(memobaseAdapter, memoryRecords, memoryRecords, queueOptions...)
 		memoryPreferenceStore = memoryRecords
@@ -510,8 +515,9 @@ func main() {
 		// 球球懂我 page still edits real state for the running server.
 		queueOptions := append([]memory.QueueOption{memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays())}, vectorOptions...)
 		if cfg.MiMoAPIKey != "" {
-			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel))))
+			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel), shadowSlotsFromConfig(cfg))))
 		}
+		queueOptions = append(queueOptions, memory.WithPortraitDecay(cfg.PortraitDecayDays))
 		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, queueOptions...)
 	}
 	companionAgent.WithMemories(memoryQueue)
@@ -648,6 +654,7 @@ func main() {
 		reminders: reminderStore,
 		submittedSignals: submittedUserSignals,
 		ambient:          ambientSidecar,
+		turnSidecar:      turnSidecar,
 	}))
 
 	addr := ":" + cfg.Port
@@ -655,6 +662,20 @@ func main() {
 	if err := newHTTPServer(addr, mux).ListenAndServe(); err != nil {
 		log.Fatalf("server: %v", err)
 	}
+}
+
+// shadowSlotsFromConfig 把 config 里的可遮蔽合成槽清单（"topic/subTopic" CSV）
+// 解析成判定器候选；空段跳过——遮蔽是尽力而为的收口，解析失败不致命。
+func shadowSlotsFromConfig(cfg *config.Config) []memory.PortraitSlotRef {
+	slots := make([]memory.PortraitSlotRef, 0, len(cfg.PortraitShadowSlots))
+	for _, raw := range cfg.PortraitShadowSlots {
+		parts := strings.SplitN(raw, "/", 2)
+		if len(parts) != 2 || strings.TrimSpace(parts[0]) == "" || strings.TrimSpace(parts[1]) == "" {
+			continue
+		}
+		slots = append(slots, memory.PortraitSlotRef{Topic: strings.TrimSpace(parts[0]), SubTopic: strings.TrimSpace(parts[1])})
+	}
+	return slots
 }
 
 func configuredSpeechSynthesizer(cfg *config.Config) speechSynthesizer {

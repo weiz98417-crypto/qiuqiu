@@ -194,6 +194,76 @@ func TestPortraitOpDeleteTombstoneMasksReExtraction(t *testing.T) {
 	}
 }
 
+// TestPortraitOpUpdateShadowsSynthesizedSlot 锁阶段二合成槽收口：判定器
+// 输出 UPDATE+shadowSlots 时，权威层换值、指认的 Memobase 合成槽落开放墓
+// 碑——ResolvePortrait 每次读取都遮蔽它，Memobase 重提取进不了下一回合。
+func TestPortraitOpUpdateShadowsSynthesizedSlot(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryPortraitOverlays()
+	audit := &noopAudit{}
+	if _, err := NewPortraitMaintainer(store, nil, audit).Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持巴萨。"}); err != nil {
+		t.Fatalf("seed blind ADD: %v", err)
+	}
+	maintainer := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{
+		Op: PortraitOpUpdate, TargetID: 1, Reason: "换主队",
+		ShadowSlots: []PortraitSlotRef{{Topic: "basic_info", SubTopic: "favorite_team"}},
+	}}, audit)
+	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持皇马。"}); err != nil {
+		t.Fatalf("consolidate with shadow: %v", err)
+	}
+	current, err := store.CurrentPortrait(ctx, "user-1")
+	if err != nil {
+		t.Fatalf("CurrentPortrait: %v", err)
+	}
+	// 合成槽从未有过 overlay 行，墓碑也必须落下去（遮蔽不依赖先见）。
+	merged := ResolvePortrait(
+		[]PortraitEntry{{Topic: "basic_info", SubTopic: "favorite_team", Content: "皇家马德里"}},
+		current,
+	)
+	for _, entry := range merged {
+		if entry.Topic == "basic_info" && entry.SubTopic == "favorite_team" {
+			t.Fatalf("synthesized favorite_team survived the shadow tombstone: %+v", merged)
+		}
+	}
+}
+
+// TestPortraitDecayBeforeClosesAgedEntries 锁阶段二按年龄衰减的落地语义：
+// 窗口外未被续期的开放条目软封口、墓碑行不衰减、窗口内条目不动。
+func TestPortraitDecayBeforeClosesAgedEntries(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
+	now := base
+	store := NewMemoryPortraitOverlays().WithClock(func() time.Time { return now })
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "basic_info", SubTopic: "favorite_team", Content: "皇家马德里"}); err != nil {
+		t.Fatalf("seed second: %v", err)
+	}
+	// 推到第 95 天并封口前一条（模拟用户侧改口），再开新条目。
+	now = base.Add(95 * 24 * time.Hour)
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpUpdate, TargetID: 1}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持皇马。"}); err != nil {
+		t.Fatalf("update: %v", err)
+	}
+
+	closed, err := store.DecayBefore(ctx, "user-1", 90)
+	if err != nil {
+		t.Fatalf("DecayBefore: %v", err)
+	}
+	if closed != 1 {
+		t.Fatalf("closed = %d, want exactly the aged favorite_team row", closed)
+	}
+	current, _ := store.CurrentPortrait(ctx, "user-1")
+	for _, overlay := range current {
+		if overlay.Topic == "basic_info" {
+			t.Fatalf("young row was decayed: %+v", overlay)
+		}
+		if overlay.Topic == "preferences" && overlay.Content == "我最支持的球队是巴萨。" {
+			t.Fatalf("aged row survived decay: %+v", overlay)
+		}
+	}
+}
+
 func TestPortraitMaintainerSkipsInvalidDecisions(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
@@ -313,7 +383,7 @@ func TestLLMPortraitOpsJudgesViaStructuredSeam(t *testing.T) {
 	}))
 	defer server.Close()
 
-	decider := NewLLMPortraitOpDecider(structured.NewClient(server.URL, "test-key", "test-model"))
+	decider := NewLLMPortraitOpDecider(structured.NewClient(server.URL, "test-key", "test-model"), nil)
 	claim := PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}
 	existing := []PortraitOverlay{{ID: 7, Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}}
 	decision, err := decider.DecidePortraitOp(context.Background(), claim, existing)
@@ -392,11 +462,11 @@ func TestLLMPortraitOpsRejectsMalformedVerdict(t *testing.T) {
 	}))
 	defer server.Close()
 
-	decider := NewLLMPortraitOpDecider(structured.NewClient(server.URL, "k", "m"))
+	decider := NewLLMPortraitOpDecider(structured.NewClient(server.URL, "k", "m"), nil)
 	if _, err := decider.DecidePortraitOp(context.Background(), PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "任意"}, nil); err == nil {
 		t.Fatal("unknown op must error")
 	}
-	if _, err := NewLLMPortraitOpDecider(nil).DecidePortraitOp(context.Background(), PortraitClaim{}, nil); !errors.Is(err, ErrNotSupported) {
+	if _, err := NewLLMPortraitOpDecider(nil, nil).DecidePortraitOp(context.Background(), PortraitClaim{}, nil); !errors.Is(err, ErrNotSupported) {
 		t.Fatalf("nil client = %v, want ErrNotSupported", err)
 	}
 }
@@ -468,6 +538,50 @@ func TestQueueReflectNowConsolidatesClaimsThroughOpSet(t *testing.T) {
 	blindCurrent, _ := blindOverlays.CurrentPortrait(ctx, "user-1")
 	if len(blindCurrent) != 1 || blindCurrent[0].Content != "我现在最支持的球队是皇马。" {
 		t.Fatalf("blind ADD current = %+v, want the second claim live via UPDATE", blindCurrent)
+	}
+}
+
+// TestQueueReflectNowDecaysAgedPortraitEntries 锁 beat 尾部的阶段二衰减：
+// 窗口外未被续期的条目在 Reflection 尾部软封口并审计，窗口内条目不动——
+// 与生产同一 WithPortraitDecay 接线。
+func TestQueueReflectNowDecaysAgedPortraitEntries(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		w.Header().Set("Content-Type", "application/json")
+		_, _ = w.Write([]byte(memobaseOK("{}")))
+	}))
+	defer server.Close()
+	ctx := context.Background()
+
+	base := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
+	now := base
+	overlays := NewMemoryPortraitOverlays().WithClock(func() time.Time { return now })
+	queue := NewQueue(NewMemobase(MemobaseConfig{BaseURL: server.URL, Token: "test-token"}), nil, nil,
+		WithPortraitOverlays(overlays), WithPortraitDecay(90))
+	if err := queue.Observe(ctx, Moment{UserID: "user-1", Kind: MomentUserFact, Content: "我最支持的球队是巴萨。", Importance: 0.7}); err != nil {
+		t.Fatalf("Observe: %v", err)
+	}
+	if _, err := queue.ReflectNow(ctx, "user-1", "match-1", "post_match"); err != nil {
+		t.Fatalf("ReflectNow 1: %v", err)
+	}
+	current, _ := overlays.CurrentPortrait(ctx, "user-1")
+	if len(current) != 1 || !current[0].ValidTo.IsZero() {
+		t.Fatalf("fresh claim must stay live before decay: %+v", current)
+	}
+
+	// 推进 95 天再跑一拍：主张已超窗，beat 尾部衰减封口它。
+	now = base.Add(95 * 24 * time.Hour)
+	if _, err := queue.ReflectNow(ctx, "user-1", "match-1", "post_match"); err != nil {
+		t.Fatalf("ReflectNow 2: %v", err)
+	}
+	sealed := false
+	history, _ := overlays.PortraitHistory(ctx, "user-1")
+	for _, overlay := range history {
+		if !overlay.Deleted && overlay.Topic == "preferences" && !overlay.ValidTo.IsZero() {
+			sealed = true
+		}
+	}
+	if !sealed {
+		t.Fatalf("aged claim was not decayed at the beat tail: %+v", history)
 	}
 }
 

@@ -71,6 +71,20 @@ type PortraitOverlayStore interface {
 	// (same semantics as the user-side Delete) in one transaction; NOOP
 	// writes nothing.
 	ApplyPortraitOp(ctx context.Context, userID string, decision OpDecision, claim PortraitClaim) (PortraitOverlay, error)
+	// DecayBefore soft-closes every open, non-tombstone row opened more than
+	// `days` before the store's own clock（阶段二按年龄衰减：长期未被更新主张
+	// 续期的条目 valid_to=now，永不物理删；tombstone 行是遮蔽物，不参与衰减）。
+	// 判定基准是各实现自己的时钟——eval 推进注入时钟后衰减随之触发。
+	// Returns the number of rows closed. Privacy gate is the caller's beat.
+	DecayBefore(ctx context.Context, userID string, days int) (int, error)
+}
+
+// PortraitSlotRef 指向一个画像槽位（topic/subTopic 对）。判定器输出
+// shadowSlots 时指向 Memobase 合成槽——落地=对该槽写开放墓碑，让
+// ResolvePortrait 在每次读取时遮蔽合成条目（不怕 Memobase 重提取）。
+type PortraitSlotRef struct {
+	Topic    string `json:"topic"`
+	SubTopic string `json:"subTopic"`
 }
 
 // ResolvePortrait layers the user's overlays over the synthesized entries:
@@ -141,6 +155,37 @@ func (m *MemoryPortraitOverlays) Check(_ context.Context, userID string) error {
 		return ErrUnavailable
 	}
 	return nil
+}
+
+// WithClock 注入时间源（eval 时间推进与单测锁时间窗语义）；nil 恢复真实时钟。
+func (m *MemoryPortraitOverlays) WithClock(now func() time.Time) *MemoryPortraitOverlays {
+	if m != nil {
+		m.now = now
+	}
+	return m
+}
+
+// DecayBefore 软封口窗口（天）之前打开、且至今仍开放的条目（阶段二按年龄
+// 衰减）；墓碑行是遮蔽物，不衰减。判定基准=本 store 时钟（可注入），返回
+// 封口行数——队列侧审计与 eval 断言都用它。
+func (m *MemoryPortraitOverlays) DecayBefore(_ context.Context, userID string, days int) (int, error) {
+	if m == nil {
+		return 0, ErrUnavailable
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	now := m.clock()
+	cutoff := now.AddDate(0, 0, -days)
+	closed := 0
+	for index := range m.rows[userID] {
+		overlay := &m.rows[userID][index]
+		if overlay.Deleted || !overlay.ValidTo.IsZero() || overlay.ValidFrom.IsZero() || overlay.ValidFrom.After(cutoff) {
+			continue
+		}
+		overlay.ValidTo = now
+		closed++
+	}
+	return closed, nil
 }
 
 // CurrentPortrait returns the rows inside the temporal window (tombstones
