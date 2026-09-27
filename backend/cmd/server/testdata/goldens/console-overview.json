@@ -1,4 +1,9 @@
 {
+  "backchannel": {
+    "emitted": 0,
+    "whitelistEvents": 0,
+    "windowHours": 24
+  },
   "matches": [
     {
       "matchId": "m1",

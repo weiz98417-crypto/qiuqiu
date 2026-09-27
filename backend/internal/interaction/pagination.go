@@ -11,6 +11,10 @@ import (
 
 var ErrInvalidCursor = errors.New("invalid interaction cursor")
 
+// ErrSnapshotUnavailable 是 ledger 不支持快照投影时的哨兵错误（包装器
+// 转发可选接口时内层缺能力即回它）。
+var ErrSnapshotUnavailable = errors.New("interaction ledger does not support snapshots")
+
 type PageQuery struct {
 	UserID  string
 	MatchID string
