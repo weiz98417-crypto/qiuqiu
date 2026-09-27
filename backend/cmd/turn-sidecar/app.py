@@ -155,6 +155,10 @@ def predict_turn(request: TurnRequest) -> TurnResponse:
     text = request.text.strip()
     if not text:
         raise HTTPException(status_code=400, detail="text is required")
+    # 归一化后再查空：去标点后为空的文本（「！！！」）进模板会生成空 user
+    # 话轮，EOU 被 rfind 剥掉后等于对分布外输入判定——与空文本同罪回 400。
+    if not normalize_text(text):
+        raise HTTPException(status_code=400, detail="text is empty after normalization")
     if _session is None or _tokenizer is None:
         raise HTTPException(status_code=503, detail="model not loaded")
 

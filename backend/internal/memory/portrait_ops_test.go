@@ -101,6 +101,41 @@ func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 	}
 }
 
+// TestPortraitMaintainerUpdateIntoOccupiedSlotKeepsOpenSlotIndex 锁 migration
+// 052 的全 store 不变量（同槽至多一条 valid_to 开放行）在 UPDATE 路径同样成
+// 立：判定器跨槽误判（UPDATE 指向同 topic 的另一槽位行、主张落回已有开放行
+// 的槽）时，落地必须显式拒绝——Postgres 侧由部分唯一索引回滚整笔事务（拒绝
+// 语义），Memory 侧 UPDATE 不查槽位占用会静默并出第二条开放行，双实现发散。
+func TestPortraitMaintainerUpdateIntoOccupiedSlotKeepsOpenSlotIndex(t *testing.T) {
+	ctx := context.Background()
+	store := NewMemoryPortraitOverlays()
+	// 种子：user_stated 槽一条开放主张（blind ADD，id=1）+ 同 topic 另一槽
+	// reply_style 一条用户编辑（Put，id=2）。
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
+		t.Fatalf("seed user_stated ADD: %v", err)
+	}
+	if _, err := store.Put(ctx, "user-1", "preferences", "reply_style", "简短直接"); err != nil {
+		t.Fatalf("seed reply_style Put: %v", err)
+	}
+
+	// 判定器跨槽误判：UPDATE 指向 reply_style 行（同 topic 现存条目，
+	// validateDecision 放行），而新主张落回 user_stated 槽——该槽已有开放行。
+	misjudging := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpUpdate, TargetID: 2, Reason: "误指另一槽位行"}}, nil)
+	if _, err := misjudging.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); !errors.Is(err, ErrSlotOccupied) {
+		t.Fatalf("UPDATE into an occupied slot = %v, want ErrSlotOccupied (migration 052 parity)", err)
+	}
+	current, _ := store.CurrentPortrait(ctx, "user-1")
+	openUserStated := 0
+	for _, overlay := range current {
+		if overlay.Topic == "preferences" && overlay.SubTopic == "user_stated" && !overlay.Deleted {
+			openUserStated++
+		}
+	}
+	if openUserStated != 1 {
+		t.Fatalf("open user_stated rows = %d (current=%+v), want exactly one — the UPDATE must not open a second row in an occupied slot", openUserStated, current)
+	}
+}
+
 // TestPortraitMaintainerBlindAddWithoutDecider 是 success criteria 的删除测
 // 试：删操作集（不挂判定器），Reflection 回到盲 ADD——首条主张无消解原样，
 // 同槽再来的主张撞上同槽开放行检查（migration 052）显式被拒并审计
@@ -261,6 +296,35 @@ func TestPortraitDecayBeforeClosesAgedEntries(t *testing.T) {
 		if overlay.Topic == "preferences" && overlay.Content == "我最支持的球队是巴萨。" {
 			t.Fatalf("aged row survived decay: %+v", overlay)
 		}
+	}
+}
+
+// TestPortraitDecayBeforeKeepsRowOpenedExactlyAtWindowOpen 锁衰减窗口的边界
+// 语义（接口契约「opened more than `days` before」+ Postgres 同名实现的
+// valid_from < now() - make_interval(days => $2) 严格小于）：恰好在窗口边界
+// 上打开的行（age == days）不封口。Memory 侧用 ValidFrom.After(cutoff) 跳过，
+// 恰好等于 cutoff 的行会被误封口，与 Postgres 双实现发散。
+func TestPortraitDecayBeforeKeepsRowOpenedExactlyAtWindowOpen(t *testing.T) {
+	ctx := context.Background()
+	base := time.Date(2026, 7, 10, 20, 0, 0, 0, time.UTC)
+	now := base
+	store := NewMemoryPortraitOverlays().WithClock(func() time.Time { return now })
+	if _, err := store.ApplyPortraitOp(ctx, "user-1", OpDecision{Op: PortraitOpAdd}, PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	// 恰好推进 90 天（age == 窗口）：按接口契约与 Postgres 的严格小于，
+	// 边界行必须仍然开放。
+	now = base.AddDate(0, 0, 90)
+	closed, err := store.DecayBefore(ctx, "user-1", 90)
+	if err != nil {
+		t.Fatalf("DecayBefore: %v", err)
+	}
+	if closed != 0 {
+		t.Fatalf("closed = %d, want 0 — a row opened exactly `days` ago is not \"more than days before\" (Postgres valid_from < now()-interval keeps it open)", closed)
+	}
+	current, _ := store.CurrentPortrait(ctx, "user-1")
+	if len(current) != 1 || !current[0].ValidTo.IsZero() {
+		t.Fatalf("boundary row = %+v, want it still open at exactly the window edge", current)
 	}
 }
 

@@ -287,18 +287,6 @@ class VADService {
       );
     }
 
-    if (_mode == VADMode.pushToTalk) {
-      _audioBuffer.add(pcm);
-      _emitAudioChunk(pcm);
-    } else if (!hadConfirmedSpeech) {
-      _preRoll.addLast(pcm);
-      while (_preRoll.length > preRollFrames) {
-        _preRoll.removeFirst();
-      }
-    } else {
-      _audioBuffer.add(pcm);
-      _emitAudioChunk(pcm);
-    }
 
     if (activity.detected) {
       _silenceTimer?.cancel();

@@ -5,6 +5,7 @@ package memory
 
 import (
 	"context"
+	"sync"
 	"errors"
 	"strings"
 	"testing"
@@ -14,16 +15,27 @@ type stubEmbedder struct {
 	text    string
 	vector  []float32
 	err     error
+	mu      sync.Mutex
 	calls   int
 }
 
 func (e *stubEmbedder) Embed(_ context.Context, text string) ([]float32, error) {
+	e.mu.Lock()
 	e.calls++
+	e.mu.Unlock()
 	if e.err != nil {
 		return nil, e.err
 	}
 	_ = text
 	return e.vector, nil
+}
+
+// snapshotCalls 无锁读取调用计数（observeVector 的后台 goroutine 与 Recall
+// 并发打点，测试断言侧不能裸读共享计数）。
+func (e *stubEmbedder) snapshotCalls() int {
+	e.mu.Lock()
+	defer e.mu.Unlock()
+	return e.calls
 }
 
 func vectorMoments() []Moment {
@@ -68,7 +80,7 @@ func TestVectorRecallDegradesOnEmbedderFailure(t *testing.T) {
 	if recalls != nil && len(recalls) > 5 {
 		t.Fatalf("recalls = %+v", recalls)
 	}
-	if embedder.calls == 0 {
+	if embedder.snapshotCalls() == 0 {
 		t.Fatal("embedder should have been attempted")
 	}
 }

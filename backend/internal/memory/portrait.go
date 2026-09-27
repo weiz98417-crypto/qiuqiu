@@ -179,7 +179,10 @@ func (m *MemoryPortraitOverlays) DecayBefore(_ context.Context, userID string, d
 	closed := 0
 	for index := range m.rows[userID] {
 		overlay := &m.rows[userID][index]
-		if overlay.Deleted || !overlay.ValidTo.IsZero() || overlay.ValidFrom.IsZero() || overlay.ValidFrom.After(cutoff) {
+		// 严格早于 cutoff 才封口（恰满窗口的行不封）：与 Postgres 侧
+		// valid_from < now()-interval 的严格小于对齐，「opened more than
+		// days before」的接口契约。
+		if overlay.Deleted || !overlay.ValidTo.IsZero() || overlay.ValidFrom.IsZero() || !overlay.ValidFrom.Before(cutoff) {
 			continue
 		}
 		overlay.ValidTo = now
@@ -294,6 +297,12 @@ func (m *MemoryPortraitOverlays) ApplyPortraitOp(_ context.Context, userID strin
 	case PortraitOpUpdate:
 		if err := m.closeLocked(userID, decision.TargetID, now); err != nil {
 			return PortraitOverlay{}, err
+		}
+		// 封口目标后再查主张槽位：判定器跨槽误判（target 在另一槽）或槽内
+		// 已有更新行时，append 会并出同槽第二条开放行——Postgres 侧由 052
+		// 部分唯一索引整事务回滚，Memory 侧同口径显式报错（双实现对齐）。
+		if m.slotOccupiedLocked(userID, claim.Topic, claim.SubTopic) {
+			return PortraitOverlay{}, ErrSlotOccupied
 		}
 		overlay := claim.overlay(m.nextIDLocked(), now)
 		m.rows[userID] = append(m.rows[userID], overlay)

@@ -433,6 +433,8 @@ class RemoteTurnModel {
   String? _utteranceId;
   String _text = '';
   bool? _verdict;
+  // 在途查询对应的文本快照：迟到 turn_result 与当前文本不一致即丢弃。
+  String? _inFlightQueryText;
   int _falseRepeats = 0;
   bool _queryInFlight = false;
   bool _unavailable = false;
@@ -477,13 +479,17 @@ class RemoteTurnModel {
       _unavailable = true;
       return null;
     }
+    // 记录在途查询的文本代次：partial 更新后迟到的旧文本结论必须在
+    // acceptResult 处作废（结论绑定判定时文本的契约对在途竞态同样成立）。
+    _inFlightQueryText = text;
     _queryInFlight = true;
     _timeoutTimer?.cancel();
     _timeoutTimer = Timer(queryTimeout, _resolveQueryTimeout);
     return null;
   }
 
-  /// turn_result 下行回填：utteranceId 不匹配的迟到结果丢弃；
+  /// turn_result 下行回填：utteranceId 不匹配的迟到结果丢弃；查询发出后
+  /// 文本已被 partial 更新的迟到结论一并丢弃（按旧文本提前截断新话轮）；
   /// isComplete=null 视为模型路不可用（话轮内粘滞）。
   void acceptResult({required String utteranceId, required bool? isComplete}) {
     if (utteranceId.isEmpty || utteranceId != _utteranceId) return;
@@ -494,6 +500,12 @@ class RemoteTurnModel {
       _unavailable = true;
       return;
     }
+    if (_inFlightQueryText != null && _inFlightQueryText != _text.trim()) {
+      // 旧文本的结论：丢弃，交回链上下一次咨询（按新文本重询）。
+      _inFlightQueryText = null;
+      return;
+    }
+    _inFlightQueryText = null;
     _verdict = isComplete;
   }
 

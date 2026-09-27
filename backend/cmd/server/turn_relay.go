@@ -95,8 +95,14 @@ func (c *turnSidecarClient) Predict(ctx context.Context, text string) (turnPredi
 	defer resp.Body.Close()
 	if resp.StatusCode != http.StatusOK {
 		_, _ = io.Copy(io.Discard, resp.Body)
-		c.breaker.Failure(now)
-		return turnPrediction{}, fmt.Errorf("turn sidecar error %d", resp.StatusCode)
+		// 4xx 是输入侧错误（如归一化后空文本），sidecar 服务本身健康——
+		// 不计熔断：否则一条连接发 3 条空白文本就能让全服轮次检测降级
+		// 10 秒。只有服务性故障（5xx）才计入。
+		if resp.StatusCode >= http.StatusInternalServerError {
+			c.breaker.Failure(now)
+			return turnPrediction{}, fmt.Errorf("turn sidecar error %d", resp.StatusCode)
+		}
+		return turnPrediction{}, fmt.Errorf("turn sidecar rejected input %d", resp.StatusCode)
 	}
 	var payload struct {
 		Probability float64 `json:"probability"`
