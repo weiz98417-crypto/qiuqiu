@@ -64,6 +64,10 @@ _Avoid_: Admin, shared token, 账号
 The graded scope of human takeover — single-ability pause (proactive only), match takeover, or route scope. A quieter level never enables a capability that a louder one restricts.
 _Avoid_: 五级暂停, 全局开关
 
+**Operations Observation（运营观测）**:
+The operator-facing view into runtime behavior — voice latency breakdown, turn decisions, delivery outcomes, backchannel emissions. Metric surfaces show aggregates only, never user content; the single-turn replay shows transcript text under the same privilege as the user detail page; the live ops stream carries event kinds, counts, and latencies, never message bodies.
+_Avoid_: 用户内容监控, 全文日志面板
+
 ## Memory
 
 **Shared Moment（共同瞬间）**:

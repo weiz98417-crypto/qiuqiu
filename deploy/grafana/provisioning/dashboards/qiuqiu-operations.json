@@ -1,0 +1,170 @@
+{
+  "annotations": { "list": [] },
+  "editable": true,
+  "fiscalYearStartMonth": 0,
+  "graphTooltip": 0,
+  "links": [],
+  "panels": [
+    {
+      "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 0, "y": 0 },
+      "id": 1,
+      "options": { "legend": { "calcs": ["mean", "max"], "displayMode": "table", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '5m'), percentile_cont(0.5) WITHIN GROUP (ORDER BY latency_ms) AS \"p50\", percentile_cont(0.9) WITHIN GROUP (ORDER BY latency_ms) AS \"p90\"\nFROM agent_traces\nWHERE $__timeFilter(created_at) AND latency_ms > 0\nGROUP BY 1\nORDER BY 1",
+          "refId": "A"
+        }
+      ],
+      "title": "语音总延迟 P50/P90（agent_traces.latency_ms）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+      "fieldConfig": {
+        "defaults": {
+          "custom": { "drawStyle": "line", "fillOpacity": 8, "lineWidth": 2, "showPoints": "never" },
+          "unit": "ms"
+        },
+        "overrides": []
+      },
+      "gridPos": { "h": 8, "w": 12, "x": 12, "y": 0 },
+      "id": 2,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" } },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), AVG((voice->'latencyStages'->>'asr_final')::numeric) AS \"asr_final\"\nFROM agent_traces\nWHERE $__timeFilter(created_at) AND voice ? 'latencyStages'\nGROUP BY 1 ORDER BY 1",
+          "refId": "A"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), AVG((voice->'latencyStages'->>'turn_decided')::numeric) AS \"turn_decided\"\nFROM agent_traces\nWHERE $__timeFilter(created_at) AND voice ? 'latencyStages'\nGROUP BY 1 ORDER BY 1",
+          "refId": "B"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), AVG((voice->'latencyStages'->>'tts_synthesized')::numeric) AS \"tts_synthesized\"\nFROM agent_traces\nWHERE $__timeFilter(created_at) AND voice ? 'latencyStages'\nGROUP BY 1 ORDER BY 1",
+          "refId": "C"
+        },
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "time_series",
+          "rawQuery": true,
+          "rawSql": "SELECT $__timeGroupAlias(created_at, '15m'), AVG((voice->'latencyStages'->>'audio_delivered')::numeric) AS \"audio_delivered\"\nFROM agent_traces\nWHERE $__timeFilter(created_at) AND voice ? 'latencyStages'\nGROUP BY 1 ORDER BY 1",
+          "refId": "D"
+        }
+      ],
+      "title": "延迟分段均值（非堆积：各段为累计口径，tts_synthesized 为合成段耗时）",
+      "type": "timeseries"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "green", "value": null }, { "color": "red", "value": 0.3 } ] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 0, "y": 8 },
+      "id": 3,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "WITH signals AS (\n  SELECT playback_state AS state FROM interaction_ledger WHERE $__timeFilter(created_at) AND playback_state IS NOT NULL\n  UNION ALL\n  SELECT state FROM delivery_ledger WHERE $__timeFilter(updated_at)\n)\nSELECT COALESCE(SUM(CASE WHEN state = 'interrupted' THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0), 0) AS \"打断占比\"\nFROM signals",
+          "refId": "A"
+        }
+      ],
+      "title": "播放期打断率（interaction_ledger playback_state + delivery_ledger）",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+      "fieldConfig": { "defaults": { "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 8, "y": 8 },
+      "id": 4,
+      "options": { "reduceOptions": { "calcs": ["sum"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(CASE WHEN kind = 'backchannel' THEN 1 ELSE 0 END), 0) AS \"微反应发出\",\n  (SELECT COUNT(*) FROM match_events WHERE event_type IN ('big_chance','miss','save','var_check') AND $__timeFilter(created_at)) AS \"白名单事件\"\nFROM interaction_ledger\nWHERE $__timeFilter(created_at)",
+          "refId": "A"
+        }
+      ],
+      "title": "微反应发出 vs 白名单事件 24h（拒绝路径无痕，不承诺限频归因）",
+      "type": "stat"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+      "fieldConfig": { "defaults": { "custom": { "fillOpacity": 60, "lineWidth": 2 }, "unit": "short" }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 8, "x": 16, "y": 8 },
+      "id": 5,
+      "options": { "legend": { "displayMode": "list", "placement": "bottom" }, "tooltip": { "mode": "multi" }, "orientation": "horizontal" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT state, COUNT(*) AS \"条数\"\nFROM delivery_ledger\nWHERE $__timeFilter(updated_at)\nGROUP BY state ORDER BY \"条数\" DESC",
+          "refId": "A"
+        }
+      ],
+      "title": "投递七态分布（delivery_ledger）",
+      "type": "barchart"
+    },
+    {
+      "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+      "fieldConfig": { "defaults": { "unit": "percentunit", "min": 0, "max": 1, "thresholds": { "mode": "absolute", "steps": [ { "color": "red", "value": null }, { "color": "green", "value": 0.8 } ] } }, "overrides": [] },
+      "gridPos": { "h": 8, "w": 24, "x": 0, "y": 16 },
+      "id": 6,
+      "options": { "reduceOptions": { "calcs": ["lastNotNull"] }, "orientation": "auto", "textMode": "auto", "colorMode": "value" },
+      "targets": [
+        {
+          "datasource": { "type": "postgres", "uid": "qiuqiu-ledger" },
+          "editorMode": "code",
+          "format": "table",
+          "rawQuery": true,
+          "rawSql": "SELECT COALESCE(SUM(CASE WHEN status = 'delivered' THEN 1 ELSE 0 END)::numeric / NULLIF(COUNT(*), 0), 0) AS \"送达率\"\nFROM proactive_reminders\nWHERE $__timeFilter(created_at)\n  -- 分母含全部状态：delivered / suppressed / missed（missed = status 非\n  -- delivered 且 expire_at 已过，表无 expired 状态值，migration 045）",
+          "refId": "A"
+        }
+      ],
+      "title": "主动触达送达率（delivered / 全部，含 suppressed 与 missed）",
+      "type": "stat"
+    }
+  ],
+  "refresh": "1m",
+  "schemaVersion": 41,
+  "tags": ["qiuqiu", "operations"],
+  "templating": { "list": [] },
+  "time": { "from": "now-24h", "to": "now" },
+  "timepicker": {},
+  "timezone": "browser",
+  "title": "qiuqiu 运营观测",
+  "uid": "qiuqiu-ops",
+  "version": 1,
+  "weekStart": ""
+}

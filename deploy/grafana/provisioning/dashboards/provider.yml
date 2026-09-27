@@ -1,0 +1,14 @@
+# Grafana provisioning：dashboard 来源（ADR-0021 provisioning as code）。
+apiVersion: 1
+
+providers:
+  - name: qiuqiu-operations
+    orgId: 1
+    folder: qiuqiu-operations
+    type: file
+    disableDeletion: false
+    updateIntervalSeconds: 30
+    allowUiUpdates: true
+    options:
+      path: /etc/grafana/provisioning/dashboards
+      foldersFromFilesStructure: false
