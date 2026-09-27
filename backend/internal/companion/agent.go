@@ -146,6 +146,54 @@ func (a *Agent) UpdateTrace(ctx context.Context, trace Trace) error {
 	return a.tools.UpdateTrace(ctx, trace)
 }
 
+// VoiceObservationPatch 是 AttachVoiceStages 的一次合并载荷（operations-
+// turn-replay）：延迟分解键级合并、轮次结论整替换、TTS 元数据按非零字段
+// 合并（生产 WS 路径的 TTS 在投递服务内完成，这是它唯一的落库通道）。
+type VoiceObservationPatch struct {
+	Stages       map[string]int
+	TurnDecision *VoiceTurnDecision
+	TTSMeta      *VoiceTraceMetadata
+}
+
+// AttachVoiceStages 是语音观测的事后合并通道：WS 路径的 trace 在打点时
+// 已经落库，只能键级合并进 voice——不覆盖既有其他字段，同键后到覆盖。
+// 缺 trace 报错由调用方计数即弃（观测旁路，永不反伤主链路）。
+func (a *Agent) AttachVoiceStages(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error {
+	if a == nil || (len(patch.Stages) == 0 && patch.TurnDecision == nil && patch.TTSMeta == nil) {
+		return nil
+	}
+	trace, err := a.tools.GetTrace(ctx, matchID, traceID)
+	if err != nil {
+		return err
+	}
+	if trace.Voice == nil {
+		trace.Voice = &VoiceTraceMetadata{}
+	}
+	if len(patch.Stages) > 0 {
+		if trace.Voice.LatencyStages == nil {
+			trace.Voice.LatencyStages = make(map[string]int, len(patch.Stages))
+		}
+		for stage, elapsed := range patch.Stages {
+			trace.Voice.LatencyStages[stage] = elapsed
+		}
+	}
+	if patch.TurnDecision != nil {
+		trace.Voice.TurnDecision = patch.TurnDecision
+	}
+	if meta := patch.TTSMeta; meta != nil {
+		if meta.TTSStatus != "" {
+			trace.Voice.TTSStatus = meta.TTSStatus
+		}
+		if meta.TTSMime != "" {
+			trace.Voice.TTSMime = meta.TTSMime
+		}
+		if meta.TTSByteCount > 0 {
+			trace.Voice.TTSByteCount = meta.TTSByteCount
+		}
+	}
+	return a.UpdateTrace(ctx, trace)
+}
+
 func (a *Agent) recordInteraction(ctx context.Context, event interaction.Event) error {
 	if a == nil || a.interactions == nil || event.ID == "" || event.UserID == "" || event.MatchID == "" {
 		return nil

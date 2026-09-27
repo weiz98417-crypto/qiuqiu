@@ -21,6 +21,7 @@ import (
 	"strings"
 	"time"
 
+	"qiuqiu/internal/companion"
 	"qiuqiu/internal/resilience"
 )
 
@@ -125,14 +126,14 @@ func (c *watchConnection) handleTurnQuery(utteranceID, text string) {
 	sidecar := c.deps.turnSidecar
 	if sidecar == nil || !sidecar.Enabled() {
 		// 未配置端点：同步快回 null——model 插槽整体降级，静默档自决。
-		c.sendTurnResult(utteranceID, turnPrediction{}, false)
+		c.sendTurnResult(utteranceID, turnPrediction{}, false, 0)
 		return
 	}
 	select {
 	case c.turnInFlight <- struct{}{}:
 	default:
 		// 在途饱和：不反压读循环，按不可用回 null（客户端下探静默档）。
-		c.sendTurnResult(utteranceID, turnPrediction{}, false)
+		c.sendTurnResult(utteranceID, turnPrediction{}, false, 0)
 		return
 	}
 	go c.forwardTurnQuery(sidecar, utteranceID, text)
@@ -143,6 +144,7 @@ func (c *watchConnection) handleTurnQuery(utteranceID, text string) {
 // 预算的 background context：连接拆除不打断在途短调用，写失败随连接消亡。
 func (c *watchConnection) forwardTurnQuery(sidecar *turnSidecarClient, utteranceID, text string) {
 	defer func() { <-c.turnInFlight }()
+	startedAt := time.Now()
 	ctx, cancel := context.WithTimeout(context.Background(), defaultTurnSidecarTimeout)
 	defer cancel()
 	prediction, err := sidecar.Predict(ctx, text)
@@ -152,16 +154,24 @@ func (c *watchConnection) forwardTurnQuery(sidecar *turnSidecarClient, utterance
 			log.Printf("turn sidecar query error: user=%q match=%q utterance=%q err=%v",
 				c.identity.Get(), c.matchID, utteranceID, err)
 		}
-		c.sendTurnResult(utteranceID, turnPrediction{}, false)
+		c.sendTurnResult(utteranceID, turnPrediction{}, false, time.Since(startedAt))
 		return
 	}
-	c.sendTurnResult(utteranceID, prediction, true)
+	c.sendTurnResult(utteranceID, prediction, true, time.Since(startedAt))
 }
 
 // sendTurnResult 下行 turn_result；resolved=false 时 isComplete 固定 null
-// （客户端插槽 null 语义=下探静默档）。转写文本不入日志（与 duplex_event
-// 同纪律）。
-func (c *watchConnection) sendTurnResult(utteranceID string, prediction turnPrediction, resolved bool) {
+// （客户端插槽 null 语义=下探静默档）。结论同时进 utterance 级缓冲
+// （operations-turn-replay）：同 utterance 多问以最后一问为准，trace 诞生
+// 后由 turn_decided attach。转写文本不入日志（与 duplex_event 同纪律）。
+func (c *watchConnection) sendTurnResult(utteranceID string, prediction turnPrediction, resolved bool, elapsed time.Duration) {
+	decision := &companion.VoiceTurnDecision{Source: "unavailable", QueryLatencyMS: int(elapsed.Milliseconds())}
+	if resolved {
+		complete := prediction.IsComplete
+		decision.IsComplete = &complete
+		decision.Source = "model"
+	}
+	c.recordTurnVerdict(utteranceID, decision)
 	payload := map[string]interface{}{
 		"type":        "turn_result",
 		"utteranceId": utteranceID,

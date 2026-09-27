@@ -221,6 +221,22 @@ type VoiceTraceMetadata struct {
 	TTSMime        string `json:"ttsMime,omitempty"`
 	TTSByteCount   int    `json:"ttsByteCount,omitempty"`
 	PlaybackStatus string `json:"playbackStatus,omitempty"`
+	// LatencyStages 是语音链路延迟分解（operations-turn-replay）：stage 名
+	// →相对 speech_received 锚点的累计毫秒（非相邻差）。缺 stage = 该段未
+	// 测得（锚点缺失/非语音轮），UI 需容错。写入走 AttachVoiceStages
+	// （事后合并，WS 路径 trace 已落库）或构造内直填（HTTP 路径）。
+	LatencyStages map[string]int `json:"latencyStages,omitempty"`
+	// TurnDecision 是轮次检测的最后一问结论（voice-turn-detection 决策 c
+	// 的落库面）：isComplete=null = sidecar 未决（降级/饱和/错误）；来源
+	// model=真结论、unavailable=回退。真机 800ms 抢话门校准与回放共用。
+	TurnDecision *VoiceTurnDecision `json:"turnDecision,omitempty"`
+}
+
+// VoiceTurnDecision 见 VoiceTraceMetadata.TurnDecision。
+type VoiceTurnDecision struct {
+	IsComplete     *bool  `json:"isComplete,omitempty"`
+	Source         string `json:"source,omitempty"`
+	QueryLatencyMS int    `json:"queryLatencyMs,omitempty"`
 }
 
 type ToolCall struct {
@@ -335,4 +351,7 @@ type MemoryTools interface {
 	RecentTurns(ctx context.Context, matchID, userID string, limit int) ([]ConversationTurn, error)
 	WriteTrace(ctx context.Context, trace Trace) error
 	UpdateTrace(ctx context.Context, trace Trace) error
+	// GetTrace 供 AttachVoiceStages 读回已落库 trace 做键级合并
+	// （operations-turn-replay）。
+	GetTrace(ctx context.Context, matchID, traceID string) (Trace, error)
 }

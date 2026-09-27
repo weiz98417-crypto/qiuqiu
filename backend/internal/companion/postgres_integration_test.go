@@ -273,3 +273,71 @@ func TestPostgresRouterTraceRoundTripIntegration(t *testing.T) {
 		t.Fatalf("rejected trace round-trip = %+v, want rejectReason=policy", gotRejected.Router)
 	}
 }
+
+// AttachVoiceStages 的 PG 路径（operations-turn-replay）：voice JSONB 的
+// 键级合并在真实列上往返——首轮 attach 落库、二轮 attach 不丢兄弟键。
+func TestPostgresAttachVoiceStagesIntegration(t *testing.T) {
+	databaseURL := os.Getenv("DATABASE_URL")
+	if databaseURL == "" {
+		t.Skip("DATABASE_URL not set")
+	}
+
+	ctx := context.Background()
+	store, err := matchstate.OpenPostgresStore(ctx, databaseURL, "../../migrations")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore error: %v", err)
+	}
+	defer store.Close()
+	traces, err := OpenPostgresTraceWriter(ctx, databaseURL)
+	if err != nil {
+		t.Fatalf("OpenPostgresTraceWriter error: %v", err)
+	}
+	defer traces.Close()
+
+	matchID := "pg-voice-stages-" + time.Now().UTC().Format("20060102150405")
+	if err := traces.Reset(matchID); err != nil {
+		t.Fatalf("Reset traces error: %v", err)
+	}
+	agent := NewAgent(NewRepositoryMemoryTools(store).WithTraceWriter(traces).WithTurnReader(traces))
+	if _, err := agent.HandleMessage(ctx, MessageRequest{
+		SignalID: "pg-voice-" + matchID, MatchID: matchID, UserID: "pg-user", Text: "现在几比几？", Now: time.Now().UTC(),
+	}); err != nil {
+		t.Fatalf("HandleMessage error: %v", err)
+	}
+	tracesInMatch, err := traces.ListTraces(ctx, matchID, 10)
+	if err != nil || len(tracesInMatch) == 0 {
+		t.Fatalf("ListTraces error: %v (n=%d)", err, len(tracesInMatch))
+	}
+	traceID := tracesInMatch[0].ID
+	if err := agent.AttachVoiceStages(ctx, matchID, traceID, VoiceObservationPatch{
+		Stages: map[string]int{"speech_received": 0, "asr_final": 320},
+		TurnDecision: &VoiceTurnDecision{Source: "model", QueryLatencyMS: 41},
+	}); err != nil {
+		t.Fatalf("attach 1: %v", err)
+	}
+	if err := agent.AttachVoiceStages(ctx, matchID, traceID, VoiceObservationPatch{
+		Stages:  map[string]int{"audio_delivered": 2100},
+		TTSMeta: &VoiceTraceMetadata{TTSStatus: "ok", TTSMime: "audio/wav", TTSByteCount: 66000},
+	}); err != nil {
+		t.Fatalf("attach 2: %v", err)
+	}
+
+	reloaded, err := agent.tools.GetTrace(ctx, matchID, traceID)
+	if err != nil {
+		t.Fatalf("reload: %v", err)
+	}
+	if reloaded.Voice == nil {
+		t.Fatal("voice meta missing after PG attach")
+	}
+	for stage, want := range map[string]int{"speech_received": 0, "asr_final": 320, "audio_delivered": 2100} {
+		if have := reloaded.Voice.LatencyStages[stage]; have != want {
+			t.Fatalf("stage %s = %d, want %d", stage, have, want)
+		}
+	}
+	if reloaded.Voice.TurnDecision == nil || reloaded.Voice.TurnDecision.Source != "model" {
+		t.Fatalf("turn decision lost: %+v", reloaded.Voice.TurnDecision)
+	}
+	if reloaded.Voice.TTSMime != "audio/wav" || reloaded.Voice.TTSByteCount != 66000 {
+		t.Fatalf("tts meta lost: %+v", reloaded.Voice)
+	}
+}

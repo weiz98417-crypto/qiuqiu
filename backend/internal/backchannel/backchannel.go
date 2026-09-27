@@ -26,6 +26,12 @@ var whitelistedEvents = map[string]bool{
 	"var_check":  true,
 }
 
+// Whitelisted 报告事件类型是否在微反应白名单内（运营观测面计数用，
+// operations-turn-replay）。
+func Whitelisted(eventType string) bool {
+	return whitelistedEvents[eventType]
+}
+
 // phrasePools 按事件类型分桶的短语池（≤10 字，球球口吻）。
 var phrasePools = map[string][]string{
 	"big_chance": {"哇，这球太险了！", "就差一点点！"},

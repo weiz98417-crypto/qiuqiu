@@ -102,6 +102,13 @@ type ResponseDeliveryResult struct {
 	TextDelivered  bool
 	AudioDelivered bool
 	FallbackReason string
+	// SynthesisMS/TTSMime/TTSByteCount 是语音观测面（operations-turn-
+	// replay）：合成耗时（0=未合成或走兜底）与产物元数据，由投递服务带回，
+	// 调用方经 AttachVoiceStages 落 trace——生产 WS 路径的 TTS 在投递服务
+	// 内完成，此前这些字段无落库通道。
+	SynthesisMS   int
+	TTSMime       string
+	TTSByteCount  int
 }
 
 type ResponseDeliveryService struct {
@@ -284,7 +291,9 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 	if request.Trace.RelationshipDecision != nil {
 		acts = request.Trace.RelationshipDecision.Actions
 	}
+	synthStartedAt := time.Now()
 	audio, synthErr := service.synthesizer.SynthesizeResponse(ctx, request.Reply, request.Presentation, acts)
+	result.SynthesisMS = int(time.Since(synthStartedAt).Milliseconds())
 	if synthErr != nil {
 		if ctx.Err() != nil {
 			service.interrupt(request.Trace.ID)
@@ -302,6 +311,8 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 	if strings.TrimSpace(audio.MIME) == "" {
 		audio.MIME = "audio/mpeg"
 	}
+	result.TTSMime = audio.MIME
+	result.TTSByteCount = len(audio.Data)
 
 	// ── 加锁规划半（音频）：终态/重复判定 + AudioStarted 占位迁移。──
 	sendAudio, err := service.planAudioRound(request)
