@@ -279,6 +279,31 @@ void main() {
     );
   });
 
+  test('deduplicates backchannel audio by delivery key', () {
+    final controller = MatchSessionController();
+    for (var index = 0; index < 2; index++) {
+      controller.queueAudioMetadata(
+          const PendingAudio(
+            mime: 'audio/wav',
+            eventId: 'event-save',
+            deliveryKey: 'backchannel-event-save',
+          ),
+          source: 'backchannel');
+    }
+    controller.consumeAudio(Uint8List.fromList([1]),
+        soundEnabled: true, continuousEnabled: true);
+    controller.consumeAudio(Uint8List.fromList([2]),
+        soundEnabled: true, continuousEnabled: true);
+    final commands = controller.takeCommands();
+    expect(commands.whereType<PlayAudioCommand>(), hasLength(1));
+    expect(
+      commands
+          .whereType<SendSocketCommand>()
+          .map((command) => command.message['state']),
+      contains('skipped'),
+    );
+  });
+
   test('retracting an active match reaction stops media and clears it', () {
     final controller = MatchSessionController();
     const presentation = CompanionPresentation(

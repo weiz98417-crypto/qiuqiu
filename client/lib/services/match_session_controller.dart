@@ -1070,8 +1070,13 @@ class MatchSessionController extends ChangeNotifier {
   }
 
   void queueAudioMetadata(PendingAudio metadata, {String? source}) {
-    final duplicate = source == 'match_reaction' &&
-        !_seenAudio.remember(metadata.deliveryKey);
+    // deliveryKey 去重覆盖两条服务端下发通道：match_reaction（回合反应，
+    // 恢复重发可能重复）与 backchannel（微反应 v1.1，重连后事件再投影会
+    // 重新触发）；两者都按下发键一进一出。
+    final dedupeByDeliveryKey =
+        source == 'match_reaction' || source == 'backchannel';
+    final duplicate =
+        dedupeByDeliveryKey && !_seenAudio.remember(metadata.deliveryKey);
     final retracted = source == 'match_reaction' &&
         isRetractedMatchReaction(metadata.eventId, _state.retractedFactIds);
     _pendingAudio.add(metadata.copyWith(skip: duplicate || retracted));
