@@ -9,9 +9,18 @@ enum AudioPlaybackStatus { started, ended, interrupted, blocked, failed }
 class AudioState {
   final AudioPlaybackStatus status;
   final String? traceId;
+
+  /// 下发音频携带的投递键：随播放终态原样回传，供 playback_result 实报
+  /// 定位投递记录；旧下发路径缺此键时不实报（与原生变体同语义）。
+  final String? deliveryKey;
   final String? error;
 
-  const AudioState({required this.status, this.traceId, this.error});
+  const AudioState({
+    required this.status,
+    this.traceId,
+    this.deliveryKey,
+    this.error,
+  });
 }
 
 class AudioPlayerService {
@@ -20,6 +29,7 @@ class AudioPlayerService {
   bool _muted = false;
   bool _disposed = false;
   String? _currentTraceId;
+  String? _currentDeliveryKey;
 
   Stream<AudioState> get stateStream => _stateController.stream;
   bool get isMuted => _muted;
@@ -28,26 +38,30 @@ class AudioPlayerService {
     Uint8List audio, {
     required String mime,
     String? traceId,
+    String? deliveryKey,
   }) async {
     if (_muted || _disposed || audio.isEmpty) return;
     await pause(notify: false);
     _ensureBridge();
     _currentTraceId = traceId;
+    _currentDeliveryKey = deliveryKey;
     _eventPoll ??= Timer.periodic(
       const Duration(milliseconds: 50),
       (_) => _readPlaybackEvent(),
     );
     final source = 'data:$mime;base64,${base64Encode(audio)}';
     final encodedTraceId = jsonEncode(traceId);
+    final encodedDeliveryKey = jsonEncode(deliveryKey);
     _runJavaScript('''
       (function() {
         var bridge = document.getElementById('__qAudioDiv');
         var traceId = $encodedTraceId;
+        var deliveryKey = $encodedDeliveryKey;
         function emit(state, message) {
           window.__qAudioState = state;
           if (state === 'failed') window.__qAudioLastError = message || '';
           var previous = bridge.textContent;
-          var event = JSON.stringify({state: state, message: message || '', traceId: traceId});
+          var event = JSON.stringify({state: state, message: message || '', traceId: traceId, deliveryKey: deliveryKey});
           bridge.textContent = (previous && previous !== 'null' ? previous : '') + event + '\\n';
         }
         if (!window.__qAudioUnlockInstalled) {
@@ -120,9 +134,15 @@ class AudioPlayerService {
       }
     ''');
     final traceId = _currentTraceId;
+    final deliveryKey = _currentDeliveryKey;
     _currentTraceId = null;
-    if (notify && traceId != null) {
-      _emit(AudioPlaybackStatus.interrupted, traceId: traceId);
+    _currentDeliveryKey = null;
+    if (notify && (traceId != null || deliveryKey != null)) {
+      _emit(
+        AudioPlaybackStatus.interrupted,
+        traceId: traceId,
+        deliveryKey: deliveryKey,
+      );
     }
   }
 
@@ -147,22 +167,39 @@ class AudioPlayerService {
       final data = jsonDecode(raw) as Map<String, dynamic>;
       final state = data['state']?.toString();
       final eventTraceId = data['traceId']?.toString();
+      final eventDeliveryKey = data['deliveryKey']?.toString();
       if (state == 'started') {
-        _emit(AudioPlaybackStatus.started, traceId: eventTraceId);
+        _emit(
+          AudioPlaybackStatus.started,
+          traceId: eventTraceId,
+          deliveryKey: eventDeliveryKey,
+        );
       } else if (state == 'ended') {
         if (_currentTraceId == eventTraceId) _currentTraceId = null;
-        _emit(AudioPlaybackStatus.ended, traceId: eventTraceId);
+        if (_currentDeliveryKey == eventDeliveryKey) {
+          _currentDeliveryKey = null;
+        }
+        _emit(
+          AudioPlaybackStatus.ended,
+          traceId: eventTraceId,
+          deliveryKey: eventDeliveryKey,
+        );
       } else if (state == 'failed') {
         if (_currentTraceId == eventTraceId) _currentTraceId = null;
+        if (_currentDeliveryKey == eventDeliveryKey) {
+          _currentDeliveryKey = null;
+        }
         _emit(
           AudioPlaybackStatus.failed,
           traceId: eventTraceId,
+          deliveryKey: eventDeliveryKey,
           error: data['message']?.toString(),
         );
       } else if (state == 'blocked') {
         _emit(
           AudioPlaybackStatus.blocked,
           traceId: eventTraceId,
+          deliveryKey: eventDeliveryKey,
           error: data['message']?.toString(),
         );
       }
@@ -170,6 +207,7 @@ class AudioPlayerService {
       _emit(
         AudioPlaybackStatus.failed,
         traceId: _currentTraceId,
+        deliveryKey: _currentDeliveryKey,
         error: error.toString(),
       );
     }
@@ -192,10 +230,20 @@ class AudioPlayerService {
     script.remove();
   }
 
-  void _emit(AudioPlaybackStatus status, {String? traceId, String? error}) {
+  void _emit(
+    AudioPlaybackStatus status, {
+    String? traceId,
+    String? deliveryKey,
+    String? error,
+  }) {
     if (!_disposed && !_stateController.isClosed) {
       _stateController.add(
-        AudioState(status: status, traceId: traceId, error: error),
+        AudioState(
+          status: status,
+          traceId: traceId,
+          deliveryKey: deliveryKey,
+          error: error,
+        ),
       );
     }
   }

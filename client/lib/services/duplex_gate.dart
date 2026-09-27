@@ -1,3 +1,6 @@
+import 'dart:math';
+import 'dart:typed_data';
+
 import 'vad_service.dart';
 
 /// 播放期抢断门参数。能量门默认 = 空闲期 start 阈值 × 倍率；时长门挡住
@@ -171,4 +174,19 @@ List<PlaybackInterruptDecision> evaluatePlaybackInterrupt(
   return [
     for (final rms in rmsFrames) gate.observe(rms),
   ];
+}
+
+/// 16kHz 16-bit LE PCM 的 RMS（0..1 归一）：原生流帧与 web 流式批次共用的
+/// 同一能量口径——门参数按 RMS 定标，两侧口径必须一致。
+double pcm16Rms(Uint8List pcm) {
+  if (pcm.length < 2) return 0;
+  var sum = 0.0;
+  final samples = pcm.length ~/ 2;
+  for (var offset = 0; offset < pcm.length - 1; offset += 2) {
+    final unsigned = (pcm[offset + 1] << 8) | pcm[offset];
+    final signed = unsigned > 32767 ? unsigned - 65536 : unsigned;
+    final normalized = signed / 32768.0;
+    sum += normalized * normalized;
+  }
+  return sqrt(sum / samples);
 }

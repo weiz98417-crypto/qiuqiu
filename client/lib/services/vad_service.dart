@@ -1,6 +1,5 @@
 import 'dart:async';
 import 'dart:collection';
-import 'dart:math';
 
 import 'package:audio_session/audio_session.dart';
 import 'package:flutter/foundation.dart';
@@ -243,7 +242,7 @@ class VADService {
 
   void _processAudio(Uint8List pcm) {
     if (!_sessionActive || !_captureActive || pcm.isEmpty) return;
-    final rms = _calculateRms(pcm);
+    final rms = pcm16Rms(pcm);
     final hadConfirmedSpeech = _voiceActivity.hasConfirmedSpeech;
 
     if (_mode == VADMode.pushToTalk) {
@@ -341,19 +340,6 @@ class VADService {
       _gatedSpeechAnnounced = true;
       _emit(const VADEvent.speaking());
     }
-  }
-
-  double _calculateRms(Uint8List pcm) {
-    if (pcm.length < 2) return 0;
-    var sum = 0.0;
-    final samples = pcm.length ~/ 2;
-    for (var offset = 0; offset < pcm.length - 1; offset += 2) {
-      final unsigned = (pcm[offset + 1] << 8) | pcm[offset];
-      final signed = unsigned > 32767 ? unsigned - 65536 : unsigned;
-      final normalized = signed / 32768.0;
-      sum += normalized * normalized;
-    }
-    return sqrt(sum / samples);
   }
 
   Future<void> _finishSentence() async {
