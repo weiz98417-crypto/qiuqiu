@@ -1,11 +1,12 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, App as AntApp, Button, Card, Col, Empty, Input, Popconfirm, Row, Select, Space, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Button, Card, Col, Empty, Input, Popconfirm, Row, Select, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { consoleApi } from '../api/client';
 import type { ConsoleThread } from '../api/client';
 import { useOperator } from '../api/operator';
 import { fmtTime, threadKindLabels, threadStateLabels, threadStateTag } from '../api/format';
-import { useAsync } from '../api/useAsync';
+import { runAction, useConsoleQuery } from '../api/useConsoleQuery';
+import ObservationPage from '../components/ObservationPage';
 
 const { Text } = Typography;
 
@@ -28,23 +29,17 @@ export default function Threads() {
     () => consoleApi.threads({ userId: appliedUserId || undefined, state: stateFilter || undefined }),
     [appliedUserId, stateFilter],
   );
-  const threads = useAsync(lister, [appliedUserId, stateFilter]);
+  const threads = useConsoleQuery(lister, [appliedUserId, stateFilter]);
 
   const rows = useMemo(() => threads.data?.threads ?? [], [threads.data]);
 
   const patchThread = useCallback(
-    async (threadId: string, action: 'address' | 'expire') => {
-      setActingThreadId(threadId);
-      try {
-        await consoleApi.patchThread(threadId, action);
-        messageApi.success(action === 'address' ? '已标记为已答' : '已标记为过期');
-        await threads.reload();
-      } catch (err) {
-        messageApi.error(err instanceof Error ? err.message : String(err));
-      } finally {
-        setActingThreadId(null);
-      }
-    },
+    (threadId: string, action: 'address' | 'expire') =>
+      runAction(messageApi, () => consoleApi.patchThread(threadId, action), {
+        success: action === 'address' ? '已标记为已答' : '已标记为过期',
+        reload: threads.reload,
+        busy: { set: setActingThreadId, key: threadId },
+      }),
     [messageApi, threads],
   );
 
@@ -112,49 +107,49 @@ export default function Threads() {
   ];
 
   return (
-    <Row gutter={[16, 16]}>
-      <Col span={24}>
-        <Card
-          title="话题台账"
-          extra={
-            <Space wrap>
-              <Input
-                aria-label="按用户过滤"
-                placeholder="按用户 ID 过滤"
-                style={{ width: 200 }}
-                allowClear
-                value={userIdInput}
-                onChange={(event) => setUserIdInput(event.target.value)}
-                onPressEnter={() => setAppliedUserId(userIdInput.trim())}
-              />
-              <Button onClick={() => setAppliedUserId(userIdInput.trim())}>过滤</Button>
-              <Select
-                aria-label="按状态过滤"
-                placeholder="状态"
-                style={{ width: 120 }}
-                allowClear
-                options={STATE_OPTIONS}
-                value={stateFilter || undefined}
-                onChange={(value) => setStateFilter(value ?? '')}
-              />
-              <Button size="small" onClick={() => void threads.reload()} loading={threads.loading}>
-                刷新
-              </Button>
-            </Space>
-          }
-        >
-          {threads.error ? <Alert type="error" showIcon message={threads.error} style={{ marginBottom: 12 }} /> : null}
-          <Table<ConsoleThread>
-            size="small"
-            rowKey="id"
-            columns={columns}
-            dataSource={rows}
-            loading={threads.loading}
-            pagination={{ pageSize: 15, hideOnSinglePage: true }}
-            locale={{ emptyText: <Empty description="没有匹配的话题" imageStyle={{ height: 48 }} /> }}
+    <ObservationPage
+      title="话题台账"
+      error={threads.error}
+      loading={threads.loading}
+      onReload={() => void threads.reload()}
+      extra={
+        <Space wrap>
+          <Input
+            aria-label="按用户过滤"
+            placeholder="按用户 ID 过滤"
+            style={{ width: 200 }}
+            allowClear
+            value={userIdInput}
+            onChange={(event) => setUserIdInput(event.target.value)}
+            onPressEnter={() => setAppliedUserId(userIdInput.trim())}
           />
-        </Card>
-      </Col>
-    </Row>
+          <Button onClick={() => setAppliedUserId(userIdInput.trim())}>过滤</Button>
+          <Select
+            aria-label="按状态过滤"
+            placeholder="状态"
+            style={{ width: 120 }}
+            allowClear
+            options={STATE_OPTIONS}
+            value={stateFilter || undefined}
+            onChange={(value) => setStateFilter(value ?? '')}
+          />
+        </Space>
+      }
+    >
+      <Row gutter={[16, 16]}>
+        <Col span={24}>
+          <Card>
+            <Table<ConsoleThread>
+              size="small"
+              rowKey="id"
+              columns={columns}
+              dataSource={rows}
+              pagination={{ pageSize: 15, hideOnSinglePage: true }}
+              locale={{ emptyText: <Empty description="没有匹配的话题" imageStyle={{ height: 48 }} /> }}
+            />
+          </Card>
+        </Col>
+      </Row>
+    </ObservationPage>
   );
 }

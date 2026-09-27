@@ -1,23 +1,49 @@
-import { Alert, Button, Card, Col, Empty, Row, Space, Table, Tag, Typography } from 'antd';
+import { Button, Card, Col, Empty, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
-import type { ConsoleUser, DirectorEventRow } from '../api/client';
+import type { ConsoleUser, DeliveryInterruption, DirectorEventRow } from '../api/client';
 import { fmtTime, talkativenessLabel } from '../api/format';
-import { useAsync } from '../api/useAsync';
+import { useConsoleQuery } from '../api/useConsoleQuery';
+import ObservationPage from '../components/ObservationPage';
 import MatchSettings from '../components/MatchSettings';
 
 const { Text } = Typography;
 
+// 投递打断（interruptionRing.Recent）：跨比赛最近被抢话/打断的回合。
+const interruptionColumns: ColumnsType<DeliveryInterruption> = [
+  {
+    title: 'Trace',
+    dataIndex: 'traceId',
+    key: 'traceId',
+    render: (traceId: string) => <code style={{ fontSize: 12 }}>{traceId}</code>,
+  },
+  {
+    title: '比赛',
+    dataIndex: 'matchId',
+    key: 'matchId',
+    width: 150,
+    render: (matchId: string) => <Link to={`/console/match/${matchId}`}>{matchId}</Link>,
+  },
+  { title: '时间', dataIndex: 'at', key: 'at', width: 110, render: fmtTime },
+];
+
 export default function MatchPage() {
   const { matchId = '' } = useParams<{ matchId: string }>();
 
-  // 比赛层两路数据：事件流、用户网格。轨迹深查收敛到引用审计页（#c8）。
-  const events = useAsync<{ events: DirectorEventRow[] }>(
+  // 比赛层两路数据：事件流、用户网格 + 投递打断。轨迹深查收敛到引用审计页（#c8）。
+  const events = useConsoleQuery<{ events: DirectorEventRow[] }>(
     () => consoleApi.matchEvents(matchId),
     [matchId],
   );
-  const users = useAsync<{ users: ConsoleUser[] }>(() => consoleApi.matchUsers(matchId), [matchId]);
+  const users = useConsoleQuery<{ users: ConsoleUser[] }>(() => consoleApi.matchUsers(matchId), [matchId]);
+  const interruptions = useConsoleQuery(() => consoleApi.deliveryInterruptions(), []);
+
+  const reloadAll = () => {
+    void events.reload();
+    void users.reload();
+    void interruptions.reload();
+  };
 
   const userColumns: ColumnsType<ConsoleUser> = [
     {
@@ -64,23 +90,21 @@ export default function MatchPage() {
   ];
 
   return (
-    <div>
+    <ObservationPage
+      title="比赛"
+      subtitle={<code>{matchId}</code>}
+      error={events.error || users.error || interruptions.error}
+      loading={events.loading || users.loading}
+      onReload={reloadAll}
+    >
       <Row gutter={[16, 16]}>
         <Col span={24}>
-          <Card
-            title={`比赛 · ${matchId}`}
-            extra={
-              <Button size="small" onClick={() => { void events.reload(); void users.reload(); }}>
-                刷新
-              </Button>
-            }
-          >
+          <Card title={`比赛 · ${matchId}`}>
             <Space direction="vertical" style={{ width: '100%' }} size="middle">
               <div>
                 <Text type="secondary" style={{ marginRight: 8 }}>
                   事件流
                 </Text>
-                {events.error ? <Alert type="error" showIcon message={events.error} /> : null}
                 <Table<DirectorEventRow>
                   size="small"
                   rowKey="id"
@@ -101,7 +125,6 @@ export default function MatchPage() {
                     },
                   ]}
                   dataSource={events.data?.events ?? []}
-                  loading={events.loading}
                   pagination={{ pageSize: 5, hideOnSinglePage: true }}
                   locale={{ emptyText: <Empty description="暂无比赛事件" imageStyle={{ height: 40 }} /> }}
                 />
@@ -111,21 +134,12 @@ export default function MatchPage() {
         </Col>
 
         <Col span={12}>
-          <Card
-            title="用户网格"
-            extra={
-              <Button size="small" onClick={() => void users.reload()}>
-                刷新
-              </Button>
-            }
-          >
-            {users.error ? <Alert type="error" showIcon message={users.error} /> : null}
+          <Card title="用户网格">
             <Table<ConsoleUser>
               size="small"
               rowKey="userId"
               columns={userColumns}
               dataSource={users.data?.users ?? []}
-              loading={users.loading}
               pagination={false}
               locale={{ emptyText: <Empty description="暂无在线用户" imageStyle={{ height: 40 }} /> }}
             />
@@ -149,11 +163,26 @@ export default function MatchPage() {
           </Card>
         </Col>
 
+        <Col span={12}>
+          {/* 投递打断（operations-turn-replay）：本场最近的抢话/打断回合。
+              ring 是跨比赛全局容量 20，这里按 matchId 过滤出本场所见。 */}
+          <Card data-cell="delivery-interruptions" title="投递打断">
+            <Table<DeliveryInterruption>
+              size="small"
+              rowKey="traceId"
+              columns={interruptionColumns}
+              dataSource={(interruptions.data?.recent ?? []).filter((row) => row.matchId === matchId)}
+              pagination={false}
+              locale={{ emptyText: <Empty description="暂无打断记录" imageStyle={{ height: 40 }} /> }}
+            />
+          </Card>
+        </Col>
+
         {/* 设置：赛前配置 + 自动化播报策略 + 数据源与人工接管。 */}
         <Col span={24}>
           <MatchSettings matchId={matchId} />
         </Col>
       </Row>
-    </div>
+    </ObservationPage>
   );
 }

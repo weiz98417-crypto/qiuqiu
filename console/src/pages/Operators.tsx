@@ -5,7 +5,8 @@ import { consoleApi } from '../api/client';
 import type { OperatorRow } from '../api/client';
 import { useOperator } from '../api/operator';
 import { fmtDateTime } from '../api/format';
-import { useAsync } from '../api/useAsync';
+import { useConsoleQuery } from '../api/useConsoleQuery';
+import ObservationPage from '../components/ObservationPage';
 
 const { Text, Paragraph } = Typography;
 
@@ -30,7 +31,7 @@ export default function Operators() {
   const [creating, setCreating] = useState(false);
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string } | null>(null);
 
-  const operators = useAsync<{ operators: OperatorRow[] }>(() => consoleApi.operators(), []);
+  const operators = useConsoleQuery<{ operators: OperatorRow[] }>(() => consoleApi.operators(), []);
 
   const createOperator = useCallback(
     async (values: { name: string; role: 'director' | 'auditor' }) => {
@@ -111,105 +112,102 @@ export default function Operators() {
   const needsPersistentStore = operators.errorStatus === 501;
 
   return (
-    <Row gutter={[16, 16]}>
-      <Col span={24}>
-        {!operatorLoading && !isDirector ? (
-          <Alert
-            type="warning"
-            showIcon
-            message="仅导演（director）角色可管理运营员"
-            description="当前令牌为审计（auditor）角色，只有轨迹读取权限，页面为只读。"
-            style={{ marginBottom: 16 }}
-          />
-        ) : null}
-        <Card
-          title="运营员"
-          extra={
-            <Button size="small" onClick={() => void operators.reload()} loading={operators.loading}>
-              刷新
-            </Button>
-          }
-        >
-          {needsPersistentStore ? (
+    <ObservationPage
+      title="运营员"
+      error={isDirector && !needsPersistentStore ? operators.error : undefined}
+      errorTitle="运营员列表加载失败"
+      loading={operators.loading || operatorLoading}
+      onReload={() => void operators.reload()}
+    >
+      <Row gutter={[16, 16]}>
+        <Col span={24}>
+          {!operatorLoading && !isDirector ? (
             <Alert
-              type="info"
+              type="warning"
               showIcon
-              message="运营员管理需要持久化存储（DATABASE_URL）"
-              description="当前后端使用内存运营员存储，仅支持令牌鉴权；创建/吊销需要配置 DATABASE_URL。"
+              message="仅导演（director）角色可管理运营员"
+              description="当前令牌为审计（auditor）角色，只有轨迹读取权限，页面为只读。"
               style={{ marginBottom: 16 }}
             />
           ) : null}
-          {isDirector && operators.error && !needsPersistentStore ? (
-            <Alert type="error" showIcon message="运营员列表加载失败" description={operators.error} style={{ marginBottom: 16 }} />
-          ) : null}
-          {isDirector && !needsPersistentStore ? (
-            <Form
-              form={form}
-              layout="inline"
-              onFinish={(values) => void createOperator(values)}
-              style={{ marginBottom: 16, rowGap: 8 }}
-            >
-              <Form.Item
-                name="name"
-                label="姓名"
-                rules={[{ required: true, message: '请输入运营员姓名' }]}
+          <Card>
+            {needsPersistentStore ? (
+              <Alert
+                type="info"
+                showIcon
+                message="运营员管理需要持久化存储（DATABASE_URL）"
+                description="当前后端使用内存运营员存储，仅支持令牌鉴权；创建/吊销需要配置 DATABASE_URL。"
+                style={{ marginBottom: 16 }}
+              />
+            ) : null}
+            {isDirector && !needsPersistentStore ? (
+              <Form
+                form={form}
+                layout="inline"
+                onFinish={(values) => void createOperator(values)}
+                style={{ marginBottom: 16, rowGap: 8 }}
               >
-                <Input placeholder="运营员姓名" style={{ width: 180 }} />
-              </Form.Item>
-              <Form.Item name="role" label="角色" initialValue="auditor" rules={[{ required: true }]}>
-                <Select
-                  style={{ width: 140 }}
-                  options={[
-                    { value: 'auditor', label: '审计（只读）' },
-                    { value: 'director', label: '导演（全部权限）' },
-                  ]}
-                />
-              </Form.Item>
-              <Form.Item>
-                <Button type="primary" htmlType="submit" loading={creating}>
-                  创建运营员
-                </Button>
-              </Form.Item>
-            </Form>
-          ) : null}
-          <Table<OperatorRow>
-            size="small"
-            rowKey="id"
-            columns={columns}
-            dataSource={operators.data?.operators ?? []}
-            loading={operators.loading || operatorLoading}
-            pagination={false}
-            locale={{ emptyText: '暂无运营员' }}
-          />
-          {isDirector ? (
-            <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
-              令牌创建后仅显示一次；吊销 = 删除记录，立即生效，历史审计保留姓名。
-            </Paragraph>
-          ) : null}
-        </Card>
-      </Col>
+                <Form.Item
+                  name="name"
+                  label="姓名"
+                  rules={[{ required: true, message: '请输入运营员姓名' }]}
+                >
+                  <Input placeholder="运营员姓名" style={{ width: 180 }} />
+                </Form.Item>
+                <Form.Item name="role" label="角色" initialValue="auditor" rules={[{ required: true }]}>
+                  <Select
+                    style={{ width: 140 }}
+                    options={[
+                      { value: 'auditor', label: '审计（只读）' },
+                      { value: 'director', label: '导演（全部权限）' },
+                    ]}
+                  />
+                </Form.Item>
+                <Form.Item>
+                  <Button type="primary" htmlType="submit" loading={creating}>
+                    创建运营员
+                  </Button>
+                </Form.Item>
+              </Form>
+            ) : null}
+            <Table<OperatorRow>
+              size="small"
+              rowKey="id"
+              columns={columns}
+              dataSource={operators.data?.operators ?? []}
+              pagination={false}
+              locale={{ emptyText: '暂无运营员' }}
+            />
+            {isDirector ? (
+              <Paragraph type="secondary" style={{ marginTop: 12, marginBottom: 0, fontSize: 12 }}>
+                令牌创建后仅显示一次；吊销 = 删除记录，立即生效，历史审计保留姓名。
+              </Paragraph>
+            ) : null}
+          </Card>
+        </Col>
 
-      <Modal
-        title="令牌仅显示一次"
-        open={Boolean(issuedToken)}
-        onCancel={() => setIssuedToken(null)}
-        footer={[
-          <Button key="done" type="primary" onClick={() => setIssuedToken(null)}>
-            我已保存
-          </Button>,
-        ]}
-      >
-        {issuedToken ? (
-          <Space direction="vertical" size="middle" style={{ width: '100%' }}>
-            <Paragraph>
-              运营员 <Text strong>{issuedToken.name}</Text> 的个人令牌如下，请立即交给本人保存，关闭后不再显示：
-            </Paragraph>
-            <Paragraph code copyable style={{ marginBottom: 0 }}>
-              {issuedToken.token}
-            </Paragraph>
-          </Space>
-        ) : null}
-      </Modal>
-    </Row>
+        <Modal
+          title="令牌仅显示一次"
+          open={Boolean(issuedToken)}
+          onCancel={() => setIssuedToken(null)}
+          footer={[
+            <Button key="done" type="primary" onClick={() => setIssuedToken(null)}>
+              我已保存
+            </Button>,
+          ]}
+        >
+          {issuedToken ? (
+            <Space direction="vertical" size="middle" style={{ width: '100%' }}>
+              <Paragraph>
+                运营员 <Text strong>{issuedToken.name}</Text> 的个人令牌如下，请立即交给本人保存，关闭后不再显示：
+              </Paragraph>
+              <Paragraph code copyable style={{ marginBottom: 0 }}>
+                {issuedToken.token}
+              </Paragraph>
+            </Space>
+          ) : null}
+        </Modal>
+      </Row>
+    </ObservationPage>
   );
 }

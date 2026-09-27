@@ -153,7 +153,8 @@ test.beforeAll(async () => {
     mockState,
     // eval 后端无 DATABASE_URL：open_threads/画像集合物理为空（ListThreads
     // 返回空列表而非错误），台账与画像数据按仓库契约回退惯例供数。
-    forceMockPrefixes: ['/api/console/threads', '/api/console/users/'],
+    // /api/console/config 同走契约回退：观测页 Grafana 地址固定空串（未部署）。
+    forceMockPrefixes: ['/api/console/threads', '/api/console/users/', '/api/console/config'],
   });
   consoleBaseURL = consoleServer.baseURL;
 
@@ -254,13 +255,16 @@ test.afterAll(async () => {
   await consoleServer?.close();
 });
 
-test('概览页六张卡片全部渲染，词汇漏斗有真实 unknown 统计', async ({ page }) => {
+test('概览页七张卡片全部渲染，词汇漏斗有真实 unknown 统计', async ({ page }) => {
   const failures = await visit(page, '/console');
   expect(failures).toEqual([]);
 
-  for (const card of ['活跃比赛', '在线会话', '话题老化', '记忆健康', '最近主动引用', '词汇漏斗（没接明白）']) {
+  for (const card of ['活跃比赛', '在线会话', '话题老化', '记忆健康', '最近主动引用', '词汇漏斗（没接明白）', '微反应 24h']) {
     await expect(page.locator('.ant-card').filter({ hasText: card })).toBeVisible();
   }
+  // 微反应 24h 卡（operations-turn-replay）：发出数与白名单事件数上屏。
+  const backchannel = page.locator('.ant-card').filter({ hasText: '微反应 24h' });
+  await expect(backchannel).toContainText('白名单事件');
   // 活跃比赛有我们播种的比赛；在线会话 ≥1（WS 连接真实注册）。
   await expect(page.locator('.ant-card').filter({ hasText: '活跃比赛' }).locator('table')).toContainText(matchId);
   const sessions = page.locator('.ant-card').filter({ hasText: '在线会话' }).locator('.ant-statistic-content-value');
@@ -376,6 +380,35 @@ test('引用审计页按引用前缀查到真实轨迹，路由意图列渲染�
   await expect(drawer).toContainText('球进了');
   await expect(drawer).toContainText('还没跟上');
   await expect(drawer).toContainText('球球输出');
+
+  await expect(page.locator('.ant-alert-error')).toHaveCount(0);
+});
+
+test('直播监听页注册 NAV 并稳定渲染未连接态（静态伺服无 WS 环境）', async ({ page }) => {
+  const failures = await visit(page, '/console/live');
+  expect(failures).toEqual([]);
+
+  // NAV 注册：侧边菜单有「直播监听」入口。
+  await expect(page.getByRole('link', { name: '直播监听' })).toBeVisible();
+  // console-server 只代理 /api 不代理 /ws：页面必须优雅降级为未连接态
+  //（状态徽标 + 重连按钮 + 空态指引），而非报错风暴或空白。
+  await expect(page.locator('.ant-badge').filter({ hasText: '实时流未连接' })).toBeVisible();
+  await expect(page.getByRole('button', { name: '重连' })).toBeVisible();
+  await expect(page.getByText('未连接实时流，连接后事件将在此滚动显示')).toBeVisible();
+  await expect(page.getByText('从左侧选择一条事件查看详情')).toBeVisible();
+
+  await expect(page.locator('.ant-alert-error')).toHaveCount(0);
+});
+
+test('观测页注册 NAV，未配置 Grafana 时渲染部署指引（契约 mock）', async ({ page }) => {
+  const failures = await visit(page, '/console/observation');
+  expect(failures).toEqual([]);
+
+  // NAV 注册：侧边菜单有「观测」入口。
+  await expect(page.getByRole('link', { name: '观测' })).toBeVisible();
+  // config mock 固定 grafanaUrl=''：页面降级为部署指引占位而非报错。
+  await expect(page.getByText('未配置 QIUQIU_GRAFANA_URL')).toBeVisible();
+  await expect(page.getByText('deploy/grafana/README.md')).toBeVisible();
 
   await expect(page.locator('.ant-alert-error')).toHaveCount(0);
 });

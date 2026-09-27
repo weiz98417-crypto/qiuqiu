@@ -34,6 +34,8 @@ export function createContractMockState({ appToken }) {
   const now = new Date().toISOString();
   return {
     appToken,
+    // 运营台配置（operations-metrics-stack）：eval 环境未配置 Grafana。
+    grafanaUrl: '',
     operatorSeq: 0,
     operatorSecrets: new Map(), // token → { name, role }
     operators: [
@@ -56,6 +58,8 @@ export function createContractMockState({ appToken }) {
         ],
       },
       threadAging: { today: 2, d1to3: 1, d3plus: 0 },
+      // 微反应通道观测（operations-turn-replay）：契约回退样例值。
+      backchannel: { emitted: 3, whitelistEvents: 5, windowHours: 24 },
       recentProactive: [
         {
           traceId: 'trace-proactive-1',
@@ -103,6 +107,9 @@ function mockResponse(state, method, pathname, auth, bodyText) {
 
   if (pathname === '/api/console/overview' && method === 'GET') {
     return ok(state.overview);
+  }
+  if (pathname === '/api/console/config' && method === 'GET') {
+    return ok({ grafanaUrl: state.grafanaUrl });
   }
   if (/^\/api\/console\/matches\/[^/]+\/users$/.test(pathname) && method === 'GET') {
     return ok({ users: state.users });

@@ -33,7 +33,9 @@ export const REFRESH_STORAGE_KEY = 'qiuqiu.console.refresh';
 
 let accessToken = '';
 
-function getAccessToken(): string {
+// getAccessToken 读取内存访问令牌。导出给 WS 子协议鉴权复用
+// （LiveMonitor 连 /ws/ops 时与 api() 同源取令牌：访问令牌优先，机令牌兜底）。
+export function getAccessToken(): string {
   return accessToken;
 }
 
@@ -338,6 +340,9 @@ export interface Overview {
     unknownRate: number;
     topUnroutable: { userId: string; content: string; createdAt: string }[];
   };
+  // 微反应通道观测（operations-turn-replay）：滚动窗口内的发出数 vs 白名单
+  // 事件数。读失败后端降级为零值，不让 overview 变红。
+  backchannel?: { emitted: number; whitelistEvents: number; windowHours: number };
 }
 
 export interface ConsoleUser {
@@ -394,6 +399,29 @@ export interface WhoAmI {
 // 后端 scope 常量（backend/internal/auth/session.go）。
 export const SCOPE_MATCH_WRITE = 'operator:match:write';
 
+// 轮次检测的最后一问结论（voice-turn-detection 落库面）：isComplete=null =
+// sidecar 未决（降级/饱和/错误）；source=model=真结论、unavailable=回退。
+export interface VoiceTurnDecisionLike {
+  isComplete: boolean | null;
+  source: string;
+  queryLatencyMs?: number;
+}
+
+// 语音链路观测元数据（backend companion.VoiceTraceMetadata）：状态与延迟
+// 分段；缺字段 = 该段未测得（锚点缺失/非语音轮），UI 需容错。
+export interface TraceVoiceMeta {
+  asrStatus?: string;
+  asrError?: string;
+  ttsStatus?: string;
+  ttsError?: string;
+  ttsMime?: string;
+  ttsByteCount?: number;
+  // 延迟分段：stage → 相对 speech_received 锚点的累计毫秒（非相邻差）；
+  // stage ∈ speech_received/asr_final/turn_decided/tts_synthesized/audio_delivered。
+  latencyStages?: Record<string, number>;
+  turnDecision?: VoiceTurnDecisionLike;
+}
+
 export interface TraceRow {
   id: string;
   matchId?: string;
@@ -403,6 +431,8 @@ export interface TraceRow {
   reason?: string;
   reasonCodes?: string[];
   relationshipDecision?: { reasonCodes?: string[] } | null;
+  // 本回合的工具调用（knowledge/search 类 = RAG 检索）。
+  toolCalls?: { name: string; args?: Record<string, string> }[];
   // intent-router 4.2：被路由回合携带的路由判定（意图/置信度/槽位）。
   router?: {
     intent: string;
@@ -412,6 +442,7 @@ export interface TraceRow {
     score?: string;
     replyUsed?: boolean;
   } | null;
+  voice?: TraceVoiceMeta;
   latencyMs?: number;
   createdAt?: string;
 }
@@ -474,6 +505,8 @@ export interface InteractionEventRow {
   userId: string;
   inputText?: string;
   outputText?: string;
+  // 微反应账本行的命中短语（interaction.Event.Phrase，kind=backchannel）。
+  phrase?: string;
   deliveryState?: string;
   createdAt: string;
 }
@@ -508,6 +541,8 @@ export interface MatchSourceStatus {
 
 export const consoleApi = {
   overview: () => api<Overview>('/api/console/overview'),
+  // 运营台配置（观测页 Grafana 面板地址；未配置项为空串。TraceRead 即可读）。
+  config: () => api<{ grafanaUrl: string }>('/api/console/config'),
   matchUsers: (matchId: string) =>
     api<{ users: ConsoleUser[] }>(`/api/console/matches/${encodeURIComponent(matchId)}/users`),
   matchEvents: (matchId: string) =>

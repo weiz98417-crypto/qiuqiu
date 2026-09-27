@@ -12,6 +12,10 @@ const NAV_ITEMS = [
   { key: '/console', label: '全局概览' },
   { key: '/console/threads', label: '话题台账' },
   { key: '/console/citations', label: '引用审计' },
+  // 实时运营面之观测流（operations-live-stream）：/ws/ops 只读旁路。
+  { key: '/console/live', label: '直播监听' },
+  // 指标观测面（operations-metrics-stack）：内嵌 Grafana 运营面板。
+  { key: '/console/observation', label: '观测' },
   { key: '/console/operators', label: '运营员' },
 ];
 
@@ -25,10 +29,12 @@ function ConsoleLayout({ onLogout }: { onLogout: () => void }) {
   const pathParts = location.pathname.split('/').filter(Boolean);
   const liveMatchId = pathParts[1] === 'match' ? pathParts[2] ?? '' : 'test';
 
+  // 精确匹配优先于前缀匹配：否则 '/console' 作为首项会以 startsWith 抢走
+  // 全部 '/console/*' 子路径（threads/citations/live 的高亮都会错位）。
   const selectedKey =
-    NAV_ITEMS.find(
-      (item) => location.pathname === item.key || location.pathname.startsWith(`${item.key}/`),
-    )?.key ?? '/console';
+    NAV_ITEMS.find((item) => location.pathname === item.key)?.key ??
+    NAV_ITEMS.find((item) => location.pathname.startsWith(`${item.key}/`))?.key ??
+    '/console';
   const onMatchLayer = location.pathname.startsWith('/console/match/');
 
   const crumbs: { title: React.ReactNode }[] = [{ title: <RouterLink to="/console">运营台</RouterLink> }];

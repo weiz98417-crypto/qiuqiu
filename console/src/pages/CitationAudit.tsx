@@ -1,12 +1,13 @@
 import { useCallback, useMemo, useState } from 'react';
-import { Alert, Button, Card, Col, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
+import { Button, Card, Col, Empty, Input, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link, useSearchParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { TraceRow } from '../api/client';
 import { fmtDateTime, fmtTime, reasonCodeLabel } from '../api/format';
-import { matchesCitation, traceReasonCodes, WhyDrawer } from '../api/traceEvidence';
-import { useAsync } from '../api/useAsync';
+import { matchesCitation, ragCallCount, traceReasonCodes, WhyDrawer } from '../api/traceEvidence';
+import { useConsoleQuery } from '../api/useConsoleQuery';
+import ObservationPage from '../components/ObservationPage';
 
 const { Text } = Typography;
 
@@ -14,7 +15,7 @@ type TraceLike = TraceRow;
 
 export default function CitationAudit() {
   // 跨比赛最近主动引用（来自概览聚合，cross-match limit 10）。
-  const overview = useAsync(() => consoleApi.overview(), []);
+  const overview = useConsoleQuery(() => consoleApi.overview(), []);
 
   // URL 预填：比赛页「去引用审计」入口带 matchId 进来。
   const [searchParams] = useSearchParams();
@@ -29,7 +30,7 @@ export default function CitationAudit() {
 
   const canQuery = Boolean(appliedMatchId.trim());
   // 未输入比赛 ID 时不发请求（避免 /api/matches//traces 这类无效调用）。
-  const traceQuery = useAsync<{ traces: TraceRow[] }>(
+  const traceQuery = useConsoleQuery<{ traces: TraceRow[] }>(
     () =>
       canQuery
         ? consoleApi.traces(appliedMatchId.trim(), appliedCitation, 100)
@@ -78,6 +79,17 @@ export default function CitationAudit() {
         ),
     },
     {
+      // RAG 命中：toolCalls 里 knowledge/search 类调用的次数（0 = 未检索）。
+      title: 'RAG',
+      key: 'rag',
+      width: 70,
+      align: 'right',
+      render: (_, record) => {
+        const calls = ragCallCount(record);
+        return calls > 0 ? <Tag color="purple">{calls}</Tag> : <Text type="secondary">—</Text>;
+      },
+    },
+    {
       title: '原因码',
       key: 'reasonCodes',
       render: (_, record) => (
@@ -113,78 +125,80 @@ export default function CitationAudit() {
   }, [citationInput, matchIdInput]);
 
   return (
-    <Row gutter={[16, 16]}>
-      <Col span={24}>
-        <Card title="跨比赛最近主动引用">
-          {overview.error ? <Alert type="error" showIcon message={overview.error} style={{ marginBottom: 12 }} /> : null}
-          <Table
-            size="small"
-            rowKey="traceId"
-            columns={[
-              { title: 'Trace', dataIndex: 'traceId', render: (id: string) => <code style={{ fontSize: 12 }}>{id}</code> },
-              {
-                title: '比赛',
-                dataIndex: 'matchId',
-                render: (matchId: string) => (
-                  <Link to={`/console/match/${matchId}`}>{matchId}</Link>
-                ),
-              },
-              {
-                title: '引用',
-                dataIndex: 'citation',
-                render: (citation: string) => <Tag color="orange">{reasonCodeLabel(citation)}</Tag>,
-              },
-              { title: '时间', dataIndex: 'createdAt', render: fmtDateTime },
-            ]}
-            dataSource={proactiveRows}
-            loading={overview.loading}
-            pagination={false}
-            locale={{ emptyText: <Empty description="暂无主动引用记录" imageStyle={{ height: 48 }} /> }}
-          />
-        </Card>
-      </Col>
-
-      <Col span={24}>
-        <Card title="按引用前缀审计轨迹">
-          <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
-            <Input
-              aria-label="比赛 ID"
-              placeholder="比赛 ID（如 demo-operator-control-e2e）"
-              style={{ width: 320 }}
-              value={matchIdInput}
-              onChange={(event) => setMatchIdInput(event.target.value)}
-              onPressEnter={queryTraces}
-            />
-            <Input
-              aria-label="引用前缀"
-              placeholder="proactive_citation:"
-              style={{ width: 260 }}
-              value={citationInput}
-              onChange={(event) => setCitationInput(event.target.value)}
-              onPressEnter={queryTraces}
-            />
-            <Button type="primary" onClick={queryTraces}>
-              审计
-            </Button>
-          </Space.Compact>
-          {traceQuery.error ? <Alert type="error" showIcon message={traceQuery.error} /> : null}
-          {!canQuery ? (
-            <Empty description="输入比赛 ID 与引用前缀开始审计" imageStyle={{ height: 48 }} />
-          ) : (
-            <Table<TraceLike>
+    <ObservationPage
+      title="引用审计"
+      error={overview.error || traceQuery.error}
+      loading={overview.loading || traceQuery.loading}
+    >
+      <Row gutter={[16, 16]}>
+        <Col span={24}>
+          <Card title="跨比赛最近主动引用">
+            <Table
               size="small"
-              rowKey="id"
-              columns={traceColumns}
-              dataSource={traceRows}
-              loading={traceQuery.loading}
-              pagination={{ pageSize: 10, hideOnSinglePage: true }}
-              locale={{ emptyText: <Empty description="没有匹配该引用前缀的回合" imageStyle={{ height: 48 }} /> }}
+              rowKey="traceId"
+              columns={[
+                { title: 'Trace', dataIndex: 'traceId', render: (id: string) => <code style={{ fontSize: 12 }}>{id}</code> },
+                {
+                  title: '比赛',
+                  dataIndex: 'matchId',
+                  render: (matchId: string) => (
+                    <Link to={`/console/match/${matchId}`}>{matchId}</Link>
+                  ),
+                },
+                {
+                  title: '引用',
+                  dataIndex: 'citation',
+                  render: (citation: string) => <Tag color="orange">{reasonCodeLabel(citation)}</Tag>,
+                },
+                { title: '时间', dataIndex: 'createdAt', render: fmtDateTime },
+              ]}
+              dataSource={proactiveRows}
+              pagination={false}
+              locale={{ emptyText: <Empty description="暂无主动引用记录" imageStyle={{ height: 48 }} /> }}
             />
-          )}
-        </Card>
-      </Col>
+          </Card>
+        </Col>
 
-      <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
-    </Row>
+        <Col span={24}>
+          <Card title="按引用前缀审计轨迹">
+            <Space.Compact style={{ width: '100%', marginBottom: 12 }}>
+              <Input
+                aria-label="比赛 ID"
+                placeholder="比赛 ID（如 demo-operator-control-e2e）"
+                style={{ width: 320 }}
+                value={matchIdInput}
+                onChange={(event) => setMatchIdInput(event.target.value)}
+                onPressEnter={queryTraces}
+              />
+              <Input
+                aria-label="引用前缀"
+                placeholder="proactive_citation:"
+                style={{ width: 260 }}
+                value={citationInput}
+                onChange={(event) => setCitationInput(event.target.value)}
+                onPressEnter={queryTraces}
+              />
+              <Button type="primary" onClick={queryTraces}>
+                审计
+              </Button>
+            </Space.Compact>
+            {!canQuery ? (
+              <Empty description="输入比赛 ID 与引用前缀开始审计" imageStyle={{ height: 48 }} />
+            ) : (
+              <Table<TraceLike>
+                size="small"
+                rowKey="id"
+                columns={traceColumns}
+                dataSource={traceRows}
+                pagination={{ pageSize: 10, hideOnSinglePage: true }}
+                locale={{ emptyText: <Empty description="没有匹配该引用前缀的回合" imageStyle={{ height: 48 }} /> }}
+              />
+            )}
+          </Card>
+        </Col>
+
+        <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
+      </Row>
+    </ObservationPage>
   );
 }

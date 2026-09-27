@@ -1,11 +1,12 @@
 import { useMemo } from 'react';
-import { Alert, Badge, Button, Card, Col, Empty, List, Row, Statistic, Table, Tag } from 'antd';
+import { Badge, Card, Col, Empty, List, Row, Statistic, Table, Tag } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { AuditRow, ConsoleMatch, Overview as OverviewData } from '../api/client';
 import { fmtDateTime, fmtTime } from '../api/format';
-import { useAsync } from '../api/useAsync';
+import { useConsoleQuery } from '../api/useConsoleQuery';
+import ObservationPage from '../components/ObservationPage';
 
 const MATCH_STATE_LABELS: Record<string, { label: string; color: string }> = {
   live: { label: '直播中', color: 'processing' },
@@ -50,36 +51,29 @@ function cellBorder(style: React.CSSProperties): React.CSSProperties {
 }
 
 export default function Overview() {
-  const { data, loading, error, reload } = useAsync<OverviewData>(() => consoleApi.overview(), []);
+  const { data, loading, error, reload } = useConsoleQuery<OverviewData>(() => consoleApi.overview(), []);
 
   const aging = data?.threadAging ?? { today: 0, d1to3: 0, d3plus: 0 };
   const memory = data?.memory;
   const matchRows = useMemo(() => data?.matches ?? [], [data]);
 
   return (
-    <div>
-      {error ? (
-        <Alert type="error" showIcon message="概览加载失败" description={error} style={{ marginBottom: 16 }} />
-      ) : null}
+    <ObservationPage
+      title="运营概览"
+      error={error}
+      errorTitle="概览加载失败"
+      loading={loading}
+      onReload={reload}
+    >
       <Row gutter={[16, 16]}>
         {/* 一格 · 活跃比赛 */}
         <Col span={12}>
-          <Card
-            data-cell="matches"
-            title="活跃比赛"
-            extra={
-              <Button size="small" onClick={reload} loading={loading}>
-                刷新
-              </Button>
-            }
-            style={cellBorder({ height: '100%' })}
-          >
+          <Card data-cell="matches" title="活跃比赛" style={cellBorder({ height: '100%' })}>
             <Table<ConsoleMatch>
               size="small"
               rowKey="matchId"
               columns={matchColumns}
               dataSource={matchRows}
-              loading={loading}
               pagination={false}
               locale={{ emptyText: <Empty description="暂无活跃比赛" imageStyle={{ height: 48 }} /> }}
             />
@@ -138,7 +132,6 @@ export default function Overview() {
                       rowKey={(row) => `${row.createdAt}-${row.operatorName}-${row.action}`}
                       columns={auditColumns}
                       dataSource={memory?.recentAudit ?? []}
-                      loading={loading}
                       pagination={false}
                       scroll={{ y: 160 }}
                       locale={{ emptyText: <Empty description="暂无审计记录" imageStyle={{ height: 40 }} /> }}
@@ -160,7 +153,6 @@ export default function Overview() {
           >
             <List
               size="small"
-              loading={loading}
               dataSource={data?.recentProactive ?? []}
               locale={{ emptyText: <Empty description="暂无主动引用记录" imageStyle={{ height: 48 }} /> }}
               renderItem={(item) => (
@@ -211,7 +203,6 @@ export default function Overview() {
                     { title: '时间', dataIndex: 'createdAt', width: 110, render: fmtDateTime },
                   ]}
                   dataSource={data?.router?.topUnroutable ?? []}
-                  loading={loading}
                   pagination={false}
                   scroll={{ y: 160 }}
                   locale={{ emptyText: <Empty description="暂无 unroutable 样本" imageStyle={{ height: 40 }} /> }}
@@ -220,7 +211,17 @@ export default function Overview() {
             </Row>
           </Card>
         </Col>
+
+        {/* 七格 · 微反应通道观测（operations-turn-replay）：滚动 24h 发出数 vs 白名单事件数 */}
+        <Col span={12}>
+          <Card data-cell="backchannel" title="微反应 24h" style={cellBorder({ height: '100%' })}>
+            <Statistic value={data?.backchannel?.emitted ?? 0} suffix="次微反应" loading={loading} />
+            <div style={{ color: '#AAB4C0', fontSize: 12 }}>
+              白名单事件 {data?.backchannel?.whitelistEvents ?? 0}
+            </div>
+          </Card>
+        </Col>
       </Row>
-    </div>
+    </ObservationPage>
   );
 }

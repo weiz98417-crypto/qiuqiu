@@ -1,12 +1,13 @@
 import { useCallback, useState } from 'react';
-import { Alert, App as AntApp, Button, Card, Col, Empty, Popconfirm, Row, Space, Table, Tag, Typography } from 'antd';
+import { App as AntApp, Button, Card, Col, Empty, Popconfirm, Row, Space, Table, Tag, Typography } from 'antd';
 import type { ColumnsType } from 'antd/es/table';
 import { useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { ConsoleThread, InteractionEventRow, PortraitEntry } from '../api/client';
 import { useOperator } from '../api/operator';
 import { fmtTime, threadKindLabels, threadStateTag } from '../api/format';
-import { useAsync } from '../api/useAsync';
+import { runAction, useConsoleQuery } from '../api/useConsoleQuery';
+import ObservationPage from '../components/ObservationPage';
 
 const { Text, Paragraph } = Typography;
 
@@ -16,6 +17,7 @@ const KIND_LABELS: Record<string, string> = {
   assistant_reply: '球球回复',
   proactive: '主动发言',
   playback_result: '播报回执',
+  backchannel: '微反应',
 };
 
 export default function UserPage() {
@@ -24,36 +26,26 @@ export default function UserPage() {
   const { isDirector } = useOperator();
   const [actingThreadId, setActingThreadId] = useState<string | null>(null);
 
-  const portrait = useAsync(() => consoleApi.portrait(userId), [userId]);
-  const threads = useAsync(() => consoleApi.threads({ userId }), [userId]);
-  const history = useAsync(() => consoleApi.interaction(matchId, userId), [matchId, userId]);
+  const portrait = useConsoleQuery(() => consoleApi.portrait(userId), [userId]);
+  const threads = useConsoleQuery(() => consoleApi.threads({ userId }), [userId]);
+  const history = useConsoleQuery(() => consoleApi.interaction(matchId, userId), [matchId, userId]);
 
   const patchThread = useCallback(
-    async (threadId: string, action: 'address' | 'expire') => {
-      setActingThreadId(threadId);
-      try {
-        await consoleApi.patchThread(threadId, action);
-        messageApi.success(action === 'address' ? '已标记为已答' : '已标记为过期');
-        await threads.reload();
-      } catch (err) {
-        messageApi.error(err instanceof Error ? err.message : String(err));
-      } finally {
-        setActingThreadId(null);
-      }
-    },
+    (threadId: string, action: 'address' | 'expire') =>
+      runAction(messageApi, () => consoleApi.patchThread(threadId, action), {
+        success: action === 'address' ? '已标记为已答' : '已标记为过期',
+        reload: threads.reload,
+        busy: { set: setActingThreadId, key: threadId },
+      }),
     [messageApi, threads],
   );
 
   const deleteSlot = useCallback(
-    async (entry: PortraitEntry) => {
-      try {
-        await consoleApi.deletePortraitSlot(userId, entry.topic, entry.subTopic);
-        messageApi.success(`已删除画像槽位 ${entry.topic}/${entry.subTopic}（操作已入审计）`);
-        await portrait.reload();
-      } catch (err) {
-        messageApi.error(err instanceof Error ? err.message : String(err));
-      }
-    },
+    (entry: PortraitEntry) =>
+      runAction(messageApi, () => consoleApi.deletePortraitSlot(userId, entry.topic, entry.subTopic), {
+        success: `已删除画像槽位 ${entry.topic}/${entry.subTopic}（操作已入审计）`,
+        reload: portrait.reload,
+      }),
     [messageApi, portrait, userId],
   );
 
@@ -153,7 +145,11 @@ export default function UserPage() {
     {
       title: '内容',
       key: 'content',
-      render: (_, record) => record.outputText || record.inputText || record.deliveryState || '—',
+      // 微反应行展示命中短语；其余行维持既有的正文回退链。
+      render: (_, record) =>
+        record.kind === 'backchannel'
+          ? record.phrase || '—'
+          : record.outputText || record.inputText || record.deliveryState || '—',
       ellipsis: true,
     },
     { title: '投递', dataIndex: 'deliveryState', key: 'deliveryState', width: 100 },
@@ -161,8 +157,17 @@ export default function UserPage() {
   ];
 
   return (
-    <div>
-      {portrait.error ? <Alert type="error" showIcon message={portrait.error} style={{ marginBottom: 16 }} /> : null}
+    <ObservationPage
+      title="用户"
+      subtitle={<code>{userId}</code>}
+      error={portrait.error || threads.error || history.error}
+      loading={portrait.loading || threads.loading || history.loading}
+      onReload={() => {
+        void portrait.reload();
+        void threads.reload();
+        void history.reload();
+      }}
+    >
       <Row gutter={[16, 16]}>
         <Col span={12}>
           <Card title="画像（只读 + 代客删除）" extra={<Text type="secondary">用户 {userId}</Text>}>
@@ -171,7 +176,6 @@ export default function UserPage() {
               rowKey={(record) => `${record.topic}/${record.subTopic}`}
               columns={portraitColumns}
               dataSource={portrait.data?.entries ?? []}
-              loading={portrait.loading}
               pagination={false}
               locale={{ emptyText: <Empty description="画像暂无条目" imageStyle={{ height: 40 }} /> }}
             />
@@ -182,13 +186,11 @@ export default function UserPage() {
         </Col>
         <Col span={12}>
           <Card title="话题台账">
-            {threads.error ? <Alert type="error" showIcon message={threads.error} /> : null}
             <Table<ConsoleThread>
               size="small"
               rowKey="id"
               columns={threadColumns}
               dataSource={threads.data?.threads ?? []}
-              loading={threads.loading}
               pagination={false}
               locale={{ emptyText: <Empty description="该用户暂无话题" imageStyle={{ height: 40 }} /> }}
             />
@@ -196,19 +198,17 @@ export default function UserPage() {
         </Col>
         <Col span={24}>
           <Card title="交互历史">
-            {history.error ? <Alert type="error" showIcon message={history.error} /> : null}
             <Table<InteractionEventRow>
               size="small"
               rowKey="id"
               columns={historyColumns}
               dataSource={history.data?.events ?? []}
-              loading={history.loading}
               pagination={{ pageSize: 10, hideOnSinglePage: true }}
               locale={{ emptyText: <Empty description="暂无交互记录" imageStyle={{ height: 40 }} /> }}
             />
           </Card>
         </Col>
       </Row>
-    </div>
+    </ObservationPage>
   );
 }

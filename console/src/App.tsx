@@ -18,6 +18,8 @@ import Threads from './pages/Threads';
 import Operators from './pages/Operators';
 import CitationAudit from './pages/CitationAudit';
 import DirectorLive from './pages/DirectorLive';
+import LiveMonitor from './pages/LiveMonitor';
+import Observation from './pages/Observation';
 
 export default function App() {
   // 登录态三种来源：内存访问令牌（刷新后丢失）、刷新令牌（localStorage，
@@ -59,6 +61,8 @@ export default function App() {
               <Route path="/console/threads" element={<Threads />} />
               <Route path="/console/operators" element={<Operators />} />
               <Route path="/console/citations" element={<CitationAudit />} />
+              <Route path="/console/live" element={<LiveMonitor />} />
+              <Route path="/console/observation" element={<Observation />} />
               <Route path="*" element={<Navigate to="/console" replace />} />
             </Route>
           </Routes>
