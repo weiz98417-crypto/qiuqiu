@@ -1,8 +1,10 @@
 package main
 
-// 比赛运营 API（openspec/changes/server-surface-split）：25-case 路由、
-// 五层构造器洋葱与私有辅助。请求形状是 ADR-0011 冻结基线（28 条
-// operator-control evals 回归网），本文件为纯搬移零行为变化。
+// 比赛运营 API（openspec/changes/server-surface-split）：请求形状是
+// ADR-0011 冻结基线（28 条 operator-control evals 回归网）。路由由
+// matchRoutes 注册表 + Go 1.22+ ServeMux method+wildcard pattern 声明
+// （router.go），鉴权走 withScope；原 25-case switch 的内联 case 体原样
+// 搬进具名方法，纯搬移零行为变化。
 
 import (
 	"context"
@@ -255,723 +257,826 @@ func getInteractionTrace(ctx context.Context, ledger interaction.Ledger, matchID
 	return companion.Trace{}, companion.ErrTraceNotFound
 }
 
+// matchAPI 聚拢 /api/matches/ 运营面的全部依赖；原 25-case switch 的内联
+// case 体原样搬进具名方法（matchID/资源 ID 从 r.PathValue 取），路由由
+// matchRoutes 注册表声明，鉴权走 withScope。
+type matchAPI struct {
+	store             matchstate.Repository
+	traceReader       companion.TraceReader
+	demoResetter      companion.DemoResetter
+	sources           *datasource.Manager
+	directorDrafts    *directordraft.Service
+	interactionLedger interaction.Ledger
+	authz             operatorAuthz
+	operatorWrites    *operatorwrite.Service
+}
+
 func handleMatchAPIWithOperatorAuth(store matchstate.Repository, traceReader companion.TraceReader, demoResetter companion.DemoResetter, cfg *config.Config, llmClient *llm.Client, sources *datasource.Manager, directorDrafts *directordraft.Service, interactionLedger interaction.Ledger, authz operatorAuthz, writeServices ...*operatorwrite.Service) http.HandlerFunc {
-	operatorWrites := selectedOperatorWriteService(writeServices)
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !applyCORS(w, r, cfg) {
-			return
-		}
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
+	return mountRoutes(cfg, authz, matchRoutes(matchAPI{
+		store:             store,
+		traceReader:       traceReader,
+		demoResetter:      demoResetter,
+		sources:           sources,
+		directorDrafts:    directorDrafts,
+		interactionLedger: interactionLedger,
+		authz:             authz,
+		operatorWrites:    selectedOperatorWriteService(writeServices),
+	}))
+}
 
-		path := strings.TrimPrefix(r.URL.Path, "/api/matches/")
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		if len(parts) < 2 || parts[0] == "" {
-			http.NotFound(w, r)
-			return
-		}
+// matchRoutes 是 /api/matches/ 运营面的声明式路由表：一行一个端点（method
+// + pattern + scope + handler）。scope 为空的四个 GET（clock/config/events/
+// state）是公开可降级读端点：匿名拿公开视图、持 TraceRead 的运营拿运营视
+// 图，判定在方法内用 authz.view 完成——与迁移前一致，故不包 withScope。
+// 行为差异（已知路径错方法 → 405 等）统一记录在 router.go。
+func matchRoutes(m matchAPI) []route {
+	return []route{
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/interaction", scope: auth.ScopeOperatorTraceRead, handler: m.handleInteraction},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/start", scope: auth.ScopeOperatorMatchWrite, handler: m.handleStart},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/reset", scope: auth.ScopeOperatorMatchWrite, handler: m.handleReset},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/sources", scope: auth.ScopeOperatorTraceRead, handler: m.handleSourcesStatus},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/sources/start", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSourcesStart},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/sources/stop", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSourcesStop},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/takeover", scope: auth.ScopeOperatorMatchWrite, handler: m.handleTakeover},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/automation", scope: auth.ScopeOperatorTraceRead, handler: m.handleGetAutomation},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/automation", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSetAutomation},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/clock", handler: m.handleGetClock},
+		{method: http.MethodPatch, pattern: "/api/matches/{matchId}/clock", scope: auth.ScopeOperatorMatchWrite, handler: m.handlePatchClock},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/drafts/voice/publish", scope: auth.ScopeOperatorMatchWrite, handler: m.handleVoiceDraftPublish},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/drafts/voice", scope: auth.ScopeOperatorMatchWrite, handler: m.handleVoiceDraft},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/facts/{factId}/confirm", scope: auth.ScopeOperatorFactConfirm, handler: m.handleFactConfirm},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/facts/{factId}/revoke", scope: auth.ScopeOperatorFactConfirm, handler: m.handleFactRevoke},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/facts/{factId}/reconcile", scope: auth.ScopeOperatorFactConfirm, handler: m.handleFactReconcile},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/conflicts/{conflictId}/resolve", scope: auth.ScopeOperatorFactConfirm, handler: m.handleConflictResolve},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/facts/{factId}/revisions", scope: auth.ScopeOperatorTraceRead, handler: m.handleFactRevisions},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/config", handler: m.handleGetConfig},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/config", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSetConfig},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/lifecycle", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSetLifecycle},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/events", handler: m.handleGetEvents},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/events", scope: auth.ScopeOperatorMatchWrite, handler: m.handleCreateEvent},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/state", handler: m.handleGetState},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/traces", scope: auth.ScopeOperatorTraceRead, handler: m.handleListTraces},
+		{method: http.MethodGet, pattern: "/api/matches/{matchId}/traces/{traceId}", scope: auth.ScopeOperatorTraceRead, handler: m.handleGetTrace},
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/events/{eventId}/correct", scope: auth.ScopeOperatorFactCorrect, handler: m.handleCorrectEvent},
+	}
+}
 
-		matchID := parts[0]
-		resource := parts[1]
-		switch {
-		case r.Method == http.MethodGet && resource == "interaction" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
-				return
-			}
-			if interactionLedger == nil {
-				writeJSON(w, http.StatusOK, map[string]any{"events": []interaction.Event{}, "nextCursor": "", "hasMore": false, "projectionScope": "all", "journey": interaction.Journey{}, "audit": evals.InteractionAuditReport{}})
-				return
-			}
-			limit := 100
-			if value := r.URL.Query().Get("limit"); value != "" {
-				if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
-					limit = parsed
-				}
-			}
-			userID := strings.TrimSpace(r.URL.Query().Get("userId"))
-			if userID == "" {
-				http.Error(w, "userId is required", http.StatusBadRequest)
-				return
-			}
-			page := interaction.Page{}
-			var err error
-			if pageable, ok := interactionLedger.(interaction.PageableLedger); ok {
-				page, err = pageable.ListPage(r.Context(), interaction.PageQuery{
-					UserID: userID, MatchID: matchID, Limit: limit, Cursor: strings.TrimSpace(r.URL.Query().Get("cursor")),
-				})
-			} else {
-				page.Events, err = interactionLedger.List(r.Context(), userID, matchID, limit)
-			}
-			if err != nil {
-				if errors.Is(err, interaction.ErrInvalidCursor) {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			projectionEvents := page.Events
-			projectionScope := "page"
-			if snapshot, ok := interactionLedger.(interaction.SnapshotLedger); ok {
-				projectionEvents, err = snapshot.ListSnapshot(r.Context(), userID, matchID)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusInternalServerError)
-					return
-				}
-				projectionScope = "all"
-			}
-			writeJSON(w, http.StatusOK, map[string]any{
-				"events": page.Events, "nextCursor": page.NextCursor, "hasMore": page.HasMore(),
-				"projectionScope": projectionScope,
-				"journey":         interaction.ProjectJourney(projectionEvents), "audit": evals.AuditInteractions(projectionEvents),
-			})
-		case r.Method == http.MethodPost && resource == "start" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			var matchConfig matchstate.MatchConfig
-			body, err := decodeOperatorJSON(w, r, &matchConfig)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			if err := validateNewMatchConfig(matchConfig); err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			if strings.TrimSpace(matchConfig.Lifecycle) == "" {
-				matchConfig.Lifecycle = matchstate.LifecycleScheduled
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "match.start", body, func(_ context.Context) (operatorwrite.Response, error) {
-				if sources != nil {
-					sources.Stop(matchID)
-				}
-				if err := store.Reset(matchID); err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				if demoResetter != nil {
-					if err := demoResetter.Reset(matchID); err != nil {
-						return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-					}
-				}
-				savedConfig, snapshot, err := store.SetConfig(matchID, matchConfig)
-				if err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"ok":       true,
-					"matchId":  matchID,
-					"config":   savedConfig,
-					"snapshot": snapshot,
-				})
-			})
-		case r.Method == http.MethodPost && resource == "reset" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			if !isDemoMatchID(matchID) {
-				http.Error(w, "reset is only available for local demo match ids", http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "match.reset", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
-				if sources != nil {
-					sources.Stop(matchID)
-				}
-				if err := store.Reset(matchID); err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				if demoResetter != nil {
-					if err := demoResetter.Reset(matchID); err != nil {
-						return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-					}
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"ok":       true,
-					"matchId":  matchID,
-					"snapshot": store.PublicSnapshot(matchID),
-				})
-			})
-		case r.Method == http.MethodGet && resource == "sources" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
-				return
-			}
-			if sources == nil {
-				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"status": sources.Status(matchID)})
-		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "start":
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			if sources == nil {
-				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			var sourceConfig datasource.SourceConfig
-			body, err := decodeOperatorJSON(w, r, &sourceConfig)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "sources.start", body, func(_ context.Context) (operatorwrite.Response, error) {
-				status, err := sources.Start(matchID, sourceConfig)
-				if err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": status})
-			})
-		case r.Method == http.MethodPost && resource == "sources" && len(parts) == 3 && parts[2] == "stop":
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			if sources == nil {
-				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "sources.stop", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": sources.Stop(matchID)})
-			})
-		case r.Method == http.MethodPost && resource == "takeover" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			if sources == nil {
-				http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "match.takeover", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
-				status := sources.Stop(matchID)
-				policy := store.Config(matchID).Automation
-				policy.Mode = matchstate.AutomationModePaused
-				saved, err := store.SetAutomation(matchID, policy)
-				if err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"policy": saved,
-					"status": status,
-				})
-			})
-		case r.Method == http.MethodGet && resource == "automation" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{"policy": store.Config(matchID).Automation})
-		case r.Method == http.MethodPost && resource == "automation" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			var policy matchstate.AutomationPolicy
-			body, err := decodeOperatorJSON(w, r, &policy)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "automation.set", body, func(_ context.Context) (operatorwrite.Response, error) {
-				saved, err := store.SetAutomation(matchID, policy)
-				if err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"policy": saved})
-			})
-		case r.Method == http.MethodGet && resource == "clock" && len(parts) == 2:
-			clockStore, ok := store.(matchstate.ClockRepository)
-			if !ok {
-				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
-				return
-			}
-			snapshot := store.PublicSnapshot(matchID)
-			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
-			if !operatorView {
-				snapshot = clientSnapshot(snapshot)
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"clock":    clockStore.Clock(matchID),
-				"snapshot": snapshot,
-			})
-		case r.Method == http.MethodPatch && resource == "clock" && len(parts) == 2:
-			if _, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !authorized {
-				return
-			}
-			clockStore, ok := store.(matchstate.ClockRepository)
-			if !ok {
-				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
-				return
-			}
-			var command matchstate.ClockCommand
-			body, err := decodeOperatorJSON(w, r, &command)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			command.Source = "operator"
-			executeOperatorWrite(w, r, operatorWrites, matchID, "match.clock", body, func(_ context.Context) (operatorwrite.Response, error) {
-				clock, err := clockStore.SetClock(matchID, command)
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"clock":    clock,
-					"snapshot": store.PublicSnapshot(matchID),
-				})
-			})
-		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 4 && parts[2] == "voice" && parts[3] == "publish":
-			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite)
-			if !authorized {
-				return
-			}
-			if directorDrafts == nil {
-				http.Error(w, "director voice draft unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			clockStore, ok := store.(matchstate.ClockRepository)
-			if !ok {
-				http.Error(w, "match clock unavailable", http.StatusNotImplemented)
-				return
-			}
-			var request directordraft.Request
-			body, err := decodeOperatorJSON(w, r, &request)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice.publish", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
-				draftCtx, cancel := context.WithTimeout(operationCtx, 45*time.Second)
-				defer cancel()
-				result, err := directorDrafts.Build(draftCtx, request, directordraft.MatchContext{
-					MatchID: matchID,
-					Config:  store.Config(matchID),
-					Clock:   clockStore.Clock(matchID),
-				})
-				if err != nil {
-					return operatorwrite.Response{}, directorDraftWriteError(err)
-				}
-				event, err := eventFromVoiceDraft(result, store.PublicSnapshot(matchID).Score)
-				if err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusUnprocessableEntity, err)
-				}
-				event.OperatorID = operator.Subject
-				applyRequestedFactStatus(&event)
-				markProactiveMode(&event)
-				var created matchstate.MatchEvent
-				var snapshot matchstate.Snapshot
-				if sources != nil {
-					created, snapshot, err = sources.Ingest(operationCtx, matchID, event)
-				} else if transactionalStore, supported := store.(matchstate.OperatorTransactionRepository); supported {
-					created, snapshot, err = transactionalStore.CreateOperator(operationCtx, matchID, event)
-				} else {
-					created, snapshot, err = store.Create(matchID, event)
-				}
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				if transactionalStore, supported := store.(matchstate.OperatorTransactionRepository); supported {
-					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
-				} else {
-					snapshot = store.PublicSnapshot(matchID)
-				}
-				if err != nil {
-					return operatorwrite.Response{}, err
-				}
-				return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{"event": created, "snapshot": snapshot})
-			})
-		case r.Method == http.MethodPost && resource == "drafts" && len(parts) == 3 && parts[2] == "voice":
-			if _, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !authorized {
-				return
-			}
-			if directorDrafts == nil {
-				http.Error(w, "director voice draft unavailable", http.StatusServiceUnavailable)
-				return
-			}
-			var request directordraft.Request
-			body, err := decodeOperatorJSON(w, r, &request)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "drafts.voice", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
-				clockStore, ok := store.(matchstate.ClockRepository)
-				if !ok {
-					return operatorwrite.Response{}, operatorError(http.StatusNotImplemented, errors.New("match clock unavailable"))
-				}
-				result, err := directorDrafts.Build(operationCtx, request, directordraft.MatchContext{
-					MatchID: matchID,
-					Config:  store.Config(matchID),
-					Clock:   clockStore.Clock(matchID),
-				})
-				if err != nil {
-					return operatorwrite.Response{}, directorDraftWriteError(err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, result)
-			})
-		case r.Method == http.MethodPost && resource == "facts" && len(parts) == 4:
-			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorFactConfirm)
-			if !authorized {
-				return
-			}
-			action := parts[3]
-			if action != "confirm" && action != "revoke" && action != "reconcile" {
-				http.NotFound(w, r)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "facts."+action, []byte("{}"), func(operationCtx context.Context) (operatorwrite.Response, error) {
-				var changed matchstate.MatchEvent
-				var snapshot matchstate.Snapshot
-				var err error
-				transactionalStore, transactional := store.(matchstate.OperatorTransactionRepository)
-				switch action {
-				case "confirm":
-					if transactional {
-						changed, snapshot, err = transactionalStore.ConfirmFactOperator(operationCtx, matchID, parts[2], operator.Subject)
-					} else {
-						changed, snapshot, err = store.ConfirmFact(matchID, parts[2], operator.Subject)
-					}
-				case "revoke":
-					if transactional {
-						changed, snapshot, err = transactionalStore.RevokeFactOperator(operationCtx, matchID, parts[2], operator.Subject)
-					} else {
-						changed, snapshot, err = store.RevokeFact(matchID, parts[2], operator.Subject)
-					}
-				case "reconcile":
-					if transactional {
-						changed, snapshot, err = transactionalStore.ReconcileFactOperator(operationCtx, matchID, parts[2], operator.Subject)
-					} else {
-						changed, snapshot, err = store.ReconcileFact(matchID, parts[2], operator.Subject)
-					}
-				}
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
-			})
-		case r.Method == http.MethodPost && resource == "conflicts" && len(parts) == 4 && parts[3] == "resolve":
-			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorFactConfirm)
-			if !authorized {
-				return
-			}
-			conflictStore, supported := store.(matchstate.FactConflictRepository)
-			if !supported {
-				http.Error(w, "fact conflict resolution unavailable", http.StatusNotImplemented)
-				return
-			}
-			var request struct {
-				ChosenFactID    string   `json:"chosenFactId"`
-				SelectedFactIDs []string `json:"selectedFactIds"`
-				Reason          string   `json:"reason"`
-			}
-			body, err := decodeOperatorJSON(w, r, &request)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			selectedFactIDs := append([]string(nil), request.SelectedFactIDs...)
-			if len(selectedFactIDs) == 0 && strings.TrimSpace(request.ChosenFactID) != "" {
-				var target matchstate.FactConflict
-				for _, conflict := range conflictStore.FactConflicts(matchID) {
-					if conflict.ID == parts[2] && conflict.Status == matchstate.ConflictStatusOpen {
-						target = conflict
-						break
-					}
-				}
-				selectedFactIDs, err = matchstate.CompatibleSelectionForLegacyChoice(target, request.ChosenFactID)
-				if err != nil {
-					http.Error(w, err.Error(), http.StatusBadRequest)
-					return
-				}
-			}
-			preferredFactID := strings.TrimSpace(request.ChosenFactID)
-			if preferredFactID == "" && len(selectedFactIDs) > 0 {
-				preferredFactID = strings.TrimSpace(selectedFactIDs[0])
-			}
-			existingByFactID := make(map[string]matchstate.MatchEvent)
-			for _, event := range store.Events(matchID) {
-				if event.Status == "active" {
-					existingByFactID[event.FactID] = event
-				}
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "conflicts.resolve", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
-				var conflict matchstate.FactConflict
-				var changedEvents []matchstate.MatchEvent
-				var snapshot matchstate.Snapshot
-				var err error
-				if transactionalStore, transactional := store.(matchstate.FactConflictSelectionTransactionRepository); transactional {
-					conflict, changedEvents, snapshot, err = transactionalStore.ResolveFactConflictSelectionOperator(
-						operationCtx, matchID, parts[2], selectedFactIDs, operator.Subject, request.Reason,
-					)
-				} else if selectionStore, selectable := store.(matchstate.FactConflictSelectionRepository); selectable {
-					conflict, changedEvents, snapshot, err = selectionStore.ResolveFactConflictSelection(
-						matchID, parts[2], selectedFactIDs, operator.Subject, request.Reason,
-					)
-				} else if len(selectedFactIDs) == 1 {
-					var changed matchstate.MatchEvent
-					conflict, changed, snapshot, err = conflictStore.ResolveFactConflict(matchID, parts[2], selectedFactIDs[0], operator.Subject, request.Reason)
-					if changed.ID != "" {
-						changedEvents = []matchstate.MatchEvent{changed}
-					}
-				} else {
-					err = fmt.Errorf("%w: compatible fact selection is unavailable", matchstate.ErrInvalid)
-				}
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				primary := existingByFactID[preferredFactID]
-				for _, event := range changedEvents {
-					if event.FactID == preferredFactID {
-						primary = event
-						break
-					}
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"conflict": conflict,
-					"event":    primary,
-					"events":   changedEvents,
-					"snapshot": snapshot,
-				})
-			})
-		case r.Method == http.MethodGet && resource == "facts" && len(parts) == 4 && parts[3] == "revisions":
-			if _, authorized := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !authorized {
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"revisions": store.FactRevisions(matchID, parts[2]),
-			})
-		case r.Method == http.MethodGet && resource == "config" && len(parts) == 2:
-			matchConfig := store.Config(matchID)
-			snapshot := store.PublicSnapshot(matchID)
-			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
-			if !operatorView {
-				matchConfig.Integrity = matchstate.MatchIntegrity{}
-				snapshot = clientSnapshot(snapshot)
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"config":   matchConfig,
-				"snapshot": snapshot,
-			})
-		case r.Method == http.MethodPost && resource == "config" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorMatchWrite); !ok {
-				return
-			}
-			var config matchstate.MatchConfig
-			body, err := decodeOperatorJSON(w, r, &config)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			config, err = mergeMatchConfigRoster(store.Config(matchID), config)
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "config.set", body, func(_ context.Context) (operatorwrite.Response, error) {
-				saved, _, err := store.SetConfig(matchID, config)
-				if err != nil {
-					return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"config":   saved,
-					"snapshot": store.PublicSnapshot(matchID),
-				})
-			})
-		case r.Method == http.MethodPost && resource == "lifecycle" && len(parts) == 2:
-			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite)
-			if !authorized {
-				return
-			}
-			var request struct {
-				Lifecycle string `json:"lifecycle"`
-			}
-			body, err := decodeOperatorJSON(w, r, &request)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			executeOperatorWrite(w, r, operatorWrites, matchID, "lifecycle.set", body, func(_ context.Context) (operatorwrite.Response, error) {
-				lifecycleStore, ok := store.(matchstate.LifecycleRepository)
-				if !ok {
-					return operatorwrite.Response{}, operatorError(http.StatusNotImplemented, errors.New("match lifecycle unavailable"))
-				}
-				saved, err := lifecycleStore.SetLifecycle(matchID, request.Lifecycle)
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"config": saved, "snapshot": store.PublicSnapshot(matchID), "operatorId": operator.Subject,
-				})
-			})
-		case r.Method == http.MethodGet && resource == "events" && len(parts) == 2:
-			events := store.PublicEvents(matchID)
-			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
-			if operatorView {
-				events = operatorAuditEvents(store.Events(matchID), events)
-			}
-			if events == nil {
-				events = []matchstate.MatchEvent{}
-			}
-			response := map[string]interface{}{"events": events}
-			if operatorView {
-				if conflictStore, supported := store.(matchstate.FactConflictRepository); supported {
-					conflicts := conflictStore.FactConflicts(matchID)
-					if conflicts == nil {
-						conflicts = []matchstate.FactConflict{}
-					}
-					response["conflicts"] = conflicts
-				}
-			}
-			writeJSON(w, http.StatusOK, response)
-		case r.Method == http.MethodGet && resource == "state" && len(parts) == 2:
-			snapshot := store.PublicSnapshot(matchID)
-			_, operatorView := authz.view(r, auth.ScopeOperatorTraceRead)
-			if !operatorView {
-				snapshot = clientSnapshot(snapshot)
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"snapshot": snapshot,
-			})
-		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 2:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
-				return
-			}
-			limit := 50
-			if value := r.URL.Query().Get("limit"); value != "" {
-				if parsed, err := strconv.Atoi(value); err == nil {
-					limit = parsed
-				}
-			}
-			var traces []companion.Trace
-			var err error
-			if interactionLedger != nil {
-				traces, err = listInteractionTraces(r.Context(), interactionLedger, matchID, limit)
-			} else {
-				traces, err = traceReader.ListTraces(r.Context(), matchID, limit)
-			}
-			if err != nil {
-				http.Error(w, err.Error(), http.StatusInternalServerError)
-				return
-			}
-			// ADR-0008 citation audit: `citation=<prefix>` keeps only traces
-			// whose reason codes cite a proactive_citation with that prefix.
-			if prefix := strings.TrimSpace(r.URL.Query().Get("citation")); prefix != "" {
-				traces = filterTracesByCitationPrefix(traces, prefix)
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"traces": traces,
-			})
-		case r.Method == http.MethodGet && resource == "traces" && len(parts) == 3:
-			if _, ok := authz.authorize(w, r, auth.ScopeOperatorTraceRead); !ok {
-				return
-			}
-			var trace companion.Trace
-			var err error
-			if interactionLedger != nil {
-				trace, err = getInteractionTrace(r.Context(), interactionLedger, matchID, parts[2])
-			} else {
-				trace, err = traceReader.GetTrace(r.Context(), matchID, parts[2])
-			}
-			if err != nil {
-				status := http.StatusInternalServerError
-				if errors.Is(err, companion.ErrTraceNotFound) {
-					status = http.StatusNotFound
-				}
-				http.Error(w, err.Error(), status)
-				return
-			}
-			writeJSON(w, http.StatusOK, map[string]interface{}{
-				"trace": trace,
-			})
-		case r.Method == http.MethodPost && resource == "events" && len(parts) == 2:
-			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorMatchWrite)
-			if !authorized {
-				return
-			}
-			var ev matchstate.MatchEvent
-			body, err := decodeOperatorJSON(w, r, &ev)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			ev.OperatorID = operator.Subject
-			applyRequestedFactStatus(&ev)
-			markProactiveMode(&ev)
-			executeOperatorWrite(w, r, operatorWrites, matchID, "events.create", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
-				var created matchstate.MatchEvent
-				var snapshot matchstate.Snapshot
-				var err error
-				if sources != nil {
-					created, snapshot, err = sources.Ingest(operationCtx, matchID, ev)
-				} else {
-					if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
-						created, snapshot, err = transactionalStore.CreateOperator(operationCtx, matchID, ev)
-					} else {
-						created, snapshot, err = store.Create(matchID, ev)
-					}
-				}
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
-					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
-				} else {
-					snapshot = store.PublicSnapshot(matchID)
-				}
-				if err != nil {
-					return operatorwrite.Response{}, err
-				}
-				return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{
-					"event":    created,
-					"snapshot": snapshot,
-				})
-			})
-		case r.Method == http.MethodPost && resource == "events" && len(parts) == 4 && parts[3] == "correct":
-			operator, authorized := authz.authorize(w, r, auth.ScopeOperatorFactCorrect)
-			if !authorized {
-				return
-			}
-			var ev matchstate.MatchEvent
-			body, err := decodeOperatorJSON(w, r, &ev)
-			if err != nil {
-				http.Error(w, "invalid json", http.StatusBadRequest)
-				return
-			}
-			correctionReason, _ := ev.Evidence["correctionReason"].(string)
-			if strings.TrimSpace(correctionReason) == "" {
-				http.Error(w, "correction reason is required", http.StatusBadRequest)
-				return
-			}
-			ev.OperatorID = operator.Subject
-			applyRequestedFactStatus(&ev)
-			markProactiveMode(&ev)
-			executeOperatorWrite(w, r, operatorWrites, matchID, "events.correct", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
-				var corrected matchstate.MatchEvent
-				var snapshot matchstate.Snapshot
-				var err error
-				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
-					corrected, snapshot, err = transactionalStore.CorrectOperator(operationCtx, matchID, parts[2], ev)
-				} else {
-					corrected, snapshot, err = store.Correct(matchID, parts[2], ev)
-				}
-				if err != nil {
-					return operatorwrite.Response{}, matchStateWriteError(err)
-				}
-				if transactionalStore, ok := store.(matchstate.OperatorTransactionRepository); ok {
-					snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
-				} else {
-					snapshot = store.PublicSnapshot(matchID)
-				}
-				if err != nil {
-					return operatorwrite.Response{}, err
-				}
-				return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
-					"event":    corrected,
-					"snapshot": snapshot,
-				})
-			})
-		default:
-			http.NotFound(w, r)
+// handleInteraction 列出/翻页某比赛某用户的交互账本行（附 journey 投影与
+// 审计报告）。
+func (m matchAPI) handleInteraction(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.interactionLedger == nil {
+		writeJSON(w, http.StatusOK, map[string]any{"events": []interaction.Event{}, "nextCursor": "", "hasMore": false, "projectionScope": "all", "journey": interaction.Journey{}, "audit": evals.InteractionAuditReport{}})
+		return
+	}
+	limit := 100
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil && parsed > 0 {
+			limit = parsed
 		}
 	}
+	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
+	if userID == "" {
+		http.Error(w, "userId is required", http.StatusBadRequest)
+		return
+	}
+	page := interaction.Page{}
+	var err error
+	if pageable, ok := m.interactionLedger.(interaction.PageableLedger); ok {
+		page, err = pageable.ListPage(r.Context(), interaction.PageQuery{
+			UserID: userID, MatchID: matchID, Limit: limit, Cursor: strings.TrimSpace(r.URL.Query().Get("cursor")),
+		})
+	} else {
+		page.Events, err = m.interactionLedger.List(r.Context(), userID, matchID, limit)
+	}
+	if err != nil {
+		if errors.Is(err, interaction.ErrInvalidCursor) {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	projectionEvents := page.Events
+	projectionScope := "page"
+	if snapshot, ok := m.interactionLedger.(interaction.SnapshotLedger); ok {
+		projectionEvents, err = snapshot.ListSnapshot(r.Context(), userID, matchID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusInternalServerError)
+			return
+		}
+		projectionScope = "all"
+	}
+	writeJSON(w, http.StatusOK, map[string]any{
+		"events": page.Events, "nextCursor": page.NextCursor, "hasMore": page.HasMore(),
+		"projectionScope": projectionScope,
+		"journey":         interaction.ProjectJourney(projectionEvents), "audit": evals.AuditInteractions(projectionEvents),
+	})
+}
+// handleStart 布阵开赛：重置比赛状态后写入新配置（幂等写）。
+func (m matchAPI) handleStart(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	var matchConfig matchstate.MatchConfig
+	body, err := decodeOperatorJSON(w, r, &matchConfig)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	if err := validateNewMatchConfig(matchConfig); err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	if strings.TrimSpace(matchConfig.Lifecycle) == "" {
+		matchConfig.Lifecycle = matchstate.LifecycleScheduled
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "match.start", body, func(_ context.Context) (operatorwrite.Response, error) {
+		if m.sources != nil {
+			m.sources.Stop(matchID)
+		}
+		if err := m.store.Reset(matchID); err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		if m.demoResetter != nil {
+			if err := m.demoResetter.Reset(matchID); err != nil {
+				return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+			}
+		}
+		savedConfig, snapshot, err := m.store.SetConfig(matchID, matchConfig)
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"ok":       true,
+			"matchId":  matchID,
+			"config":   savedConfig,
+			"snapshot": snapshot,
+		})
+	})
+}
+
+// handleReset 只对本地演示比赛开放的一键重置（幂等写）。
+func (m matchAPI) handleReset(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if !isDemoMatchID(matchID) {
+		http.Error(w, "reset is only available for local demo match ids", http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "match.reset", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
+		if m.sources != nil {
+			m.sources.Stop(matchID)
+		}
+		if err := m.store.Reset(matchID); err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		if m.demoResetter != nil {
+			if err := m.demoResetter.Reset(matchID); err != nil {
+				return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+			}
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"ok":       true,
+			"matchId":  matchID,
+			"snapshot": m.store.PublicSnapshot(matchID),
+		})
+	})
+}
+// handleSourcesStatus 报告当前活跃信号源。
+func (m matchAPI) handleSourcesStatus(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.sources == nil {
+		http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{"status": m.sources.Status(matchID)})
+}
+
+// handleSourcesStart 切换并启动一个信号源（幂等写）。
+func (m matchAPI) handleSourcesStart(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.sources == nil {
+		http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var sourceConfig datasource.SourceConfig
+	body, err := decodeOperatorJSON(w, r, &sourceConfig)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "sources.start", body, func(_ context.Context) (operatorwrite.Response, error) {
+		status, err := m.sources.Start(matchID, sourceConfig)
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": status})
+	})
+}
+
+// handleSourcesStop 停掉信号源，回到 manual（幂等写）。
+func (m matchAPI) handleSourcesStop(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.sources == nil {
+		http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "sources.stop", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"status": m.sources.Stop(matchID)})
+	})
+}
+
+// handleTakeover 人工接管：停源并把自动化切到 paused（幂等写）。
+func (m matchAPI) handleTakeover(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.sources == nil {
+		http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "match.takeover", []byte("{}"), func(_ context.Context) (operatorwrite.Response, error) {
+		status := m.sources.Stop(matchID)
+		policy := m.store.Config(matchID).Automation
+		policy.Mode = matchstate.AutomationModePaused
+		saved, err := m.store.SetAutomation(matchID, policy)
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"policy": saved,
+			"status": status,
+		})
+	})
+}
+
+// handleGetAutomation 读取自动化策略。
+func (m matchAPI) handleGetAutomation(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	writeJSON(w, http.StatusOK, map[string]interface{}{"policy": m.store.Config(matchID).Automation})
+}
+
+// handleSetAutomation 保存自动化策略（幂等写）。
+func (m matchAPI) handleSetAutomation(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	var policy matchstate.AutomationPolicy
+	body, err := decodeOperatorJSON(w, r, &policy)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "automation.set", body, func(_ context.Context) (operatorwrite.Response, error) {
+		saved, err := m.store.SetAutomation(matchID, policy)
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"policy": saved})
+	})
+}
+// handleGetClock 公开可降级读：匿名拿公开视图，持 TraceRead 的运营拿完整
+// 视图（判定在方法内用 authz.view，与迁移前一致）。
+func (m matchAPI) handleGetClock(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	clockStore, ok := m.store.(matchstate.ClockRepository)
+	if !ok {
+		http.Error(w, "match clock unavailable", http.StatusNotImplemented)
+		return
+	}
+	snapshot := m.store.PublicSnapshot(matchID)
+	_, operatorView := m.authz.view(r, auth.ScopeOperatorTraceRead)
+	if !operatorView {
+		snapshot = clientSnapshot(snapshot)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"clock":    clockStore.Clock(matchID),
+		"snapshot": snapshot,
+	})
+}
+
+// handlePatchClock 运营改钟（set/adjust/start/pause），带乐观并发版本号
+// （幂等写）。
+func (m matchAPI) handlePatchClock(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	clockStore, ok := m.store.(matchstate.ClockRepository)
+	if !ok {
+		http.Error(w, "match clock unavailable", http.StatusNotImplemented)
+		return
+	}
+	var command matchstate.ClockCommand
+	body, err := decodeOperatorJSON(w, r, &command)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	command.Source = "operator"
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "match.clock", body, func(_ context.Context) (operatorwrite.Response, error) {
+		clock, err := clockStore.SetClock(matchID, command)
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"clock":    clock,
+			"snapshot": m.store.PublicSnapshot(matchID),
+		})
+	})
+}
+// handleVoiceDraftPublish 把语音草稿直发为确认事实（45s 上游预算，幂等写）。
+func (m matchAPI) handleVoiceDraftPublish(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	operator, ok := operatorClaims(m.authz, w, r)
+	if !ok {
+		return
+	}
+	if m.directorDrafts == nil {
+		http.Error(w, "director voice draft unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	clockStore, ok := m.store.(matchstate.ClockRepository)
+	if !ok {
+		http.Error(w, "match clock unavailable", http.StatusNotImplemented)
+		return
+	}
+	var request directordraft.Request
+	body, err := decodeOperatorJSON(w, r, &request)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "drafts.voice.publish", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		draftCtx, cancel := context.WithTimeout(operationCtx, 45*time.Second)
+		defer cancel()
+		result, err := m.directorDrafts.Build(draftCtx, request, directordraft.MatchContext{
+			MatchID: matchID,
+			Config:  m.store.Config(matchID),
+			Clock:   clockStore.Clock(matchID),
+		})
+		if err != nil {
+			return operatorwrite.Response{}, directorDraftWriteError(err)
+		}
+		event, err := eventFromVoiceDraft(result, m.store.PublicSnapshot(matchID).Score)
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusUnprocessableEntity, err)
+		}
+		event.OperatorID = operator.Subject
+		applyRequestedFactStatus(&event)
+		markProactiveMode(&event)
+		var created matchstate.MatchEvent
+		var snapshot matchstate.Snapshot
+		if m.sources != nil {
+			created, snapshot, err = m.sources.Ingest(operationCtx, matchID, event)
+		} else if transactionalStore, supported := m.store.(matchstate.OperatorTransactionRepository); supported {
+			created, snapshot, err = transactionalStore.CreateOperator(operationCtx, matchID, event)
+		} else {
+			created, snapshot, err = m.store.Create(matchID, event)
+		}
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		if transactionalStore, supported := m.store.(matchstate.OperatorTransactionRepository); supported {
+			snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
+		} else {
+			snapshot = m.store.PublicSnapshot(matchID)
+		}
+		if err != nil {
+			return operatorwrite.Response{}, err
+		}
+		return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{"event": created, "snapshot": snapshot})
+	})
+}
+
+// handleVoiceDraft 把语音转写成草稿（不落事件，幂等写）。
+func (m matchAPI) handleVoiceDraft(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.directorDrafts == nil {
+		http.Error(w, "director voice draft unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	var request directordraft.Request
+	body, err := decodeOperatorJSON(w, r, &request)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "drafts.voice", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		clockStore, ok := m.store.(matchstate.ClockRepository)
+		if !ok {
+			return operatorwrite.Response{}, operatorError(http.StatusNotImplemented, errors.New("match clock unavailable"))
+		}
+		result, err := m.directorDrafts.Build(operationCtx, request, directordraft.MatchContext{
+			MatchID: matchID,
+			Config:  m.store.Config(matchID),
+			Clock:   clockStore.Clock(matchID),
+		})
+		if err != nil {
+			return operatorwrite.Response{}, directorDraftWriteError(err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, result)
+	})
+}
+// handleFactConfirm/Revoke/Reconcile 是事实状态迁移的三个端点形态：原
+// switch 里同一 case 以 parts[3] 分流（未知动作落 404），现在由注册表的
+// 三条字面量 pattern 各自接住，语义等价。
+func (m matchAPI) handleFactConfirm(w http.ResponseWriter, r *http.Request) {
+	m.handleFactTransition(w, r, "confirm")
+}
+
+func (m matchAPI) handleFactRevoke(w http.ResponseWriter, r *http.Request) {
+	m.handleFactTransition(w, r, "revoke")
+}
+
+func (m matchAPI) handleFactReconcile(w http.ResponseWriter, r *http.Request) {
+	m.handleFactTransition(w, r, "reconcile")
+}
+
+func (m matchAPI) handleFactTransition(w http.ResponseWriter, r *http.Request, action string) {
+	matchID := r.PathValue("matchId")
+	factID := r.PathValue("factId")
+	operator, ok := operatorClaims(m.authz, w, r)
+	if !ok {
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "facts."+action, []byte("{}"), func(operationCtx context.Context) (operatorwrite.Response, error) {
+		var changed matchstate.MatchEvent
+		var snapshot matchstate.Snapshot
+		var err error
+		transactionalStore, transactional := m.store.(matchstate.OperatorTransactionRepository)
+		switch action {
+		case "confirm":
+			if transactional {
+				changed, snapshot, err = transactionalStore.ConfirmFactOperator(operationCtx, matchID, factID, operator.Subject)
+			} else {
+				changed, snapshot, err = m.store.ConfirmFact(matchID, factID, operator.Subject)
+			}
+		case "revoke":
+			if transactional {
+				changed, snapshot, err = transactionalStore.RevokeFactOperator(operationCtx, matchID, factID, operator.Subject)
+			} else {
+				changed, snapshot, err = m.store.RevokeFact(matchID, factID, operator.Subject)
+			}
+		case "reconcile":
+			if transactional {
+				changed, snapshot, err = transactionalStore.ReconcileFactOperator(operationCtx, matchID, factID, operator.Subject)
+			} else {
+				changed, snapshot, err = m.store.ReconcileFact(matchID, factID, operator.Subject)
+			}
+		}
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{"event": changed, "snapshot": snapshot})
+	})
+}
+
+// handleConflictResolve 在一条事实冲突里裁决采纳哪个/哪些事实（幂等写）。
+func (m matchAPI) handleConflictResolve(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	conflictID := r.PathValue("conflictId")
+	operator, ok := operatorClaims(m.authz, w, r)
+	if !ok {
+		return
+	}
+	conflictStore, supported := m.store.(matchstate.FactConflictRepository)
+	if !supported {
+		http.Error(w, "fact conflict resolution unavailable", http.StatusNotImplemented)
+		return
+	}
+	var request struct {
+		ChosenFactID    string   `json:"chosenFactId"`
+		SelectedFactIDs []string `json:"selectedFactIds"`
+		Reason          string   `json:"reason"`
+	}
+	body, err := decodeOperatorJSON(w, r, &request)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	selectedFactIDs := append([]string(nil), request.SelectedFactIDs...)
+	if len(selectedFactIDs) == 0 && strings.TrimSpace(request.ChosenFactID) != "" {
+		var target matchstate.FactConflict
+		for _, conflict := range conflictStore.FactConflicts(matchID) {
+			if conflict.ID == conflictID && conflict.Status == matchstate.ConflictStatusOpen {
+				target = conflict
+				break
+			}
+		}
+		selectedFactIDs, err = matchstate.CompatibleSelectionForLegacyChoice(target, request.ChosenFactID)
+		if err != nil {
+			http.Error(w, err.Error(), http.StatusBadRequest)
+			return
+		}
+	}
+	preferredFactID := strings.TrimSpace(request.ChosenFactID)
+	if preferredFactID == "" && len(selectedFactIDs) > 0 {
+		preferredFactID = strings.TrimSpace(selectedFactIDs[0])
+	}
+	existingByFactID := make(map[string]matchstate.MatchEvent)
+	for _, event := range m.store.Events(matchID) {
+		if event.Status == "active" {
+			existingByFactID[event.FactID] = event
+		}
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "conflicts.resolve", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		var conflict matchstate.FactConflict
+		var changedEvents []matchstate.MatchEvent
+		var snapshot matchstate.Snapshot
+		var err error
+		if transactionalStore, transactional := m.store.(matchstate.FactConflictSelectionTransactionRepository); transactional {
+			conflict, changedEvents, snapshot, err = transactionalStore.ResolveFactConflictSelectionOperator(
+				operationCtx, matchID, conflictID, selectedFactIDs, operator.Subject, request.Reason,
+			)
+		} else if selectionStore, selectable := m.store.(matchstate.FactConflictSelectionRepository); selectable {
+			conflict, changedEvents, snapshot, err = selectionStore.ResolveFactConflictSelection(
+				matchID, conflictID, selectedFactIDs, operator.Subject, request.Reason,
+			)
+		} else if len(selectedFactIDs) == 1 {
+			var changed matchstate.MatchEvent
+			conflict, changed, snapshot, err = conflictStore.ResolveFactConflict(matchID, conflictID, selectedFactIDs[0], operator.Subject, request.Reason)
+			if changed.ID != "" {
+				changedEvents = []matchstate.MatchEvent{changed}
+			}
+		} else {
+			err = fmt.Errorf("%w: compatible fact selection is unavailable", matchstate.ErrInvalid)
+		}
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		primary := existingByFactID[preferredFactID]
+		for _, event := range changedEvents {
+			if event.FactID == preferredFactID {
+				primary = event
+				break
+			}
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"conflict": conflict,
+			"event":    primary,
+			"events":   changedEvents,
+			"snapshot": snapshot,
+		})
+	})
+}
+
+// handleFactRevisions 列出一条事实的修订史。
+func (m matchAPI) handleFactRevisions(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"revisions": m.store.FactRevisions(matchID, r.PathValue("factId")),
+	})
+}
+// handleGetConfig 公开可降级读：匿名视图抹掉 integrity 审计细节。
+func (m matchAPI) handleGetConfig(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	matchConfig := m.store.Config(matchID)
+	snapshot := m.store.PublicSnapshot(matchID)
+	_, operatorView := m.authz.view(r, auth.ScopeOperatorTraceRead)
+	if !operatorView {
+		matchConfig.Integrity = matchstate.MatchIntegrity{}
+		snapshot = clientSnapshot(snapshot)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"config":   matchConfig,
+		"snapshot": snapshot,
+	})
+}
+
+// handleSetConfig 保存比赛配置；空阵容继承已配置名单，缩编被拒（幂等写）。
+func (m matchAPI) handleSetConfig(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	var config matchstate.MatchConfig
+	body, err := decodeOperatorJSON(w, r, &config)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	config, err = mergeMatchConfigRoster(m.store.Config(matchID), config)
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "config.set", body, func(_ context.Context) (operatorwrite.Response, error) {
+		saved, _, err := m.store.SetConfig(matchID, config)
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"config":   saved,
+			"snapshot": m.store.PublicSnapshot(matchID),
+		})
+	})
+}
+
+// handleSetLifecycle 迁移比赛生命周期（幂等写），审计行带运营身份。
+func (m matchAPI) handleSetLifecycle(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	operator, ok := operatorClaims(m.authz, w, r)
+	if !ok {
+		return
+	}
+	var request struct {
+		Lifecycle string `json:"lifecycle"`
+	}
+	body, err := decodeOperatorJSON(w, r, &request)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "lifecycle.set", body, func(_ context.Context) (operatorwrite.Response, error) {
+		lifecycleStore, ok := m.store.(matchstate.LifecycleRepository)
+		if !ok {
+			return operatorwrite.Response{}, operatorError(http.StatusNotImplemented, errors.New("match lifecycle unavailable"))
+		}
+		saved, err := lifecycleStore.SetLifecycle(matchID, request.Lifecycle)
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"config": saved, "snapshot": m.store.PublicSnapshot(matchID), "operatorId": operator.Subject,
+		})
+	})
+}
+// handleGetEvents 公开可降级读：匿名拿公开事件流，持 TraceRead 的运营额外
+// 拿到审计事件与冲突列表。
+func (m matchAPI) handleGetEvents(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	events := m.store.PublicEvents(matchID)
+	_, operatorView := m.authz.view(r, auth.ScopeOperatorTraceRead)
+	if operatorView {
+		events = operatorAuditEvents(m.store.Events(matchID), events)
+	}
+	if events == nil {
+		events = []matchstate.MatchEvent{}
+	}
+	response := map[string]interface{}{"events": events}
+	if operatorView {
+		if conflictStore, supported := m.store.(matchstate.FactConflictRepository); supported {
+			conflicts := conflictStore.FactConflicts(matchID)
+			if conflicts == nil {
+				conflicts = []matchstate.FactConflict{}
+			}
+			response["conflicts"] = conflicts
+		}
+	}
+	writeJSON(w, http.StatusOK, response)
+}
+
+// handleGetState 公开可降级读：匿名拿公开快照。
+func (m matchAPI) handleGetState(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	snapshot := m.store.PublicSnapshot(matchID)
+	_, operatorView := m.authz.view(r, auth.ScopeOperatorTraceRead)
+	if !operatorView {
+		snapshot = clientSnapshot(snapshot)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"snapshot": snapshot,
+	})
+}
+// handleListTraces 列出某比赛的 companion traces（interaction ledger 优先），
+// 支持 limit 与 citation=<prefix> 过滤。
+func (m matchAPI) handleListTraces(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	limit := 50
+	if value := r.URL.Query().Get("limit"); value != "" {
+		if parsed, err := strconv.Atoi(value); err == nil {
+			limit = parsed
+		}
+	}
+	var traces []companion.Trace
+	var err error
+	if m.interactionLedger != nil {
+		traces, err = listInteractionTraces(r.Context(), m.interactionLedger, matchID, limit)
+	} else {
+		traces, err = m.traceReader.ListTraces(r.Context(), matchID, limit)
+	}
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusInternalServerError)
+		return
+	}
+	// ADR-0008 citation audit: `citation=<prefix>` keeps only traces
+	// whose reason codes cite a proactive_citation with that prefix.
+	if prefix := strings.TrimSpace(r.URL.Query().Get("citation")); prefix != "" {
+		traces = filterTracesByCitationPrefix(traces, prefix)
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"traces": traces,
+	})
+}
+
+// handleGetTrace 取单条 trace 详情（interaction ledger 优先）。
+func (m matchAPI) handleGetTrace(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	traceID := r.PathValue("traceId")
+	var trace companion.Trace
+	var err error
+	if m.interactionLedger != nil {
+		trace, err = getInteractionTrace(r.Context(), m.interactionLedger, matchID, traceID)
+	} else {
+		trace, err = m.traceReader.GetTrace(r.Context(), matchID, traceID)
+	}
+	if err != nil {
+		status := http.StatusInternalServerError
+		if errors.Is(err, companion.ErrTraceNotFound) {
+			status = http.StatusNotFound
+		}
+		http.Error(w, err.Error(), status)
+		return
+	}
+	writeJSON(w, http.StatusOK, map[string]interface{}{
+		"trace": trace,
+	})
+}
+
+// handleCreateEvent 发布一条比赛事件（sources.Ingest 或事务写，幂等写）。
+func (m matchAPI) handleCreateEvent(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	operator, ok := operatorClaims(m.authz, w, r)
+	if !ok {
+		return
+	}
+	var ev matchstate.MatchEvent
+	body, err := decodeOperatorJSON(w, r, &ev)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	ev.OperatorID = operator.Subject
+	applyRequestedFactStatus(&ev)
+	markProactiveMode(&ev)
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "events.create", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		var created matchstate.MatchEvent
+		var snapshot matchstate.Snapshot
+		var err error
+		if m.sources != nil {
+			created, snapshot, err = m.sources.Ingest(operationCtx, matchID, ev)
+		} else {
+			if transactionalStore, ok := m.store.(matchstate.OperatorTransactionRepository); ok {
+				created, snapshot, err = transactionalStore.CreateOperator(operationCtx, matchID, ev)
+			} else {
+				created, snapshot, err = m.store.Create(matchID, ev)
+			}
+		}
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		if transactionalStore, ok := m.store.(matchstate.OperatorTransactionRepository); ok {
+			snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
+		} else {
+			snapshot = m.store.PublicSnapshot(matchID)
+		}
+		if err != nil {
+			return operatorwrite.Response{}, err
+		}
+		return operatorwrite.JSONResponse(http.StatusCreated, map[string]interface{}{
+			"event":    created,
+			"snapshot": snapshot,
+		})
+	})
+}
+
+// handleCorrectEvent 以 VAR 更正语义替换一条既有事件（须带 correctionReason，
+// 幂等写）。
+func (m matchAPI) handleCorrectEvent(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	eventID := r.PathValue("eventId")
+	operator, ok := operatorClaims(m.authz, w, r)
+	if !ok {
+		return
+	}
+	var ev matchstate.MatchEvent
+	body, err := decodeOperatorJSON(w, r, &ev)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	correctionReason, _ := ev.Evidence["correctionReason"].(string)
+	if strings.TrimSpace(correctionReason) == "" {
+		http.Error(w, "correction reason is required", http.StatusBadRequest)
+		return
+	}
+	ev.OperatorID = operator.Subject
+	applyRequestedFactStatus(&ev)
+	markProactiveMode(&ev)
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "events.correct", body, func(operationCtx context.Context) (operatorwrite.Response, error) {
+		var corrected matchstate.MatchEvent
+		var snapshot matchstate.Snapshot
+		var err error
+		if transactionalStore, ok := m.store.(matchstate.OperatorTransactionRepository); ok {
+			corrected, snapshot, err = transactionalStore.CorrectOperator(operationCtx, matchID, eventID, ev)
+		} else {
+			corrected, snapshot, err = m.store.Correct(matchID, eventID, ev)
+		}
+		if err != nil {
+			return operatorwrite.Response{}, matchStateWriteError(err)
+		}
+		if transactionalStore, ok := m.store.(matchstate.OperatorTransactionRepository); ok {
+			snapshot, err = transactionalStore.PublicSnapshotOperator(operationCtx, matchID)
+		} else {
+			snapshot = m.store.PublicSnapshot(matchID)
+		}
+		if err != nil {
+			return operatorwrite.Response{}, err
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"event":    corrected,
+			"snapshot": snapshot,
+		})
+	})
 }
 
 // 语音 wrapper 链塌缩（server-residual-polish 1.3）：四层里两层纯转发 shim

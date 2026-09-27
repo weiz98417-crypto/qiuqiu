@@ -18,11 +18,13 @@ import (
 	"log"
 	"math"
 	"net/http"
+	"os"
 	"sort"
 	"strings"
 	"time"
 
 	"qiuqiu/internal/auth"
+	"qiuqiu/internal/backchannel"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
@@ -48,18 +50,18 @@ type talkativenessReader interface {
 }
 
 type consoleAPI struct {
-	cfg           *config.Config
-	authz         operatorAuthz
-	matches       matchstate.Repository
-	traces        companion.TraceReader
-	ledger        interaction.Ledger
-	sessions      *conversation.WatchSessionRegistry
-	memories      *memory.Queue
-	operators     operatorauth.Directory
-	preferences   talkativenessReader
+	cfg               *config.Config
+	authz             operatorAuthz
+	matches           matchstate.Repository
+	traces            companion.TraceReader
+	ledger            interaction.Ledger
+	sessions          *conversation.WatchSessionRegistry
+	memories          *memory.Queue
+	operators         operatorauth.Directory
+	preferences       talkativenessReader
 	characterSettings *relationship.CharacterSettings
-	writes        *operatorwrite.Service
-	interruptions *interruptionRing
+	writes            *operatorwrite.Service
+	interruptions     *interruptionRing
 	// ADR-0010 human channel: the HS256 signing secret (QIUQIU_JWT_SECRET).
 	jwtSecret string
 }
@@ -130,52 +132,36 @@ type consolePortrait struct {
 }
 
 func handleConsoleAPI(deps consoleAPI) http.HandlerFunc {
-	return func(w http.ResponseWriter, r *http.Request) {
-		if !applyCORS(w, r, deps.cfg) {
-			return
-		}
-		if r.Method == http.MethodOptions {
-			w.WriteHeader(http.StatusOK)
-			return
-		}
-		path := strings.TrimPrefix(r.URL.Path, "/api/console/")
-		parts := strings.Split(strings.Trim(path, "/"), "/")
-		switch {
-		case r.Method == http.MethodGet && path == "overview":
-			deps.handleOverview(w, r)
-		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "matches" && parts[2] == "users":
-			deps.handleMatchUsers(w, r, parts[1])
-		case r.Method == http.MethodGet && len(parts) == 1 && parts[0] == "threads":
-			deps.handleListThreads(w, r)
-		case r.Method == http.MethodPatch && len(parts) == 2 && parts[0] == "threads":
-			deps.handlePatchThread(w, r, parts[1])
-		case r.Method == http.MethodGet && len(parts) == 3 && parts[0] == "users" && parts[2] == "portrait":
-			deps.handleGetPortrait(w, r, parts[1])
-		case r.Method == http.MethodDelete && len(parts) == 3 && parts[0] == "users" && parts[2] == "portrait":
-			deps.handleDeletePortrait(w, r, parts[1])
-		case r.Method == http.MethodGet && path == "delivery-interruptions":
-			deps.handleDeliveryInterruptions(w, r)
-		case r.Method == http.MethodGet && path == "operators":
-			deps.handleListOperators(w, r)
-		case r.Method == http.MethodPost && path == "operators":
-			deps.handleCreateOperator(w, r)
-		case r.Method == http.MethodGet && path == "whoami":
-			deps.handleWhoami(w, r)
-		case r.Method == http.MethodDelete && len(parts) == 2 && parts[0] == "operators":
-			deps.handleDeleteOperator(w, r, parts[1])
+	return mountRoutes(deps.cfg, deps.authz, consoleRoutes(deps))
+}
+
+// consoleRoutes 是 console 面（ADR-0008）的声明式路由表：一行一个端点，
+// scope 走 withScope（读 → TraceRead，写 → MatchWrite，auditor 只读）。
+// scope 为空的端点与迁移前一致：login 是认证入口本身（无鉴权）；whoami 与
+// me/password 只解析身份不做 scope 检查；refresh/logout 以 refresh token
+// 为凭证。行为差异（405 等）统一记录在 router.go。
+func consoleRoutes(deps consoleAPI) []route {
+	return []route{
+		{method: http.MethodGet, pattern: "/api/console/overview", scope: traceReadScope, handler: deps.handleOverview},
+		{method: http.MethodGet, pattern: "/api/console/matches/{matchId}/users", scope: traceReadScope, handler: deps.handleMatchUsers},
+		{method: http.MethodGet, pattern: "/api/console/threads", scope: traceReadScope, handler: deps.handleListThreads},
+		{method: http.MethodPatch, pattern: "/api/console/threads/{threadId}", scope: matchWriteScope, handler: deps.handlePatchThread},
+		{method: http.MethodGet, pattern: "/api/console/users/{userId}/portrait", scope: traceReadScope, handler: deps.handleGetPortrait},
+		{method: http.MethodDelete, pattern: "/api/console/users/{userId}/portrait", scope: matchWriteScope, handler: deps.handleDeletePortrait},
+		{method: http.MethodGet, pattern: "/api/console/delivery-interruptions", scope: traceReadScope, handler: deps.handleDeliveryInterruptions},
+		// 运营观测页运行时配置（operations-metrics-stack）：grafanaUrl 空 =
+		// 前端渲染部署指引占位。
+		{method: http.MethodGet, pattern: "/api/console/config", scope: traceReadScope, handler: deps.handleConsoleConfig},
+		{method: http.MethodGet, pattern: "/api/console/operators", scope: matchWriteScope, handler: deps.handleListOperators},
+		{method: http.MethodPost, pattern: "/api/console/operators", scope: matchWriteScope, handler: deps.handleCreateOperator},
+		{method: http.MethodGet, pattern: "/api/console/whoami", handler: deps.handleWhoami},
+		{method: http.MethodDelete, pattern: "/api/console/operators/{operatorName}", scope: matchWriteScope, handler: deps.handleDeleteOperator},
 		// ADR-0010 human auth channel: login/refresh/logout + self-service
 		// password change. Login is unauthenticated (it IS the auth step).
-		case r.Method == http.MethodPost && path == "auth/login":
-			deps.handleLogin(w, r)
-		case r.Method == http.MethodPost && path == "auth/refresh":
-			deps.handleRefresh(w, r)
-		case r.Method == http.MethodPost && path == "auth/logout":
-			deps.handleLogout(w, r)
-		case r.Method == http.MethodPatch && path == "me/password":
-			deps.handleMePassword(w, r)
-		default:
-			http.NotFound(w, r)
-		}
+		{method: http.MethodPost, pattern: "/api/console/auth/login", handler: deps.handleLogin},
+		{method: http.MethodPost, pattern: "/api/console/auth/refresh", handler: deps.handleRefresh},
+		{method: http.MethodPost, pattern: "/api/console/auth/logout", handler: deps.handleLogout},
+		{method: http.MethodPatch, pattern: "/api/console/me/password", handler: deps.handleMePassword},
 	}
 }
 
@@ -186,9 +172,6 @@ func handleConsoleAPI(deps consoleAPI) http.HandlerFunc {
 
 // handleListOperators lists every operator row (director only).
 func (deps consoleAPI) handleListOperators(w http.ResponseWriter, r *http.Request) {
-	if _, ok := deps.authz.authorize(w, r, matchWriteScope); !ok {
-		return
-	}
 	lister, ok := deps.operators.(operatorauth.OperatorLister)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "operators management requires a persistent operator store (DATABASE_URL)"})
@@ -205,7 +188,7 @@ func (deps consoleAPI) handleListOperators(w http.ResponseWriter, r *http.Reques
 // handleCreateOperator mints a personal token for a new operator. The token
 // is returned exactly once; only its SHA-256 hash is stored.
 func (deps consoleAPI) handleCreateOperator(w http.ResponseWriter, r *http.Request) {
-	claims, ok := deps.authz.authorize(w, r, matchWriteScope)
+	claims, ok := operatorClaims(deps.authz, w, r)
 	if !ok {
 		return
 	}
@@ -227,7 +210,7 @@ func (deps consoleAPI) handleCreateOperator(w http.ResponseWriter, r *http.Reque
 		http.Error(w, err.Error(), status)
 		return
 	}
-	_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.create", request.Name)
+	deps.appendAudit(claims, "operator.create", request.Name)
 	response := map[string]any{"operator": operator, "token": token}
 	// ADR-0010 lifecycle: a director-issued temp password rides along (shown
 	// once); first login forces a change. Token-only stores skip this.
@@ -237,12 +220,24 @@ func (deps consoleAPI) handleCreateOperator(w http.ResponseWriter, r *http.Reque
 	writeJSON(w, http.StatusOK, response)
 }
 
-// handleDeleteOperator revokes an operator (row deletion, immediate).
-func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Request, name string) {
-	claims, ok := deps.authz.authorize(w, r, matchWriteScope)
+// appendAudit 是运营审计三段式的收敛（operations-live-stream 3.5）：3s 独立
+// 预算 + 写审计 + 失败仅记日志——业务已落地，审计失败不回滚也不拖响应。
+func (deps consoleAPI) appendAudit(operator auth.Claims, intent, object string) {
+	if deps.operators == nil {
+		return
+	}
+	auditCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+	defer cancel()
+	if err := deps.operators.AppendAudit(auditCtx, operatorName(operator), intent, object); err != nil {
+		log.Printf("console: append %s audit for %q: %v", intent, operatorName(operator), err)
+	}
+}// handleDeleteOperator revokes an operator (row deletion, immediate).
+func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Request) {
+	claims, ok := operatorClaims(deps.authz, w, r)
 	if !ok {
 		return
 	}
+	name := r.PathValue("operatorName")
 	revoker, ok := deps.operators.(operatorauth.OperatorRevoker)
 	if !ok {
 		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "operators management requires a persistent operator store (DATABASE_URL)"})
@@ -257,8 +252,15 @@ func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Reque
 		http.Error(w, "operator not found", http.StatusNotFound)
 		return
 	}
-	_ = deps.operators.AppendAudit(r.Context(), operatorName(claims), "operator.revoke", name)
+	deps.appendAudit(claims, "operator.revoke", name)
 	writeJSON(w, http.StatusOK, map[string]any{})
+}
+
+// handleConsoleConfig 返回观测页需要的运行时配置（operations-metrics-stack）：
+// grafanaUrl 为空 = 观测页渲染部署指引占位（与 Operators 页 501 降级同模式）。
+func (deps consoleAPI) handleConsoleConfig(w http.ResponseWriter, r *http.Request) {
+	grafanaURL := strings.TrimRight(strings.TrimSpace(os.Getenv("QIUQIU_GRAFANA_URL")), "/")
+	writeJSON(w, http.StatusOK, map[string]any{"grafanaUrl": grafanaURL})
 }
 
 // handleWhoami reports the authenticated operator identity (name, role via
@@ -283,9 +285,6 @@ func newOperatorToken() string {
 }
 
 func (deps consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request) {
-	if _, ok := deps.authz.authorize(w, r, traceReadScope); !ok {
-		return
-	}
 	onlineSessions, usersByMatch := deps.sessions.ConsoleSnapshot()
 
 	matches := make([]consoleMatch, 0, 8)
@@ -334,14 +333,55 @@ func (deps consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request) {
 		}
 	}
 
+	overviewSummaries := deps.catalog()
 	writeJSON(w, http.StatusOK, map[string]any{
 		"matches":         matches,
 		"onlineSessions":  onlineSessions,
 		"memory":          health,
 		"threadAging":     aging,
-		"recentProactive": deps.recentProactive(r.Context(), deps.catalog()),
+		"recentProactive": deps.recentProactive(r.Context(), overviewSummaries),
 		"router":          deps.routerFunnel(r.Context()),
+		"backchannel":     deps.backchannelPulse(r.Context(), overviewSummaries),
 	})
+}
+
+// consoleBackchannelPulse 是微反应通道的运营观测（operations-turn-replay）：
+// 滚动 24h 窗口的发出数与白名单事件数。Decide 的拒绝路径（quiet/限频/
+// 风暴去重）无痕，不承诺限频归因——那是留尾。
+type consoleBackchannelPulse struct {
+	Emitted         int `json:"emitted"`
+	WhitelistEvents int `json:"whitelistEvents"`
+	WindowHours     int `json:"windowHours"`
+}
+
+// backchannelPulse 扫描全部比赛的微反应账本行与白名单事件；读失败降级为
+// 零值，从不让 overview 变红（与 routerFunnel 同纪律）。账本行按每比赛
+// 100 条封顶（recentProactive 同口径）；账本 List 无 kind 过滤，拉回后
+// 在代码侧筛 Kind。
+func (deps consoleAPI) backchannelPulse(ctx context.Context, summaries []matchstate.MatchSummary) consoleBackchannelPulse {
+	pulse := consoleBackchannelPulse{WindowHours: 24}
+	if deps.ledger == nil || deps.matches == nil {
+		return pulse
+	}
+	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	for _, summary := range summaries {
+		if events, err := deps.ledger.List(ctx, "", summary.MatchID, 100); err == nil {
+			for _, event := range events {
+				if event.Kind == interaction.KindBackchannel && event.CreatedAt.After(cutoff) {
+					pulse.Emitted++
+				}
+			}
+		}
+		for _, event := range deps.matches.PublicEvents(summary.MatchID) {
+			if !backchannel.Whitelisted(event.EventType) {
+				continue
+			}
+			if created, err := time.Parse(time.RFC3339, event.CreatedAt); err == nil && created.After(cutoff) {
+				pulse.WhitelistEvents++
+			}
+		}
+	}
+	return pulse
 }
 
 // consoleRouterFunnel is the intent-router C3 vocabulary funnel on the
@@ -416,10 +456,8 @@ func (deps consoleAPI) routerFunnel(ctx context.Context) consoleRouterFunnel {
 	return funnel
 }
 
-func (deps consoleAPI) handleMatchUsers(w http.ResponseWriter, r *http.Request, matchID string) {
-	if _, ok := deps.authz.authorize(w, r, traceReadScope); !ok {
-		return
-	}
+func (deps consoleAPI) handleMatchUsers(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
 	_, usersByMatch := deps.sessions.ConsoleSnapshot()
 	users := make([]consoleUser, 0, len(usersByMatch[matchID]))
 	for _, entry := range usersByMatch[matchID] {
@@ -466,9 +504,6 @@ func (deps consoleAPI) consoleUser(ctx context.Context, entry conversation.Onlin
 }
 
 func (deps consoleAPI) handleListThreads(w http.ResponseWriter, r *http.Request) {
-	if _, ok := deps.authz.authorize(w, r, traceReadScope); !ok {
-		return
-	}
 	userID := strings.TrimSpace(r.URL.Query().Get("userId"))
 	state := strings.TrimSpace(r.URL.Query().Get("state"))
 	threads, err := deps.memories.ListThreads(r.Context(), userID, state)
@@ -484,11 +519,12 @@ func (deps consoleAPI) handleListThreads(w http.ResponseWriter, r *http.Request)
 	writeJSON(w, http.StatusOK, map[string]any{"threads": consoleThreads(threads)})
 }
 
-func (deps consoleAPI) handlePatchThread(w http.ResponseWriter, r *http.Request, threadID string) {
-	operator, ok := deps.authz.authorize(w, r, matchWriteScope)
+func (deps consoleAPI) handlePatchThread(w http.ResponseWriter, r *http.Request) {
+	operator, ok := operatorClaims(deps.authz, w, r)
 	if !ok {
 		return
 	}
+	threadID := r.PathValue("threadId")
 	var request struct {
 		Action string `json:"action"`
 	}
@@ -535,22 +571,13 @@ func (deps consoleAPI) handlePatchThread(w http.ResponseWriter, r *http.Request,
 				return operatorwrite.Response{}, operatorError(http.StatusInternalServerError, threadErr)
 			}
 		}
-		if deps.operators != nil {
-			auditCtx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
-			defer cancel()
-			if auditErr := deps.operators.AppendAudit(auditCtx, operatorName(operator), "thread."+action, "thread:"+threadID); auditErr != nil {
-				// The mutation landed; the audit failure is logged, not fatal.
-				log.Printf("console: append thread audit for %q: %v", operatorName(operator), auditErr)
-			}
-		}
+		deps.appendAudit(operator, "thread."+action, "thread:"+threadID)
 		return operatorwrite.JSONResponse(http.StatusOK, map[string]any{"thread": consoleThreadRow(updated)})
 	})
 }
 
-func (deps consoleAPI) handleGetPortrait(w http.ResponseWriter, r *http.Request, userID string) {
-	if _, ok := deps.authz.authorize(w, r, traceReadScope); !ok {
-		return
-	}
+func (deps consoleAPI) handleGetPortrait(w http.ResponseWriter, r *http.Request) {
+	userID := r.PathValue("userId")
 	// On-behalf view shows exactly what the next turn sees — entries only,
 	// no export of anything beyond the portrait slots.
 	entries, updatedAt := deps.memories.PortraitEntries(r.Context(), userID)
@@ -569,11 +596,12 @@ func (deps consoleAPI) handleGetPortrait(w http.ResponseWriter, r *http.Request,
 	writeJSON(w, http.StatusOK, portrait)
 }
 
-func (deps consoleAPI) handleDeletePortrait(w http.ResponseWriter, r *http.Request, userID string) {
-	operator, ok := deps.authz.authorize(w, r, matchWriteScope)
+func (deps consoleAPI) handleDeletePortrait(w http.ResponseWriter, r *http.Request) {
+	operator, ok := operatorClaims(deps.authz, w, r)
 	if !ok {
 		return
 	}
+	userID := r.PathValue("userId")
 	topic := strings.TrimSpace(r.URL.Query().Get("topic"))
 	subTopic := strings.TrimSpace(r.URL.Query().Get("subTopic"))
 	// Detached timeout: the tombstone must survive a client disconnect.
@@ -595,21 +623,12 @@ func (deps consoleAPI) handleDeletePortrait(w http.ResponseWriter, r *http.Reque
 		writePortraitMutationError(w, err, "画像删除失败")
 		return
 	}
-	if deps.operators != nil {
-		// On-behalf privacy-ops are always attributable (ADR-0008 red line).
-		auditCtx, auditCancel := context.WithTimeout(context.Background(), 3*time.Second)
-		defer auditCancel()
-		if auditErr := deps.operators.AppendAudit(auditCtx, operatorName(operator), "portrait.delete", object); auditErr != nil {
-			log.Printf("console: append portrait audit for %q: %v", operatorName(operator), auditErr)
-		}
-	}
+	// On-behalf privacy-ops are always attributable (ADR-0008 red line).
+	deps.appendAudit(operator, "portrait.delete", object)
 	writeJSON(w, http.StatusOK, map[string]any{})
 }
 
 func (deps consoleAPI) handleDeliveryInterruptions(w http.ResponseWriter, r *http.Request) {
-	if _, ok := deps.authz.authorize(w, r, traceReadScope); !ok {
-		return
-	}
 	recent := deps.interruptions.Recent()
 	payload := make([]map[string]any, 0, len(recent))
 	for _, item := range recent {
