@@ -34,6 +34,17 @@ var phrasePools = map[string][]string{
 	"var_check":  {"VAR 回放，心悬住了。", "等 VAR，先别喊。"},
 }
 
+// affectByEvent 把白名单事件折算成 Affect State，供 v1.1 短 TTS 的表演
+// 指令使用（ADR-0016 留尾）。取值与 tts/instruction.go 的情绪分档阈值
+// 对齐：险球/神扑落激动档、丢机落遗憾档、VAR 落紧张档——短语内容与
+// 语音情绪同源，配音不与文字打架。
+var affectByEvent = map[string]relationship.AffectState{
+	"big_chance": {Arousal: 0.70, Valence: 0.35},
+	"miss":       {Arousal: 0.20, Valence: -0.40},
+	"save":       {Arousal: 0.72, Valence: 0.45},
+	"var_check":  {Arousal: 0.45, Valence: 0.10, Tension: 0.60},
+}
+
 // 表演槽位不在此维护：Decide 经 relationship.BackchannelPresentation 走
 // presentation-map.json 的同一张 events 表（live2d-motion-revert 单源化，
 // ADR-0007）。
@@ -49,10 +60,11 @@ type State struct {
 
 // Verdict 是一次微反应的产出。
 type Verdict struct {
-	Phrase     string `json:"text"`
-	EventType  string `json:"eventType"`
-	Expression string `json:"expression"`
-	Motion     string `json:"motion"`
+	Phrase     string                   `json:"text"`
+	EventType  string                   `json:"eventType"`
+	Expression string                   `json:"expression"`
+	Motion     string                   `json:"motion"`
+	Affect     relationship.AffectState `json:"affect"`
 }
 
 // Decide 决定是否发一条微反应：白名单 + 半场/全场限频 + quiet 档 + 用户
@@ -93,5 +105,5 @@ func Decide(state *State, eventType, period, talkativeness string, userSpeaking 
 	state.halfCount++
 	state.fullCount++
 	state.lastEmitted = now
-	return Verdict{Phrase: phrase, EventType: eventType, Expression: expression, Motion: motion}, true
+	return Verdict{Phrase: phrase, EventType: eventType, Expression: expression, Motion: motion, Affect: affectByEvent[eventType]}, true
 }

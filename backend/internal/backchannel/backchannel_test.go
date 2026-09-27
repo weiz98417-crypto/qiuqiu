@@ -4,6 +4,9 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"qiuqiu/internal/relationship"
+	"qiuqiu/internal/tts"
 )
 
 func TestDecideWhitelistAndLimits(t *testing.T) {
@@ -83,6 +86,42 @@ func TestDecidePhrasesStayShortAndRotate(t *testing.T) {
 		}
 		if !strings.Contains(verdict.EventType, "miss") {
 			t.Fatalf("event type = %q", verdict.EventType)
+		}
+	}
+}
+
+// v1.1 短 TTS（ADR-0016 留尾）：Verdict 携带事件折算的 Affect State——
+// 险球/神扑落激动档、丢机落遗憾档、VAR 落紧张档（与短语内容同源，配音
+// 不与文字打架）；且短语 ≤10 字必然咬合 InstructionFor 的紧凑尾巴，
+// 音频一闪而过。
+func TestVerdictAffectNamesEmotionAndEngagesCompactTail(t *testing.T) {
+	wantAffect := map[string]relationship.AffectState{
+		"big_chance": {Arousal: 0.70, Valence: 0.35},
+		"save":       {Arousal: 0.72, Valence: 0.45},
+		"miss":       {Arousal: 0.20, Valence: -0.40},
+		"var_check":  {Arousal: 0.45, Valence: 0.10, Tension: 0.60},
+	}
+	wantBandCell := map[string]string{
+		"big_chance": "即时的情绪爆发",
+		"save":       "即时的情绪爆发",
+		"miss":       "失落感",
+		"var_check":  "紧张而专注",
+	}
+	base := time.Date(2026, 9, 22, 20, 0, 0, 0, time.UTC)
+	for eventType, want := range wantAffect {
+		verdict, ok := Decide(&State{}, eventType, "first_half", "normal", false, base)
+		if !ok {
+			t.Fatalf("%s blocked unexpectedly", eventType)
+		}
+		if verdict.Affect != want {
+			t.Fatalf("%s affect = %+v, want %+v", eventType, verdict.Affect, want)
+		}
+		instruction := tts.InstructionFor(verdict.Affect, relationship.ActReact, len([]rune(verdict.Phrase)))
+		if !strings.Contains(instruction, wantBandCell[eventType]) {
+			t.Fatalf("%s affect lands in wrong band: %q lacks %q", eventType, instruction, wantBandCell[eventType])
+		}
+		if !strings.Contains(instruction, "反应一闪而过") {
+			t.Fatalf("%s instruction missing compact tail: %q", eventType, instruction)
 		}
 	}
 }

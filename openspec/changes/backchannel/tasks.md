@@ -11,5 +11,5 @@
 
 ## 触发型留尾（Q3 标准格式）
 
-- 触发：v1 文字气泡验证有陪伴价值 + 客户端排期；动作：v1.1 音频（客户端音频队列 FIFO→deliveryKey 配对 + 短 TTS 接入）。
+- [x] 触发：v1 文字气泡验证有陪伴价值 + 客户端排期；动作：v1.1 音频（客户端音频队列 FIFO→deliveryKey 配对 + 短 TTS 接入）。**2026-09 落地**：`Verdict.Affect`（affectByEvent 事件→情绪档，与短语池同源）+ `deliverBackchannelAudio`（goroutine 异步 one-shot 合成，基础人设+紧凑尾巴，失败即弃，voice_audio 直发 deliveryKey=`backchannel-<事件ID>` 不进投递台账）+ 客户端 deliveryKey 去重扩展到 source=backchannel；ADR-0016 有修订注。
 - 触发：v1.1 稳定且出现流式需求；动作：SSE 流式语音（从 openaicompat 重建，真消费者=backchannel/长回复）。

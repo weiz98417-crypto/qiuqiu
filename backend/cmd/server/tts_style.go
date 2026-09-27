@@ -18,13 +18,17 @@ func synthesizeReply(ctx context.Context, synthesizer speechSynthesizer, text st
 	})
 }
 
+// mimoBasePersona 是所有语音合成共用的基础人设段（恒定，单源于此）：
+// 回合语音与微反应短 TTS（backchannel_audio.go）都以此为第一段。
+const mimoBasePersona = "使用当前固定音色，以20岁左右中文女生的感觉表演。声线甜美清亮但不过度夹，像熟悉的朋友陪着看球。普通话口语自然，不要播音腔。句内要有自然快慢变化，陈述句句尾自然回落，保留轻微呼吸和自然停顿；激动时有爆发力但不要尖叫或破音。"
+
 // mimoPerformanceInstruction 拼装 Miimo 表演指令：基础人设恒定；情绪×动
 // 作段由 tts.InstructionFor 给出（Affect State 来源是表演计划内嵌的该回
 // 合情绪）；数值档（风格/能量/语速）继续由表演计划驱动——两段互补，前
 // 者命名情绪与姿态，后者做数值微调。
 func mimoPerformanceInstruction(presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, utterLen int) string {
 	parts := []string{
-		"使用当前固定音色，以20岁左右中文女生的感觉表演。声线甜美清亮但不过度夹，像熟悉的朋友陪着看球。普通话口语自然，不要播音腔。句内要有自然快慢变化，陈述句句尾自然回落，保留轻微呼吸和自然停顿；激动时有爆发力但不要尖叫或破音。",
+		mimoBasePersona,
 		tts.InstructionFor(presentation.Affect, primaryAct(acts), utterLen),
 		voiceStyleDirection(presentation.VoiceStyle),
 		voiceEnergyDirection(presentation.VoiceEnergy),

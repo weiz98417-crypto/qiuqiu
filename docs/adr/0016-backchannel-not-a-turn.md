@@ -24,3 +24,5 @@
 - `internal/backchannel` 纯规则决策器 + 连接内计数状态；限频参数集中一处，运营可调。
 - 事件白名单外的时刻（进球等）仍走既有主动回合管线——微反应是补充不是替代。
 - C2 引用码门的管辖范围自此有了明确的书面边界（发言 vs 身体性）。
+
+> 2026-09 修订（backchannel v1.1 短 TTS 留尾落地）：微反应音频接入，载体仍非发言。短 TTS 用既有 one-shot `Synthesize`（≤10 字对流式无需求，SSE 留尾维持）；指令 = 基础人设 + `InstructionFor(affectByEvent[eventType], react)`——事件折算的情绪档与短语池同源（险球/神扑激动、丢机遗憾、VAR 紧张），短语 ≤10 字必咬合紧凑尾巴（一闪而过）。音频走 `voice_audio` 直发：deliveryKey=`backchannel-<事件ID>`、`source=backchannel`，不带 traceId/eventId、不进投递七态台账——客户端按 deliveryKey 配对去重（FIFO 队列原样），播放实报经 playback_result 落账本（client_late 记账），审计闭环不断。合成异步于事件泵（不阻塞主回合规划），失败即弃、永不重试；合成器缺位（无 key 且未开 mock）回退 v1 纯文字形态。FIFO 排队不顶替主回合语音。

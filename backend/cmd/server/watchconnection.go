@@ -464,6 +464,17 @@ func (c *watchConnection) maybeBackchannel(ev matchstate.MatchEvent) {
 			},
 		},
 	})
+	// v1.1 短 TTS（ADR-0016 留尾）：one-shot 合成走 goroutine，不阻塞
+	// 事件泵的主回合规划；失败记日志即弃（无重试——文字气泡已发）。
+	if c.deps.tts != nil {
+		go func() {
+			audioCtx, cancel := context.WithTimeout(c.connectionCtx, backchannelTTSTimeout)
+			defer cancel()
+			if err := deliverBackchannelAudio(audioCtx, c.deps.tts, c.writer, verdict, ev.ID); err != nil {
+				log.Printf("backchannel tts error: %v", err)
+			}
+		}()
+	}
 	auditCtx, auditCancel := context.WithTimeout(c.connectionCtx, 3*time.Second)
 	defer auditCancel()
 	if err := c.deps.agent.RecordBackchannel(auditCtx, c.identity.Get(), c.matchID, "backchannel-"+ev.ID, verdict.EventType, verdict.Phrase, now); err != nil {
