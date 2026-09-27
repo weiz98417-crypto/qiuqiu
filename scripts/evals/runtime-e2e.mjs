@@ -164,6 +164,35 @@ export async function runRuntimeEvals() {
     });
     await socket.expectSilence((message) => message.type === 'event' && message.event === 'qiuqiu_reply' && message.data?.text?.includes(quietMarker), 700);
 
+    // 运营观测实时流（operations-live-stream）：/ws/ops 收到裁剪后的
+    // ops_event——kind/match/user/trace/延迟在场，任何正文字段不存在。
+    const opsSocket = await openOpsSocket();
+    try {
+      const opsBefore = opsSocket.checkpoint();
+      await publish({
+        eventType: 'save',
+        period: 'first_half',
+        clock: '24:10',
+        teamId: 'away',
+        teamName: '德国',
+        playerName: '努贝尔',
+        score: { home: 1, away: 0 },
+        intensity: 4,
+        description: '努贝尔神扑。',
+        proactiveText: '__quiet__',
+        visibility: 'public',
+      });
+      const opsEvent = await opsSocket.waitFor((message) => message.type === 'ops_event' && message.matchId === matchId, 8_000, opsBefore);
+      assert(typeof opsEvent.kind === 'string' && opsEvent.kind.length > 0, 'ops event must carry kind');
+      const serialized = JSON.stringify(opsEvent);
+      for (const forbidden of ['phrase', 'inputText', 'outputText', 'text', 'decision', 'presentation', 'trace"']) {
+        assert(!serialized.includes(forbidden), `ops event leaked content key ${forbidden}: ${serialized}`);
+      }
+      assert(opsEvent.userId !== undefined, 'ops event must carry userId');
+    } finally {
+      await opsSocket.close();
+    }
+
     await resetMatch();
     await configureMatch();
     const original = await publish({
@@ -263,6 +292,19 @@ async function openSocket() {
   endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
   endpoint.pathname = `/ws/match/${matchId}`;
   endpoint.search = '';
+  return openWebSocket(endpoint);
+}
+
+// 运营观测流连接（operations-live-stream）：/ws/ops，同一鉴权子协议。
+async function openOpsSocket() {
+  const endpoint = new URL(baseUrl);
+  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+  endpoint.pathname = '/ws/ops';
+  endpoint.search = '';
+  return openWebSocket(endpoint);
+}
+
+async function openWebSocket(endpoint) {
   const protocols = token ? [`qiuqiu-auth.${Buffer.from(token).toString('base64url')}`] : [];
   const socket = new WebSocket(endpoint, protocols);
   await once(socket, 'open', 8_000);

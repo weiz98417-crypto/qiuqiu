@@ -168,6 +168,43 @@ func sameOriginClient(r *http.Request) bool {
 	return err == nil && parsed.Scheme != "" && strings.EqualFold(parsed.Host, strings.TrimSpace(r.Host))
 }
 
+// UpgradeOps 升级运营观测流连接（operations-live-stream）：复用既有鉴权
+// 链升级，再过运营面放行——会话 claims 带 OperatorTraceRead，或 legacy
+// 通道（运营员静态令牌/开发档匿名，语义与 match WS 一致）。拒绝发生在
+// 升级成功之后：直接断开，不写 HTTP 错误（握手已完成）。
+func (h *Hub) UpgradeOps(w http.ResponseWriter, r *http.Request) (*websocket.Conn, func(), error) {
+	conn, release, claims, err := h.upgradeWithIdentity(w, r)
+	if err != nil {
+		return nil, func() {}, err
+	}
+	token, _ := requestToken(r)
+	if !opsAuthorized(claims, token, h.cfg.OperatorTokenMatches) {
+		release()
+		conn.Close()
+		return nil, func() {}, errOpsForbidden
+	}
+	return conn, release, nil
+}
+
+// errOpsForbidden 标记运营面放行拒绝；连接已在升级后关闭，调用方只需
+// 识别失败。
+var errOpsForbidden = &websocket.CloseError{Code: websocket.ClosePolicyViolation, Text: "operator scope required"}
+
+// opsAuthorized 报告一组 claims/令牌组合是否可订阅运营观测流。空 claims
+// 走 legacy 通道：运营员静态令牌，或（matcher 为 nil 时的）开发档匿名。
+func opsAuthorized(claims auth.Claims, token string, operatorTokenMatches func(string) bool) bool {
+	if claims.HasScope(auth.ScopeOperatorTraceRead) {
+		return true
+	}
+	if claims.Subject != "" {
+		return false
+	}
+	if operatorTokenMatches == nil {
+		return true
+	}
+	return operatorTokenMatches(token)
+}
+
 func (h *Hub) HandleWS(w http.ResponseWriter, r *http.Request) {
 	conn, release, err := h.Upgrade(w, r)
 	if err != nil {

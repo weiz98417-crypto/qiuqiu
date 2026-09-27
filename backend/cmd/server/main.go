@@ -424,6 +424,13 @@ func main() {
 	if interactionLedgerCloser != nil {
 		defer interactionLedgerCloser()
 	}
+	// 运营观测实时流（operations-live-stream）：ledger 的旁路观察者——
+	// 广播裁剪后的 wire 事件，饱和丢弃只计数，永不反伤落库。
+	opsStream := NewOpsStream(256)
+	opsCtx, opsCancel := context.WithCancel(context.Background())
+	defer opsCancel()
+	go opsStream.Run(opsCtx)
+	interactionLedger = newObservingLedger(interactionLedger, opsStream.Observe)
 	companionAgent.WithInteractionLedger(interactionLedger)
 	var scheduleReaderSource companion.ScheduleReader
 	if reader, ok := sportsClient.(scheduleFixturesClient); ok {
@@ -656,6 +663,9 @@ func main() {
 		ambient:          ambientSidecar,
 		turnSidecar:      turnSidecar,
 	}))
+	// /ws/ops 运营观测流（operations-live-stream）：复用鉴权链升级 + 运营
+	// 面放行；订阅者只收裁剪后的 wire 事件（无正文）。
+	mux.HandleFunc("/ws/ops", handleOpsStream(hub, opsStream))
 
 	addr := ":" + cfg.Port
 	log.Printf("qiuqiu server starting on %s", addr)
@@ -949,9 +959,17 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 			result.Trace.Voice.TTSMime = result.AudioMIME
 			result.Trace.Voice.TTSByteCount = len(result.AudioData)
 			// 延迟分解：tts_synthesized（voice-transport-upgrade 1.1，操作台
-			// HTTP 语音路径；WS 路径的合成在投递服务内，由 audio_delivered 覆盖）。
+			// HTTP 语音路径；WS 路径的合成在投递服务内，由 audio_delivered
+			// 覆盖）。HTTP 路径 trace 在本函数内构造，分解直接内填——
+			// speech_received 基准 = now（语音会话到达），无需事后 attach
+			// （operations-turn-replay）。
+			ttsElapsed := time.Since(now).Milliseconds()
 			log.Printf("voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d",
-				userID, matchID, signalID, "tts_synthesized", time.Since(now).Milliseconds())
+				userID, matchID, signalID, "tts_synthesized", ttsElapsed)
+			result.Trace.Voice.LatencyStages = map[string]int{
+				"speech_received": 0,
+				"tts_synthesized": int(ttsElapsed),
+			}
 			_ = agent.RecordMediaDelivery(ctx, interaction.Event{ID: "tts:" + userID + ":" + matchID + ":" + result.Trace.ID + ":audio_ready", Kind: interaction.KindMediaDelivery, UserID: userID, MatchID: matchID, TraceID: result.Trace.ID, DeliveryKey: result.Trace.ID, MediaType: result.AudioMIME, DeliveryState: "audio_ready", Source: "tts", CreatedAt: time.Now().UTC()})
 		}
 	}
