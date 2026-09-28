@@ -10,5 +10,9 @@ providers:
     updateIntervalSeconds: 30
     allowUiUpdates: true
     options:
-      path: /etc/grafana/provisioning/dashboards
+      # 环境变量插值（Grafana provisioning 原生支持）：compose 设
+      # GRAFANA_DASHBOARDS_DIR=/etc/grafana/provisioning/dashboards；
+      # Windows 本机闭环设为仓库 deploy/grafana/provisioning/dashboards
+      # 的绝对路径（见 README 起动命令）。
+      path: ${GRAFANA_DASHBOARDS_DIR}
       foldersFromFilesStructure: false
