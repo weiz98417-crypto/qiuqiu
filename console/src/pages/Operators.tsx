@@ -5,8 +5,8 @@ import { consoleApi } from '../api/client';
 import type { OperatorRow } from '../api/client';
 import { useOperator } from '../api/operator';
 import { fmtDateTime } from '../api/format';
-import { useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const { Text, Paragraph } = Typography;
 
@@ -31,7 +31,7 @@ export default function Operators() {
   const [creating, setCreating] = useState(false);
   const [issuedToken, setIssuedToken] = useState<{ name: string; token: string } | null>(null);
 
-  const operators = useConsoleQuery<{ operators: OperatorRow[] }>(() => consoleApi.operators(), []);
+  const operators = useAsync<{ operators: OperatorRow[] }>(() => consoleApi.operators(), []);
 
   const createOperator = useCallback(
     async (values: { name: string; role: 'director' | 'auditor' }) => {
@@ -112,7 +112,7 @@ export default function Operators() {
   const needsPersistentStore = operators.errorStatus === 501;
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="运营员"
       error={isDirector && !needsPersistentStore ? operators.error : undefined}
       errorTitle="运营员列表加载失败"
@@ -208,6 +208,6 @@ export default function Operators() {
           ) : null}
         </Modal>
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

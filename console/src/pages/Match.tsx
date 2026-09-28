@@ -4,8 +4,8 @@ import { Link, useParams } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { ConsoleUser, DeliveryInterruption, DirectorEventRow } from '../api/client';
 import { fmtTime, talkativenessLabel } from '../api/format';
-import { useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 import MatchSettings from '../components/MatchSettings';
 
 const { Text } = Typography;
@@ -32,12 +32,12 @@ export default function MatchPage() {
   const { matchId = '' } = useParams<{ matchId: string }>();
 
   // 比赛层两路数据：事件流、用户网格 + 投递打断。轨迹深查收敛到引用审计页（#c8）。
-  const events = useConsoleQuery<{ events: DirectorEventRow[] }>(
+  const events = useAsync<{ events: DirectorEventRow[] }>(
     () => consoleApi.matchEvents(matchId),
     [matchId],
   );
-  const users = useConsoleQuery<{ users: ConsoleUser[] }>(() => consoleApi.matchUsers(matchId), [matchId]);
-  const interruptions = useConsoleQuery(() => consoleApi.deliveryInterruptions(), []);
+  const users = useAsync<{ users: ConsoleUser[] }>(() => consoleApi.matchUsers(matchId), [matchId]);
+  const interruptions = useAsync(() => consoleApi.deliveryInterruptions(), []);
 
   const reloadAll = () => {
     void events.reload();
@@ -90,7 +90,7 @@ export default function MatchPage() {
   ];
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="比赛"
       subtitle={<code>{matchId}</code>}
       error={events.error || users.error || interruptions.error}
@@ -183,6 +183,6 @@ export default function MatchPage() {
           <MatchSettings matchId={matchId} />
         </Col>
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

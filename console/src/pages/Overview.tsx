@@ -5,8 +5,8 @@ import { Link } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { AuditRow, ConsoleMatch, Overview as OverviewData } from '../api/client';
 import { fmtDateTime, fmtTime } from '../api/format';
-import { useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const MATCH_STATE_LABELS: Record<string, { label: string; color: string }> = {
   live: { label: '直播中', color: 'processing' },
@@ -51,14 +51,14 @@ function cellBorder(style: React.CSSProperties): React.CSSProperties {
 }
 
 export default function Overview() {
-  const { data, loading, error, reload } = useConsoleQuery<OverviewData>(() => consoleApi.overview(), []);
+  const { data, loading, error, reload } = useAsync<OverviewData>(() => consoleApi.overview(), []);
 
   const aging = data?.threadAging ?? { today: 0, d1to3: 0, d3plus: 0 };
   const memory = data?.memory;
   const matchRows = useMemo(() => data?.matches ?? [], [data]);
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="运营概览"
       error={error}
       errorTitle="概览加载失败"
@@ -222,6 +222,6 @@ export default function Overview() {
           </Card>
         </Col>
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

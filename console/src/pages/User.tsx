@@ -6,19 +6,12 @@ import { consoleApi } from '../api/client';
 import type { ConsoleThread, InteractionEventRow, PortraitEntry } from '../api/client';
 import { useOperator } from '../api/operator';
 import { fmtTime, threadKindLabels, threadStateTag } from '../api/format';
-import { runAction, useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { kindLabel } from '../api/kinds';
+import { runAction, useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const { Text, Paragraph } = Typography;
 
-
-const KIND_LABELS: Record<string, string> = {
-  user_message: '用户发言',
-  assistant_reply: '球球回复',
-  proactive: '主动发言',
-  playback_result: '播报回执',
-  backchannel: '微反应',
-};
 
 export default function UserPage() {
   const { matchId = '', userId = '' } = useParams<{ matchId: string; userId: string }>();
@@ -26,9 +19,9 @@ export default function UserPage() {
   const { isDirector } = useOperator();
   const [actingThreadId, setActingThreadId] = useState<string | null>(null);
 
-  const portrait = useConsoleQuery(() => consoleApi.portrait(userId), [userId]);
-  const threads = useConsoleQuery(() => consoleApi.threads({ userId }), [userId]);
-  const history = useConsoleQuery(() => consoleApi.interaction(matchId, userId), [matchId, userId]);
+  const portrait = useAsync(() => consoleApi.portrait(userId), [userId]);
+  const threads = useAsync(() => consoleApi.threads({ userId }), [userId]);
+  const history = useAsync(() => consoleApi.interaction(matchId, userId), [matchId, userId]);
 
   const patchThread = useCallback(
     (threadId: string, action: 'address' | 'expire') =>
@@ -140,7 +133,7 @@ export default function UserPage() {
       dataIndex: 'kind',
       key: 'kind',
       width: 110,
-      render: (kind: string) => <Tag>{KIND_LABELS[kind] ?? kind}</Tag>,
+      render: (kind: string) => <Tag>{kindLabel(kind)}</Tag>,
     },
     {
       title: '内容',
@@ -157,7 +150,7 @@ export default function UserPage() {
   ];
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="用户"
       subtitle={<code>{userId}</code>}
       error={portrait.error || threads.error || history.error}
@@ -209,6 +202,6 @@ export default function UserPage() {
           </Card>
         </Col>
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

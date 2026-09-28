@@ -5,8 +5,8 @@ import { consoleApi } from '../api/client';
 import type { ConsoleThread } from '../api/client';
 import { useOperator } from '../api/operator';
 import { fmtTime, threadKindLabels, threadStateLabels, threadStateTag } from '../api/format';
-import { runAction, useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { runAction, useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const { Text } = Typography;
 
@@ -29,7 +29,7 @@ export default function Threads() {
     () => consoleApi.threads({ userId: appliedUserId || undefined, state: stateFilter || undefined }),
     [appliedUserId, stateFilter],
   );
-  const threads = useConsoleQuery(lister, [appliedUserId, stateFilter]);
+  const threads = useAsync(lister, [appliedUserId, stateFilter]);
 
   const rows = useMemo(() => threads.data?.threads ?? [], [threads.data]);
 
@@ -107,7 +107,7 @@ export default function Threads() {
   ];
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="话题台账"
       error={threads.error}
       loading={threads.loading}
@@ -150,6 +150,6 @@ export default function Threads() {
           </Card>
         </Col>
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

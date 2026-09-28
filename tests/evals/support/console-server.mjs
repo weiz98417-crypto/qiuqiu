@@ -111,6 +111,47 @@ function mockResponse(state, method, pathname, auth, bodyText) {
   if (pathname === '/api/console/config' && method === 'GET') {
     return ok({ grafanaUrl: state.grafanaUrl });
   }
+  // 轨迹契约回退样例（operations-turn-replay）：一条完整五段 + 一条缺段
+  // （仅锚点）。隐私纪律：样例不含 input/output/asrText 正文。
+  if (/^\/api\/matches\/test\/traces$/.test(pathname) && method === 'GET') {
+    const now = new Date().toISOString();
+    return ok({
+      traces: [
+        {
+          id: 'trace-voice-full',
+          matchId: 'test',
+          latencyMs: 2100,
+          toolCalls: [{ name: 'search_events', args: {} }],
+          voice: {
+            asrStatus: 'ok',
+            ttsStatus: 'ok',
+            ttsMime: 'audio/mpeg',
+            ttsByteCount: 52352,
+            latencyStages: {
+              speech_received: 0,
+              asr_final: 320,
+              turn_decided: 900,
+              tts_synthesized: 1600,
+              audio_delivered: 2100,
+            },
+            turnDecision: { isComplete: true, source: 'model', queryLatencyMs: 580 },
+          },
+          createdAt: now,
+        },
+        {
+          id: 'trace-voice-partial',
+          matchId: 'test',
+          latencyMs: 0,
+          voice: {
+            asrStatus: 'ok',
+            latencyStages: { speech_received: 0 },
+            turnDecision: { isComplete: null, source: 'unavailable' },
+          },
+          createdAt: now,
+        },
+      ],
+    });
+  }
   if (/^\/api\/console\/matches\/[^/]+\/users$/.test(pathname) && method === 'GET') {
     return ok({ users: state.users });
   }

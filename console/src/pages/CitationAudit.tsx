@@ -6,8 +6,8 @@ import { consoleApi } from '../api/client';
 import type { TraceRow } from '../api/client';
 import { fmtDateTime, fmtTime, reasonCodeLabel } from '../api/format';
 import { matchesCitation, ragCallCount, traceReasonCodes, WhyDrawer } from '../api/traceEvidence';
-import { useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const { Text } = Typography;
 
@@ -15,7 +15,7 @@ type TraceLike = TraceRow;
 
 export default function CitationAudit() {
   // 跨比赛最近主动引用（来自概览聚合，cross-match limit 10）。
-  const overview = useConsoleQuery(() => consoleApi.overview(), []);
+  const overview = useAsync(() => consoleApi.overview(), []);
 
   // URL 预填：比赛页「去引用审计」入口带 matchId 进来。
   const [searchParams] = useSearchParams();
@@ -30,7 +30,7 @@ export default function CitationAudit() {
 
   const canQuery = Boolean(appliedMatchId.trim());
   // 未输入比赛 ID 时不发请求（避免 /api/matches//traces 这类无效调用）。
-  const traceQuery = useConsoleQuery<{ traces: TraceRow[] }>(
+  const traceQuery = useAsync<{ traces: TraceRow[] }>(
     () =>
       canQuery
         ? consoleApi.traces(appliedMatchId.trim(), appliedCitation, 100)
@@ -125,7 +125,7 @@ export default function CitationAudit() {
   }, [citationInput, matchIdInput]);
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="引用审计"
       error={overview.error || traceQuery.error}
       loading={overview.loading || traceQuery.loading}
@@ -199,6 +199,6 @@ export default function CitationAudit() {
 
         <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

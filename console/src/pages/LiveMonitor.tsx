@@ -2,8 +2,9 @@ import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
 import { Badge, Button, Card, Col, Descriptions, Empty, Input, List, Row, Select, Space, Tag, Typography } from 'antd';
 import { Link } from 'react-router-dom';
 import { getAccessToken, getToken } from '../api/client';
+import { INTERACTION_KINDS, kindMeta } from '../api/kinds';
 import { fmtDateTime, fmtTime } from '../api/format';
-import ObservationPage from '../components/ObservationPage';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const { Text } = Typography;
 
@@ -22,23 +23,6 @@ interface OpsEventRow {
   playbackState?: string;
   latencyMs?: number;
   at: string;
-}
-
-// kind → 中文标签 + 徽标色（口径与用户页交互历史 KIND_LABELS 一致）。
-const KIND_META: Record<string, { label: string; color: string }> = {
-  turn_planned: { label: '回合规划', color: 'geekblue' },
-  delivery: { label: '投递', color: 'green' },
-  signal: { label: '信号', color: 'blue' },
-  fact_revision: { label: '事实修订', color: 'orange' },
-  media_delivery: { label: '媒体投递', color: 'purple' },
-  playback_result: { label: '播报回执', color: 'cyan' },
-  turn_stale: { label: '回合过期', color: 'red' },
-  backchannel: { label: '微反应', color: 'gold' },
-  character_setting: { label: '人格设定', color: 'magenta' },
-};
-
-function kindMeta(kind: string): { label: string; color: string } {
-  return KIND_META[kind] ?? { label: kind, color: 'default' };
 }
 
 type StreamStatus = 'connecting' | 'connected' | 'disconnected';
@@ -81,7 +65,7 @@ function fmtRelative(at: string, now: number): string {
 
 const KIND_OPTIONS = [
   { value: '', label: '全部' },
-  ...Object.entries(KIND_META).map(([value, meta]) => ({ value, label: meta.label })),
+  ...Object.entries(INTERACTION_KINDS).map(([value, meta]) => ({ value, label: meta.label })),
 ];
 
 export default function LiveMonitor() {
@@ -185,7 +169,7 @@ export default function LiveMonitor() {
   const statusMeta = STATUS_META[status];
 
   return (
-    <ObservationPage
+    <ConsolePageShell
       title="直播监听"
       subtitle={<Badge status={statusMeta.status} text={statusMeta.text} />}
       extra={
@@ -324,6 +308,6 @@ export default function LiveMonitor() {
           </Card>
         </Col>
       </Row>
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

@@ -1,7 +1,7 @@
 import { Card, Typography } from 'antd';
 import { consoleApi } from '../api/client';
-import { useConsoleQuery } from '../api/useConsoleQuery';
-import ObservationPage from '../components/ObservationPage';
+import { useAsync } from '../api/useAsync';
+import ConsolePageShell from '../components/ConsolePageShell';
 
 const { Paragraph, Text } = Typography;
 
@@ -9,11 +9,11 @@ const { Paragraph, Text } = Typography;
 // 面板地址来自 /api/console/config（QIUQIU_GRAFANA_URL，TraceRead 即可读）；
 // 未配置时不报错，渲染部署指引占位（与 Operators 页 501 降级卡同气质）。
 export default function Observation() {
-  const config = useConsoleQuery(() => consoleApi.config(), []);
+  const config = useAsync(() => consoleApi.config(), []);
   const grafanaUrl = config.data?.grafanaUrl ?? '';
 
   return (
-    <ObservationPage title="观测" error={config.error} loading={config.loading}>
+    <ConsolePageShell title="观测" error={config.error} loading={config.loading}>
       {grafanaUrl ? (
         <iframe
           title="Grafana 可观测性面板"
@@ -31,6 +31,6 @@ export default function Observation() {
           </Paragraph>
         </Card>
       )}
-    </ObservationPage>
+    </ConsolePageShell>
   );
 }

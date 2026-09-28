@@ -407,10 +407,31 @@ export interface VoiceTurnDecisionLike {
   queryLatencyMs?: number;
 }
 
+// 语音链路延迟分段（operations-turn-replay）：stage 出现顺序与中文标签的
+// 运营台单源，与 backend/internal/companion/voice_stages.go 互指——两端的
+// stage 名集合必须一致，改动任何一侧都要同步另一侧。
+export const VOICE_LATENCY_STAGES = [
+  'speech_received',
+  'asr_final',
+  'turn_decided',
+  'tts_synthesized',
+  'audio_delivered',
+] as const;
+
+export const VOICE_STAGE_LABELS: Record<string, string> = {
+  speech_received: '收到语音',
+  asr_final: 'ASR 定稿',
+  turn_decided: '轮次判定',
+  tts_synthesized: 'TTS 合成',
+  audio_delivered: '音频送达',
+};
+
 // 语音链路观测元数据（backend companion.VoiceTraceMetadata）：状态与延迟
-// 分段；缺字段 = 该段未测得（锚点缺失/非语音轮），UI 需容错。
+// 分段；缺字段 = 该段未测得（锚点缺失/非语音轮），UI 需容错。asrText 仅随
+// wire 存在——运营台组件（TurnReplay 等）按隐私纪律不渲染正文。
 export interface TraceVoiceMeta {
   asrStatus?: string;
+  asrText?: string;
   asrError?: string;
   ttsStatus?: string;
   ttsError?: string;

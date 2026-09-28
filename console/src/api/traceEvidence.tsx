@@ -1,4 +1,5 @@
 import { Drawer, Space, Tag, Tooltip, Typography } from 'antd';
+import { VOICE_LATENCY_STAGES, VOICE_STAGE_LABELS } from './client';
 import type { TraceRow } from './client';
 import { fmtDateTime, reasonCodeLabel } from './format';
 
@@ -69,16 +70,16 @@ export function WhyDrawer({ trace, onClose }: { trace: TraceRow | null; onClose:
 
 // ---- 语音回合回放（operations-turn-replay）----
 
-// 延迟分段固定顺序与配色（色源 theme/palette：skyBlue/yellow/green；紫色为
-// TTS 段新增，无画板对应色）。缺 stage = 未测得，时间轴只画测得的段。
-const STAGE_ORDER = ['speech_received', 'asr_final', 'turn_decided', 'tts_synthesized', 'audio_delivered'];
-
-const STAGE_META: Record<string, { label: string; color: string }> = {
-  speech_received: { label: '收到语音', color: '#7C8794' },
-  asr_final: { label: 'ASR 定稿', color: '#55A8FF' },
-  turn_decided: { label: '轮次判定', color: '#F2C94C' },
-  tts_synthesized: { label: 'TTS 合成', color: '#9B7EDE' },
-  audio_delivered: { label: '音频送达', color: '#5FCB8B' },
+// 延迟分段顺序与中文标签单源自 client.ts（VOICE_LATENCY_STAGES /
+// VOICE_STAGE_LABELS，与后端 companion/voice_stages.go 互指）；配色本地维护
+// （色源 theme/palette：skyBlue/yellow/green；紫色为 TTS 段新增）。缺 stage =
+// 未测得，时间轴只画测得的段。
+const STAGE_COLORS: Record<string, string> = {
+  speech_received: '#7C8794',
+  asr_final: '#55A8FF',
+  turn_decided: '#F2C94C',
+  tts_synthesized: '#9B7EDE',
+  audio_delivered: '#5FCB8B',
 };
 
 function formatBytes(count: number): string {
@@ -100,10 +101,9 @@ export function TurnReplay({ trace }: { trace: TraceRow }) {
   const voice = trace.voice;
   // 只取测得的段（缺 stage 不画）；latencyStages 为累计毫秒，轨道按相对
   // 总长百分比分宽。只有锚点（恒 0）或没有分段时不画轨道。
-  const stages = STAGE_ORDER.filter((stage) => typeof voice?.latencyStages?.[stage] === 'number').map((stage) => ({
-    stage,
-    at: voice?.latencyStages?.[stage] ?? 0,
-  }));
+  const stages = VOICE_LATENCY_STAGES.filter((stage) => typeof voice?.latencyStages?.[stage] === 'number').map(
+    (stage) => ({ stage, at: voice?.latencyStages?.[stage] ?? 0 }),
+  );
   const totalMs = stages.length ? Math.max(...stages.map((entry) => entry.at)) : 0;
   const ragCalls = ragCallCount(trace);
   const decision = voice?.turnDecision;
@@ -124,12 +124,13 @@ export function TurnReplay({ trace }: { trace: TraceRow }) {
       {stages.length > 1 ? (
         <div style={{ display: 'flex', height: 14, borderRadius: 4, overflow: 'hidden', background: '#182234' }}>
           {stages.map(({ stage, at }) => (
-            <Tooltip key={stage} title={`${STAGE_META[stage]?.label ?? stage} · 累计 ${at} ms`}>
+            <Tooltip key={stage} title={`${VOICE_STAGE_LABELS[stage] ?? stage} · 累计 ${at} ms`}>
               <div
+                data-stage={stage}
                 style={{
                   width: `${totalMs > 0 ? (at / totalMs) * 100 : 0}%`,
                   minWidth: at > 0 ? 3 : 0,
-                  background: STAGE_META[stage]?.color ?? '#7C8794',
+                  background: STAGE_COLORS[stage] ?? '#7C8794',
                 }}
               />
             </Tooltip>

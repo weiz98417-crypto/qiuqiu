@@ -3,12 +3,12 @@ import type { ReactNode } from 'react';
 
 const { Title } = Typography;
 
-// ObservationPage 是观测页统一壳：标题栏（title/subtitle/extra + 刷新按钮）
+// ConsolePageShell 是运营台页面统一壳：标题栏（title/subtitle/extra + 刷新按钮）
 // + 顶部错误 Alert + 内容区 loading 遮罩，替代各页手写的「Alert error +
 // 刷新 Button + Table loading」重复组合。三态由调用页传入（与
-// useConsoleQuery 返回对齐），组件不接管取数——多数据源页面（比赛页/
+// useAsync 返回对齐），组件不接管取数——多数据源页面（比赛页/
 // 用户页）先聚合再传即可。
-export default function ObservationPage({
+export default function ConsolePageShell({
   title,
   subtitle,
   extra,
