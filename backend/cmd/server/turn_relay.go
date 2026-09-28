@@ -171,7 +171,7 @@ func (c *watchConnection) sendTurnResult(utteranceID string, prediction turnPred
 		decision.IsComplete = &complete
 		decision.Source = "model"
 	}
-	c.recordTurnVerdict(utteranceID, decision)
+	c.voiceStages.recordTurnVerdict(utteranceID, decision)
 	payload := map[string]interface{}{
 		"type":        "turn_result",
 		"utteranceId": utteranceID,

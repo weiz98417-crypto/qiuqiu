@@ -155,17 +155,20 @@ type VoiceObservationPatch struct {
 	TTSMeta      *VoiceTraceMetadata
 }
 
-// AttachVoiceStages 是语音观测的事后合并通道：WS 路径的 trace 在打点时
-// 已经落库，只能键级合并进 voice——不覆盖既有其他字段，同键后到覆盖。
-// 缺 trace 报错由调用方计数即弃（观测旁路，永不反伤主链路）。
+// AttachVoiceStages 是语音观测的合并入口：键级合并进已落库 trace——不覆
+// 盖既有其他字段，同键后到覆盖。tools.AttachVoice 优先走 PG 原子合并
+// （jsonb），内存实现回退读改写。缺 trace 报错由调用方计数即弃（观测旁
+// 路，永不反伤主链路）。
 func (a *Agent) AttachVoiceStages(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error {
 	if a == nil || (len(patch.Stages) == 0 && patch.TurnDecision == nil && patch.TTSMeta == nil) {
 		return nil
 	}
-	trace, err := a.tools.GetTrace(ctx, matchID, traceID)
-	if err != nil {
-		return err
-	}
+	return a.tools.AttachVoice(ctx, matchID, traceID, patch)
+}
+
+// mergeVoiceObservation 把 patch 键级合并进 voice（内存路径共享的合并语
+// 义，与 PG jsonb 原子路径逐字段对齐）。
+func mergeVoiceObservation(trace *Trace, patch VoiceObservationPatch) {
 	if trace.Voice == nil {
 		trace.Voice = &VoiceTraceMetadata{}
 	}
@@ -191,7 +194,6 @@ func (a *Agent) AttachVoiceStages(ctx context.Context, matchID, traceID string, 
 			trace.Voice.TTSByteCount = meta.TTSByteCount
 		}
 	}
-	return a.UpdateTrace(ctx, trace)
 }
 
 func (a *Agent) recordInteraction(ctx context.Context, event interaction.Event) error {

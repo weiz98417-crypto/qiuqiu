@@ -283,16 +283,16 @@ func TestPostgresAttachVoiceStagesIntegration(t *testing.T) {
 	}
 
 	ctx := context.Background()
-	store, err := matchstate.OpenPostgresStore(ctx, databaseURL, "../../migrations")
-	if err != nil {
-		t.Fatalf("OpenPostgresStore error: %v", err)
-	}
-	defer store.Close()
 	traces, err := OpenPostgresTraceWriter(ctx, databaseURL)
 	if err != nil {
 		t.Fatalf("OpenPostgresTraceWriter error: %v", err)
 	}
 	defer traces.Close()
+	store, err := matchstate.OpenPostgresStore(ctx, databaseURL, "testdata/migrations-min")
+	if err != nil {
+		t.Fatalf("OpenPostgresStore(min) error: %v", err)
+	}
+	defer store.Close()
 
 	matchID := "pg-voice-stages-" + time.Now().UTC().Format("20060102150405")
 	if err := traces.Reset(matchID); err != nil {
@@ -339,5 +339,8 @@ func TestPostgresAttachVoiceStagesIntegration(t *testing.T) {
 	}
 	if reloaded.Voice.TTSMime != "audio/wav" || reloaded.Voice.TTSByteCount != 66000 {
 		t.Fatalf("tts meta lost: %+v", reloaded.Voice)
+	}
+	if _, ok := interface{}(traces).(VoiceAttacher); !ok {
+		t.Fatal("PostgresTraceWriter must satisfy VoiceAttacher (atomic jsonb path)")
 	}
 }

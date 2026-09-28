@@ -354,4 +354,14 @@ type MemoryTools interface {
 	// GetTrace 供 AttachVoiceStages 读回已落库 trace 做键级合并
 	// （operations-turn-replay）。
 	GetTrace(ctx context.Context, matchID, traceID string) (Trace, error)
+	// AttachVoice 供 AttachVoiceStages 落语音观测（operations-turn-replay）：
+	// 实现方优先走原子合并（PG jsonb），否则内部回退读改写。
+	AttachVoice(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error
+}
+
+// VoiceAttacher 是支持语音观测原子合并的 trace 写面（operations-turn-
+// replay）：PG 实现用 jsonb_set + || 在单条 UPDATE 内完成键级合并，消除
+// 读改写的丢更新窗口。
+type VoiceAttacher interface {
+	AttachVoice(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error
 }

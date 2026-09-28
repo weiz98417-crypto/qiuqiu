@@ -116,12 +116,9 @@ type watchConnection struct {
 	// 延迟分解日志取 elapsed（voice-transport-upgrade 1.1，待真机会话采集）。
 	voiceLatencyMu      sync.Mutex
 	voiceLatencyAnchors map[string]time.Time
-	// voiceStageBuffers 是延迟分解/轮次结论的 utterance 级缓冲（operations-
-	// turn-replay）：asr_final/turn_query 都发生在 trace 诞生前，先按
-	// utteranceID 记，转写完成时 rekey 到 signalID，turn_decided 时随
-	// AttachVoiceStages 落 trace。与锚点表同锁、同 64 上限整表重置。
-	voiceAsrElapsed   map[string]int
-	voiceTurnVerdicts map[string]*companion.VoiceTurnDecision
+	// voiceStages 是延迟分解/轮次结论的 utterance 级缓冲（单锁有界类型，
+	// 见 voice_stage_buffers.go）。
+	voiceStages *voiceStageBuffers
 
 	transcriptions *transcriptionSessions
 }
@@ -133,8 +130,7 @@ func newWatchConnection(deps watchDeps, conn *websocket.Conn, claims auth.Claims
 	connection.userTalkativeness.Store(relationship.TalkativenessNormal)
 	connection.clientPlaybackReports = newClientPlaybackReportSet()
 	connection.voiceLatencyAnchors = make(map[string]time.Time)
-	connection.voiceAsrElapsed = make(map[string]int)
-	connection.voiceTurnVerdicts = make(map[string]*companion.VoiceTurnDecision)
+	connection.voiceStages = newVoiceStageBuffers()
 	connection.turnInFlight = make(chan struct{}, turnRelayMaxInFlight)
 	return connection
 }
@@ -195,59 +191,6 @@ func (c *watchConnection) logVoiceLatency(stage, signalID string, startedAt time
 // turn_decided 时随 AttachVoiceStages 键级合并进已落库的 trace。合并失败
 // 只记日志——观测是旁路，永不反伤投递主链路。
 
-func (c *watchConnection) recordAsrElapsed(utteranceID string, elapsedMS int) {
-	if utteranceID == "" || elapsedMS < 0 {
-		return
-	}
-	c.voiceLatencyMu.Lock()
-	defer c.voiceLatencyMu.Unlock()
-	if len(c.voiceAsrElapsed) >= maxVoiceLatencyAnchors {
-		c.voiceAsrElapsed = make(map[string]int)
-	}
-	c.voiceAsrElapsed[utteranceID] = elapsedMS
-}
-
-func (c *watchConnection) recordTurnVerdict(utteranceID string, decision *companion.VoiceTurnDecision) {
-	if utteranceID == "" || decision == nil {
-		return
-	}
-	c.voiceLatencyMu.Lock()
-	defer c.voiceLatencyMu.Unlock()
-	if len(c.voiceTurnVerdicts) >= maxVoiceLatencyAnchors {
-		c.voiceTurnVerdicts = make(map[string]*companion.VoiceTurnDecision)
-	}
-	c.voiceTurnVerdicts[utteranceID] = decision
-}
-
-// rekeyVoiceStageBuffers 把 utterance 级缓冲搬到 signalID 名下（转写完成
-// 回调同时持有两种 ID，是唯一同时知道映射的时刻）。
-func (c *watchConnection) rekeyVoiceStageBuffers(utteranceID, signalID string) {
-	if utteranceID == "" || signalID == "" {
-		return
-	}
-	c.voiceLatencyMu.Lock()
-	defer c.voiceLatencyMu.Unlock()
-	if elapsed, ok := c.voiceAsrElapsed[utteranceID]; ok {
-		delete(c.voiceAsrElapsed, utteranceID)
-		c.voiceAsrElapsed[signalID] = elapsed
-	}
-	if verdict, ok := c.voiceTurnVerdicts[utteranceID]; ok {
-		delete(c.voiceTurnVerdicts, utteranceID)
-		c.voiceTurnVerdicts[signalID] = verdict
-	}
-}
-
-// takeVoiceStageBuffers 取走该话轮的全部缓冲（取后即清，缓冲不跨话轮）。
-func (c *watchConnection) takeVoiceStageBuffers(signalID string) (int, bool, *companion.VoiceTurnDecision) {
-	c.voiceLatencyMu.Lock()
-	defer c.voiceLatencyMu.Unlock()
-	asr, hasAsr := c.voiceAsrElapsed[signalID]
-	delete(c.voiceAsrElapsed, signalID)
-	verdict := c.voiceTurnVerdicts[signalID]
-	delete(c.voiceTurnVerdicts, signalID)
-	return asr, hasAsr, verdict
-}
-
 // attachVoiceStages 把延迟分解与轮次结论合并进已落库 trace：锚点缺失
 // （非本连接发起的话轮/纯文本轮）整组跳过，与日志行的跳过语义一致。
 // audio=TTS 观测面（合成耗时/产物元数据，投递服务带回），非空 = 第二次
@@ -257,7 +200,7 @@ func (c *watchConnection) attachVoiceStages(traceID, signalID string, anchor tim
 	if anchor.IsZero() || traceID == "" {
 		return
 	}
-	asrElapsed, hasAsr, verdict := c.takeVoiceStageBuffers(signalID)
+	asrElapsed, hasAsr, verdict := c.voiceStages.take(signalID)
 	patch := companion.VoiceObservationPatch{TurnDecision: verdict}
 	if audio == nil {
 		patch.Stages = map[string]int{
@@ -265,14 +208,14 @@ func (c *watchConnection) attachVoiceStages(traceID, signalID string, anchor tim
 			"turn_decided":    int(time.Since(anchor).Milliseconds()),
 		}
 		if hasAsr {
-			patch.Stages["asr_final"] = asrElapsed
+			patch.Stages[companion.VoiceStageASRFinal] = asrElapsed
 		}
 	} else {
 		patch.Stages = map[string]int{
 			"audio_delivered": int(time.Since(anchor).Milliseconds()),
 		}
 		if audio.SynthesisMS > 0 {
-			patch.Stages["tts_synthesized"] = audio.SynthesisMS
+			patch.Stages[companion.VoiceStageTTSSynthesized] = audio.SynthesisMS
 		}
 		patch.TTSMeta = &companion.VoiceTraceMetadata{
 			TTSStatus:    "ok",
@@ -613,14 +556,14 @@ func (c *watchConnection) startMessagePumps() {
 					anchor := c.voiceLatencyAnchor(voiceLatencyAnchorKey("utt", utteranceID))
 					c.logVoiceLatency("asr_final", utteranceID, anchor)
 					if !anchor.IsZero() {
-						c.recordAsrElapsed(utteranceID, int(time.Since(anchor).Milliseconds()))
+						c.voiceStages.recordAsrElapsed(utteranceID, int(time.Since(anchor).Milliseconds()))
 					}
 				}
 			}
 			_ = c.writer.SendJSON(message)
 		},
 		func(completion transcriptionCompletion) {
-			c.rekeyVoiceStageBuffers(completion.UtteranceID, completion.SignalID)
+			c.voiceStages.rekey(completion.UtteranceID, completion.SignalID)
 			c.submitUserTurn(completion.UserID, completion.Text, "", completion.SignalID, completion.Provider, completion.Timezone)
 		},
 	)

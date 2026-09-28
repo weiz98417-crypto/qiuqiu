@@ -208,8 +208,85 @@ func (w *PostgresTraceWriter) WriteTrace(ctx context.Context, trace Trace) error
 	return tx.Commit(ctx)
 }
 
-func (w *PostgresTraceWriter) UpdateTrace(ctx context.Context, trace Trace) error {
+// AttachVoice 是语音观测的 PG 原子合并（operations-turn-replay）：单条
+// UPDATE 内用 jsonb_set + || 完成键级合并——latencyStages 内层键合并、
+// turnDecision/TTS 字段顶层覆盖，无读改写丢更新窗口。隐私纪律与
+// UpdateTrace 同（advisory 锁 + 墓碑检查，user_id 由行内取）。
+func (w *PostgresTraceWriter) AttachVoice(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error {
+	stages := []byte("{}")
+	if len(patch.Stages) > 0 {
+		encoded, err := json.Marshal(patch.Stages)
+		if err != nil {
+			return err
+		}
+		stages = encoded
+	}
+	turnJSON := []byte("{}")
+	if patch.TurnDecision != nil {
+		encoded, err := json.Marshal(map[string]*VoiceTurnDecision{"turnDecision": patch.TurnDecision})
+		if err != nil {
+			return err
+		}
+		turnJSON = encoded
+	}
+	ttsJSON := map[string]any{}
+	if meta := patch.TTSMeta; meta != nil {
+		if meta.TTSStatus != "" {
+			ttsJSON["ttsStatus"] = meta.TTSStatus
+		}
+		if meta.TTSMime != "" {
+			ttsJSON["ttsMime"] = meta.TTSMime
+		}
+		if meta.TTSByteCount > 0 {
+			ttsJSON["ttsByteCount"] = meta.TTSByteCount
+		}
+	}
+	tts, err := json.Marshal(ttsJSON)
+	if err != nil {
+		return err
+	}
+
 	tx, err := w.pool.Begin(ctx)
+	if err != nil {
+		return err
+	}
+	defer tx.Rollback(ctx)
+	var userID string
+	err = tx.QueryRow(ctx, `
+		SELECT user_id FROM agent_traces
+		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
+		FOR UPDATE
+	`, matchID, traceID).Scan(&userID)
+	if errors.Is(err, pgx.ErrNoRows) {
+		return ErrTraceNotFound
+	}
+	if err != nil {
+		return err
+	}
+	if err := privacy.LockUserTx(ctx, tx, userID); err != nil {
+		return err
+	}
+	if err := privacy.CheckDeletionTx(ctx, tx, userID); err != nil {
+		return err
+	}
+	tag, err := tx.Exec(ctx, `
+		UPDATE agent_traces SET voice = jsonb_set(
+			COALESCE(NULLIF(voice, 'null'::jsonb), '{}'::jsonb) || $3::jsonb || $4::jsonb,
+			'{latencyStages}',
+			COALESCE(NULLIF(voice, 'null'::jsonb)->'latencyStages', '{}'::jsonb) || $5::jsonb
+		)
+		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
+	`, matchID, traceID, turnJSON, tts, stages)
+	if err != nil {
+		return err
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrTraceNotFound
+	}
+	return tx.Commit(ctx)
+}
+
+func (w *PostgresTraceWriter) UpdateTrace(ctx context.Context, trace Trace) error {	tx, err := w.pool.Begin(ctx)
 	if err != nil {
 		return err
 	}

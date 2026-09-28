@@ -106,6 +106,38 @@ func (m *StoreMemoryTools) UpdateTrace(ctx context.Context, trace Trace) error {
 	return nil
 }
 
+// AttachVoice 落语音观测（operations-turn-replay）：内存副本始终本地键级
+// 合并；远端优先 VoiceAttacher（PG jsonb 原子合并，消除丢更新窗口），
+// 无该能力回退 UpdateTrace 推整条读改写结果。
+func (m *StoreMemoryTools) AttachVoice(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error {
+	m.mu.Lock()
+	var merged Trace
+	found := false
+	for i := range m.traces {
+		if m.traces[i].MatchID == matchID && m.traces[i].ID == traceID {
+			mergeVoiceObservation(&m.traces[i], patch)
+			merged = m.traces[i]
+			found = true
+			break
+		}
+	}
+	m.mu.Unlock()
+	if !found {
+		// 内存无副本（如重启后 attach 或纯 PG 形态）：交由远端原子路径。
+		if attacher, ok := m.traceWriter.(VoiceAttacher); ok {
+			return attacher.AttachVoice(ctx, matchID, traceID, patch)
+		}
+		return ErrTraceNotFound
+	}
+	if attacher, ok := m.traceWriter.(VoiceAttacher); ok {
+		return attacher.AttachVoice(ctx, matchID, traceID, patch)
+	}
+	if updater, ok := m.traceWriter.(TraceUpdater); ok {
+		return updater.UpdateTrace(ctx, merged)
+	}
+	return nil
+}
+
 func (m *StoreMemoryTools) Reset(matchID string) error {
 	m.mu.Lock()
 	defer m.mu.Unlock()
