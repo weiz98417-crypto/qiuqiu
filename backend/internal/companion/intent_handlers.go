@@ -25,12 +25,12 @@ func (a *Agent) handleMatchClaim(t *userTurn) (intentHandling, error) {
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": req.MatchID}})
 	events, err := a.tools.RecentEvents(ctx, req.MatchID, 8)
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.search_events", Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchSearchEvents, Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
 	claim, eventIDs, ok := assessMatchClaim(req.Text, snapshot, events)
 	if !ok {
 		claim = FactClaim{Kind: "match_fact", Status: ClaimStatusUnverified, Reason: "claim could not be parsed"}
@@ -42,7 +42,7 @@ func (a *Agent) handleMatchClaim(t *userTurn) (intentHandling, error) {
 		claim.Reason = ReasonMatchNotStarted
 	}
 	trace.Reason = ReasonUserMatchClaimPrefix + string(claim.Status)
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchVerifyUserClaim, Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 	// intent-router C2: an insistence repeat of a claim this same user
 	// already raised gets the warm deterministic hold, not the generic
 	// one. Fact status is unchanged — the coordinator dedupe still owns
@@ -104,7 +104,7 @@ func (a *Agent) handleMatchStatus(t *userTurn) (intentHandling, error) {
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": req.MatchID}})
 	if issue := snapshotIntegrityIssue(snapshot); issue != "" {
 		h.allowRealize = false
 		h.deterministicReason = "snapshot_integrity"
@@ -114,7 +114,7 @@ func (a *Agent) handleMatchStatus(t *userTurn) (intentHandling, error) {
 			claim.Status = ClaimStatusUnverified
 			claim.Reason = issue
 			trace.Claim = &claim
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchVerifyUserClaim, Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 		}
 		return h, nil
 	}
@@ -123,7 +123,7 @@ func (a *Agent) handleMatchStatus(t *userTurn) (intentHandling, error) {
 		h.deterministicReason = "claim_policy"
 		trace.Claim = &claim
 		trace.Reason = ReasonUserMatchClaimPrefix + string(claim.Status)
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchVerifyUserClaim, Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 	}
 	h.reply = fmt.Sprintf("现在是%s %d-%d %s，时间在%s %s。", snapshot.HomeTeam, snapshot.Score.Home, snapshot.Score.Away, snapshot.AwayTeam, displayPeriod(snapshot.Period), snapshot.Clock)
 	h.requiredAnchors = compactAnchors(snapshot.HomeTeam, snapshot.AwayTeam, fmt.Sprintf("%d-%d", snapshot.Score.Home, snapshot.Score.Away), snapshot.Clock)
@@ -139,7 +139,7 @@ func (a *Agent) handleRecentEvent(t *userTurn) (intentHandling, error) {
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.search_events", Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchSearchEvents, Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
 	h.reply, trace.RetrievedEvent = answerRecentEvent(req.Text, events)
 	h.requiredAnchors = anchorsForEvents(events, trace.RetrievedEvent, h.reply)
 	return h, nil
@@ -154,12 +154,12 @@ func (a *Agent) handleFollowUp(t *userTurn) (intentHandling, error) {
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "conversation.read_recent", Args: map[string]string{"matchId": req.MatchID, "userId": req.UserID, "limit": "8"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallConversationReadRecent, Args: map[string]string{"matchId": req.MatchID, "userId": req.UserID, "limit": "8"}})
 	events, err := a.tools.RecentEvents(ctx, req.MatchID, 8)
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.search_events", Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchSearchEvents, Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
 	h.reply, trace.RetrievedEvent = answerFollowUp(req.Text, turns, events)
 	h.requiredAnchors = anchorsForEvents(events, trace.RetrievedEvent, h.reply)
 	return h, nil
@@ -175,7 +175,7 @@ func (a *Agent) handlePlayerQuestion(t *userTurn) (intentHandling, error) {
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.get_player_timeline", Args: map[string]string{"matchId": req.MatchID, "playerName": player, "limit": "8"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchGetPlayerTimeline, Args: map[string]string{"matchId": req.MatchID, "playerName": player, "limit": "8"}})
 	h.reply, trace.RetrievedEvent = answerPlayerQuestion(req.Text, player, events)
 	h.requiredAnchors = compactAnchors(player)
 	h.requiredAnchors = append(h.requiredAnchors, anchorsForEvents(events, trace.RetrievedEvent, h.reply)...)
@@ -196,7 +196,7 @@ func (a *Agent) handleSchedule(t *userTurn) (intentHandling, error) {
 	scheduleIntent := *trace.Schedule
 	if scheduleIntent.Scope == ScheduleScopeCurrent || scheduleIntent.Scope == ScheduleScopeNearby {
 		if snapshot, err := a.tools.Snapshot(ctx, req.MatchID); err == nil {
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": req.MatchID}})
 			if currentReply, ok := activeMatchScheduleReply(snapshot); ok {
 				h.deterministicReason = ReasonActiveMatchContext
 				trace.Reason = ReasonActiveMatchContext
@@ -231,7 +231,7 @@ func (a *Agent) handleSchedule(t *userTurn) (intentHandling, error) {
 			return h, nil
 		}
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{
-			Name: "schedule.search",
+			Name: ToolCallScheduleSearch,
 			Args: scheduleSearchToolArgs(searchRequest),
 		})
 		result, err := searchReader.Search(ctx, searchRequest)
@@ -244,7 +244,7 @@ func (a *Agent) handleSchedule(t *userTurn) (intentHandling, error) {
 		h.reply = formatScheduleSearchResult(result, scheduleIntent.Scope)
 		return h, nil
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "schedule.read_today", Args: map[string]string{"scope": "today"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallScheduleReadToday, Args: map[string]string{"scope": "today"}})
 	if a.scheduleReader == nil {
 		h.reply = "今天的赛程我还没拿到，你想查哪个联赛？"
 		return h, nil
@@ -270,12 +270,12 @@ func (a *Agent) handleEmotionReaction(t *userTurn) (intentHandling, error) {
 		if err != nil {
 			return h, err
 		}
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.search_events", Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchSearchEvents, Args: map[string]string{"matchId": req.MatchID, "limit": "8"}})
 		var claim FactClaim
 		h.reply, claim, trace.RetrievedEvent = answerDeicticMatchReaction(req.Text, events)
 		trace.Claim = &claim
 		trace.Reason = ReasonUserEventReferencePrfx + string(claim.Status)
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.verify_user_claim", Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchVerifyUserClaim, Args: map[string]string{"kind": claim.Kind, "status": string(claim.Status)}})
 		if claim.Status == ClaimStatusUnverified {
 			a.recordObservation(ctx, req, t.requestTraceID, claim, trace)
 		}
@@ -319,7 +319,7 @@ func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
 	if err != nil {
 		return h, err
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": req.MatchID}})
 	if snapshot.Period != "pre_match" {
 		h.reply = "这场已经开赛了，下次开球前提前叫我。"
 		return h, nil
@@ -333,7 +333,7 @@ func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
 	if pendings, err := a.reminders.PendingForUser(ctx, req.UserID); err == nil {
 		for _, existing := range pendings {
 			if existing.MatchID == req.MatchID && teamNamesAlign(existing.HomeTeam, existing.AwayTeam, snapshot.HomeTeam, snapshot.AwayTeam) {
-				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "reminder.duplicate", Args: map[string]string{"reminderId": existing.ID}})
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallReminderDuplicate, Args: map[string]string{"reminderId": existing.ID}})
 				h.reply = "记着呢，开球前我会叫你，放心。"
 				return h, nil
 			}
@@ -353,7 +353,7 @@ func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
 		h.reply = "提醒没记上，我这边出了点小状况，再试一次？"
 		return h, nil
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "reminder.create", Args: map[string]string{"reminderId": reminder.ID, "kickoffAt": kickoff.UTC().Format(time.RFC3339)}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallReminderCreate, Args: map[string]string{"reminderId": reminder.ID, "kickoffAt": kickoff.UTC().Format(time.RFC3339)}})
 	trace.Reason = ReasonReminderScheduled
 	h.reply = fmt.Sprintf("好，%s 对 %s 开球前%d分钟我叫你。", snapshot.HomeTeam, snapshot.AwayTeam, reminder.LeadMinutes)
 	return h, nil
@@ -375,7 +375,7 @@ func (a *Agent) handleKnowledgeQuestion(t *userTurn) (intentHandling, error) {
 		h.reply = "这个我还真不敢乱说，等我把功课补上再答你。"
 		return h, nil
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "knowledge.answer", Args: map[string]string{
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallKnowledgeAnswer, Args: map[string]string{
 		"entryId":    entry.ID,
 		"confidence": strconv.FormatFloat(entry.Confidence, 'f', 2, 64),
 	}})
@@ -472,7 +472,7 @@ func (a *Agent) handleSubscriptionManage(t *userTurn) (intentHandling, error) {
 			if mentionsRunes(text, sub.TeamName) >= 2 {
 				if _, done, err := a.subscriptions.CancelTeam(ctx, req.UserID, sub.TeamName); err == nil && done {
 					_ = a.remindersSuppressSubscription(ctx, req.UserID, sub.ID)
-					trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "subscription.cancel", Args: map[string]string{"subscriptionId": sub.ID}})
+					trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallSubscriptionCancel, Args: map[string]string{"subscriptionId": sub.ID}})
 					trace.Reason = ReasonSubscriptionCancelled
 					h.reply = "好，以后" + sub.TeamName + "的比赛不叫你了，想恢复随时说。"
 					return h, nil
@@ -503,7 +503,7 @@ func (a *Agent) handleSubscriptionManage(t *userTurn) (intentHandling, error) {
 		h.reply = "订阅没记上，再试一次？"
 		return h, nil
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "subscription.create", Args: map[string]string{"subscriptionId": sub.ID, "team": sub.TeamName}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallSubscriptionCreate, Args: map[string]string{"subscriptionId": sub.ID, "team": sub.TeamName}})
 	trace.Reason = ReasonSubscriptionScheduled
 	h.reply = "好，以后" + sub.TeamName + "的比赛，开球前我都叫你。"
 	return h, nil

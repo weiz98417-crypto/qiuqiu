@@ -37,19 +37,26 @@ func (a *Agent) routeKeywordMiss(ctx context.Context, req AgentBoundaryRequest, 
 	})
 	if err != nil {
 		if trace != nil {
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "intent.route", Args: map[string]string{"status": "degraded", "error": shortLabel(err.Error(), 120)}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallIntentRoute, Args: map[string]string{"status": "degraded", "error": shortLabel(err.Error(), 120)}})
 		}
 		return nil
 	}
 	if trace != nil {
+		// Model 走可选接口断言:TurnRouter 的 eval 替身不实现 Model(),
+		// 生产 *router.Client 实现——trace 只在有值时记。
+		model := ""
+		if m, ok := a.router.(interface{ Model() string }); ok {
+			model = m.Model()
+		}
 		trace.Router = &RouterTrace{
+			Model:      model,
 			Intent:     result.Intent,
 			Confidence: result.Confidence,
 			Player:     result.Player,
 			Team:       result.Team,
 			Score:      result.Score,
 		}
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "intent.route", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallIntentRoute, Args: map[string]string{
 			"intent":     result.Intent,
 			"confidence": strconv.FormatFloat(result.Confidence, 'f', 2, 64),
 		}})
@@ -69,7 +76,7 @@ func (a *Agent) routerContextSummary(ctx context.Context, req AgentBoundaryReque
 				snapshot.HomeTeam, snapshot.AwayTeam, displayPeriod(snapshot.Period),
 				snapshot.Score.Home, snapshot.Score.Away, snapshot.Clock))
 			if trace != nil {
-				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": req.MatchID, "source": "intent.route"}})
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": req.MatchID, "source": ToolCallIntentRoute}})
 			}
 		} else {
 			builder.WriteString("赛况暂时不可用。")

@@ -89,7 +89,7 @@ func (a *Agent) knowledgeTrigger(req MatchEventRequest, trace *Trace) *knowledge
 	state.total++
 	state.perEntry[entry.ID]++
 	if trace != nil {
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "knowledge.trigger", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallKnowledgeTrigger, Args: map[string]string{
 			"id": entry.ID, "eventType": req.Event.EventType,
 		}})
 	}

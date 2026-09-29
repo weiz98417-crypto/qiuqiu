@@ -62,7 +62,7 @@ func (a *Agent) recallMemoryBlock(ctx context.Context, userID, focus string, tra
 	defer cancel()
 	recalls := a.memories.Recall(recallCtx, memory.Query{UserID: userID, Focus: focus, Limit: memoryRecallLimit})
 	if trace != nil {
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "memory.recall", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMemoryRecall, Args: map[string]string{
 			"userId": userID, "limit": strconv.Itoa(memoryRecallLimit), "recalled": strconv.Itoa(len(recalls)),
 		}})
 	}
@@ -88,7 +88,7 @@ func (a *Agent) portraitMemoryBlock(ctx context.Context, userID string, trace *T
 		} else {
 			args["entries"] = strconv.Itoa(len(portrait.Entries))
 		}
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "memory.portrait", Args: args})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMemoryPortrait, Args: args})
 	}
 	if err != nil {
 		return ""

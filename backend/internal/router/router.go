@@ -72,6 +72,7 @@ func parseMillis(raw string) int64 {
 // decision 6). 传输与解析经 structured 深模块（留尾 3.6 兑现）。
 type Client struct {
 	apiKey     string
+	model      string
 	structured *structured.Client
 }
 
@@ -82,8 +83,18 @@ func NewClient(config Config) *Client {
 	}
 	return &Client{
 		apiKey:     config.APIKey,
+		model:      config.Model,
 		structured: structured.NewClientWithTimeout(config.BaseURL, config.APIKey, config.Model, timeout),
 	}
+}
+
+// Model exposes the classification model id for trace observability
+// (RouterTrace.Model ↔ gen_ai.request.model, trace-genai-alignment).
+func (c *Client) Model() string {
+	if c == nil || c.model == "" {
+		return DefaultModel
+	}
+	return c.model
 }
 
 // Enabled reports whether the router layer is configured. An unset key (CI,

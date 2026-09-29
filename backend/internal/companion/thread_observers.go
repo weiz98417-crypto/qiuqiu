@@ -75,7 +75,7 @@ func (a *Agent) appendThreadCandidate(ctx context.Context, store memory.ThreadSt
 		return
 	}
 	if trace != nil {
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "memory.append_thread", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMemoryAppendThread, Args: map[string]string{
 			"threadId": appended.ID, "kind": string(appended.Kind), "state": appended.State,
 		}})
 	}
@@ -219,7 +219,7 @@ func (a *Agent) appendThreadRecovery(ctx context.Context, req AgentBoundaryReque
 			log.Printf("memory: mark thread %s addressed: %v", thread.ID, err)
 			return reply
 		}
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "memory.recover_thread", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMemoryRecoverThread, Args: map[string]string{
 			"threadId": thread.ID, "kind": string(thread.Kind), "player": player,
 		}})
 		trace.RetrievedEvent = append(trace.RetrievedEvent, eventIDs...)
@@ -273,7 +273,7 @@ func (a *Agent) RecoverOpenThreads(ctx context.Context, userID, matchID string, 
 			Reason:         "open_thread_recovery",
 			CreatedAt:      now,
 			ToolCalls: []ToolCall{
-				{Name: "memory.recover_thread", Args: map[string]string{"threadId": thread.ID, "kind": string(thread.Kind)}},
+				{Name: ToolCallMemoryRecoverThread, Args: map[string]string{"threadId": thread.ID, "kind": string(thread.Kind)}},
 			},
 		}
 		// 记忆进措辞层：回访文本仅在 recall 材料非空时带记忆重措辞，
@@ -290,8 +290,8 @@ func (a *Agent) RecoverOpenThreads(ctx context.Context, userID, matchID string, 
 			emitMode = "realized"
 		}
 		trace.ToolCalls = append(trace.ToolCalls,
-			ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": emitMode, "source": "open_thread_recovery", "threadId": thread.ID}},
-			ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": matchID, "traceId": traceID}},
+			ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": emitMode, "source": "open_thread_recovery", "threadId": thread.ID}},
+			ToolCall{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": matchID, "traceId": traceID}},
 		)
 		trace.Output = reply
 		if err := a.tools.WriteTrace(ctx, trace); err != nil {

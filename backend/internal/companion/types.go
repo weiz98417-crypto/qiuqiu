@@ -200,6 +200,8 @@ type Trace struct {
 // survived guard validation. The reason code "router:<intent>:<confidence>"
 // rides on the relationship decision's reason codes.
 type RouterTrace struct {
+	// Model 是分类调用的模型 id（trace-genai-alignment：↔ gen_ai.request.model）。
+	Model      string  `json:"model,omitempty"`
 	Intent     string  `json:"intent"`
 	Confidence float64 `json:"confidence"`
 	Player     string  `json:"player,omitempty"`

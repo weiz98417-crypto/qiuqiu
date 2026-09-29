@@ -42,7 +42,7 @@ func (a *Agent) mirrorCharacterSettings(ctx context.Context, userID, matchID str
 		if _, err := a.characterSettings.Set(ctx, userID, string(field), value); err != nil {
 			return
 		}
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "character.setting_mirror", Args: map[string]string{"field": string(field), "value": value}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallCharacterSettingMirror, Args: map[string]string{"field": string(field), "value": value}})
 		if a.interactions != nil {
 			event := interaction.Event{
 				Kind: interaction.KindCharacterSetting,

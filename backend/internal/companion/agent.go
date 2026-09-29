@@ -433,8 +433,8 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 			CreatedAt:             now.UTC(),
 			ToolCalls: []ToolCall{
 				{Name: "observation.reconcile", Args: map[string]string{"observationId": resolution.ObservationID, "status": string(resolution.Status)}},
-				{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "observation_resolution"}},
-				{Name: "trace.write_decision", Args: map[string]string{"matchId": resolution.MatchID}},
+				{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "source": "observation_resolution"}},
+				{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": resolution.MatchID}},
 			},
 		}
 		if err := a.tools.WriteTrace(ctx, trace); err != nil {
@@ -730,7 +730,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	if allowRealize && decision != nil && decision.Speech == nil {
 		reply = ""
 		trace.Reason = ReasonRelationshipChosenSilence
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "silence"}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "silence"}})
 	} else if allowRealize && decision != nil && (shouldRealizeUserTurn(intent, *decision) || (intent == IntentUnknown && routerChatReply != "")) {
 		reply = reliableFallbackForDecision(req.Text, intent, reply, *decision)
 		// Design decision 4: when the router already suggested a natural
@@ -741,7 +741,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			reply = validated
 			routerReplyUsed = true
 			trace.Reason = ReasonRouterReplyRealized
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized", "source": "router"}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "realized", "source": "router"}})
 		} else {
 			// ADR-0009 审计承诺补全：有建议但被拒/为空不再是静默的
 			// ReplyUsed=false——拒绝原因落 trace.Router，随后照旧走
@@ -753,11 +753,11 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 				reply = a.realizeReply(ctx, req, intent, reply, requiredAnchors, *decision, &trace)
 			} else {
 				trace.Reason = ReasonRealizeFallbackUnavail
-				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "realizer_unavailable"}})
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "fallback": "realizer_unavailable"}})
 			}
 		}
 	} else {
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "reason": deterministicReason}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "reason": deterministicReason}})
 	}
 	reply = a.appendThreadRecovery(ctx, req, intent, reply, &trace)
 	// C2 writer hook: open-thread candidates ride on the same trace as the
@@ -776,8 +776,8 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 			trace.Reason = ReasonDeterministicCompanion
 		}
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "conversation.append_turn", Args: map[string]string{"matchId": req.MatchID, "userId": req.UserID, "roles": "user,qiuqiu"}})
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": req.MatchID, "traceId": trace.ID}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallConversationAppendTurn, Args: map[string]string{"matchId": req.MatchID, "userId": req.UserID, "roles": "user,qiuqiu"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": req.MatchID, "traceId": trace.ID}})
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
 		return Response{}, err
 	}
@@ -831,14 +831,14 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 	}
 	if intent.Scope == ScheduleScopeCurrent || intent.Scope == ScheduleScopeNearby {
 		if snapshot, err := a.tools.Snapshot(ctx, lookup.MatchID); err == nil {
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": lookup.MatchID}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": lookup.MatchID}})
 			if reply, active := activeMatchScheduleReply(snapshot); active {
 				trace.Output = reply
 				trace.Reason = ReasonScheduleLookupCtxUpdated
 				trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
 				trace.ToolCalls = append(trace.ToolCalls,
-					ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
-					ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
+					ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
+					ToolCall{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
 				)
 				if err := a.tools.WriteTrace(ctx, trace); err != nil {
 					return Response{}, err
@@ -858,15 +858,15 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 	}
 	if intent.Scope == ScheduleScopeCurrent || intent.Scope == ScheduleScopeNearby {
 		if snapshot, snapshotErr := a.tools.Snapshot(ctx, lookup.MatchID); snapshotErr == nil {
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "match.read_snapshot", Args: map[string]string{"matchId": lookup.MatchID}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallMatchReadSnapshot, Args: map[string]string{"matchId": lookup.MatchID}})
 			if currentReply, active := activeMatchScheduleReply(snapshot); active {
 				searchArgs["state"] = "superseded"
 				searchArgs["source"] = strings.TrimSpace(result.Source)
 				searchArgs["durationMs"] = strconv.Itoa(int(time.Since(startedAt).Milliseconds()))
 				trace.ToolCalls = append(trace.ToolCalls,
-					ToolCall{Name: "schedule.search", Args: searchArgs},
-					ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
-					ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
+					ToolCall{Name: ToolCallScheduleSearch, Args: searchArgs},
+					ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
+					ToolCall{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
 				)
 				trace.Output = currentReply
 				trace.Reason = ReasonScheduleLookupCtxUpdated
@@ -900,9 +900,9 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 	}
 	searchArgs["durationMs"] = strconv.Itoa(int(time.Since(startedAt).Milliseconds()))
 	trace.ToolCalls = append(trace.ToolCalls,
-		ToolCall{Name: "schedule.search", Args: searchArgs},
-		ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
-		ToolCall{Name: "trace.write_decision", Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
+		ToolCall{Name: ToolCallScheduleSearch, Args: searchArgs},
+		ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "source": "schedule_lookup"}},
+		ToolCall{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": lookup.MatchID, "traceId": trace.ID}},
 	)
 	trace.Output = reply
 	trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
@@ -965,11 +965,11 @@ func (a *Agent) recordObservation(ctx context.Context, req AgentBoundaryRequest,
 		ReconcileWindow: reconcileWindow,
 	})
 	if err != nil {
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "observation.record", Args: map[string]string{"status": "error"}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallObservationRecord, Args: map[string]string{"status": "error"}})
 		return
 	}
 	trace.Observation = &recorded
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "observation.record", Args: map[string]string{"status": string(recorded.Status), "observationId": recorded.ID}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallObservationRecord, Args: map[string]string{"status": string(recorded.Status), "observationId": recorded.ID}})
 }
 
 func reliableFallbackForDecision(input string, intent Intent, original string, decision relationship.Decision) string {
@@ -1212,11 +1212,11 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 		},
 	})
 	if err != nil {
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "error", "reason": err.Error()}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallRelationshipApply, Args: map[string]string{"status": "error", "reason": err.Error()}})
 		return nil
 	}
 	trace.RelationshipDecision = &decision
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallRelationshipApply, Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
 	return &decision
 }
 
@@ -1276,14 +1276,14 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	}
 	if decision.ID != "" {
 		trace.RelationshipDecision = &decision
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallRelationshipApply, Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
 	} else {
 		trace.Reason = ReasonOperatorEventProactive
 	}
 	reply := ""
 	if req.OutputAllowed && (decision.ID == "" || decision.Speech != nil) {
 		citation := strings.TrimSpace(req.CitationReason)
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{
 			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "clock": req.Event.Clock, "citation": citation,
 		}})
 		if citation != "" && decision.ID != "" {
@@ -1322,19 +1322,19 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 			if realized, done := a.realizeWithMemory(ctx, IntentMatchReaction, req.UserID, req.Event.Description, focus, reply, anchors, decision, &trace); done {
 				reply = realized
 				trace.Reason = ReasonProactiveMemoryRealized
-				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized", "source": "match_event_memory"}})
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "realized", "source": "match_event_memory"}})
 			}
 		}
 		if knowledgeEntry != nil && !knowledgeQuoteCarried(reply, knowledgeEntry) {
 			reply += knowledgeDeterministicAppendix(knowledgeEntry)
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "knowledge.trigger_fallback", Args: map[string]string{"id": knowledgeEntry.ID, "mode": "deterministic_appendix"}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallKnowledgeTriggerFallback, Args: map[string]string{"id": knowledgeEntry.ID, "mode": "deterministic_appendix"}})
 		}
 		if goalComfort != "" {
 			reply = goalComfort + reply
 		}
 	} else if trace.Reason != ReasonCriticalFactRefreshLimit {
 		trace.Reason = ReasonMatchObservedSilent
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{
 			"eventId": req.Event.ID, "deliveryKey": deliveryKey, "eventType": req.Event.EventType, "mode": "silence",
 		}})
 	}
@@ -1343,7 +1343,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	// C2 writer hook: prediction threads open from the match event itself and
 	// stay on the event trace (memory.append_thread).
 	a.observeMatchEventThread(ctx, req, decision, &trace)
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "trace.write_decision", Args: map[string]string{
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallTraceWriteDecision, Args: map[string]string{
 		"matchId": req.Event.MatchID,
 		"traceId": trace.ID,
 	}})
@@ -1433,20 +1433,20 @@ func (a *Agent) handleFirstMeeting(ctx context.Context, req FirstMeetingRequest)
 		Reason:    "first_meeting_welcome",
 		CreatedAt: req.Now,
 		ToolCalls: []ToolCall{
-			{Name: "response.emit_companion_reply", Args: map[string]string{"source": "first_meeting"}},
-			{Name: "trace.write_decision", Args: map[string]string{"matchId": req.MatchID}},
+			{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"source": "first_meeting"}},
+			{Name: ToolCallTraceWriteDecision, Args: map[string]string{"matchId": req.MatchID}},
 		},
 	}
 	if a.director != nil {
 		decision, err := a.ObserveSession(ctx, signalID, req.UserID, req.MatchID, req.Now)
 		if err == nil {
 			trace.RelationshipDecision = &decision
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallRelationshipApply, Args: map[string]string{"status": "ok", "decisionId": decision.ID}})
 			if decision.Relationship.GreetingDelivered {
 				reply = ""
 				trace.Output = ""
 				trace.Reason = ReasonFirstMeetingDelivered
-				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{
 					"mode": "silence", "reason": "already_delivered",
 				}})
 			} else if a.realizer != nil && decision.Speech != nil {
@@ -1458,7 +1458,7 @@ func (a *Agent) handleFirstMeeting(ctx context.Context, req FirstMeetingRequest)
 				trace.Output = reply
 			}
 		} else {
-			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.apply", Args: map[string]string{"status": "error", "reason": err.Error()}})
+			trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallRelationshipApply, Args: map[string]string{"status": "error", "reason": err.Error()}})
 		}
 	}
 	trace.LatencyMS = int(time.Since(startedAt).Milliseconds())
@@ -1591,18 +1591,18 @@ func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, inte
 			trace.Error = strings.TrimSpace(err.Error())
 		}
 		trace.Reason = ReasonRealizeFallbackError
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "realizer_error"}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "fallback": "realizer_error"}})
 		return reliable
 	}
 	// 与路由建议共用同一个 guard：拒绝原因、锚源纪律一处定义。
 	validated, _ := guardValidateReply(req.Text, intent, realized.Text, anchors, reliable, decision)
 	if validated == "" {
 		trace.Reason = ReasonRealizeFallbackPolicy
-		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
+		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "deterministic", "fallback": "policy"}})
 		return reliable
 	}
 	trace.Reason = ReasonRelationshipPlanRealized
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "realized"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "realized"}})
 	return validated
 }
 
@@ -1800,7 +1800,7 @@ func (a *Agent) recentPhraseHashes(ctx context.Context, matchID, userID string, 
 	if err != nil {
 		return nil
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "conversation.read_recent", Args: map[string]string{"matchId": matchID, "userId": userID, "limit": "12", "purpose": "phrase_cooldown"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallConversationReadRecent, Args: map[string]string{"matchId": matchID, "userId": userID, "limit": "12", "purpose": "phrase_cooldown"}})
 	hashes := make([]uint64, 0, len(turns))
 	for _, turn := range turns {
 		if turn.Role == "qiuqiu" && strings.TrimSpace(turn.Text) != "" {

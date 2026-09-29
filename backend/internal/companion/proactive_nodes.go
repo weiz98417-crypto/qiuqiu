@@ -99,7 +99,7 @@ func (a *Agent) goalComfortPrefix(userID string, ev matchstate.MatchEvent, snaps
 				return ""
 			}
 			if trace != nil {
-				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "relationship.goal_comfort", Args: map[string]string{"team": conceded}})
+				trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallRelationshipGoalComfort, Args: map[string]string{"team": conceded}})
 			}
 			clock := strings.TrimSpace(ev.Clock)
 			if clock != "" {

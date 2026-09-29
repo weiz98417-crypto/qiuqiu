@@ -114,7 +114,7 @@ func (a *Agent) appendFactMemoryCallback(ctx context.Context, req AgentBoundaryR
 	if tail == "" {
 		return reply
 	}
-	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: "response.emit_companion_reply", Args: map[string]string{"mode": "fact_memory_callback"}})
+	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "fact_memory_callback"}})
 	return reply + tail
 }
 
