@@ -54,5 +54,5 @@ func seedDemoOperator(ctx context.Context, store operatorauth.Directory, environ
 		logf("demo operator password seed skipped: %v", err)
 		return
 	}
-	logf("demo operator seeded: %s/%s (development only, director role)", demoOperatorName, demoOperatorPassword)
+	logf("demo operator seeded: %s (development only, director role, fixed demo password)", demoOperatorName)
 }

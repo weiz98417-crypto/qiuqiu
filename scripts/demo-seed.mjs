@@ -443,6 +443,7 @@ async function openSeedSocket() {
         waiters.push(waiter);
       });
     },
+    send(obj) { socket.send(JSON.stringify(obj)); },
     close() {
       if (socket.readyState === 3) return Promise.resolve();
       return new Promise((resolve) => {
@@ -472,8 +473,10 @@ async function seedLiveConversation() {
       && message.data?.source === 'backchannel', 10_000, '微反应');
 
     // ② 进球主动线（引用审计的数据源：proactiveText 落引用码）。
+    // 注意：这里已 POST goal，外层不再 publishGoalAndRest（避免双发进球事实）。
+    let goalCreated = {};
     if (seedGoal) {
-      await request(`/api/matches/${encodeURIComponent(matchId)}/events`, { method: 'POST', body: JSON.stringify(goal) });
+      goalCreated = await request(`/api/matches/${encodeURIComponent(matchId)}/events`, { method: 'POST', body: JSON.stringify(goal) });
       await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
         && message.data?.text?.includes('佩德里'), 15_000, '主动线').catch(() => {});
     }
@@ -483,32 +486,39 @@ async function seedLiveConversation() {
     const firstTurn = await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
       && message.data?.source !== 'backchannel' && (message.data?.text || '').length > 0, 10_000, '用户回合1');
     await socket.waitFor((message) => message.type === 'voice_audio', 6_000, '回合1音频').catch(() => {});
-    socket.send(JSON.stringify({ type: 'reply_displayed', traceId: firstTurn.data?.traceId }));
-    socket.send(JSON.stringify({ type: 'playback_result', deliveryKey: firstTurn.data?.deliveryKey || firstTurn.data?.traceId, state: 'interrupted', reason: 'demo-seed' }));
+    if (firstTurn) socket.send(JSON.stringify({ type: 'reply_displayed', traceId: firstTurn.data?.traceId }));
+    if (firstTurn) socket.send(JSON.stringify({ type: 'playback_result', deliveryKey: firstTurn.data?.deliveryKey || firstTurn.data?.traceId, state: 'interrupted', reason: 'demo-seed' }));
 
     socket.send(JSON.stringify({ type: 'user_speech', userId: 'demo-fan', text: '法比安这场表现怎么样？', talkativeness: 'normal' }));
     const secondTurn = await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
       && message.data?.traceId !== firstTurn.data?.traceId && message.data?.source !== 'backchannel' && (message.data?.text || '').length > 0, 10_000, '用户回合2');
     await socket.waitFor((message) => message.type === 'voice_audio', 6_000, '回合2音频').catch(() => {});
-    socket.send(JSON.stringify({ type: 'reply_displayed', traceId: secondTurn.data?.traceId }));
-    socket.send(JSON.stringify({ type: 'playback_result', deliveryKey: secondTurn.data?.deliveryKey || secondTurn.data?.traceId, state: 'completed' }));
+    if (secondTurn) socket.send(JSON.stringify({ type: 'reply_displayed', traceId: secondTurn.data?.traceId }));
+    if (secondTurn) socket.send(JSON.stringify({ type: 'playback_result', deliveryKey: secondTurn.data?.deliveryKey || secondTurn.data?.traceId, state: 'completed' }));
 
     // ④ 无意义回合 → unknown 意图 → ThreadUnroutable（话题台账演示）。
-    socket.send(JSON.stringify({ type: 'user_speech', userId: 'demo-fan', text: '呃啊啊这个嗯那个哎呀', talkativeness: 'normal' }));
+    socket.send(JSON.stringify({ type: 'user_speech', userId: 'demo-fan', text: 'xqzw kvml pp', talkativeness: 'normal' }));
     await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
       && (message.data?.text || '').includes('没接明白'), 10_000, 'unknown 回合').catch(() => {});
+    return goalCreated;
   } finally {
     await socket.close();
   }
 }
 
-const created = seedLife
-  ? await seedLiveConversation().then(() => publishGoalAndRest()).catch(async (error) => {
-      console.warn(`seed-life 部分失败（不影响比赛种子）: ${error.message}`);
-      return publishGoalAndRest();
-    })
-  : await publishGoalAndRest();
-void created;
+// seed-life 模式下 goal 由 seedLiveConversation ② 内发布（含主动线等待）；
+// 失败兜底或非 seed-life 时才在此直接发布——绝不能两处都发（进球事实双计）。
+let created = {};
+if (seedLife) {
+  try {
+    created = await seedLiveConversation();
+  } catch (error) {
+    console.warn(`seed-life 部分失败（不影响比赛种子）: ${error.message}`);
+    created = await publishGoalAndRest();
+  }
+} else {
+  created = await publishGoalAndRest();
+}
 const state = await fetch(`${baseUrl}/api/matches/${encodeURIComponent(matchId)}/state`).then((res) => res.json());
 
 if (seedFinishedMatches) {

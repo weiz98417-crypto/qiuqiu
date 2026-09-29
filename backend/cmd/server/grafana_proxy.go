@@ -30,7 +30,3 @@ func grafanaProxyHandler(upstream string) http.HandlerFunc {
 	}
 	return proxy.ServeHTTP
 }
-
-func grafanaProxyPrefix(upstream string) string {
-	return strings.TrimRight(strings.TrimSpace(upstream), "/")
-}

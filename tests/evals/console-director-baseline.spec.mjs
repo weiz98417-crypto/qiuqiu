@@ -176,9 +176,7 @@ test('④ 红牌+换人连发：两事实独立确认互不覆盖', async () => 
       description: '西班牙换人：费兰·托雷斯上，尼科·威廉姆斯下。', proactiveText: '__quiet__', visibility: 'public',
     }),
   });
-  if (red.status !== 201) console.log('RED 400 BODY:', JSON.stringify(red.body));
   expect(red.status).toBe(201);
-  if (sub.status !== 201) console.log('SUB 400 BODY:', JSON.stringify(sub.body));
   expect(sub.status).toBe(201);
   expect(red.body.event.factId).not.toBe(sub.body.event.factId);
 });

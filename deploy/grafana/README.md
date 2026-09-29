@@ -34,6 +34,11 @@
 http_addr = 127.0.0.1
 http_port = 3300
 
+# 同源反代子路径（后端 /grafana/* 反代依赖这两项，缺了会 301 自环）
+[server]
+root_url = http://127.0.0.1:18090/grafana
+serve_from_sub_path = true
+
 [security]
 allow_embedding = true        ; console 观测页 iframe 需要
 
