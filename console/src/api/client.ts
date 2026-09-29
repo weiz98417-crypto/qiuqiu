@@ -414,6 +414,7 @@ export const VOICE_LATENCY_STAGES = [
   'speech_received',
   'asr_final',
   'turn_decided',
+  'tts_first_audio',
   'tts_synthesized',
   'audio_delivered',
 ] as const;
@@ -422,6 +423,7 @@ export const VOICE_STAGE_LABELS: Record<string, string> = {
   speech_received: '收到语音',
   asr_final: 'ASR 定稿',
   turn_decided: '轮次判定',
+  tts_first_audio: 'TTS 首响',
   tts_synthesized: 'TTS 合成',
   audio_delivered: '音频送达',
 };
@@ -438,9 +440,14 @@ export interface TraceVoiceMeta {
   ttsMime?: string;
   ttsByteCount?: number;
   // 延迟分段：stage → 相对 speech_received 锚点的累计毫秒（非相邻差）；
-  // stage ∈ speech_received/asr_final/turn_decided/tts_synthesized/audio_delivered。
+  // stage ∈ speech_received/asr_final/turn_decided/tts_first_audio/
+  // tts_synthesized/audio_delivered（六段；整段合成路径无 tts_first_audio）。
   latencyStages?: Record<string, number>;
   turnDecision?: VoiceTurnDecisionLike;
+  // 用户语音情绪结论（user-voice-affect 波1）：话轮级 sidecar 分类，事后经
+  // AttachVoiceStages 原子合并；可选字段，缺 = 本回合未测得，UI 不占位。
+  // 三层隐私纪律：只显 label+confidence，无任何正文。
+  userAffect?: { label: string; confidence: number };
 }
 
 export interface TraceRow {

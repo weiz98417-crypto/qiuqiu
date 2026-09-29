@@ -22,8 +22,9 @@ qiuqiu 的自建 trace(五段语音延迟分解、事后 attach 原子合并落 
 
 | 字段/锚点 | 理由 |
 |---|---|
-| 语音延迟锚点 `speech_received` / `asr_final` / `turn_decided` / `tts_synthesized` / `audio_delivered`(companion/voice_stages.go 单一源) | OTel GenAI 语音段约定未 stable(OpenInference 的 realtime voice-agent tracing 刚并入 PR #3173,provider 中立约定在草案);不为对齐而对齐,等 stable 再评估。**anchor 集合将由 voice-streaming-delivery 扩至六个(新增 `tts_first_audio`)**,直接沿用本体系 |
+| 语音延迟锚点 `speech_received` / `asr_final` / `turn_decided` / `tts_first_audio` / `tts_synthesized` / `audio_delivered`(companion/voice_stages.go 单一源,**六个**——`tts_first_audio` 由 voice-streaming-delivery 3.6 按本体系新增:句粒度路径首帧可下发时刻,值=turn_decided 耗时+首帧相对 Deliver 进入毫秒;整段路径无此段) | OTel GenAI 语音段约定未 stable;不为对齐而对齐,等 stable 再评估 |
 | `trace.voice.*`(asrStatus/asrText/asrProvider/ttsStatus 等) | 领域观测语义,生态无对应 |
+| `trace.voice.userAffect {label, confidence}`(user-voice-affect 波1) | 领域观测语义(User Voice Affect 词条);宪法线:永不进比赛事实账本 |
 | `trace.deliveryState`/playback 三态(source: client/client_late/server_inferred) | 领域资产(delivery-outcome-uplink),生态无对应 |
 | `latencyStages` JSON 键名 | Grafana 六面板与 console TurnReplay 的消费面;键未变,面板零变更(本变更已核对:因锚点保留领域名,面板查询无需改动) |
 

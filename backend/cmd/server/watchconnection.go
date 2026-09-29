@@ -233,7 +233,7 @@ func (c *watchConnection) attachVoiceStages(traceID, signalID string, anchor tim
 		// 毫秒；五段锚点自此变六段。
 		if audio.FirstAudioMS > 0 {
 			if turnDecidedElapsed, ok := c.voiceStages.takeTurnDecided(signalID); ok {
-				patch.Stages["tts_first_audio"] = turnDecidedElapsed + audio.FirstAudioMS
+				patch.Stages[companion.VoiceStageTTSFirstAudio] = turnDecidedElapsed + audio.FirstAudioMS
 			}
 		}
 		patch.TTSMeta = &companion.VoiceTraceMetadata{

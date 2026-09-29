@@ -72,12 +72,14 @@ export function WhyDrawer({ trace, onClose }: { trace: TraceRow | null; onClose:
 
 // 延迟分段顺序与中文标签单源自 client.ts（VOICE_LATENCY_STAGES /
 // VOICE_STAGE_LABELS，与后端 companion/voice_stages.go 互指）；配色本地维护
-// （色源 theme/palette：skyBlue/yellow/green；紫色为 TTS 段新增）。缺 stage =
-// 未测得，时间轴只画测得的段。
+// （色源 theme/palette：skyBlue/yellow/green；橙色为 TTS 首响段——主强调色
+// 标记用户听到第一声的时刻；紫色为 TTS 合成段）。缺 stage = 未测得，时间轴
+// 只画测得的段（整段合成路径无 tts_first_audio，照常缺段容错）。
 const STAGE_COLORS: Record<string, string> = {
   speech_received: '#7C8794',
   asr_final: '#55A8FF',
   turn_decided: '#F2C94C',
+  tts_first_audio: '#FF6B35',
   tts_synthesized: '#9B7EDE',
   audio_delivered: '#5FCB8B',
 };
@@ -86,6 +88,12 @@ function formatBytes(count: number): string {
   if (count >= 1024 * 1024) return `${(count / 1024 / 1024).toFixed(1)} MB`;
   if (count >= 1024) return `${(count / 1024).toFixed(1)} KB`;
   return `${count} B`;
+}
+
+// formatAffectConfidence 伪置信展示口径：两位小数后去尾零（0.9 → "0.9"，
+// 0.87 → "0.87"），与 sidecar 的非校准伪置信精度相称。
+function formatAffectConfidence(confidence: number): string {
+  return String(Number(confidence.toFixed(2)));
 }
 
 function turnDecisionLabel(isComplete: boolean | null | undefined): string {
@@ -144,6 +152,13 @@ export function TurnReplay({ trace }: { trace: TraceRow }) {
           {voice?.asrError ? <Tag color="red">ASR 失败：{voice.asrError}</Tag> : null}
           {voice?.ttsError ? <Tag color="red">TTS 失败：{voice.ttsError}</Tag> : null}
         </Space>
+      ) : null}
+      {/* 用户语音情绪（user-voice-affect）：可选字段，缺 = 本回合未测得不占位。
+          三层隐私纪律：chip 只含标签与伪置信数值，无任何正文。 */}
+      {voice?.userAffect ? (
+        <div>
+          <Tag color="magenta">{`用户情绪：${voice.userAffect.label} ${formatAffectConfidence(voice.userAffect.confidence)}`}</Tag>
+        </div>
       ) : null}
       <div style={{ fontSize: 12, color: '#AAB4C0' }}>TTS {ttsParts.length ? ttsParts.join(' · ') : '—'}</div>
       <div style={{ fontSize: 12, color: '#AAB4C0' }}>
