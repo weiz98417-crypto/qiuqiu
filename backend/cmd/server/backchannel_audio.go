@@ -6,6 +6,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/backchannel"
+	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/tts"
 )
@@ -49,7 +50,7 @@ func deliverBackchannelAudio(ctx context.Context, synthesizer speechSynthesizer,
 		"type":        "voice_audio",
 		"mime":        mime,
 		"byteLength":  len(result.AudioData),
-		"deliveryKey": "backchannel-" + eventID,
+		"deliveryKey": deliverykey.ForBackchannel(eventID),
 		"source":      "backchannel",
 	}, result.AudioData)
 }

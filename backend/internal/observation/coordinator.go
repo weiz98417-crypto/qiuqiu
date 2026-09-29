@@ -10,6 +10,7 @@ import (
 	"sync"
 	"time"
 
+	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/matchstate"
 )
 
@@ -447,7 +448,7 @@ func resolutionFor(pending PendingObservation, event matchstate.MatchEvent) Reso
 		FactID:           pending.ResolvedFactID,
 		FactRevision:     pending.ResolvedRevision,
 		ReliableText:     reliableText(pending, event),
-		DeliveryKey:      fmt.Sprintf("%s:%d:%s", pending.ID, pending.ResolvedRevision, pending.Status),
+		DeliveryKey:      deliverykey.ForObservation(pending.ID, pending.ResolvedRevision, string(pending.Status)),
 		FollowUpDeadline: pending.FollowUpDeadline,
 	}
 }

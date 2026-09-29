@@ -22,6 +22,7 @@ import (
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/datasource"
+	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/directordraft"
 	"qiuqiu/internal/embedding"
 	"qiuqiu/internal/knowledge"
@@ -952,26 +953,33 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 	result.Trace = response.Trace
 	result.Presentation = response.Presentation
 	result.ScheduleLookup = response.ScheduleLookup
-	if synthesizer != nil {
-		ttsResult, err := synthesizeReply(ctx, synthesizer, result.Reply, result.Presentation, turnActs(result.Trace))
+	if synthesizer != nil && strings.TrimSpace(result.Reply) != "" {
+		// 合成/记账统一走投递服务（voice-streaming-delivery 3.1 双装配线
+		// 合一）：收集型 sink 原地接住音频帧供 HTTP 响应返回；WS 路径传
+		// nil synthesizer，投递在连接的投递服务内进行。tracker 为请求内
+		// 内存实例——操作台语音会话是一次性回合，无跨推送去重需求。
+		sink := &collectingResponseSink{}
+		service := collectingDeliveryService(agent, synthesizer, sink)
+		deliveryResult, err := service.Deliver(ctx, conversation.ResponseDeliveryRequest{
+			Reply:        result.Reply,
+			Trace:        result.Trace,
+			Presentation: result.Presentation,
+			Source:       "conversation",
+			DeliveryKey:  deliverykey.ForTrace(result.Trace.ID),
+		}, nil)
 		if err != nil {
-			result.TTSError = err.Error()
-			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
-			result.Trace.Voice.TTSStatus = "failed"
-			result.Trace.Voice.TTSError = result.TTSError
-			_ = agent.RecordMediaDelivery(ctx, interaction.Event{ID: "tts:" + userID + ":" + matchID + ":" + result.Trace.ID + ":failed", Kind: interaction.KindMediaDelivery, UserID: userID, MatchID: matchID, TraceID: result.Trace.ID, DeliveryKey: result.Trace.ID, DeliveryState: "failed", Source: "tts", CreatedAt: time.Now().UTC()})
-		} else {
-			result.AudioData = ttsResult.AudioData
-			result.AudioMIME = ttsResult.MimeType
+			return result, err
+		}
+		if deliveryResult.AudioDelivered {
+			result.AudioData = sink.audio.Data
+			result.AudioMIME = sink.audio.MIME
 			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
 			result.Trace.Voice.TTSStatus = "ok"
 			result.Trace.Voice.TTSMime = result.AudioMIME
 			result.Trace.Voice.TTSByteCount = len(result.AudioData)
-			// 延迟分解：tts_synthesized（voice-transport-upgrade 1.1，操作台
-			// HTTP 语音路径；WS 路径的合成在投递服务内，由 audio_delivered
-			// 覆盖）。HTTP 路径 trace 在本函数内构造，分解直接内填——
-			// speech_received 基准 = now（语音会话到达），无需事后 attach
-			// （operations-turn-replay）。
+			// 延迟分解：tts_synthesized（voice-transport-upgrade 1.1）。
+			// 语义保持累计毫秒（speech_received 基准 = now = 语音会话到达），
+			// 与既有 HTTP 路径口径一致（operations-turn-replay）。
 			ttsElapsed := time.Since(now).Milliseconds()
 			log.Printf("voice latency event: user=%q match=%q signal=%q stage=%q elapsed_ms=%d",
 				userID, matchID, signalID, "tts_synthesized", ttsElapsed)
@@ -979,7 +987,11 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 				"speech_received": 0,
 				"tts_synthesized": int(ttsElapsed),
 			}
-			_ = agent.RecordMediaDelivery(ctx, interaction.Event{ID: "tts:" + userID + ":" + matchID + ":" + result.Trace.ID + ":audio_ready", Kind: interaction.KindMediaDelivery, UserID: userID, MatchID: matchID, TraceID: result.Trace.ID, DeliveryKey: result.Trace.ID, MediaType: result.AudioMIME, DeliveryState: "audio_ready", Source: "tts", CreatedAt: time.Now().UTC()})
+		} else if reason := deliveryResult.FallbackReason; reason != "" {
+			result.TTSError = reason
+			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
+			result.Trace.Voice.TTSStatus = "failed"
+			result.Trace.Voice.TTSError = result.TTSError
 		}
 	}
 	return result, nil
@@ -1018,7 +1030,7 @@ func latestCriticalFactRevisionKey(snapshot matchstate.Snapshot) string {
 			continue
 		}
 		if event.ID != "" {
-			return matchstate.DeliveryKey(event)
+			return deliverykey.ForEvent(event)
 		}
 		return fmt.Sprintf("%s:%s:%s:%d:%s", event.EventType, event.Clock, event.UpdatedAt, event.FactRevision, event.FactStatus)
 	}

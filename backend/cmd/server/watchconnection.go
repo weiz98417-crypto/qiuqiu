@@ -24,6 +24,7 @@ import (
 	"qiuqiu/internal/auth"
 	"qiuqiu/internal/backchannel"
 	"qiuqiu/internal/companion"
+	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/interaction"
@@ -454,7 +455,7 @@ func (c *watchConnection) submitDueReminders(userID string) {
 			_, err := c.responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
 				Reply: reply, Trace: trace,
 				Presentation: relationship.PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"},
-				Source:       "reminder", DeliveryKey: "reminder:" + reminder.ID, Critical: false, TTL: ttl,
+				Source:       "reminder", DeliveryKey: deliverykey.ForReminder(reminder.ID), Critical: false, TTL: ttl,
 			}, playback)
 			if err != nil {
 				if !errors.Is(err, context.Canceled) {
@@ -592,7 +593,7 @@ func (c *watchConnection) pumpMatchEvents() {
 				"data": clientSnapshot(c.deps.matchStore.PublicSnapshot(c.matchID)),
 			})
 		case ev := <-c.matchEvents:
-			eventKey := matchstate.DeliveryKey(ev)
+			eventKey := deliverykey.ForEvent(ev)
 			if _, duplicate := deliveredEventKeys[eventKey]; duplicate {
 				continue
 			}
