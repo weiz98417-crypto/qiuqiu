@@ -28,6 +28,8 @@ type AudioDelivery struct {
 	Source      string
 	EventID     string
 	DeliveryKey string
+	// SentenceIndex 是句粒度路径的句序号（0 基；整段路径恒 0，wire 层省略）。
+	SentenceIndex int
 }
 
 type DeliveryStatus struct {
@@ -106,9 +108,33 @@ type ResponseDeliveryResult struct {
 	// replay）：合成耗时（0=未合成或走兜底）与产物元数据，由投递服务带回，
 	// 调用方经 AttachVoiceStages 落 trace——生产 WS 路径的 TTS 在投递服务
 	// 内完成，此前这些字段无落库通道。
-	SynthesisMS   int
-	TTSMime       string
-	TTSByteCount  int
+	SynthesisMS  int
+	TTSMime      string
+	TTSByteCount int
+	// FirstAudioMS 是首段音频可下发时刻相对 Deliver 进入的毫秒（voice-
+	// streaming-delivery：句粒度路径才有值；0=未走流式或未出音频）。调用
+	// 方把它加到 turn_decided 锚点耗时上，落 tts_first_audio 观测段。
+	FirstAudioMS int
+	// SentenceCount 是本次投递的句数（0=未走句粒度路径）。
+	SentenceCount int
+}
+
+// StreamedSentence 是句粒度投递的一帧：一句一帧、完整可播（WAV 封装在
+// adapter 内完成），Final 标记末句。
+type StreamedSentence struct {
+	Data          []byte
+	MIME          string
+	SentenceIndex int
+	SentenceCount int
+	Final         bool
+}
+
+// StreamingResponseSynthesizer 是 ResponseAudioSynthesizer 的可选能力接口
+// （voice-streaming-delivery 3.4）：实现者按句合成、逐帧回调；未实现者
+// 走整段 SynthesizeResponse 既有路径。与 tts.StreamingSynthesizer 的可选
+// 能力接口同构——两层都不破坏既有测试替身。
+type StreamingResponseSynthesizer interface {
+	SynthesizeResponseStream(ctx context.Context, text string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, onChunk func(StreamedSentence) error) error
 }
 
 type ResponseDeliveryService struct {
@@ -287,6 +313,12 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 	if service.synthesizer == nil {
 		return service.completeWithFallback(ctx, request, result, "tts unavailable", nil)
 	}
+	// 句粒度路径（voice-streaming-delivery 3.4）：synthesizer 实现可选能力
+	// 接口则逐句合成逐帧下发——首句合成完即可播，不等整段；未实现者走
+	// 下方整段路径，行为与历史一致。
+	if streamer, ok := service.synthesizer.(StreamingResponseSynthesizer); ok {
+		return service.deliverStreaming(ctx, request, streamer, result, playback)
+	}
 	var acts []relationship.CommunicationAct
 	if request.Trace.RelationshipDecision != nil {
 		acts = request.Trace.RelationshipDecision.Actions
@@ -338,6 +370,70 @@ func (service *ResponseDeliveryService) Deliver(ctx context.Context, request Res
 	}
 	result.AudioDelivered = true
 	if err := service.recordMedia(ctx, request, audio.MIME, "audio_started", ""); err != nil {
+		return result, fmt.Errorf("record response audio delivery: %w", err)
+	}
+	return result, nil
+}
+
+// deliverStreaming 是句粒度投递的 I/O 半：AudioStarted 占位后逐句合成逐帧
+// 下发。打断（ctx 取消）即停——已发句不撤回（播了就是播了），剩余句不再
+// 合成不再下发；句中合成失败走 completeWithFallback（与整段路径 fallback
+// 语义一致，非 Critical 声明 Completed）。
+func (service *ResponseDeliveryService) deliverStreaming(ctx context.Context, request ResponseDeliveryRequest, streamer StreamingResponseSynthesizer, result ResponseDeliveryResult, playback Playback) (ResponseDeliveryResult, error) {
+	sendAudio, err := service.planAudioRound(request)
+	if err != nil {
+		return result, err
+	}
+	if !sendAudio {
+		result.Duplicate = true
+		return result, nil
+	}
+	var acts []relationship.CommunicationAct
+	if request.Trace.RelationshipDecision != nil {
+		acts = request.Trace.RelationshipDecision.Actions
+	}
+	startedAt := service.timestamp()
+	firstAudioAt := time.Time{}
+	sentenceCount := 0
+	streamErr := streamer.SynthesizeResponseStream(ctx, request.Reply, request.Presentation, acts, func(sentence StreamedSentence) error {
+		if err := ctx.Err(); err != nil {
+			return err
+		}
+		if firstAudioAt.IsZero() {
+			firstAudioAt = service.timestamp()
+			result.FirstAudioMS = int(firstAudioAt.Sub(startedAt).Milliseconds())
+		}
+		sentenceCount = sentence.SentenceCount
+		mime := sentence.MIME
+		if strings.TrimSpace(mime) == "" {
+			mime = "audio/wav"
+		}
+		result.TTSMime = mime
+		result.TTSByteCount += len(sentence.Data)
+		return service.sink.DeliverAudio(ctx, AudioDelivery{
+			Data: sentence.Data, MIME: mime, TraceID: request.Trace.ID, Source: request.Source,
+			EventID: request.EventID, DeliveryKey: request.DeliveryKey, SentenceIndex: sentence.SentenceIndex,
+		})
+	})
+	result.SentenceCount = sentenceCount
+	if streamErr != nil {
+		if errors.Is(streamErr, context.Canceled) || ctx.Err() != nil {
+			service.interrupt(request.Trace.ID)
+			return result, ctx.Err()
+		}
+		return service.completeWithFallback(ctx, request, result, streamErr.Error(), streamErr)
+	}
+	if sentenceCount == 0 || result.TTSByteCount == 0 {
+		return service.completeWithFallback(ctx, request, result, "empty audio", nil)
+	}
+	if !firstAudioAt.IsZero() {
+		result.SynthesisMS = int(service.timestamp().Sub(startedAt).Milliseconds())
+	}
+	if playback != nil {
+		playback(request.Trace.ID)
+	}
+	result.AudioDelivered = true
+	if err := service.recordMedia(ctx, request, result.TTSMime, "audio_started", ""); err != nil {
 		return result, fmt.Errorf("record response audio delivery: %w", err)
 	}
 	return result, nil

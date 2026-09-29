@@ -366,3 +366,117 @@ func TestFirstMeetingCoordinatorUsesSharedDeliveryService(t *testing.T) {
 		t.Fatalf("unexpected first meeting statuses: %+v", sink.statuses)
 	}
 }
+
+// ── 句粒度投递（voice-streaming-delivery 3.4/3.5）─────────────────────────
+
+type streamingSynthesizerStub struct {
+	sentences []StreamedSentence
+	err       error
+	cancelAt  int // 第 N 帧回调时取消 ctx（打断语义）；-1 = 不取消
+}
+
+func (stub *streamingSynthesizerStub) SynthesizeResponse(context.Context, string, relationship.PresentationPlan, []relationship.CommunicationAct) (SynthesizedAudio, error) {
+	return SynthesizedAudio{}, errors.New("streaming stub must not take the whole-shot path")
+}
+
+func (stub *streamingSynthesizerStub) SynthesizeResponseStream(ctx context.Context, _ string, _ relationship.PresentationPlan, _ []relationship.CommunicationAct, onChunk func(StreamedSentence) error) error {
+	for index, sentence := range stub.sentences {
+		if stub.cancelAt == index {
+			// 等取消落地（模拟第 N 句合成期间被打断）；等不到 = 测试没取消。
+			deadline := time.Now().Add(time.Second)
+			for ctx.Err() == nil && time.Now().Before(deadline) {
+				time.Sleep(2 * time.Millisecond)
+			}
+			if err := ctx.Err(); err != nil {
+				return err
+			}
+		}
+		if err := onChunk(sentence); err != nil {
+			return err
+		}
+	}
+	return stub.err
+}
+
+func newStreamingService(sink *responseSinkStub, streamer *streamingSynthesizerStub) *ResponseDeliveryService {
+	return NewResponseDeliveryService(sink, streamer, newResponseTrackerStub(), nil)
+}
+
+func TestResponseDeliveryStreamsSentenceBySentence(t *testing.T) {
+	sink := &responseSinkStub{}
+	streamer := &streamingSynthesizerStub{sentences: []StreamedSentence{
+		{Data: []byte("s1"), MIME: "audio/wav", SentenceIndex: 0, SentenceCount: 3, Final: false},
+		{Data: []byte("s2"), MIME: "audio/wav", SentenceIndex: 1, SentenceCount: 3, Final: false},
+		{Data: []byte("s3"), MIME: "audio/wav", SentenceIndex: 2, SentenceCount: 3, Final: true},
+	}}
+	service := newStreamingService(sink, streamer)
+	result, err := service.Deliver(context.Background(), responseRequest(), nil)
+	if err != nil {
+		t.Fatalf("deliver: %v", err)
+	}
+	if len(sink.audio) != 3 {
+		t.Fatalf("expected 3 sentence frames, got %d", len(sink.audio))
+	}
+	for index, delivery := range sink.audio {
+		if delivery.SentenceIndex != index {
+			t.Fatalf("frame %d out of order: %+v", index, delivery)
+		}
+	}
+	if !result.AudioDelivered || result.FirstAudioMS < 0 || result.SentenceCount != 3 || result.TTSByteCount != 6 {
+		t.Fatalf("unexpected result: %+v", result)
+	}
+	if record, ok := trackerLookup(t, service, "trace-1"); !ok || record.State != DeliveryAudioStarted {
+		t.Fatalf("expected audio_started, got %+v", record)
+	}
+}
+
+func TestResponseDeliveryStreamInterruptDropsRemainingSentences(t *testing.T) {
+	sink := &responseSinkStub{}
+	streamer := &streamingSynthesizerStub{sentences: []StreamedSentence{
+		{Data: []byte("s1"), MIME: "audio/wav", SentenceIndex: 0, SentenceCount: 3},
+		{Data: []byte("s2"), MIME: "audio/wav", SentenceIndex: 1, SentenceCount: 3},
+		{Data: []byte("s3"), MIME: "audio/wav", SentenceIndex: 2, SentenceCount: 3},
+	}, cancelAt: 1}
+	service := newStreamingService(sink, streamer)
+	ctx, cancel := context.WithCancel(context.Background())
+	deliveryDone := make(chan struct{})
+	go func() {
+		defer close(deliveryDone)
+		_, _ = service.Deliver(ctx, responseRequest(), nil)
+	}()
+	time.Sleep(20 * time.Millisecond)
+	cancel()
+	<-deliveryDone
+	if len(sink.audio) == 0 || len(sink.audio) == 3 {
+		t.Fatalf("expected partial delivery on interrupt, got %d frames", len(sink.audio))
+	}
+	if record, ok := trackerLookup(t, service, "trace-1"); !ok || record.State != DeliveryInterrupted {
+		t.Fatalf("expected interrupted, got %+v", record)
+	}
+}
+
+func TestResponseDeliveryStreamMidwayFailureFallsBackWithoutResending(t *testing.T) {
+	sink := &responseSinkStub{}
+	streamer := &streamingSynthesizerStub{sentences: []StreamedSentence{
+		{Data: []byte("s1"), MIME: "audio/wav", SentenceIndex: 0, SentenceCount: 2},
+	}, err: errors.New("sentence 2 synth exploded")}
+	service := newStreamingService(sink, streamer)
+	result, err := service.Deliver(context.Background(), responseRequest(), nil)
+	if err != nil {
+		t.Fatalf("fallback must swallow synth error: %v", err)
+	}
+	if result.FallbackReason == "" {
+		t.Fatalf("expected fallback reason, got %+v", result)
+	}
+	if len(sink.audio) != 1 {
+		t.Fatalf("delivered sentence must not be resent: %d frames", len(sink.audio))
+	}
+	if len(sink.statuses) == 0 || sink.statuses[len(sink.statuses)-1].State != "tts_fallback" {
+		t.Fatalf("expected tts_fallback status, got %+v", sink.statuses)
+	}
+}
+
+func trackerLookup(t *testing.T, service *ResponseDeliveryService, traceID string) (DeliveryRecord, bool) {
+	t.Helper()
+	return service.tracker.Lookup(traceID)
+}

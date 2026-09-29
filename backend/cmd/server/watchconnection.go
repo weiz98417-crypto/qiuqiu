@@ -212,9 +212,11 @@ func (c *watchConnection) attachVoiceStages(traceID, signalID string, anchor tim
 	asrElapsed, hasAsr, verdict := c.voiceStages.take(signalID)
 	patch := companion.VoiceObservationPatch{TurnDecision: verdict}
 	if audio == nil {
+		turnDecidedElapsed := int(time.Since(anchor).Milliseconds())
+		c.voiceStages.recordTurnDecided(signalID, turnDecidedElapsed)
 		patch.Stages = map[string]int{
 			"speech_received": 0,
-			"turn_decided":    int(time.Since(anchor).Milliseconds()),
+			"turn_decided":    turnDecidedElapsed,
 		}
 		if hasAsr {
 			patch.Stages[companion.VoiceStageASRFinal] = asrElapsed
@@ -225,6 +227,14 @@ func (c *watchConnection) attachVoiceStages(traceID, signalID string, anchor tim
 		}
 		if audio.SynthesisMS > 0 {
 			patch.Stages[companion.VoiceStageTTSSynthesized] = audio.SynthesisMS
+		}
+		// 首段音频锚点（voice-streaming-delivery 3.6）：句粒度路径下
+		// tts_first_audio = turn_decided 耗时 + 首帧相对 Deliver 进入的
+		// 毫秒；五段锚点自此变六段。
+		if audio.FirstAudioMS > 0 {
+			if turnDecidedElapsed, ok := c.voiceStages.takeTurnDecided(signalID); ok {
+				patch.Stages["tts_first_audio"] = turnDecidedElapsed + audio.FirstAudioMS
+			}
 		}
 		patch.TTSMeta = &companion.VoiceTraceMetadata{
 			TTSStatus:    "ok",

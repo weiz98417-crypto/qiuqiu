@@ -15,14 +15,18 @@ type voiceStageBuffers struct {
 	mu       sync.Mutex
 	asr      map[string]int
 	verdicts map[string]*companion.VoiceTurnDecision
+	// turnDecided 按 signalID 记 turn_decided 锚点耗时（attachVoiceStages
+	// 的 nil-audio 半写入，audio 半读出——tts_first_audio 以它为基准段）。
+	turnDecided map[string]int
 }
 
 const voiceStageBufferCapacity = 64
 
 func newVoiceStageBuffers() *voiceStageBuffers {
 	return &voiceStageBuffers{
-		asr:      make(map[string]int),
-		verdicts: make(map[string]*companion.VoiceTurnDecision),
+		asr:         make(map[string]int),
+		verdicts:    make(map[string]*companion.VoiceTurnDecision),
+		turnDecided: make(map[string]int),
 	}
 }
 
@@ -77,4 +81,27 @@ func (b *voiceStageBuffers) take(signalID string) (int, bool, *companion.VoiceTu
 	verdict := b.verdicts[signalID]
 	delete(b.verdicts, signalID)
 	return asr, hasAsr, verdict
+}
+
+// recordTurnDecided 记 turn_decided 锚点耗时（audio 半算 tts_first_audio
+// 的基准段；容量纪律与 asr 同）。
+func (b *voiceStageBuffers) recordTurnDecided(signalID string, elapsedMS int) {
+	if signalID == "" || elapsedMS < 0 {
+		return
+	}
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	if len(b.turnDecided) >= voiceStageBufferCapacity {
+		b.turnDecided = make(map[string]int)
+	}
+	b.turnDecided[signalID] = elapsedMS
+}
+
+// takeTurnDecided 取走 turn_decided 耗时。
+func (b *voiceStageBuffers) takeTurnDecided(signalID string) (int, bool) {
+	b.mu.Lock()
+	defer b.mu.Unlock()
+	elapsed, ok := b.turnDecided[signalID]
+	delete(b.turnDecided, signalID)
+	return elapsed, ok
 }

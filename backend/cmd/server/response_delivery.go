@@ -2,11 +2,14 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/relationship"
+	"qiuqiu/internal/speech"
+	"qiuqiu/internal/tts"
 )
 
 type websocketResponseSink struct{ writer *wsWriter }
@@ -27,7 +30,7 @@ func (sink websocketResponseSink) DeliverReply(_ context.Context, delivery conve
 }
 
 func (sink websocketResponseSink) DeliverAudio(_ context.Context, delivery conversation.AudioDelivery) error {
-	return sink.writer.SendAudio(map[string]interface{}{
+	message := map[string]interface{}{
 		"type":        "voice_audio",
 		"mime":        delivery.MIME,
 		"traceId":     delivery.TraceID,
@@ -35,7 +38,13 @@ func (sink websocketResponseSink) DeliverAudio(_ context.Context, delivery conve
 		"eventId":     delivery.EventID,
 		"deliveryKey": delivery.DeliveryKey,
 		"source":      delivery.Source,
-	}, delivery.Data)
+	}
+	// 句粒度路径（voice-streaming-delivery 3.4）：句序号随帧；整段路径
+	// 恒 0，wire 层省略（老客户端零感知，FIFO 配对按到达序不受影响）。
+	if delivery.SentenceIndex > 0 {
+		message["sentenceIndex"] = delivery.SentenceIndex
+	}
+	return sink.writer.SendAudio(message, delivery.Data)
 }
 
 func (sink websocketResponseSink) DeliverStatus(_ context.Context, status conversation.DeliveryStatus) error {
@@ -97,6 +106,76 @@ func (adapter responseSpeechSynthesizer) SynthesizeResponse(ctx context.Context,
 		return conversation.SynthesizedAudio{}, err
 	}
 	return conversation.SynthesizedAudio{Data: result.AudioData, MIME: result.MimeType}, nil
+}
+
+// SynthesizeResponseStream 实现句粒度可选能力接口（voice-streaming-delivery
+// 3.4）：整段 realizer 文本经句聚合器切句，逐句合成——synthesizer 支持
+// tts.StreamingSynthesizer 时走流式分片（pcm16 聚合成整句 WAV），否则回
+// 退整段合成单句。一句一帧、帧帧完整可播；ctx 取消即中止（打断语义，
+// 剩余句不再合成）。
+func (adapter responseSpeechSynthesizer) SynthesizeResponseStream(ctx context.Context, text string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, onChunk func(conversation.StreamedSentence) error) error {
+	aggregator := speech.NewAggregator()
+	sentences := aggregator.Feed(text)
+	if tail := aggregator.Flush(); tail != "" {
+		sentences = append(sentences, tail)
+	}
+	if len(sentences) == 0 {
+		return nil
+	}
+	streamer, streams := adapter.synthesizer.(tts.StreamingSynthesizer)
+	for index, sentence := range sentences {
+		opts := tts.VoiceOpts{Instruction: mimoPerformanceInstruction(presentation, acts, len([]rune(sentence)))}
+		data, mime, err := adapter.synthesizeSentence(ctx, sentence, presentation, acts, streamer, streams, opts)
+		if err != nil {
+			return err
+		}
+		if len(data) == 0 {
+			continue
+		}
+		if err := onChunk(conversation.StreamedSentence{
+			Data: data, MIME: mime, SentenceIndex: index, SentenceCount: len(sentences),
+			Final: index == len(sentences)-1,
+		}); err != nil {
+			return err
+		}
+	}
+	return nil
+}
+
+func (adapter responseSpeechSynthesizer) synthesizeSentence(ctx context.Context, sentence string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, streamer tts.StreamingSynthesizer, streams bool, opts tts.VoiceOpts) ([]byte, string, error) {
+	if !streams {
+		result, err := adapter.synthesizer.Synthesize(ctx, sentence, opts)
+		if err != nil {
+			return nil, "", err
+		}
+		return result.AudioData, result.MimeType, nil
+	}
+	var pcm []byte
+	passthrough := []byte(nil)
+	passthroughMIME := ""
+	err := streamer.SynthesizeStreamDetailed(ctx, sentence, opts, func(chunk tts.StreamChunk) error {
+		if chunk.Degraded {
+			// REPLACE 契约：回退分片是完整产物，丢弃此前残缺前缀。
+			passthrough = chunk.Data
+			passthroughMIME = chunk.MimeType
+			return nil
+		}
+		if !strings.HasPrefix(chunk.MimeType, "audio/pcm") {
+			// 完整产物分片（如 mock 回放 mp3）：直通，不二次封装。
+			passthrough = chunk.Data
+			passthroughMIME = chunk.MimeType
+			return nil
+		}
+		pcm = append(pcm, chunk.Data...)
+		return nil
+	})
+	if err != nil {
+		return nil, "", err
+	}
+	if passthrough != nil {
+		return passthrough, passthroughMIME, nil
+	}
+	return tts.WAVFromPCM16(pcm, tts.PCMStreamSampleRate), "audio/wav", nil
 }
 
 func newResponseDeliveryService(writer *wsWriter, agent *companion.Agent, synthesizer speechSynthesizer, tracker *replyDeliveryTracker) *conversation.ResponseDeliveryService {
