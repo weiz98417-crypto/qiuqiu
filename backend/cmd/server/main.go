@@ -37,6 +37,7 @@ import (
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/privacy"
 	"qiuqiu/internal/relationship"
+	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/router"
 	"qiuqiu/internal/tts"
 	"qiuqiu/internal/ws"
@@ -357,6 +358,12 @@ func main() {
 	// 留空即 model 插槽降级（turn_query 回 isComplete:null，客户端下探静默
 	// 档）；sidecar 不可达时同样按 null 兜底，主链路无感。
 	turnSidecar := newTurnSidecarClient(cfg.TurnSidecarURL, cfg.TurnSidecarTimeout())
+	// 用户语音情绪旁路（user-voice-affect 波1）：QIUQIU_USER_AFFECT_URL 留空
+	// 即旁路整体停用；结论只落语音 trace 观测，永不进比赛事实账本。
+	var userAffectSidecar *useraffect.Client
+	if strings.TrimSpace(cfg.UserAffectURL) != "" {
+		userAffectSidecar = useraffect.NewClient(cfg.UserAffectURL).WithTimeout(cfg.UserAffectTimeout())
+	}
 	// 意图注册表漂移断言（openspec/changes/intent-registry）：启动即校验
 	// 注册表镜像与 router 硬编码事实一致，不一致 fail-fast。
 	if err := companion.ValidateIntentRegistry(); err != nil {
@@ -578,6 +585,9 @@ func main() {
 	}, time.Minute)
 
 	mux := http.NewServeMux()
+	// /mcp 只读账本 MCP server（mcp-registry-serve 5.2）：运营台凭证同体系，
+	// 匿名 401；装配细节见 mcp_api.go。
+	mountMCPServer(mux, cfg, matchStore, scheduleReaderSource, operatorStore)
 	watchSessions := conversation.NewWatchSessionRegistry(context.Background(), conversation.Config{})
 	defer watchSessions.Close()
 	var deliveryStore *conversation.PostgresDeliveryStore
@@ -672,6 +682,7 @@ func main() {
 		submittedSignals: submittedUserSignals,
 		ambient:          ambientSidecar,
 		turnSidecar:      turnSidecar,
+		userAffect:       userAffectSidecar,
 	}))
 	// /ws/ops 运营观测流（operations-live-stream）：复用鉴权链升级 + 运营
 	// 面放行；订阅者只收裁剪后的 wire 事件（无正文）。
