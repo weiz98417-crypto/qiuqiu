@@ -51,6 +51,7 @@ func TestUserAffectNeverEntersTheFactLedger(t *testing.T) {
 	recorder := &attachRecorder{}
 	relay := newUserAffectRelayForTest(&stubAffectClassifier{signal: useraffect.Signal{Label: "excited", Confidence: 0.9}}, recorder, "match-1")
 
+	relay.bind("signal-1", "trace-1")
 	relay.Forward("user-1", "signal-1", []byte{1, 0, 2, 0})
 	waitForAffect(t, func() bool { return len(recorder.patches) == 1 })
 
