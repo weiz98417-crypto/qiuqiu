@@ -1,0 +1,12 @@
+# Grafana 通知策略 provisioning（openspec/changes/grafana-alerting）：
+# 默认策略指向 qiuqiu-alerts contact point（钉钉 + webhook 兜底，见
+# contact-points.yml）。as code，重启即生效——策略不散在 UI 手改里。
+apiVersion: 1
+
+policies:
+  - orgId: 1
+    receiver: qiuqiu-alerts
+    # 按文件夹+规则名分组聚合，防同一窗口多条规则轰炸钉钉群。
+    group_by:
+      - grafana_folder
+      - alertname

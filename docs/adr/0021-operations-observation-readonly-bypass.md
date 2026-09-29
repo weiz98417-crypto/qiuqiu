@@ -29,3 +29,15 @@ C 端六轮落地语音双工/smart-turn/backchannel/RAG 后，运营观测缺�
 - 新指标成本从 7 处代码降为 1 条 SQL 面板；观测债停止累积。
 - `agent_traces` 无清理任务、`interaction_ledger` 只有 (user_id, match_id, created_at) 索引：默认窗口 24h/7d 下单机量级可接受；变慢再补部分索引（留尾在 tasks）。
 - backchannel「限频命中」无数据源（Decide 拒绝路径无痕），面板口径为发出数÷白名单事件数；拒绝归因留尾。
+
+> 2026-09-30 修订（告警链路，openspec/changes/grafana-alerting）：告警规则与
+> contact point/通知策略进 `deploy/grafana/provisioning/alerting/`，与本决定 2
+> 同一 as-code 纪律——SQL 就是阈值定义，改规则走评审；告警查询仍走只读账号
+> `qiuqiu_grafana_ro`，只读边界不变（决定 1 不破）。两点实测补充：(a) 钉钉
+> 集成在 Grafana 13.2 OSS 的类型字符串是 `dingding`（非 dingtalk），字段名
+> `msgType`；(b) 落库面调查后不可查的指标不凑数——熔断器开合（进程内
+> resilience.CircuitBreaker）换型为 agent_traces.error 计数、poller freshness
+> （内存 SourceStatus）换型为 match_events provider 事件停摆检测，/ws/ops
+> 饱和丢弃（内存计数）暂不规则化、降级为文档记录，待后端落快照表补齐。
+> 告警通知是本决定隐私三层之「指标面」的自然延伸：通知 payload 只含规则
+> 名/标签/聚合值，不含正文列。

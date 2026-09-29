@@ -1,0 +1,307 @@
+# Grafana 告警规则 provisioning（openspec/changes/grafana-alerting，ADR-0021
+# 同源纪律：告警 as code，SQL 就是阈值定义，改规则走评审）。
+#
+# 组名 qiuqiu-operations（与面板 folder 同名，Grafana 自动建同名 folder）。
+# 数据源一律 qiuqiu-ledger（只读账号，告警查询无新权限面，ADR-0021 决定 1）。
+#
+# 阈值纪律：首发全部宽松（演示环境无真实负载，「只有真故障才响」），观测
+# 一周后收紧（收紧密留尾在 openspec change tasks.md）。
+#
+# 口径纪律：告警 SQL 与面板 SQL 同表同列同算法——
+#   规则①抄 qiuqiu-operations.json「语音总延迟 P50/P90」面板
+#   （agent_traces.latency_ms，percentile_cont，latency_ms > 0），
+#   仅把 0.9 分位抬到 0.95、窗口 5m 抬到 15m。
+#
+# 四条规则落库调查记录（诚实优先于凑数，调查于 2026-09-30）：
+#   ① 语音延迟 P95   —— agent_traces 落库可查，照面板口径落规则（下）。
+#   ② 熔断器开合     —— resilience.CircuitBreaker 是进程内状态
+#      （backend/internal/resilience/circuit_breaker.go，llm/tts/asr/ambient
+#      四个 client 各持一个，CircuitState() 只在内存暴露），不落 PG、无查询面。
+#      换型为同源意图的可查代理：agent_traces.error 非空计数（LLM/TTS/ASR
+#      错误率）——熔断开启必然先有连续调用失败，账本 error 字段就是这些失败
+#      的落库面。换型理由同步记录在 openspec change tasks.md。
+#   ③ /ws/ops 饱和丢弃 —— OpsStream.dropped 是 atomic.Int64 内存计数
+#      （backend/cmd/server/ops_stream.go:68，Dropped() 无任何 PG 消费方），
+#      不可查 → 不规则化，降级为文档记录（见 tasks.md）。观察它需要先落
+#      快照表（后端侧改动，不在本 change 范围），留尾。
+#   ④ poller freshness —— freshness 推导（manager.go deriveSourceStatus，
+#      fresh/degraded/offline 标签与 6–20s 动态阈值）在内存 SourceStatus，
+#      不落 PG。换型为同管线可查代理：api-sports 事件在 match_events 的
+#      落库停摆——poller 停摆的直接后果就是 provider 事件断流。仅统计
+#      近 24h 有 provider 事件的窗口（演示环境无比赛时不停摆不误报），
+#      noDataState=OK；本地最小库（migrations-min）已补 provider_name 列。
+apiVersion: 1
+
+groups:
+  - orgId: 1
+    name: qiuqiu-operations
+    folder: qiuqiu-operations
+    # 评估周期 1m：演示口径；收紧阈值时同步评估是否缩窗。
+    interval: 1m
+    rules:
+      # ── ① 语音延迟 P95 超阈 ──────────────────────────────────────────
+      # 口径同面板「语音总延迟 P50/P90」：agent_traces.latency_ms，
+      # percentile_cont，latency_ms > 0。阈值 P95 > 5000ms（宽松起步，
+      # 演示环境正常 p95 在两位数 ms），持续 15m 才报；恢复通知由 contact
+      # point 侧 disableResolveMessage: false 保证。
+      - uid: qiuqiu-voice-latency-p95
+        title: 语音延迟 P95 超阈（> 5000ms 持续 15m）
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: KeepLast
+        annotations:
+          summary: 语音链路延迟 P95 超 5000ms（ASR/LLM/TTS 全链口径，同观测面板）
+        labels:
+          severity: page
+          source: qiuqiu-operations
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 900 # 15m 窗口
+              to: 0
+            datasourceUid: qiuqiu-ledger
+            model:
+              datasource:
+                type: postgres
+                uid: qiuqiu-ledger
+              editorMode: code
+              format: table
+              # 同面板口径（同表同列同算法），仅分位 0.9→0.95：
+              rawSql: |
+                SELECT percentile_cont(0.95) WITHIN GROUP (ORDER BY latency_ms) AS "p95_latency_ms"
+                FROM agent_traces
+                WHERE $__timeFilter(created_at) AND latency_ms > 0
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0, 0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    # ── 显式阈值参数：P95 > 5000ms（观测一周后收紧）──
+                    params: [5000]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+
+      # ── ② 供应商调用错误率（熔断器开合的落库代理，见文件头调查记录②）──
+      # agent_traces.error 非空计数。熔断阈值是连续 3 次失败才开（四个
+      # client 均 NewCircuitBreaker(3, 10s)），告警取 30m 窗口错误 > 5 条：
+      # 只有持续性真故障才达线，偶发单次失败不响。窗口与阈值宽松起步。
+      - uid: qiuqiu-provider-error-count
+        title: LLM/TTS/ASR 供应商错误率超阈（30m 错误 > 5 条；熔断器落库代理）
+        condition: C
+        for: 5m
+        noDataState: OK
+        execErrState: KeepLast
+        annotations:
+          summary: 供应商调用持续失败（agent_traces.error 非空计数超阈，熔断开启的前兆/伴随面）
+        labels:
+          severity: page
+          source: qiuqiu-operations
+        data:
+          - refId: A
+            relativeTimeRange:
+              from: 1800 # 30m 窗口
+              to: 0
+            datasourceUid: qiuqiu-ledger
+            model:
+              datasource:
+                type: postgres
+                uid: qiuqiu-ledger
+              editorMode: code
+              format: table
+              rawSql: |
+                SELECT COUNT(*) AS "error_count"
+                FROM agent_traces
+                WHERE $__timeFilter(created_at) AND error <> ''
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0, 0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    # ── 显式阈值参数：30m 窗口错误 > 5 条（观测一周后收紧）──
+                    params: [5]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+
+      # ── ④ api-sports poller 停摆（freshness 超窗的落库代理，见文件头④）──
+      # 原生 freshness 标签在内存不可查；此处以 provider 事件断流为停摆面：
+      # 近 24h 内有过 api-sports 事件（=有比赛进行中）但已 15m 无新事件。
+      # 无 provider 事件（无比赛）时查询空返回 → noDataState: OK，不误报。
+      - uid: qiuqiu-poller-stall
+        title: api-sports poller 停摆（24h 窗口内 15m 无 provider 事件）
+        condition: C
+        for: 0m # 15m 断流本身就是持续条件，不再加持有期
+        noDataState: OK
+        execErrState: KeepLast
+        annotations:
+          summary: api-sports poller 疑似停摆：近期有比赛数据但 15m 无新 provider 事件
+        labels:
+          severity: page
+          source: qiuqiu-operations
+        data:
+          - refId: A
+            # 即时查询（SQL 自带 24h 窗口，不用 $__timeFilter）；Grafana
+            # 校验要求 from > 0，给 10m 象征窗。
+            relativeTimeRange:
+              from: 600
+              to: 0
+            datasourceUid: qiuqiu-ledger
+            model:
+              datasource:
+                type: postgres
+                uid: qiuqiu-ledger
+              editorMode: code
+              format: table
+              rawSql: |
+                SELECT EXTRACT(EPOCH FROM now() - MAX(created_at))::bigint AS "stall_seconds"
+                FROM match_events
+                WHERE provider_name = 'api-sports'
+                  AND created_at > now() - interval '24 hours'
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: A
+          - refId: B
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    params: [0, 0]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [B]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: A
+              reducer: last
+              settings:
+                mode: dropNN
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: B
+              type: reduce
+          - refId: C
+            datasourceUid: __expr__
+            model:
+              conditions:
+                - evaluator:
+                    # ── 显式阈值参数：断流 > 900s（15m；原生动态阈值 6–20s
+                    #    在演示环境过于敏感，宽松起步观测后收紧）──
+                    params: [900]
+                    type: gt
+                  operator:
+                    type: and
+                  query:
+                    params: [C]
+                  reducer:
+                    params: []
+                    type: last
+                  type: query
+              datasource:
+                type: __expr__
+                uid: __expr__
+              expression: B
+              intervalMs: 1000
+              maxDataPoints: 43200
+              refId: C
+              type: threshold
+
+    # ── ③ /ws/ops 饱和丢弃率：不可查，未规则化 ─────────────────────────
+    # OpsStream.dropped（backend/cmd/server/ops_stream.go:68）是进程内
+    # atomic.Int64，Dropped() 诊断口无任何 PG 落库消费方；Grafana 只能查
+    # 数据源，此指标当前无诚实数据面。降级为文档记录（tasks.md 2.1 下），
+    # 不造代理凑数。留尾：后端把 dropped 周期落快照表后再补第 4 条规则。

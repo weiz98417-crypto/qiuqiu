@@ -1,0 +1,43 @@
+# Grafana contact point provisioning（openspec/changes/grafana-alerting）。
+# 一个 contact point（qiuqiu-alerts）挂两个 receiver 集成：钉钉（生产主
+# 通道）+ 通用 webhook（兜底/本机 capture 验证），通知策略（policies.yml）
+# 把默认路由指向它。
+#
+# 钉钉集成实测勘误（2026-09-30，Grafana 13.2.2 OSS Windows）：proposal 写
+# 「内建 DingTalk 类型」，实测类型字符串是 **dingding**（grafana/alerting
+# 模块 receivers/schema/known_types.go：DingDingType = "dingding"）——写成
+# dingtalk 会整个 provisioning 模块启动失败（unknown integration type:
+# dingtalk，连规则一起加载不了）。settings 字段名是 **msgType**（非
+# messageType），取值 link（默认）/ markdown；url 可明文放 settings（生产
+# 更稳妥放 secureSettings: url: ${GRAFANA_DINGTALK_WEBHOOK}）。
+#
+# DingTalk URL 纪律：占位符 access_token=REPLACE_ME_BEFORE_PROD 仅为让
+# provisioning 校验通过（URL 形状合法），**生产启动前必须替换**为真实钉钉
+# 群机器人 webhook（见 README「钉钉机器人」段）。Grafana provisioning 支持
+# ${VAR} 环境变量插值（2026-09-30 实测：VAR 设值时加载成功、URL 展开为
+# 实值；VAR unset 时展开成空串，dingding 校验「could not find url property
+# in settings」，整个 provisioning 模块失败、Grafana 起不来）——故默认占位
+# 而不用 env 形态；生产若走 env，须把 VAR 配置在启动环境里并保证非空。
+apiVersion: 1
+
+contactPoints:
+  - orgId: 1
+    name: qiuqiu-alerts
+    receivers:
+      - uid: qiuqiu-alerts-dingtalk
+        type: dingding
+        settings:
+          # 生产时替换真实钉钉机器人 webhook（自定义机器人 access_token）。
+          url: https://oapi.dingtalk.com/robot/send?access_token=REPLACE_ME_BEFORE_PROD
+          # markdown 形态：告警标题+正文在钉钉群可直接渲染。
+          msgType: markdown
+          title: qiuqiu 告警
+        disableResolveMessage: false # 恢复通知开
+      - uid: qiuqiu-alerts-webhook
+        type: webhook
+        settings:
+          # 本机验证：scripts/grafana-alert-capture.mjs 监听 19999；
+          # 生产替换为运维侧通用接收端（兜底通道）。
+          url: http://127.0.0.1:19999/grafana-alert
+          httpMethod: POST
+        disableResolveMessage: false # 恢复通知开

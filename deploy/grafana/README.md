@@ -87,3 +87,28 @@ E:\tools\grafana\bin\grafana.exe server --homepath E:\tools\grafana --config E:\
 - SQL 只出聚合数字，**禁止任何正文列**（input/output/asr_text/phrase）。
 - 改面板 = 改 `deploy/grafana/provisioning/dashboards/qiuqiu-operations.json`
   走 PR，UI 上手改只在验证阶段、改完导回仓库。
+
+## 告警链路（openspec/changes/grafana-alerting，2026-09-30 实测）
+
+`provisioning/alerting/` 三件套重启即加载：`rules.yml`（组 qiuqiu-operations，
+3 条规则：语音延迟 P95 / 供应商错误计数 / api-sports poller 停摆；/ws/ops
+丢弃计数无落库面未规则化，理由见文件头与 change tasks.md）、
+`contact-points.yml`（qiuqiu-alerts = 钉钉 + 通用 webhook 两集成，恢复通知
+开）、`policies.yml`（默认路由 → qiuqiu-alerts）。
+
+- **钉钉机器人**：contact point 类型字符串是 **`dingding`**（不是 dingtalk，
+  写错整个 provisioning 模块起不来），字段 `msgType: markdown`。生产把
+  `settings.url` 占位符 `access_token=REPLACE_ME_BEFORE_PROD` 替换为钉钉群
+  自定义机器人真实 webhook；也可走 env：url 写 `${GRAFANA_DINGTALK_WEBHOOK}`
+  并在启动环境设值——实测 provisioning 支持 ${VAR} 插值，但 **VAR unset 会
+  展开为空串导致 provisioning 失败、Grafana 起不来**，所以 env 形态必须保证
+  非空。
+- **本机验证**：`node scripts/grafana-alert-capture.mjs 19999` 起 capture，
+  webhook 集成默认指向它；造一条必燃规则（rawSql `SELECT 1`、阈值 >0）等
+  1m 评估即见 POST 到达（firing），改 `SELECT 0` 等 5m group_interval 见
+  resolved。验证完删 canary。
+- 本机 PG 是 migrations-min 最小库（match_events 无 provider_name 列），
+  跑 poller 停摆规则前补列：
+  `ALTER TABLE match_events ADD COLUMN IF NOT EXISTS source TEXT NOT NULL DEFAULT 'operator', ADD COLUMN IF NOT EXISTS provider_name TEXT NOT NULL DEFAULT '';`
+- 阈值纪律：首发宽松（演示环境「只有真故障才响」），阈值全部是 YAML 里
+  显式数字+注释；观测一周后收紧（记录在 change tasks.md 2.4）。
