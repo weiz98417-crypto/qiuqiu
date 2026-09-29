@@ -257,9 +257,15 @@ func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Reque
 }
 
 // handleConsoleConfig 返回观测页需要的运行时配置（operations-metrics-stack）：
-// grafanaUrl 为空 = 观测页渲染部署指引占位（与 Operators 页 501 降级同模式）。
+// grafanaUrl 为空 = 观测页渲染部署指引占位（与 Operators 页 501 降级同模
+// 式）。非空时返回**同源前缀** /grafana（后端把该前缀反代到
+// QIUQIU_GRAFANA_URL）——同源 iframe 让前端能注入 CSS 隐藏 Grafana 控制
+// 条，且不依赖 allow_embedding。
 func (deps consoleAPI) handleConsoleConfig(w http.ResponseWriter, r *http.Request) {
-	grafanaURL := strings.TrimRight(strings.TrimSpace(os.Getenv("QIUQIU_GRAFANA_URL")), "/")
+	grafanaURL := ""
+	if strings.TrimSpace(os.Getenv("QIUQIU_GRAFANA_URL")) != "" {
+		grafanaURL = "/grafana"
+	}
 	writeJSON(w, http.StatusOK, map[string]any{"grafanaUrl": grafanaURL})
 }
 
@@ -355,17 +361,26 @@ type consoleBackchannelPulse struct {
 }
 
 // backchannelPulse 扫描全部比赛的微反应账本行与白名单事件；读失败降级为
-// 零值，从不让 overview 变红（与 routerFunnel 同纪律）。账本行按每比赛
-// 100 条封顶（recentProactive 同口径）；账本 List 无 kind 过滤，拉回后
-// 在代码侧筛 Kind。
+// 零值，从不让 overview 变红（与 routerFunnel 同纪律）。账本行优先走
+// match 快照接口（跨用户全量）——List(userID="") 在内存实现里是双键过滤，
+// 查不到任何行。
 func (deps consoleAPI) backchannelPulse(ctx context.Context, summaries []matchstate.MatchSummary) consoleBackchannelPulse {
 	pulse := consoleBackchannelPulse{WindowHours: 24}
 	if deps.ledger == nil || deps.matches == nil {
 		return pulse
 	}
 	cutoff := time.Now().UTC().Add(-24 * time.Hour)
+	snapshotLedger, hasSnapshot := deps.ledger.(interaction.MatchSnapshotLedger)
 	for _, summary := range summaries {
-		if events, err := deps.ledger.List(ctx, "", summary.MatchID, 100); err == nil {
+		if hasSnapshot {
+			if events, err := snapshotLedger.ListMatchSnapshot(ctx, summary.MatchID); err == nil {
+				for _, event := range events {
+					if event.Kind == interaction.KindBackchannel && event.CreatedAt.After(cutoff) {
+						pulse.Emitted++
+					}
+				}
+			}
+		} else if events, err := deps.ledger.List(ctx, "", summary.MatchID, 100); err == nil {
 			for _, event := range events {
 				if event.Kind == interaction.KindBackchannel && event.CreatedAt.After(cutoff) {
 					pulse.Emitted++

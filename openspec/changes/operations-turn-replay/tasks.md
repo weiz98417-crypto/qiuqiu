@@ -27,4 +27,4 @@
 - 触发：真机轮人耳确认 TTS 需要音频样本对照；动作：音频回放嵌片段（样本库+保留策略，隐私面单独评审）。
 - 触发：延迟面板/回放发现 stage 粒度不够（如 ASR 流式分片耗时）；动作：扩 stage 集合（沿用 attach 通道，零 migration）。
 - 触发：User 页需要单轮回放、或直播右栏需要就地回放；动作：TurnReplay 复用（组件已就绪，补 trace 取数接线）。
-- 触发：并发 attach 丢更新窗口成为实际问题；动作：PG 侧改 `voice = voice || ?::jsonb` 原子合并（现实现为读改写，同连接顺序写不触发）。
+- [x] ~~并发 attach 丢更新窗口~~（2026-09-28 补齐轮已做：PG VoiceAttacher jsonb_set 原子合并，真 PG 集成测试通过；顺带修复 jsonb null 标量 || 包数组的 SQL 陷阱）。

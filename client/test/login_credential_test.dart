@@ -143,6 +143,11 @@ void main() {
       secretStorage: MemorySessionSecretStore(),
     );
 
+    // 宽屏分栏布局（>900）需要足够宽度，放大测试面保控件全部可命中。
+    tester.view.physicalSize = const Size(1200, 1600);
+    tester.view.devicePixelRatio = 1.0;
+    addTearDown(tester.view.reset);
+
     await tester.pumpWidget(
       MaterialApp(
         home: LoginScreen(
@@ -158,14 +163,20 @@ void main() {
     expect(tester.widget<FilledButton>(buttonFinder).onPressed, isNull);
 
     await tester.enterText(
-      find.widgetWithText(TextField, '邮箱'),
+      find.widgetWithText(TextField, '账号'),
       'fan@example.com',
     );
     await tester.enterText(
-      find.widgetWithText(TextField, '密码（至少 8 位）'),
+      find.widgetWithText(TextField, '密码（至少 7 位）'),
       'password123',
     );
     await tester.tap(find.byType(CheckboxListTile));
+    await tester.pump();
+    expect(tester.widget<FilledButton>(buttonFinder).onPressed, isNotNull);
+
+    // identifier 放宽为任意文本（ADR-0020 修订）：纯用户名同样放行，
+    // 形态校验交给后端。
+    await tester.enterText(find.widgetWithText(TextField, '账号'), 'test');
     await tester.pump();
     expect(tester.widget<FilledButton>(buttonFinder).onPressed, isNotNull);
   });

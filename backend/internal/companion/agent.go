@@ -2074,10 +2074,16 @@ func (a *Agent) RecordBackchannel(ctx context.Context, userID, matchID, traceID,
 		return err
 	}
 	if a.interactions != nil {
-		_, _ = a.interactions.Append(ctx, interaction.Event{
+		if _, err := a.interactions.Append(ctx, interaction.Event{
+			ID: trace.ID, // 幂等键：与 trace 同 ID（此前漏设导致 Append 被拒、
+			// 错误又被丢弃——微反应账本行从未落过，观测面恒为 0）。
 			Kind: interaction.KindBackchannel, UserID: userID, MatchID: matchID,
 			TraceID: trace.ID, Phrase: phrase, CreatedAt: now,
-		})
+		}); err != nil {
+			// ADR-0016 承诺微反应全程可审计——账本写入失败必须留痕，
+			// 不允许静默吞掉（否则观测面永远数不到它）。
+			return err
+		}
 	}
 	return nil
 }

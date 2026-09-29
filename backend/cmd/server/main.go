@@ -299,6 +299,7 @@ func main() {
 	if err := operatorauth.Bootstrap(context.Background(), operatorStore, os.Getenv("QIUQIU_BOOTSTRAP_OPERATOR"), log.Printf); err != nil {
 		log.Printf("operator bootstrap skipped: %v", err)
 	}
+	seedDemoOperator(context.Background(), operatorStore, cfg.Environment, log.Printf)
 	authz := newOperatorAuthz(cfg, operatorStore).withJWTSecret(cfg.JWTSecret)
 	// ADR-0010: the JWT secret is required once any password account exists.
 	// Startup only warns (legacy token-only deployments are valid); the login
@@ -519,8 +520,10 @@ func main() {
 		memoryPreferenceStore = memoryRecords
 	} else {
 		// No database: the C3 portrait overlay layer lives in-process so the
-		// 球球懂我 page still edits real state for the running server.
-		queueOptions := append([]memory.QueueOption{memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays())}, vectorOptions...)
+		// 球球懂我 page still edits real state for the running server. 话题
+		// 台账同理挂内存 ThreadStore——缺了它线程候选全静默丢弃，话题台账
+		// 永远为空（2026-09-29 演示轮实证）。
+		queueOptions := append([]memory.QueueOption{memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays()), memory.WithThreads(memory.NewFake())}, vectorOptions...)
 		if cfg.MiMoAPIKey != "" {
 			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel), shadowSlotsFromConfig(cfg))))
 		}
@@ -611,6 +614,12 @@ func main() {
 		interruptions: sharedInterruptions,
 		jwtSecret:     cfg.JWTSecret,
 	}))
+	// Grafana 同源反代（operations-metrics-stack）：QIUQIU_GRAFANA_URL 配
+	// 置时 /grafana/* → Grafana，console 观测页 iframe 走同源（可注 CSS
+	// 隐藏 controls chrome）。
+	if grafanaUpstream := strings.TrimSpace(os.Getenv("QIUQIU_GRAFANA_URL")); grafanaUpstream != "" {
+		mux.Handle("/grafana/", grafanaProxyHandler(grafanaUpstream))
+	}
 	fs := http.StripPrefix("/live2d-assets/", http.FileServer(http.Dir("../client/assets/live2d")))
 	mux.HandleFunc("/live2d-assets/", func(w http.ResponseWriter, r *http.Request) {
 		w.Header().Set("Access-Control-Allow-Origin", "*")

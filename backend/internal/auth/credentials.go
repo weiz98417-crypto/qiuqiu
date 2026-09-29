@@ -83,17 +83,44 @@ func NormalizeIdentifier(value string) string {
 	return strings.ToLower(strings.TrimSpace(value))
 }
 
-// ValidateLoginRequest 校验登录表单：identifier 按邮箱形状（含 @、长度
-// 254），密码 8–128 字符。不发信、不验证归属（ADR-0020 决定 4）。
+// minPasswordLength 是登录密码下限（ADR-0020 修订：8→7，容纳运营指定的
+// 演示账号 test/5055365；上限 128 不变）。
+const minPasswordLength = 7
+
+// validUsernameIdentifier 报告值是否为合法用户名形标识：3–32 位字母数字
+// （ADR-0020 修订：identifier 放宽为「邮箱或用户名」双形态——客户端演示
+// 账号 test 按字面登录）。
+func validUsernameIdentifier(value string) bool {
+	if len(value) < 3 || len(value) > 32 {
+		return false
+	}
+	for _, character := range value {
+		if (character >= 'a' && character <= 'z') || (character >= 'A' && character <= 'Z') || (character >= '0' && character <= '9') || character == '_' || character == '.' {
+			continue
+		}
+		return false
+	}
+	return true
+}
+
+// ValidateLoginRequest 校验登录表单：identifier 双形态——邮箱形状（含 @、
+// 长度 254）或用户名形（3–32 位字母数字），密码 7–128 字符。不发信、不
+// 验证归属（ADR-0020 决定 4 + 2026-09 修订）。
 func ValidateLoginRequest(identifier, password string) error {
 	identifier = NormalizeIdentifier(identifier)
-if identifier == "" || len(identifier) > 254 || !strings.Contains(identifier, "@") {
+	if identifier == "" || len(identifier) > 254 {
 		return ErrInvalidLoginFields
 	}
-	if at := strings.LastIndex(identifier, "@"); at <= 0 || at == len(identifier)-1 {
-		return ErrInvalidLoginFields
+	if !strings.Contains(identifier, "@") {
+		if !validUsernameIdentifier(identifier) {
+			return ErrInvalidLoginFields
+		}
+	} else {
+		if at := strings.LastIndex(identifier, "@"); at <= 0 || at == len(identifier)-1 {
+			return ErrInvalidLoginFields
+		}
 	}
-	if len(password) < 8 || len(password) > 128 {
+	if len(password) < minPasswordLength || len(password) > 128 {
 		return ErrInvalidLoginFields
 	}
 	return nil

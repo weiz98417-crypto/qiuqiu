@@ -31,6 +31,9 @@ dev_dependencies:
 flutter:
   uses-material-design: true
   assets:
+    # 目录级声明：登录页背景图约定路径 assets/images/login-bg.jpg（ADR-0020
+    # 终稿图位）放进即生效，无需改 pubspec。
+    - assets/images/
     - assets/images/match-card-stadium.png
     - assets/images/match-card-blue-ball.png
     - assets/images/match-card-digital-player.png

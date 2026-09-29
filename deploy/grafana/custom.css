@@ -1,0 +1,7 @@
+/* 观测页 kiosk 内嵌专用（ADR-0021）：隐藏 Grafana 13.2 的 dashboard
+   controls chrome——kiosk 各形态都保留这条 64px 深色 sticky 条（滚动时
+   盖住面板，即用户看到的「黑杠」）。类名是 emotion 哈希+稳定后缀，
+   用包含选择器锁定。 */
+[class*="dashboard-controls-chrome"] {
+  display: none !important;
+}

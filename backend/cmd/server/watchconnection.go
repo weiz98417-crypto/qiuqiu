@@ -497,8 +497,10 @@ func (c *watchConnection) startReminderTicker() {
 // 白名单事件的微反应直发（绕回合调度、不过 C2 门），文字气泡 + 现有表演
 // 槽位，失败即弃。审计走 trace + 账本（agent.RecordBackchannel）。
 func (c *watchConnection) maybeBackchannel(ev matchstate.MatchEvent) {
+	log.Printf("DEBUG maybeBackchannel entry: event=%s tags=%v", ev.EventType, ev.Tags)
 	verdict, ok := backchannel.Decide(&c.backchannelState, ev.EventType, ev.Period, backchannelTalkativeness(&c.userTalkativeness), c.userSpeaking.Load() || c.userTurnActive.Load(), time.Now().UTC())
 	if !ok {
+		log.Printf("DEBUG maybeBackchannel declined: event=%s", ev.EventType)
 		return
 	}
 	now := time.Now().UTC()
@@ -529,7 +531,7 @@ func (c *watchConnection) maybeBackchannel(ev matchstate.MatchEvent) {
 	auditCtx, auditCancel := context.WithTimeout(c.connectionCtx, 3*time.Second)
 	defer auditCancel()
 	if err := c.deps.agent.RecordBackchannel(auditCtx, c.identity.Get(), c.matchID, "backchannel-"+ev.ID, verdict.EventType, verdict.Phrase, now); err != nil {
-		log.Printf("backchannel audit error: %v", err)
+		log.Printf("backchannel audit error: %v (user=%q match=%q)", err, c.identity.Get(), c.matchID)
 	}
 }
 
@@ -627,6 +629,7 @@ func (c *watchConnection) pumpMatchEvents() {
 				"deliveryKey": eventKey,
 			})
 			if ev.Visibility == "public" && ev.Status == "active" {
+			log.Printf("DEBUG pump: event=%s visibility=%s status=%s followUps=%d", ev.EventType, ev.Visibility, ev.Status, followUpCount)
 				if followUpCount > 0 {
 					continue
 				}

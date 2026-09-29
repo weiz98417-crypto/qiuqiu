@@ -389,9 +389,126 @@ await request(`/api/matches/${encodeURIComponent(matchId)}/clock`, {
 await request(`/api/matches/${encodeURIComponent(matchId)}/lifecycle`, {
   method: 'POST', body: JSON.stringify({ lifecycle: 'live' }),
 });
-const created = seedGoal
-  ? await request(`/api/matches/${encodeURIComponent(matchId)}/events`, { method: 'POST', body: JSON.stringify(goal) })
-  : {};
+
+// 有生命的演示场（QIUQIU_SEED_LIFE=0 跳过）：WS 驱动真实管线——险球微反
+// 应、进球主动线（带引用码）、两轮用户回合、打断/完成实报。全部走真链
+// 路落账本：引用审计/话题台账/直播监听/用户交互历史打开即有内容。
+const seedLife = process.env.QIUQIU_SEED_LIFE !== '0';
+
+async function publishGoalAndRest() {
+  return seedGoal
+    ? request(`/api/matches/${encodeURIComponent(matchId)}/events`, { method: 'POST', body: JSON.stringify(goal) })
+    : {};
+}
+
+async function openSeedSocket() {
+  const endpoint = new URL(baseUrl);
+  endpoint.protocol = endpoint.protocol === 'https:' ? 'wss:' : 'ws:';
+  endpoint.pathname = `/ws/match/${matchId}`;
+  endpoint.search = '';
+  const wsToken = process.env.SEED_WS_TOKEN || 'qiuqiu-dev-token';
+  const protocols = wsToken ? [`qiuqiu-auth.${Buffer.from(wsToken).toString('base64url')}`] : [];
+  const socket = new WebSocket(endpoint, protocols);
+  await new Promise((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error('seed-life ws 超时')), 8_000);
+    socket.addEventListener('open', () => { clearTimeout(timer); resolve(); }, { once: true });
+    socket.addEventListener('error', () => { clearTimeout(timer); reject(new Error('seed-life ws 失败')); }, { once: true });
+  });
+  const messages = [];
+  const waiters = [];
+  socket.addEventListener('message', (event) => {
+    if (typeof event.data !== 'string') return;
+    let message;
+    try { message = JSON.parse(event.data); } catch { return; }
+    messages.push(message);
+    for (const waiter of [...waiters]) {
+      if (waiter.predicate(message)) {
+        clearTimeout(waiter.timer);
+        waiters.splice(waiters.indexOf(waiter), 1);
+        waiter.resolve(message);
+      }
+    }
+  });
+  socket.send(JSON.stringify({ type: 'identify', userId: 'demo-fan' }));
+  return {
+    waitFor(predicate, timeoutMs, label) {
+      const existing = messages.find(predicate);
+      if (existing) return Promise.resolve(existing);
+      return new Promise((resolve, reject) => {
+        const waiter = { predicate, resolve, timer: setTimeout(() => {
+          const at = waiters.indexOf(waiter);
+          if (at >= 0) waiters.splice(at, 1);
+          reject(new Error(`seed-life 等待超时(${label}): ${JSON.stringify(messages.slice(-4))}`));
+        }, timeoutMs) };
+        waiters.push(waiter);
+      });
+    },
+    close() {
+      if (socket.readyState === 3) return Promise.resolve();
+      return new Promise((resolve) => {
+        socket.addEventListener('close', resolve, { once: true });
+        socket.close();
+        setTimeout(resolve, 1_200);
+      });
+    },
+  };
+}
+
+async function seedLiveConversation() {
+  const socket = await openSeedSocket();
+  try {
+    // ① 险球 → 微反应通道（backchannel 直发 + 账本行）。
+    await request(`/api/matches/${encodeURIComponent(matchId)}/events`, {
+      method: 'POST',
+      body: JSON.stringify({
+        source: 'operator', providerName: 'demo-seed', period: 'first_half', clock: '23:44',
+        eventType: 'big_chance', teamId: 'home', teamName: '西班牙', playerName: '亚马尔',
+        score: { home: 0, away: 0 }, intensity: 4,
+        description: '亚马尔内切爆射偏出立柱。',
+        visibility: 'public',
+      }),
+    });
+    await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
+      && message.data?.source === 'backchannel', 10_000, '微反应');
+
+    // ② 进球主动线（引用审计的数据源：proactiveText 落引用码）。
+    if (seedGoal) {
+      await request(`/api/matches/${encodeURIComponent(matchId)}/events`, { method: 'POST', body: JSON.stringify(goal) });
+      await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
+        && message.data?.text?.includes('佩德里'), 15_000, '主动线').catch(() => {});
+    }
+
+    // ③ 用户回合两连（回合管线 + 交互历史 + 打断/完成实报）。
+    socket.send(JSON.stringify({ type: 'user_speech', userId: 'demo-fan', text: '刚才这球是谁进的？', talkativeness: 'normal' }));
+    const firstTurn = await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
+      && message.data?.source !== 'backchannel' && (message.data?.text || '').length > 0, 10_000, '用户回合1');
+    await socket.waitFor((message) => message.type === 'voice_audio', 6_000, '回合1音频').catch(() => {});
+    socket.send(JSON.stringify({ type: 'reply_displayed', traceId: firstTurn.data?.traceId }));
+    socket.send(JSON.stringify({ type: 'playback_result', deliveryKey: firstTurn.data?.deliveryKey || firstTurn.data?.traceId, state: 'interrupted', reason: 'demo-seed' }));
+
+    socket.send(JSON.stringify({ type: 'user_speech', userId: 'demo-fan', text: '法比安这场表现怎么样？', talkativeness: 'normal' }));
+    const secondTurn = await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
+      && message.data?.traceId !== firstTurn.data?.traceId && message.data?.source !== 'backchannel' && (message.data?.text || '').length > 0, 10_000, '用户回合2');
+    await socket.waitFor((message) => message.type === 'voice_audio', 6_000, '回合2音频').catch(() => {});
+    socket.send(JSON.stringify({ type: 'reply_displayed', traceId: secondTurn.data?.traceId }));
+    socket.send(JSON.stringify({ type: 'playback_result', deliveryKey: secondTurn.data?.deliveryKey || secondTurn.data?.traceId, state: 'completed' }));
+
+    // ④ 无意义回合 → unknown 意图 → ThreadUnroutable（话题台账演示）。
+    socket.send(JSON.stringify({ type: 'user_speech', userId: 'demo-fan', text: '呃啊啊这个嗯那个哎呀', talkativeness: 'normal' }));
+    await socket.waitFor((message) => message.type === 'event' && message.event === 'qiuqiu_reply'
+      && (message.data?.text || '').includes('没接明白'), 10_000, 'unknown 回合').catch(() => {});
+  } finally {
+    await socket.close();
+  }
+}
+
+const created = seedLife
+  ? await seedLiveConversation().then(() => publishGoalAndRest()).catch(async (error) => {
+      console.warn(`seed-life 部分失败（不影响比赛种子）: ${error.message}`);
+      return publishGoalAndRest();
+    })
+  : await publishGoalAndRest();
+void created;
 const state = await fetch(`${baseUrl}/api/matches/${encodeURIComponent(matchId)}/state`).then((res) => res.json());
 
 if (seedFinishedMatches) {
