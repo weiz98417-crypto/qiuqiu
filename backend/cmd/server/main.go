@@ -385,13 +385,16 @@ func main() {
 	if cfg.EmbeddingBaseURL != "" {
 		knowledgeEmbedder = embedding.NewClient(cfg.EmbeddingBaseURL, cfg.EmbeddingModel, "ollama")
 	}
+	// 知识库装配（ADR-0017 修订，knowledge-curation-console）：有库走 DB
+	// 存储（repo YAML 降级幂等 seed，运行时读 DB），无库维持 YAML 直读。
 	var knowledgeLibrary *knowledge.Library
+	var knowledgeStore knowledge.Store
 	if cfg.KnowledgeDir != "" {
-		library, err := knowledge.Load(cfg.KnowledgeDir, knowledgeEmbedder)
+		library, store, err := knowledge.Open(context.Background(), cfg.KnowledgeDir, cfg.DatabaseURL, knowledgeEmbedder, log.Printf)
 		if err != nil {
 			log.Fatalf("knowledge library: %v", err)
 		}
-		knowledgeLibrary = library
+		knowledgeLibrary, knowledgeStore = library, store
 	}
 	// 订阅簿（openspec/changes/season-subscription）：有库走 Postgres
 	//（migration 047），无库走内存实现。
@@ -625,6 +628,14 @@ func main() {
 		interruptions: sharedInterruptions,
 		jwtSecret:     cfg.JWTSecret,
 	}))
+	// 知识策展面（knowledge-curation-console）：/api/console/knowledge 子树，
+	// ServeMux 最长前缀优先、独立路由表，不动 console 既有注册表。
+	knowledgeAPIHandler := handleKnowledgeAPI(knowledgeAPI{
+		cfg: cfg, authz: authz, library: knowledgeLibrary, store: knowledgeStore,
+		writes: operatorWrites, operators: operatorStore,
+	})
+	mux.Handle("/api/console/knowledge", knowledgeAPIHandler)
+	mux.Handle("/api/console/knowledge/", knowledgeAPIHandler)
 	// Grafana 同源反代（operations-metrics-stack）：QIUQIU_GRAFANA_URL 配
 	// 置时 /grafana/* → Grafana，console 观测页 iframe 走同源（可注 CSS
 	// 隐藏 controls chrome）。

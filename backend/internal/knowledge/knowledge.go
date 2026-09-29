@@ -13,8 +13,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-
-	"gopkg.in/yaml.v3"
 )
 
 // MinConfidence 低于它的条目不出答案——「不知道」好过「不太对」。
@@ -41,8 +39,14 @@ type Entry struct {
 }
 
 type Library struct {
-	entries  []Entry
-	embedder Embedder
+	// store 是策展存储接缝（ADR-0017 修订：DB 为事实源）：非 nil 时 Reload
+	// 从它换血条目快照；文件直读模式（无库降级）为 nil。
+	store Store
+	// entriesMu 守护 entries/triggerIdx 的换血（Reload 整体替换，读取方
+	// 取快照后锁外迭代——切片只换不改，快照永远自洽）。
+	entriesMu sync.RWMutex
+	entries   []Entry
+	embedder  Embedder
 
 	mu         sync.Mutex
 	topicVecs  map[int][]float32 // 惰性嵌条目主题（topics 以空格相连）
@@ -64,15 +68,9 @@ func Load(dir string, embedder Embedder) (*Library, error) {
 		if err != nil {
 			return fmt.Errorf("knowledge read %s: %w", path, err)
 		}
-		var entry Entry
-		if err := yaml.Unmarshal(raw, &entry); err != nil {
-			return fmt.Errorf("knowledge parse %s: %w", path, err)
-		}
-		if entry.ID == "" || strings.TrimSpace(entry.Answer) == "" || len(entry.Topics) == 0 {
-			return fmt.Errorf("knowledge entry %s missing id/topics/answer", path)
-		}
-		if len(entry.Triggers) > 0 && strings.TrimSpace(entry.Quote) == "" {
-			return fmt.Errorf("knowledge entry %s has triggers but no quote (weave anchor required)", path)
+		entry, err := parseEntryFile(path, raw)
+		if err != nil {
+			return err
 		}
 		library.entries = append(library.entries, entry)
 		return nil
@@ -84,11 +82,80 @@ func Load(dir string, embedder Embedder) (*Library, error) {
 	return library, nil
 }
 
+// NewStoreLibrary 从策展存储装载条目快照（DB 为事实源的运行时读）。
+func NewStoreLibrary(ctx context.Context, store Store, embedder Embedder) (*Library, error) {
+	if store == nil {
+		return nil, fmt.Errorf("knowledge library: nil store")
+	}
+	library := &Library{store: store, embedder: embedder, topicVecs: map[int][]float32{}}
+	if err := library.Reload(ctx); err != nil {
+		return nil, err
+	}
+	return library, nil
+}
+
+// Reload 从 store 重取条目并整体换血：运营台保存后调用，编辑即刻进入
+// 运行时检索（关键词/向量双路与触发索引全部按新快照重建，语义不变）。
+func (l *Library) Reload(ctx context.Context) error {
+	if l == nil || l.store == nil {
+		return fmt.Errorf("knowledge library: reload requires a store-backed library")
+	}
+	records, err := l.store.List(ctx)
+	if err != nil {
+		return fmt.Errorf("knowledge reload: %w", err)
+	}
+	entries := make([]Entry, len(records))
+	for i, record := range records {
+		entries[i] = record.Entry
+	}
+	l.entriesMu.Lock()
+	l.entries = entries
+	l.buildTriggerIndex()
+	l.entriesMu.Unlock()
+	// 换血后旧主题向量全部作废（下标与内容都可能变了），缓存清零重嵌。
+	l.mu.Lock()
+	l.topicVecs = map[int][]float32{}
+	l.mu.Unlock()
+	return nil
+}
+
+// Put 经 store 落一条策展编辑并立即 Reload——「保存即生效」的库内收口。
+func (l *Library) Put(ctx context.Context, entry Entry, operator string) (Record, error) {
+	if l == nil || l.store == nil {
+		return Record{}, fmt.Errorf("knowledge library: put requires a store-backed library")
+	}
+	record, err := l.store.Put(ctx, entry, operator)
+	if err != nil {
+		return Record{}, err
+	}
+	if err := l.Reload(ctx); err != nil {
+		return record, err
+	}
+	return record, nil
+}
+
+// Store 返回底层策展存储；文件直读模式返回 nil。
+func (l *Library) Store() Store {
+	if l == nil {
+		return nil
+	}
+	return l.store
+}
+
+// snapshot 取当前条目快照（切片头拷贝）：Reload 只整体替换不原地改，
+// 快照在锁外迭代永远自洽。
+func (l *Library) snapshot() []Entry {
+	l.entriesMu.RLock()
+	defer l.entriesMu.RUnlock()
+	return l.entries
+}
+
 // buildTriggerIndex 建事件类型索引，同类型按 confidence 降序——TriggerLookup
-// 取最高确信条目。
+// 取最高确信条目。调用方须持有 entriesMu（Load 构造期单线程除外）。
 func (l *Library) buildTriggerIndex() {
 	l.triggerIdx = map[string][]int{}
-	for i, entry := range l.entries {
+	entries := l.entries
+	for i, entry := range entries {
 		for _, trigger := range entry.Triggers {
 			trigger = strings.TrimSpace(trigger)
 			if trigger == "" {
@@ -99,20 +166,28 @@ func (l *Library) buildTriggerIndex() {
 	}
 	for trigger, indexes := range l.triggerIdx {
 		sort.SliceStable(indexes, func(a, b int) bool {
-			return l.entries[indexes[a]].Confidence > l.entries[indexes[b]].Confidence
+			return entries[indexes[a]].Confidence > entries[indexes[b]].Confidence
 		})
 		l.triggerIdx[trigger] = indexes
 	}
 }
 
 // TriggerLookup 返回该事件类型的知识附句条目（confidence 最高的命中），
-// 无命中 ok=false。走与 Search 相同的确信度阈值。
+// 无命中 ok=false。走与 Search 相同的确信度阈值。nil 库安全（companion
+// 未挂知识库时照常降级为无附句）。
 func (l *Library) TriggerLookup(eventType string) (Entry, bool) {
-	if l == nil || len(l.entries) == 0 {
+	if l == nil {
 		return Entry{}, false
 	}
-	for _, index := range l.triggerIdx[strings.TrimSpace(eventType)] {
-		if entry, ok := l.guard(l.entries[index]); ok {
+	entries := l.snapshot()
+	if len(entries) == 0 {
+		return Entry{}, false
+	}
+	l.entriesMu.RLock()
+	indexes := l.triggerIdx[strings.TrimSpace(eventType)]
+	l.entriesMu.RUnlock()
+	for _, index := range indexes {
+		if entry, ok := l.guard(entries[index]); ok {
 			return entry, true
 		}
 	}
@@ -123,13 +198,17 @@ func (l *Library) Size() int {
 	if l == nil {
 		return 0
 	}
-	return len(l.entries)
+	return len(l.snapshot())
 }
 
 // Search 返回最匹配的条目：关键词路（双向 contains，命中数计分）优先，
-// 向量路补换说法（余弦 ≥ 0.55）；confidence 低于阈值视同无命中。
+// 向量路补换说法（余弦 ≥ 0.55）；confidence 低于阈值视同无命中。nil 库安全。
 func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
-	if l == nil || len(l.entries) == 0 {
+	if l == nil {
+		return Entry{}, false
+	}
+	entries := l.snapshot()
+	if len(entries) == 0 {
 		return Entry{}, false
 	}
 	normalized := strings.ToLower(strings.TrimSpace(query))
@@ -139,7 +218,7 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 
 	best := -1
 	bestScore := 0
-	for i, entry := range l.entries {
+	for i, entry := range entries {
 		score := 0
 		for _, topic := range entry.Topics {
 			topic = strings.ToLower(strings.TrimSpace(topic))
@@ -156,7 +235,7 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 		}
 	}
 	if best >= 0 && bestScore > 0 {
-		return l.guard(l.entries[best])
+		return l.guard(entries[best])
 	}
 
 	if l.embedder == nil {
@@ -170,7 +249,7 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 	}
 	bestVec := -1
 	bestCos := 0.0
-	for i, entry := range l.entries {
+	for i, entry := range entries {
 		vector, ok := l.topicVector(i, entry)
 		if !ok {
 			continue
@@ -181,7 +260,7 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 		}
 	}
 	if bestVec >= 0 && bestCos >= 0.55 {
-		return l.guard(l.entries[bestVec])
+		return l.guard(entries[bestVec])
 	}
 	return Entry{}, false
 }
@@ -233,4 +312,38 @@ func cosine(a, b []float32) float64 {
 		return 0
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
+}
+
+// Open 是 main 的知识库装配口（ADR-0017 修订）：有 DATABASE_URL 走 DB 存储
+// ——repo YAML 降级 seed（幂等导入，已存在条目一律跳过）、运行时读 DB；
+// 无库维持 repo YAML 直读（裸跑/测试降级，行为与修订前一致）。返回库与
+// 库的底层 store（无库时 store 为 nil，运营台编辑面据此降级 501）。
+func Open(ctx context.Context, dir, databaseURL string, embedder Embedder, logf func(format string, args ...any)) (*Library, Store, error) {
+	if strings.TrimSpace(databaseURL) == "" {
+		library, err := Load(dir, embedder)
+		if err != nil {
+			return nil, nil, err
+		}
+		return library, nil, nil
+	}
+	store, err := OpenPostgresStore(ctx, databaseURL)
+	if err != nil {
+		return nil, nil, fmt.Errorf("knowledge store: %w", err)
+	}
+	if strings.TrimSpace(dir) != "" {
+		seeded, err := SeedDir(ctx, store, dir)
+		if err != nil {
+			store.Close()
+			return nil, nil, err
+		}
+		if seeded > 0 && logf != nil {
+			logf("knowledge seed: imported %d entries from %s (existing entries untouched)", seeded, dir)
+		}
+	}
+	library, err := NewStoreLibrary(ctx, store, embedder)
+	if err != nil {
+		store.Close()
+		return nil, nil, err
+	}
+	return library, store, nil
 }

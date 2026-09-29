@@ -19,6 +19,7 @@ import Operators from './pages/Operators';
 import CitationAudit from './pages/CitationAudit';
 import DirectorLive from './pages/DirectorLive';
 import LiveMonitor from './pages/LiveMonitor';
+import Knowledge from './pages/Knowledge';
 import Observation from './pages/Observation';
 
 export default function App() {
@@ -61,6 +62,7 @@ export default function App() {
               <Route path="/console/threads" element={<Threads />} />
               <Route path="/console/operators" element={<Operators />} />
               <Route path="/console/citations" element={<CitationAudit />} />
+              <Route path="/console/knowledge" element={<Knowledge />} />
               <Route path="/console/live" element={<LiveMonitor />} />
               <Route path="/console/observation" element={<Observation />} />
               <Route path="*" element={<Navigate to="/console" replace />} />

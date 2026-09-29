@@ -1,0 +1,216 @@
+import { describe, expect, it, vi, beforeEach, afterEach } from 'vitest';
+import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/react';
+import '@testing-library/jest-dom/vitest';
+import { App as AntApp } from 'antd';
+import Knowledge from './Knowledge';
+import { validateKnowledgeConfidence } from '../api/knowledge';
+import type { KnowledgeEntry, KnowledgeList } from '../api/knowledge';
+
+// 知识策展台组件测试（knowledge-curation-console 7.3）：列表渲染（生效状态
+// tag + 待复查标记）、过滤器（待复查开关走服务端参数）、编辑抽屉表单校验
+// （必填 + 确信度范围）与保存即生效的客户端形状、auditor 只读降级。
+// jsdom 缺 antd Table 依赖的浏览器 API，先补桩。
+
+class ResizeObserverStub {
+  observe() {}
+  unobserve() {}
+  disconnect() {}
+}
+(globalThis as unknown as { ResizeObserver?: unknown }).ResizeObserver ??= ResizeObserverStub;
+if (!window.matchMedia) {
+  window.matchMedia = ((query: string) => ({
+    matches: false,
+    media: query,
+    onchange: null,
+    addListener() {},
+    removeListener() {},
+    addEventListener() {},
+    removeEventListener() {},
+    dispatchEvent: () => false,
+  })) as unknown as typeof window.matchMedia;
+}
+
+const { knowledgeApiMocks, operatorState } = vi.hoisted(() => ({
+  knowledgeApiMocks: { list: vi.fn(), update: vi.fn(), get: vi.fn() },
+  operatorState: { operator: null as null | { name: string; scopes: string[] } },
+}));
+
+vi.mock('../api/knowledge', async (importOriginal) => {
+  const actual = await importOriginal<typeof import('../api/knowledge')>();
+  return { ...actual, knowledgeApi: knowledgeApiMocks };
+});
+
+vi.mock('../api/operator', () => ({
+  useOperator: () => ({
+    operator: operatorState.operator,
+    loading: false,
+    isDirector: Boolean(operatorState.operator?.scopes.includes('operator:match:write')),
+  }),
+}));
+
+function entry(overrides: Partial<KnowledgeEntry>): KnowledgeEntry {
+  return {
+    id: 'rule-offside',
+    topics: ['越位', 'offside'],
+    answer: '传球一瞬间比对方最后一名防守球员更靠近球门线就算越位。',
+    source: 'IFAB Law 11',
+    confidence: 0.95,
+    effectiveAt: '2026-07-01T00:00:00Z',
+    status: 'active',
+    dueReview: false,
+    createdBy: 'seed',
+    createdAt: '2026-09-30T08:00:00Z',
+    updatedAt: '2026-09-30T08:00:00Z',
+    ...overrides,
+  };
+}
+
+function listPayload(entries: KnowledgeEntry[]): KnowledgeList {
+  return { entries, total: entries.length, page: 1, pageSize: 20 };
+}
+
+function renderPage() {
+  return render(
+    <AntApp>
+      <Knowledge />
+    </AntApp>,
+  );
+}
+
+beforeEach(() => {
+  operatorState.operator = { name: '阿琴', scopes: ['operator:match:write'] };
+  knowledgeApiMocks.list.mockResolvedValue(listPayload([]));
+  knowledgeApiMocks.update.mockResolvedValue({ entry: entry({}) });
+});
+
+afterEach(() => {
+  cleanup();
+  vi.clearAllMocks();
+});
+
+describe('Knowledge 策展台', () => {
+  it('列表渲染条目：生效状态 tag、待复查标记与字段', async () => {
+    knowledgeApiMocks.list.mockResolvedValue(
+      listPayload([
+        entry({ id: 'rule-offside', status: 'active', dueReview: false }),
+        entry({
+          id: 'player-stale',
+          topics: ['旧档案'],
+          answer: '转会窗前的旧档案。',
+          status: 'active',
+          dueReview: true,
+        }),
+        entry({
+          id: 'rule-future',
+          topics: ['新规'],
+          answer: '下赛季才生效的新规。',
+          status: 'pending',
+          dueReview: false,
+        }),
+      ]),
+    );
+    renderPage();
+    await waitFor(() => expect(screen.getByText('rule-offside')).toBeInTheDocument());
+    expect(screen.getByText('rule-future')).toBeInTheDocument();
+    // 生效二态 tag（api/knowledge.ts 的共用标签）。
+    expect(screen.getAllByText('生效中')).toHaveLength(2);
+    expect(screen.getByText('待生效')).toBeInTheDocument();
+    // 转会窗复查标记只落在过期条目上（另一个「待复查」是过滤开关按钮）。
+    expect(screen.getAllByText('待复查')).toHaveLength(2);
+    expect(screen.getByText(/转会窗前的旧档案/)).toBeInTheDocument();
+  });
+
+  it('待复查开关走服务端过滤参数并刷新列表', async () => {
+    renderPage();
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalled());
+    const dueToggle = screen.getByRole('button', { name: '待复查' });
+    fireEvent.click(dueToggle);
+    await waitFor(() =>
+      expect(knowledgeApiMocks.list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ due: 'review', page: 1 }),
+      ),
+    );
+    // 再点一次关掉：参数回到无 due。
+    fireEvent.click(screen.getByRole('button', { name: '待复查' }));
+    await waitFor(() =>
+      expect(knowledgeApiMocks.list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ due: undefined, page: 1 }),
+      ),
+    );
+  });
+
+  it('生效状态过滤：选择「待生效」即带 status 参数', async () => {
+    renderPage();
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalled());
+    fireEvent.mouseDown(screen.getByText('生效状态'));
+    await waitFor(() => expect(screen.getByText('待生效')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('待生效'));
+    await waitFor(() =>
+      expect(knowledgeApiMocks.list).toHaveBeenLastCalledWith(
+        expect.objectContaining({ status: 'pending' }),
+      ),
+    );
+  });
+
+  it('表单校验：答案空白拦在客户端，不发请求（确信度口径见纯函数测试）', async () => {
+    knowledgeApiMocks.list.mockResolvedValue(listPayload([entry({ answer: '原始答案。' })]));
+    renderPage();
+    await waitFor(() => expect(screen.getByText('rule-offside')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('编辑'));
+    // 抽屉表单预填：页面上唯一的 TextArea 就是答案原文（Drawer 挂 body）。
+    await waitFor(() => {
+      const textarea = document.body.querySelector('textarea');
+      expect(textarea).not.toBeNull();
+      expect((textarea as HTMLTextAreaElement).value).toBe('原始答案。');
+    });
+    fireEvent.change(document.body.querySelector('textarea')!, { target: { value: '   ' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存并生效' }));
+    await waitFor(() => expect(screen.getByText('答案原文不能为空白')).toBeInTheDocument());
+    expect(knowledgeApiMocks.update).not.toHaveBeenCalled();
+  });
+
+  it('确信度校验口径（api/knowledge.ts 纯函数）：空值与越界都拒绝', () => {
+    expect(validateKnowledgeConfidence(null)).toBe('请填写确信度');
+    expect(validateKnowledgeConfidence(Number.NaN)).toBe('请填写确信度');
+    expect(validateKnowledgeConfidence(-0.1)).toBe('确信度必须在 0 到 1 之间');
+    expect(validateKnowledgeConfidence(1.01)).toBe('确信度必须在 0 到 1 之间');
+    expect(validateKnowledgeConfidence(0)).toBeUndefined();
+    expect(validateKnowledgeConfidence(0.6)).toBeUndefined();
+    expect(validateKnowledgeConfidence(1)).toBeUndefined();
+  });
+
+  it('保存即生效：有效提交按契约形状 PUT（日期格式化 + 答案去空白）并刷新', async () => {
+    knowledgeApiMocks.list.mockResolvedValue(listPayload([entry({})]));
+    renderPage();
+    await waitFor(() => expect(screen.getByText('rule-offside')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('编辑'));
+    await waitFor(() => expect(document.body.querySelector('textarea')).not.toBeNull());
+    // 答案输入前后带空白：提交形状按保存纪律去空白。
+    fireEvent.change(document.body.querySelector('textarea')!, { target: { value: '  原始答案。  ' } });
+    fireEvent.click(screen.getByRole('button', { name: '保存并生效' }));
+    await waitFor(() => expect(knowledgeApiMocks.update).toHaveBeenCalled());
+    expect(knowledgeApiMocks.update).toHaveBeenCalledWith(
+      'rule-offside',
+      expect.objectContaining({
+        answer: '原始答案。',
+        confidence: 0.95,
+        effectiveAt: '2026-07-01',
+        topics: ['越位', 'offside'],
+        source: 'IFAB Law 11',
+      }),
+    );
+    // 保存成功后列表重取（保存即生效回显）。
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('auditor 只读：无保存按钮，抽屉出只读警示', async () => {
+    operatorState.operator = { name: '小阅', scopes: ['operator:trace:read'] };
+    knowledgeApiMocks.list.mockResolvedValue(listPayload([entry({})]));
+    renderPage();
+    await waitFor(() => expect(screen.getByText('rule-offside')).toBeInTheDocument());
+    expect(screen.getByText(/审计（auditor）角色，条目为只读/)).toBeInTheDocument();
+    fireEvent.click(screen.getByText('编辑'));
+    await waitFor(() => expect(screen.getByText('审计角色只读，不能保存修改')).toBeInTheDocument());
+    expect(screen.queryByRole('button', { name: '保存并生效' })).not.toBeInTheDocument();
+  });
+});

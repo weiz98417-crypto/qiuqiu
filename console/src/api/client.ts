@@ -186,7 +186,7 @@ function notifyAuthInvalid(state: AuthState) {
 }
 
 export interface RequestOptions {
-  method?: 'GET' | 'POST' | 'PATCH' | 'DELETE';
+  method?: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE';
   body?: unknown;
   // 401 不触发全局令牌页（用于令牌校验本身）。
   skipAuthRedirect?: boolean;
@@ -247,7 +247,7 @@ export async function api<T>(path: string, options: RequestOptions = {}): Promis
 
 async function executeRequest<T>(
   path: string,
-  method: 'GET' | 'POST' | 'PATCH' | 'DELETE',
+  method: 'GET' | 'POST' | 'PATCH' | 'PUT' | 'DELETE',
   bodyJson: string | undefined,
   options: RequestOptions,
   idempotencyKey: string,

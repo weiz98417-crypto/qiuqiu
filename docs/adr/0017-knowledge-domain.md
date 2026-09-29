@@ -27,3 +27,17 @@
 - 2026-09 补充（knowledge-players）：球队/球员档案条目的快变字段（现属俱乐部、队长等）自带 `effective_at` 保质期标签，并建立**转会窗复查制度**——每年 7 月、1 月两个转会窗关闭后对 players 目录集中复查一轮；data-provider-lite-bridge 权威源落地后由源数据替换策展。原料经 AnySearch 检索 + 整页抽取、人工策展后落 repo（检索是策展工具，不是运行时依赖——运行时知识面仍只有 repo 内条目）。
 - CONTEXT.md 新增「知识条目 Knowledge Entry」词条。
 - 2026-09-23 修订（knowledge-event-triggers）：消费面从问答扩到**判罚时刻的事件附句**。两条纪律并存——问答路=纯确定性拼装（不变，规则文本必须逐字来自条目）；事件附句路=realizer 织写语气，但规则陈述必须原样携带策展引语 `quote`（运行时 contains 守卫，失败降级确定性附句 verbatim answer）。附句搭事件反应拍便车，不立独立话轮、不走 ADR-0015 引用码门；限频=同条目每场 1 次、总量每场 2 次、quiet 禁用。触发仅限判罚类事件（var_check/var_result/goal_cancelled/red_card/penalty/penalty_awarded）；球员档案不做事件触发（进球报简历语用不成立）。
+
+> 2026-09-30 修订（knowledge-curation-console）：条目存储从 repo YAML 升级为
+> DB（migration 053 `knowledge_entries`，自然键=条目 id），**repo YAML 降级为
+> seed**——启动时幂等导入（已存在条目一律跳过，运营在 DB 里的编辑永不被
+> seed 覆盖），运行时只读 DB。本决定 2 的「策展于 repo、错误走 git 修正」
+> 相应改写：条目编辑走运营台（`/api/console/knowledge`，读 TraceRead/写
+> MatchWrite，auditor 只读；写路径 executeOperatorWrite 幂等 + operator_audit
+> 落账），保存即生效（Library 快照换血），无草稿→发布流；YAML 仍承担策展
+> 原料与新部署冷启动（条目格式变更仍过本 ADR）。决定 1/3/5 的领域语义不变：
+> answer 原文即答案锚、确定性逐字拼装、topics 关键词 ∥ embedding 双路检索、
+> confidence < 0.6 不出答案、ForbiddenClaims 照旧；双实现（内存/Postgres）
+> 一致性与 seed 幂等、编辑→检索可见由单测锁定。转会窗复查制度（上节）落到
+> 工具面：条目生效窗口早于最近一次窗闭（7 月 1 日 / 1 月 1 日，UTC）即在
+> 运营台标「待复查」，列表提供过滤器；到期提醒推送仍后置。

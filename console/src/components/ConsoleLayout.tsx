@@ -12,6 +12,8 @@ const NAV_ITEMS = [
   { key: '/console', label: '全局概览' },
   { key: '/console/threads', label: '话题台账' },
   { key: '/console/citations', label: '引用审计' },
+  // 知识策展台（knowledge-curation-console）：条目 DB 化后的运营编辑面。
+  { key: '/console/knowledge', label: '知识条目' },
   // 实时运营面之观测流（operations-live-stream）：/ws/ops 只读旁路。
   { key: '/console/live', label: '直播监听' },
   // 指标观测面（operations-metrics-stack）：内嵌 Grafana 运营面板。
