@@ -22,17 +22,19 @@ import (
 
 var ErrNotConfigured = errors.New("tts provider is not configured")
 
-// Client 是 Miimo TTS adapter：POST {baseURL}/chat/completions，整段
-// base64 WAV 返回（非流式），自然语言指令以额外 user message 拼进
-// messages（Miimo 唯一的风格通道）。
+// Client 是 Miimo TTS adapter：POST {baseURL}/chat/completions。整段模式
+// 一次返回 base64 WAV；流式模式（stream.go）走 stream:true SSE，输出裸
+// pcm16@24kHz 分片，失败回退整段。自然语言指令以额外 user message 拼进
+// messages（Miimo 唯一的风格通道），两种模式共用同一组包。
 type Client struct {
-	apiKey     string
-	baseURL    string
-	model      string
-	voice      string
-	httpClient *http.Client
-	mockAudio  []byte
-	breaker    *resilience.CircuitBreaker
+	apiKey            string
+	baseURL           string
+	model             string
+	voice             string
+	httpClient        *http.Client
+	mockAudio         []byte
+	breaker           *resilience.CircuitBreaker
+	streamIdleTimeout time.Duration
 }
 
 func NewClient(apiKey string) *Client {
@@ -44,7 +46,8 @@ func NewClient(apiKey string) *Client {
 		httpClient: &http.Client{
 			Timeout: 30 * time.Second,
 		},
-		breaker: resilience.NewCircuitBreaker(3, 10*time.Second),
+		breaker:           resilience.NewCircuitBreaker(3, 10*time.Second),
+		streamIdleTimeout: defaultStreamIdleTimeout,
 	}
 }
 
@@ -110,24 +113,7 @@ func (c *Client) Synthesize(ctx context.Context, text string, opts VoiceOpts) (*
 	if err := c.breaker.Allow(time.Now().UTC()); err != nil {
 		return nil, fmt.Errorf("tts unavailable: %w", err)
 	}
-	voice := strings.TrimSpace(opts.Voice)
-	// cgSg 前缀是旧预制音色 id：平台已不支持，原样回落默认音色。
-	if voice == "" || strings.HasPrefix(voice, "cgSg") {
-		voice = c.voice
-	}
-	messages := make([]map[string]string, 0, 2)
-	if instruction := strings.TrimSpace(opts.Instruction); instruction != "" {
-		messages = append(messages, map[string]string{"role": "user", "content": instruction})
-	}
-	messages = append(messages, map[string]string{"role": "assistant", "content": text})
-	payload := map[string]interface{}{
-		"model":    defaultString(c.model, "mimo-v2.5-tts"),
-		"messages": messages,
-		"audio": map[string]string{
-			"format": defaultString(opts.Format, "wav"),
-			"voice":  defaultString(voice, "冰糖"),
-		},
-	}
+	payload := c.buildMiimoPayload(text, opts, false)
 
 	body, _ := json.Marshal(payload)
 	url := fmt.Sprintf("%s/chat/completions", strings.TrimRight(c.baseURL, "/"))
@@ -180,10 +166,44 @@ func (c *Client) Synthesize(ctx context.Context, text string, opts VoiceOpts) (*
 	}, nil
 }
 
-// SynthesizeStream 如实暴露 Miimo 的整段合成现实：没有流式能力，返回
-// ErrNotSupported，不实现假流式。
-func (c *Client) SynthesizeStream(ctx context.Context, text string, opts VoiceOpts) (<-chan []byte, error) {
-	return nil, ErrNotSupported
+// buildMiimoMessages 组装 messages：instruction 是 Miimo 唯一的风格通道，
+// 占据首位（user role），待合成文本随后（assistant role）。整段与流式两
+// 种模式共用，保证指令拼法一字不差。
+func buildMiimoMessages(text string, opts VoiceOpts) []map[string]string {
+	messages := make([]map[string]string, 0, 2)
+	if instruction := strings.TrimSpace(opts.Instruction); instruction != "" {
+		messages = append(messages, map[string]string{"role": "user", "content": instruction})
+	}
+	messages = append(messages, map[string]string{"role": "assistant", "content": text})
+	return messages
+}
+
+// buildMiimoPayload 组装请求载荷，整段（stream=false）与流式（stream=true）
+// 共用。音色/格式的默认与覆盖规则只有这一份：空音色与 cgSg 前缀（平台已
+// 下线的预制音色 id）回落默认音色；整段默认 wav；流式固定 pcm——Miimo 流
+// 式输出即 pcm16@24kHz 分片，qiuqiu 契约是本包只出裸 pcm16，WAV 封装留给
+// 投递层（task 3.4），调用方在流式路径设置的 VoiceOpts.Format 不生效。
+func (c *Client) buildMiimoPayload(text string, opts VoiceOpts, stream bool) map[string]interface{} {
+	voice := strings.TrimSpace(opts.Voice)
+	if voice == "" || strings.HasPrefix(voice, "cgSg") {
+		voice = c.voice
+	}
+	format := defaultString(opts.Format, "wav")
+	if stream {
+		format = "pcm"
+	}
+	payload := map[string]interface{}{
+		"model":    defaultString(c.model, "mimo-v2.5-tts"),
+		"messages": buildMiimoMessages(text, opts),
+		"audio": map[string]string{
+			"format": format,
+			"voice":  defaultString(voice, "冰糖"),
+		},
+	}
+	if stream {
+		payload["stream"] = true
+	}
+	return payload
 }
 
 func decodeBase64(value string) ([]byte, error) {

@@ -27,6 +27,7 @@ import (
 	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
+	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
@@ -67,6 +68,9 @@ type watchDeps struct {
 	// URL 未配置时 Enabled=false，turn_query 一律回 isComplete:null（客户端
 	// model 插槽下探静默档，降级链闭环）。
 	turnSidecar *turnSidecarClient
+	// userAffect 是用户语音情绪 sidecar 客户端（user-voice-affect 波1）：
+	// URL 未配置时 nil，旁路整体消失。
+	userAffect *useraffect.Client
 }
 
 // watchConnection 承载一条 /ws/match/ 连接跨四相的全部状态。字段与拆分前
@@ -104,6 +108,10 @@ type watchConnection struct {
 	// turnInFlight 是 turn_query 转发的在途信号量（voice-turn-detection
 	// 决策 c，容量 turnRelayMaxInFlight）：饱和即回 null，不反压读循环。
 	turnInFlight chan struct{}
+
+	// userAffectRelay 是本连接的用户语音情绪旁路（user-voice-affect 波1）：
+	// startMessagePumps 装配，连接拆除即消失；nil 即旁路停用。
+	userAffectRelay *useraffectRelay
 
 	userSpeaking   atomic.Bool
 	userTurnActive atomic.Bool
@@ -543,6 +551,7 @@ func backchannelTalkativeness(store interface{ Load() any }) string {
 // startMessagePumps 装配语音转写会话并拉起两条协程：比赛事件外推与 16-case
 // 读循环。两者都随 connectionCtx 收敛，写出口共用同一条 wsWriter。
 func (c *watchConnection) startMessagePumps() {
+	c.userAffectRelay = newUserAffectRelay(c.deps.userAffect, c.deps.agent, c.matchID, c.deps.cfg.UserAffectMinConfidence)
 	c.transcriptions = newTranscriptionSessions(
 		c.connectionCtx,
 		c.deps.asr,
@@ -565,6 +574,11 @@ func (c *watchConnection) startMessagePumps() {
 		},
 		func(completion transcriptionCompletion) {
 			c.voiceStages.rekey(completion.UtteranceID, completion.SignalID)
+			// 用户语音情绪旁路（user-voice-affect 波1）：话轮终稿整段 PCM
+			// 旁送，结论由 relay 事后合并进本话轮 trace；主路继续。
+			if c.userAffectRelay != nil {
+				c.userAffectRelay.Forward(completion.UserID, completion.SignalID, completion.PCM)
+			}
 			c.submitUserTurn(completion.UserID, completion.Text, "", completion.SignalID, completion.Provider, completion.Timezone)
 		},
 	)
@@ -793,6 +807,11 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 		turnDecidedAnchor := c.voiceLatencyAnchor(signalID)
 		c.logVoiceLatency("turn_decided", signalID, turnDecidedAnchor)
 		c.attachVoiceStages(result.Trace.ID, signalID, turnDecidedAnchor, nil)
+		// 用户语音情绪挂点（user-voice-affect 波1）：结论已到即时合并，
+		// 未到则登记 traceID 等结论回来事后合并（relay 内等待者模式）。
+		if c.userAffectRelay != nil {
+			c.userAffectRelay.bind(signalID, result.Trace.ID)
+		}
 		// presentation-mapping 3.2 (ADR-0007): the reply completes into a
 		// voice-session wait for the user, so the plan that rides with
 		// the reply decays to the listening pose instead of the

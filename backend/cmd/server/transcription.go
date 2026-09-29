@@ -26,6 +26,8 @@ type transcriptionCompletion struct {
 	Timezone    string
 	Text        string
 	Provider    string
+	// PCM 是话轮整段录音副本（user-voice-affect 旁路用；主路消费者忽略）。
+	PCM []byte
 }
 
 type activeTranscription struct {
@@ -203,6 +205,7 @@ func (s *transcriptionSessions) handleEvent(active *activeTranscription, event a
 			Timezone:    active.timezone,
 			Text:        event.Text,
 			Provider:    event.Provider,
+			PCM:         active.session.Recorded(),
 		}
 	case asr.TranscriptError:
 		message["type"] = "transcript_error"

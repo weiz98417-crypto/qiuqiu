@@ -245,6 +245,14 @@ func (w *PostgresTraceWriter) AttachVoice(ctx context.Context, matchID, traceID 
 	if err != nil {
 		return err
 	}
+	affectJSON := map[string]any{}
+	if patch.UserAffect != nil {
+		affectJSON["userAffect"] = patch.UserAffect
+	}
+	affect, err := json.Marshal(affectJSON)
+	if err != nil {
+		return err
+	}
 
 	tx, err := w.pool.Begin(ctx)
 	if err != nil {
@@ -271,12 +279,12 @@ func (w *PostgresTraceWriter) AttachVoice(ctx context.Context, matchID, traceID 
 	}
 	tag, err := tx.Exec(ctx, `
 		UPDATE agent_traces SET voice = jsonb_set(
-			COALESCE(NULLIF(voice, 'null'::jsonb), '{}'::jsonb) || $3::jsonb || $4::jsonb,
+			COALESCE(NULLIF(voice, 'null'::jsonb), '{}'::jsonb) || $3::jsonb || $4::jsonb || $6::jsonb,
 			'{latencyStages}',
 			COALESCE(NULLIF(voice, 'null'::jsonb)->'latencyStages', '{}'::jsonb) || $5::jsonb
 		)
 		WHERE match_id = $1 AND id = $2 AND deleted_at IS NULL
-	`, matchID, traceID, turnJSON, tts, stages)
+	`, matchID, traceID, turnJSON, tts, stages, affect)
 	if err != nil {
 		return err
 	}

@@ -232,6 +232,17 @@ type VoiceTraceMetadata struct {
 	// 的落库面）：isComplete=null = sidecar 未决（降级/饱和/错误）；来源
 	// model=真结论、unavailable=回退。真机 800ms 抢话门校准与回放共用。
 	TurnDecision *VoiceTurnDecision `json:"turnDecision,omitempty"`
+	// UserAffect 是用户语音情绪结论（user-voice-affect 波1，User Voice
+	// Affect 词条）：话轮级 sidecar 分类，事后经 AttachVoiceStages 原子合并。
+	// nil = 未测得（sidecar 摘除/降级/置信门未过）。永不进比赛事实账本。
+	UserAffect *UserAffectSignal `json:"userAffect,omitempty"`
+}
+
+// UserAffectSignal 见 VoiceTraceMetadata.UserAffect。Confidence 是 sidecar
+// 伪置信（SenseVoice 情绪 token 无校准概率），置信门在 relay 层。
+type UserAffectSignal struct {
+	Label      string  `json:"label"`
+	Confidence float64 `json:"confidence"`
 }
 
 // VoiceTurnDecision 见 VoiceTraceMetadata.TurnDecision。

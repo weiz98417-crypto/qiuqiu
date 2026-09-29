@@ -153,6 +153,7 @@ type VoiceObservationPatch struct {
 	Stages       map[string]int
 	TurnDecision *VoiceTurnDecision
 	TTSMeta      *VoiceTraceMetadata
+	UserAffect   *UserAffectSignal
 }
 
 // AttachVoiceStages 是语音观测的合并入口：键级合并进已落库 trace——不覆
@@ -160,7 +161,7 @@ type VoiceObservationPatch struct {
 // （jsonb），内存实现回退读改写。缺 trace 报错由调用方计数即弃（观测旁
 // 路，永不反伤主链路）。
 func (a *Agent) AttachVoiceStages(ctx context.Context, matchID, traceID string, patch VoiceObservationPatch) error {
-	if a == nil || (len(patch.Stages) == 0 && patch.TurnDecision == nil && patch.TTSMeta == nil) {
+	if a == nil || (len(patch.Stages) == 0 && patch.TurnDecision == nil && patch.TTSMeta == nil && patch.UserAffect == nil) {
 		return nil
 	}
 	return a.tools.AttachVoice(ctx, matchID, traceID, patch)
@@ -182,6 +183,9 @@ func mergeVoiceObservation(trace *Trace, patch VoiceObservationPatch) {
 	}
 	if patch.TurnDecision != nil {
 		trace.Voice.TurnDecision = patch.TurnDecision
+	}
+	if patch.UserAffect != nil {
+		trace.Voice.UserAffect = patch.UserAffect
 	}
 	if meta := patch.TTSMeta; meta != nil {
 		if meta.TTSStatus != "" {

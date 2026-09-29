@@ -1,0 +1,7 @@
+# 用户语音情绪 sidecar 依赖（openspec/changes/user-voice-affect 波1）。
+# sherpa-onnx 自带 SenseVoice 离线识别（含情绪 token 输出），CPU int8 实时；
+# 不装 torch/transformers。numpy 是 sherpa-onnx 的波形输入依赖。
+fastapi>=0.110
+uvicorn[standard]>=0.29
+sherpa-onnx>=1.10
+numpy>=1.26

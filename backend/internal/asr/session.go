@@ -112,6 +112,14 @@ func (s *StreamSession) Append(sequence int, pcm []byte) error {
 	return nil
 }
 
+// Recorded 返回会话累积的整段 PCM 副本（user-voice-affect 旁路在终稿后
+// 取用；主路转写不受影响）。
+func (s *StreamSession) Recorded() []byte {
+	s.mu.Lock()
+	defer s.mu.Unlock()
+	return append([]byte(nil), s.pcm...)
+}
+
 func (s *StreamSession) Finish() {
 	s.mu.Lock()
 	if s.finished {

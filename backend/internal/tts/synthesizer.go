@@ -5,8 +5,9 @@ import (
 	"errors"
 )
 
-// ErrNotSupported 表示 adapter 不具备该能力。流式位预留期间所有现役
-// adapter 都返回它——调用方据此后退到整段 Synthesize。
+// ErrNotSupported 表示 adapter 不具备该能力。流式位已变现役
+// （voice-streaming-delivery），现役 Client 不再返回它；测试替身仍以它
+// 声明「流式能力缺席」，调用方据此后退到整段 Synthesize。
 var ErrNotSupported = errors.New("tts adapter does not support this capability")
 
 // VoiceOpts 是一次合成的表现选项。全字段可零值：空值走 adapter 内的
@@ -26,8 +27,13 @@ type VoiceOpts struct {
 type Synthesizer interface {
 	// Synthesize 整段合成：返回完整音频字节（Miimo 为解码后的 WAV）。
 	Synthesize(ctx context.Context, text string, opts VoiceOpts) (*SynthesizeResult, error)
-	// SynthesizeStream 为流式位预留（voice-transport-upgrade 决策后由真
-	// 流式 adapter 实现）：现役 Miimo 是整段合成，不做假流式，现役
-	// adapter 一律返回 ErrNotSupported；ch 只在错误为 nil 时有效。
+	// SynthesizeStream 流式合成（voice-streaming-delivery 起变现役）：
+	// Miimo stream:true SSE 吃 pcm16@24kHz 裸分片（无 WAV 封装），按到达
+	// 顺序投到 ch，合成结束（含回退）后关闭；SSE 断流/超时/非 200 时
+	// adapter 内回退整段 Synthesize，全量音频作为单个分片投出，熔断沿用。
+	// 需要分片元数据与降级标记的调用方（投递层 task 3.4/3.5）改用
+	// StreamingSynthesizer 能力接口（stream.go），不要改本签名——cmd/server
+	// 的测试替身以旧签名实现它，形状变更即全量波及。
+	// ch 只在错误为 nil 时有效；起始性失败（未配置）同步返回 error。
 	SynthesizeStream(ctx context.Context, text string, opts VoiceOpts) (ch <-chan []byte, err error)
 }

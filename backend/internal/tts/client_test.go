@@ -33,12 +33,28 @@ func TestMockClientIsDeterministicFake(t *testing.T) {
 	}
 }
 
-func TestSynthesizeStreamIsReservedSlot(t *testing.T) {
-	for _, client := range []Synthesizer{NewClient("key"), NewMockClient([]byte("mp3"))} {
-		ch, err := client.SynthesizeStream(context.Background(), "你好", VoiceOpts{})
-		if ch != nil || !errors.Is(err, ErrNotSupported) {
-			t.Fatalf("SynthesizeStream = %v, %v; want nil, ErrNotSupported", ch, err)
-		}
+// 流式位变现役（voice-streaming-delivery）：mock 替身回放单分片，未配置
+// 的真实客户端同步返回 ErrNotConfigured。
+func TestSynthesizeStreamChannels(t *testing.T) {
+	mock := NewMockClient([]byte("mp3"))
+	ch, err := mock.SynthesizeStream(context.Background(), "你好", VoiceOpts{})
+	if err != nil || ch == nil {
+		t.Fatalf("mock SynthesizeStream = %v, %v; want channel, nil", ch, err)
+	}
+	var chunks [][]byte
+	for data := range ch {
+		chunks = append(chunks, data)
+	}
+	if len(chunks) != 1 || string(chunks[0]) != "mp3" {
+		t.Fatalf("mock stream chunks = %v, want single replayed chunk", chunks)
+	}
+
+	var nilClient *Client
+	if ch, err := nilClient.SynthesizeStream(context.Background(), "你好", VoiceOpts{}); ch != nil || !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("nil client SynthesizeStream = %v, %v; want nil, ErrNotConfigured", ch, err)
+	}
+	if ch, err := NewClient("").SynthesizeStream(context.Background(), "你好", VoiceOpts{}); ch != nil || !errors.Is(err, ErrNotConfigured) {
+		t.Fatalf("unconfigured SynthesizeStream = %v, %v; want nil, ErrNotConfigured", ch, err)
 	}
 }
 

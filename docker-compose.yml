@@ -35,6 +35,12 @@ services:
       # isComplete:null，客户端 model 插槽下探静默档（降级链闭环，无需开关）。
       - QIUQIU_TURN_SIDECAR_URL=${QIUQIU_TURN_SIDECAR_URL:-}
       - QIUQIU_TURN_SIDECAR_TIMEOUT_MS=${QIUQIU_TURN_SIDECAR_TIMEOUT_MS:-500}
+      # 用户语音情绪旁路（openspec/changes/user-voice-affect 波1）：默认关闭；
+      # 指向 http://voice-input-sidecar:8092 开启。URL 留空即旁路整体停用
+      # （宪法线：情绪信号永不进比赛事实账本，只落语音 trace 观测）。
+      - QIUQIU_USER_AFFECT_URL=${QIUQIU_USER_AFFECT_URL:-}
+      - QIUQIU_USER_AFFECT_TIMEOUT_MS=${QIUQIU_USER_AFFECT_TIMEOUT_MS:-2000}
+      - QIUQIU_USER_AFFECT_MIN_CONFIDENCE=${QIUQIU_USER_AFFECT_MIN_CONFIDENCE:-0.55}
       - MEMOBASE_URL=${MEMOBASE_URL:-http://memobase:8000}
       - MEMOBASE_TOKEN=${MEMOBASE_TOKEN:-secret}
       - MEMOBASE_EXTRACTION_TIMEOUT_MS=${MEMOBASE_EXTRACTION_TIMEOUT_MS:-10000}
@@ -175,6 +181,33 @@ services:
       - "${TURN_SIDECAR_PORT:-8091}:8091"
     healthcheck:
       test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8091/healthz')\""]
+      interval: 30s
+      timeout: 5s
+      retries: 3
+    restart: unless-stopped
+
+  # 用户语音情绪 sidecar（openspec/changes/user-voice-affect 波1）：SenseVoice
+  # 离线情绪分类，POST /affect 收整段话轮 pcm16/16k、返回 {label, confidence}；
+  # 无状态、不落盘、会话外不接收。ADR-0002 宪法线：情绪标签永不进比赛事实
+  # 账本，只作语音 trace 观测（波2 起可作情绪偏置）。模型不入镜像：先用
+  # scripts/voice-model/download.mjs 拉到宿主机（默认 E:\tools\voice-model\），
+  # 再 volume 挂到 VOICE_MODEL_DIR；模型未就位时 /affect 返回 503（Go 侧
+  # 静默丢弃，旁路降级为不可用）。backend 对本服务无 depends_on。
+  # profile 隔离：默认不启动，`docker compose --profile voice-input up -d`
+  # 显式拉起；本地/CI 验证接线可用 backend/cmd/voice-fake（同形状确定性）。
+  voice-input-sidecar:
+    build:
+      context: ./backend/cmd/voice-input-sidecar
+    profiles: ["voice-input"]
+    environment:
+      - VOICE_MODEL_DIR=/models/voice
+      - VOICE_SIDECAR_PORT=8092
+    volumes:
+      - ${VOICE_MODEL_ROOT:-E:\tools\voice-model}/sense-voice-int8:/models/voice:ro
+    ports:
+      - "${VOICE_SIDECAR_PORT:-8092}:8092"
+    healthcheck:
+      test: ["CMD-SHELL", "python -c \"import urllib.request;urllib.request.urlopen('http://127.0.0.1:8092/healthz')\""]
       interval: 30s
       timeout: 5s
       retries: 3

@@ -12,6 +12,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/ambient"
+	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/router"
 )
 
@@ -57,8 +58,14 @@ type Config struct {
 	// 轮次检测 sidecar（openspec/changes/voice-turn-detection 决策 c）：LiveKit
 	// EOU 多语版本地推理服务（backend/cmd/turn-sidecar），端点留空即 model
 	// 插槽降级——turn_query 一律回 isComplete:null，客户端下探静默档。
-	TurnSidecarURL                 string
-	TurnSidecarTimeoutMS           int
+	TurnSidecarURL       string
+	TurnSidecarTimeoutMS int
+	// 用户语音情绪旁路（openspec/changes/user-voice-affect 波1）：voice-input
+	// sidecar（SenseVoice）端点，留空即旁路整体停用；宪法线——情绪信号永不
+	// 进比赛事实账本，只落语音 trace 观测。
+	UserAffectURL          string
+	UserAffectTimeoutMS    int
+	UserAffectMinConfidence float64
 	// 画像巩固（openspec/changes/portrait-maintenance 阶段二）：条目 ValidFrom
 	// 超过 PortraitDecayDays 天未被更新主张续期 → Reflection 尾部扫描软封口
 	// （valid_to=now，永不物理删）；<=0 关闭衰减。
@@ -125,6 +132,9 @@ func Load() *Config {
 		AmbientAEDTimeoutMS:            getEnvInt("AMBIENT_AED_TIMEOUT_MS", 500),
 		TurnSidecarURL:                 strings.TrimSpace(getEnv("QIUQIU_TURN_SIDECAR_URL", "")),
 		TurnSidecarTimeoutMS:           getEnvInt("QIUQIU_TURN_SIDECAR_TIMEOUT_MS", 500),
+		UserAffectURL:                  strings.TrimSpace(getEnv("QIUQIU_USER_AFFECT_URL", "")),
+		UserAffectTimeoutMS:            getEnvInt("QIUQIU_USER_AFFECT_TIMEOUT_MS", 2000),
+		UserAffectMinConfidence:        getEnvFloat("QIUQIU_USER_AFFECT_MIN_CONFIDENCE", 0.55),
 		PortraitDecayDays:              getEnvInt("PORTRAIT_DECAY_DAYS", 90),
 		PortraitShadowSlots:            splitCSV(getEnv("PORTRAIT_SHADOW_SLOTS", "basic_info/favorite_team,basic_info/favorite_player")),
 		MemobaseURL:                    getEnv("MEMOBASE_URL", "http://localhost:8019"),
@@ -153,6 +163,15 @@ func (c *Config) AmbientAEDTimeout() time.Duration {
 		return ambient.DefaultTimeout
 	}
 	return time.Duration(c.AmbientAEDTimeoutMS) * time.Millisecond
+}
+
+// UserAffectTimeout 返回用户语音情绪旁路的 sidecar 调用预算；非正数回退
+// 默认值（useraffect.DefaultTimeout）。
+func (c *Config) UserAffectTimeout() time.Duration {
+	if c.UserAffectTimeoutMS <= 0 {
+		return useraffect.DefaultTimeout
+	}
+	return time.Duration(c.UserAffectTimeoutMS) * time.Millisecond
 }
 
 // TurnSidecarTimeout 返回轮次检测 sidecar 的调用预算：提前问窗口是静默
@@ -313,6 +332,16 @@ func getEnvInt(key string, fallback int) int {
 		n, err := strconv.Atoi(v)
 		if err == nil {
 			return n
+		}
+	}
+	return fallback
+}
+
+func getEnvFloat(key string, fallback float64) float64 {
+	if v := os.Getenv(key); v != "" {
+		f, err := strconv.ParseFloat(v, 64)
+		if err == nil {
+			return f
 		}
 	}
 	return fallback
