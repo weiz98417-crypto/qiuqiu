@@ -42,6 +42,64 @@ type ToolSchema struct {
 }
 
 func CompanionToolSchemas() []ToolSchema {
+	return userAgentTools.Schemas()
+}
+
+func IsUserAgentToolAllowed(name string) bool {
+	return userAgentTools.Allowed(name)
+}
+
+// ToolRegistry 是用户侧工具描述的单一源（mcp-registry-serve 5.1）：描述、
+// 运营只读门（IsUserAgentToolAllowed）与后续 MCP 供给层都从这里出发——
+// 加一个工具 = tracefields.go 常量 + userAgentToolSchemas() 一条描述，
+// 注册表去重守卫挡住双注册。
+type ToolRegistry struct {
+	byName map[string]ToolSchema
+	order  []string
+}
+
+func NewToolRegistry() *ToolRegistry {
+	return &ToolRegistry{byName: make(map[string]ToolSchema)}
+}
+
+// MustRegister 登记一条工具描述：空名或重名直接 panic——装配期错误不允许
+// 拖到运行时。
+func (registry *ToolRegistry) MustRegister(schema ToolSchema) {
+	if schema.Name == "" {
+		panic("companion: tool schema with empty name")
+	}
+	if _, exists := registry.byName[schema.Name]; exists {
+		panic("companion: duplicate tool schema " + schema.Name)
+	}
+	registry.byName[schema.Name] = schema
+	registry.order = append(registry.order, schema.Name)
+}
+
+// Schemas 按登记序返回描述副本。
+func (registry *ToolRegistry) Schemas() []ToolSchema {
+	schemas := make([]ToolSchema, 0, len(registry.order))
+	for _, name := range registry.order {
+		schemas = append(schemas, registry.byName[name])
+	}
+	return schemas
+}
+
+// Allowed 报告一个工具名是否登记且不改比赛事实（运营只读门语义不变：
+// 未登记 = 不允许）。
+func (registry *ToolRegistry) Allowed(name string) bool {
+	schema, ok := registry.byName[name]
+	return ok && !schema.MutatesMatchFacts
+}
+
+var userAgentTools = func() *ToolRegistry {
+	registry := NewToolRegistry()
+	for _, schema := range userAgentToolSchemas() {
+		registry.MustRegister(schema)
+	}
+	return registry
+}()
+// userAgentToolSchemas 是工具描述数据：注册表(userAgentTools)的唯一输入。
+func userAgentToolSchemas() []ToolSchema {
 	return []ToolSchema{
 		{
 			Name:              ToolCallMatchReadSnapshot,
@@ -191,13 +249,4 @@ func CompanionToolSchemas() []ToolSchema {
 			Output:            map[string]string{"ok": "bool"},
 		},
 	}
-}
-
-func IsUserAgentToolAllowed(name string) bool {
-	for _, schema := range CompanionToolSchemas() {
-		if schema.Name == name {
-			return !schema.MutatesMatchFacts
-		}
-	}
-	return false
 }
