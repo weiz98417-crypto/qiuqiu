@@ -96,6 +96,10 @@ _Avoid_: User profile, vector memory
 QiuQiu's continuous, decaying emotional posture shaped by match events, user signals, character stance, and prior affect.
 _Avoid_: Emotion label, expression tag
 
+**User Voice Affect（用户语音情绪）**:
+The user's vocal emotional signal — excitement, frustration, low mood — perceived from how the user speaks, not from what the words say. It is a user-side input distinct from QiuQiu's own Affect State; it may bias QiuQiu's affect and response policy, but it never becomes a Match Fact or match evidence.
+_Avoid_: Sentiment analysis, text emotion tag
+
 **Communication Act（沟通动作）**:
 The social action selected for a turn, such as reacting, opining, disagreeing, recalling, asking, repairing, backchanneling, or remaining silent.
 _Avoid_: Intent, reply type
