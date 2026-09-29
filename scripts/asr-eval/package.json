@@ -1,0 +1,6 @@
+{
+  "name": "asr-eval",
+  "private": true,
+  "type": "module",
+  "description": "ASR self-host evaluation harness (MiMo vs FunASR 2pass route). Scripts are dependency-free node; the FunASR side runs on a %TEMP% python env (see docs/design/asr-selfhost-eval.md)."
+}

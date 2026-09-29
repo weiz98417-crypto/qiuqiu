@@ -1,0 +1,592 @@
+{
+  "engine": "mimo-cloud",
+  "model": "mimo-v2.5-asr",
+  "partialScheme": "fake-streaming: 1.5s window / 0.25s overlap (session.go defaultPartialBytes/OverlapBytes)",
+  "records": [
+    {
+      "id": "pm1",
+      "category": "player-mixed",
+      "final": {
+        "text": "佩德里在中场拿球，一记直塞找到法比安·鲁伊斯，这球给的真漂亮。",
+        "ms": 978
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 465,
+          "text": "佩德里在中场拿球。",
+          "merged": "佩德里在中场拿球。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 337,
+          "text": "一记直塞找。",
+          "merged": "佩德里在中场拿球。一记直塞找。",
+          "changed": true
+        },
+        {
+          "windowIndex": 2,
+          "audioLeadMs": 1625,
+          "rttMs": 400,
+          "text": "找到法比安·鲁伊斯。",
+          "merged": "佩德里在中场拿球。一记直塞找。找到法比安·鲁伊斯。",
+          "changed": true
+        },
+        {
+          "windowIndex": 3,
+          "audioLeadMs": 1625,
+          "rttMs": 460,
+          "text": "这球给的真漂亮。",
+          "merged": "佩德里在中场拿球。一记直塞找。找到法比安·鲁伊斯。这球给的真漂亮。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 465,
+        "latencyMs": 1965,
+        "text": "佩德里在中场拿球。"
+      },
+      "windowCount": 4
+    },
+    {
+      "id": "pm2",
+      "category": "player-mixed",
+      "final": {
+        "text": "维西亚拉带球突入禁区，Bellingham后点包抄，把比分改写成二比一。",
+        "ms": 654
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 355,
+          "text": "维西亚拉带球突入。",
+          "merged": "维西亚拉带球突入。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 343,
+          "text": "输入禁区，Bellingham。",
+          "merged": "维西亚拉带球突入。输入禁区，Bellingham。",
+          "changed": true
+        },
+        {
+          "windowIndex": 2,
+          "audioLeadMs": 1625,
+          "rttMs": 346,
+          "text": "AM后点包抄，芭比。",
+          "merged": "维西亚拉带球突入。输入禁区，Bellingham。AM后点包抄，芭比。",
+          "changed": true
+        },
+        {
+          "windowIndex": 3,
+          "audioLeadMs": 1625,
+          "rttMs": 447,
+          "text": "把比分改写成二比一。",
+          "merged": "维西亚拉带球突入。输入禁区，Bellingham。AM后点包抄，芭比。把比分改写成二比一。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 355,
+        "latencyMs": 1855,
+        "text": "维西亚拉带球突入。"
+      },
+      "windowCount": 4
+    },
+    {
+      "id": "pm3",
+      "category": "player-mixed",
+      "final": {
+        "text": "阿马尔右路内切，晃过防守，小角度爆射近角，球进了。",
+        "ms": 609
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 342,
+          "text": "阿马尔右路内切。",
+          "merged": "阿马尔右路内切。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 331,
+          "text": "便换过防守。",
+          "merged": "阿马尔右路内切。便换过防守。",
+          "changed": true
+        },
+        {
+          "windowIndex": 2,
+          "audioLeadMs": 1625,
+          "rttMs": 502,
+          "text": "小角度爆射近角。",
+          "merged": "阿马尔右路内切。便换过防守。小角度爆射近角。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 342,
+        "latencyMs": 1842,
+        "text": "阿马尔右路内切。"
+      },
+      "windowCount": 3
+    },
+    {
+      "id": "pm4",
+      "category": "player-mixed",
+      "final": {
+        "text": "罗德里戈分边，维尼修斯提速下底，贝林厄姆中路跟进推射入网。",
+        "ms": 610
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 353,
+          "text": "罗德里戈分边，维尼。",
+          "merged": "罗德里戈分边，维尼。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 384,
+          "text": "维尼修斯·皮苏塞迪。",
+          "merged": "罗德里戈分边，维尼。维尼修斯·皮苏塞迪。",
+          "changed": true
+        },
+        {
+          "windowIndex": 2,
+          "audioLeadMs": 1625,
+          "rttMs": 325,
+          "text": "贝林厄姆中路。",
+          "merged": "罗德里戈分边，维尼。维尼修斯·皮苏塞迪。贝林厄姆中路。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 353,
+        "latencyMs": 1853,
+        "text": "罗德里戈分边，维尼。"
+      },
+      "windowCount": 3
+    },
+    {
+      "id": "sc1",
+      "category": "score",
+      "final": {
+        "text": "现在场上比分二比一，主队暂时领先。",
+        "ms": 565
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 323,
+          "text": "现在场上比分二比。",
+          "merged": "现在场上比分二比。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 471,
+          "text": "二比一，主队暂时。",
+          "merged": "现在场上比分二比。二比一，主队暂时。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 323,
+        "latencyMs": 1823,
+        "text": "现在场上比分二比。"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "sc2",
+      "category": "score",
+      "final": {
+        "text": "上半场结束，比分定格在二到一。",
+        "ms": 443
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 300,
+          "text": "上半场结束。",
+          "merged": "上半场结束。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 325,
+          "text": "比分定格在二到。",
+          "merged": "上半场结束。比分定格在二到。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 300,
+        "latencyMs": 1800,
+        "text": "上半场结束。"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "sc3",
+      "category": "score",
+      "final": {
+        "text": "三比二，第八十九分钟完成绝杀，这剧情谁敢想？",
+        "ms": 522
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 312,
+          "text": "三比二，第。",
+          "merged": "三比二，第。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 354,
+          "text": "第八十九分钟，完成绝。",
+          "merged": "三比二，第。第八十九分钟，完成绝。",
+          "changed": true
+        },
+        {
+          "windowIndex": 2,
+          "audioLeadMs": 1625,
+          "rttMs": 296,
+          "text": "绝杀，这剧情！",
+          "merged": "三比二，第。第八十九分钟，完成绝。绝杀，这剧情！",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 312,
+        "latencyMs": 1812,
+        "text": "三比二，第。"
+      },
+      "windowCount": 3
+    },
+    {
+      "id": "sc4",
+      "category": "score",
+      "final": {
+        "text": "扳平了，一到一，双方回到同一起跑线，下半场见真章。",
+        "ms": 600
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 318,
+          "text": "单凭了一道。",
+          "merged": "单凭了一道。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 304,
+          "text": "到一，双方回到同。",
+          "merged": "单凭了一道。到一，双方回到同。",
+          "changed": true
+        },
+        {
+          "windowIndex": 2,
+          "audioLeadMs": 1625,
+          "rttMs": 349,
+          "text": "同一起跑线，下。",
+          "merged": "单凭了一道。到一，双方回到同。同一起跑线，下。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 318,
+        "latencyMs": 1818,
+        "text": "单凭了一道。"
+      },
+      "windowCount": 3
+    },
+    {
+      "id": "cl1",
+      "category": "colloquial",
+      "final": {
+        "text": "嗯，这球走起来了，有点意思。",
+        "ms": 399
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 309,
+          "text": "嗯，这球走起。",
+          "merged": "嗯，这球走起。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 332,
+          "text": "起来了，有点意思。",
+          "merged": "嗯，这球走起。起来了，有点意思。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 309,
+        "latencyMs": 1809,
+        "text": "嗯，这球走起。"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "cl2",
+      "category": "colloquial",
+      "final": {
+        "text": "我操，漂亮！这脚世界波直接干碎了。",
+        "ms": 466
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 335,
+          "text": "我操，漂亮！",
+          "merged": "我操，漂亮！",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 285,
+          "text": "这叫世界波。",
+          "merged": "我操，漂亮！这叫世界波。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 335,
+        "latencyMs": 1835,
+        "text": "我操，漂亮！"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "cl3",
+      "category": "colloquial",
+      "final": {
+        "text": "哎呀，这防守跟纸糊的一样，P的什么玩意儿呢？",
+        "ms": 484
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 305,
+          "text": "哎呀，这防守跟",
+          "merged": "哎呀，这防守跟",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 387,
+          "text": "纸糊的一样，披的什么？",
+          "merged": "哎呀，这防守跟纸糊的一样，披的什么？",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 305,
+        "latencyMs": 1805,
+        "text": "哎呀，这防守跟"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "cl4",
+      "category": "colloquial",
+      "final": {
+        "text": "来了来了，快传中！哎呦，差一点，可惜了。",
+        "ms": 482
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 340,
+          "text": "来了来了，快传中！",
+          "merged": "来了来了，快传中！",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 362,
+          "text": "哎呦，差一点。",
+          "merged": "来了来了，快传中！哎呦，差一点。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 340,
+        "latencyMs": 1840,
+        "text": "来了来了，快传中！"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "nz1",
+      "category": "noise",
+      "final": {
+        "text": "佩德里这个处理球太细了，反复看回放都不腻。",
+        "ms": 539
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 333,
+          "text": "佩德里这个处理球。",
+          "merged": "佩德里这个处理球。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 324,
+          "text": "太细了，反复。",
+          "merged": "佩德里这个处理球。太细了，反复。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 333,
+        "latencyMs": 1833,
+        "text": "佩德里这个处理球。"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "nz2",
+      "category": "noise",
+      "final": {
+        "text": "看一下回放，刚才到底越没越位？",
+        "ms": 536
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 334,
+          "text": "看一下回放，刚才。",
+          "merged": "看一下回放，刚才。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 334,
+        "latencyMs": 1834,
+        "text": "看一下回放，刚才。"
+      },
+      "windowCount": 1
+    },
+    {
+      "id": "nz3",
+      "category": "noise",
+      "final": {
+        "text": "比分现在一比零，先别急着下结论。",
+        "ms": 471
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 303,
+          "text": "比分现在一比零。",
+          "merged": "比分现在一比零。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 348,
+          "text": "先别急着下结论。",
+          "merged": "比分现在一比零。先别急着下结论。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 303,
+        "latencyMs": 1803,
+        "text": "比分现在一比零。"
+      },
+      "windowCount": 2
+    },
+    {
+      "id": "nz4",
+      "category": "noise",
+      "final": {
+        "text": "穆西亚拉这脚打门，可惜了，就差一点点。",
+        "ms": 451
+      },
+      "partials": [
+        {
+          "windowIndex": 0,
+          "audioLeadMs": 1500,
+          "rttMs": 452,
+          "text": "穆西亚拉这脚打门。",
+          "merged": "穆西亚拉这脚打门。",
+          "changed": true
+        },
+        {
+          "windowIndex": 1,
+          "audioLeadMs": 1625,
+          "rttMs": 283,
+          "text": "嗯，可惜。",
+          "merged": "穆西亚拉这脚打门。嗯，可惜。",
+          "changed": true
+        }
+      ],
+      "firstPartial": {
+        "audioLeadMs": 1500,
+        "rttMs": 452,
+        "latencyMs": 1952,
+        "text": "穆西亚拉这脚打门。"
+      },
+      "windowCount": 2
+    }
+  ],
+  "failures": 0
+}

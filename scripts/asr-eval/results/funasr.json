@@ -1,0 +1,1089 @@
+{
+  "engine": "funasr-2pass-python",
+  "models": {
+    "streaming": "paraformer-zh-streaming (iic/speech_paraformer-large_asr_nat-zh-cn-16k-common-vocab8404-online)",
+    "final": "seaco-paraformer (iic/speech_seaco_paraformer_large_asr_nat-zh-cn-16k-common-vocab8404-pytorch)"
+  },
+  "chunkSize": [
+    0,
+    10,
+    5
+  ],
+  "modelLoadS": 13.1,
+  "records": [
+    {
+      "id": "pm1",
+      "category": "player-mixed",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.9,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 128.9,
+            "text": "佩"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 128.9,
+          "latencyMs": 728.9,
+          "text": "佩"
+        }
+      },
+      "streamingFullComputeMs": 1452.4,
+      "streamingFullText": "佩德里在中场拿球一记直塞找到法比安鲁伊斯这球给的",
+      "final": {
+        "plainText": "佩 德 里 在 中 场 拿 球 一 记 直 塞 找 到 法 比 安 鲁 伊 斯 这 球 给 的 真 漂 亮",
+        "plainMs": 685.6,
+        "hotText": "佩 德 里 在 中 场 拿 球 一 记 直 塞 找 到 法 比 安 鲁 伊 斯 这 球 给 的 真 漂 亮",
+        "hotMs": 714.1,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "pm2",
+      "category": "player-mixed",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 3.2,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 129.7,
+            "text": "威"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 129.7,
+          "latencyMs": 729.7,
+          "text": "威"
+        }
+      },
+      "streamingFullComputeMs": 1684.8,
+      "streamingFullText": "威西亚拉带球突入禁区belling ham后点包抄把比分改写成二比",
+      "final": {
+        "plainText": "维 西 亚 拉 带 球 突 入 禁 区 belliingham 后 点 包 抄 把 比 分 改 写 成 二 比 一",
+        "plainMs": 640.8,
+        "hotText": "穆 西 亚 拉 带 球 突 入 禁 区 bellllingham 后 点 包 抄 把 比 分 改 写 成 二 比 一",
+        "hotMs": 781.4,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "pm3",
+      "category": "player-mixed",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.7,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 2.2,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 144.0,
+            "text": ""
+          },
+          {
+            "prefixMs": 700,
+            "computeMs": 146.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 800,
+            "computeMs": 133.8,
+            "text": ""
+          },
+          {
+            "prefixMs": 900,
+            "computeMs": 126.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 1000,
+            "computeMs": 110.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 1200,
+            "computeMs": 272.5,
+            "text": "马尔右路"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 1200,
+          "computeMs": 272.5,
+          "latencyMs": 1472.5,
+          "text": "马尔右路"
+        }
+      },
+      "streamingFullComputeMs": 1591.8,
+      "streamingFullText": "马尔右路内切换过防守小角度爆射镜角球",
+      "final": {
+        "plainText": "阿 马 尔 右 路 内 切 换 过 防 守 小 角 度 爆 射 进 角 球 进 了",
+        "plainMs": 767.2,
+        "hotText": "亚 马 尔 右 路 内 切 换 过 防 守 小 角 度 爆 射 进 角 球 进 了",
+        "hotMs": 777.3,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "pm4",
+      "category": "player-mixed",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 157.0,
+            "text": "罗"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 157.0,
+          "latencyMs": 757.0,
+          "text": "罗"
+        }
+      },
+      "streamingFullComputeMs": 1428.4,
+      "streamingFullText": "罗德里格分边维尼修斯提速塞迪贝林厄姆中路跟进推",
+      "final": {
+        "plainText": "罗 德 里 格 分 边 维 尼 修 斯 提 速 赛 迪 贝 林 厄 姆 中 路 跟 进 推 测 入 网",
+        "plainMs": 688.1,
+        "hotText": "罗 德 里 戈 分 边 维 尼 修 斯 提 速 赛 迪 贝 林 厄 姆 中 路 跟 进 推 测 入 网",
+        "hotMs": 791.3,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "sc1",
+      "category": "score",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 2.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.9,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 132.5,
+            "text": "现"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 132.5,
+          "latencyMs": 732.5,
+          "text": "现"
+        }
+      },
+      "streamingFullComputeMs": 944.1,
+      "streamingFullText": "现在卡上比分二比一主队暂时领",
+      "final": {
+        "plainText": "现 在 场 上 比 分 二 比 一 主 队 暂 时 领 先",
+        "plainMs": 470.7,
+        "hotText": "现 在 场 上 比 分 二 比 一 主 队 暂 时 领 先",
+        "hotMs": 446.0,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "sc2",
+      "category": "score",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.8,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 2.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 2.2,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 2.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 129.2,
+            "text": "小"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 129.2,
+          "latencyMs": 729.2,
+          "text": "小"
+        }
+      },
+      "streamingFullComputeMs": 685.2,
+      "streamingFullText": "小班超结束比分定格在",
+      "final": {
+        "plainText": "小 班 超 结 束 比 分 定 格 在 二 到 一",
+        "plainMs": 462.8,
+        "hotText": "小 班 超 结 束 比 分 定 格 在 二 到 一",
+        "hotMs": 414.4,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "sc3",
+      "category": "score",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.7,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 126.5,
+            "text": "三"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 126.5,
+          "latencyMs": 726.5,
+          "text": "三"
+        }
+      },
+      "streamingFullComputeMs": 1145.0,
+      "streamingFullText": "三比二第八十九分钟完成绝杀这剧情",
+      "final": {
+        "plainText": "三 比 二 第 八 十 九 分 钟 完 成 绝 杀 这 剧 情 谁 敢 想",
+        "plainMs": 510.4,
+        "hotText": "三 比 二 第 八 十 九 分 钟 完 成 绝 杀 这 剧 情 谁 敢 想",
+        "hotMs": 480.9,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "sc4",
+      "category": "score",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 112.9,
+            "text": "单"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 112.9,
+          "latencyMs": 712.9,
+          "text": "单"
+        }
+      },
+      "streamingFullComputeMs": 1107.6,
+      "streamingFullText": "单屏了一到一双方回到同一起跑线下半场",
+      "final": {
+        "plainText": "单 平 了 一 到 一 双 方 回 到 同 一 起 跑 线 下 半 场 见 真 章",
+        "plainMs": 501.1,
+        "hotText": "单 平 了 一 到 一 双 方 回 到 同 一 起 跑 线 下 半 场 见 真 章",
+        "hotMs": 542.0,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "cl1",
+      "category": "colloquial",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 107.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 700,
+            "computeMs": 104.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 800,
+            "computeMs": 101.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 900,
+            "computeMs": 108.7,
+            "text": ""
+          },
+          {
+            "prefixMs": 1000,
+            "computeMs": 105.8,
+            "text": ""
+          },
+          {
+            "prefixMs": 1200,
+            "computeMs": 212.3,
+            "text": "嗯这"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 1200,
+          "computeMs": 212.3,
+          "latencyMs": 1412.3,
+          "text": "嗯这"
+        }
+      },
+      "streamingFullComputeMs": 552.5,
+      "streamingFullText": "嗯这球走起来了有点意",
+      "final": {
+        "plainText": "嗯 这 球 走 起 来 了 有 点 意 思",
+        "plainMs": 276.8,
+        "hotText": "嗯 这 球 走 起 来 了 有 点 意 思",
+        "hotMs": 387.8,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "cl2",
+      "category": "colloquial",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 126.5,
+            "text": "我"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 126.5,
+          "latencyMs": 726.5,
+          "text": "我"
+        }
+      },
+      "streamingFullComputeMs": 711.8,
+      "streamingFullText": "我炒漂亮这叫世界波直",
+      "final": {
+        "plainText": "我 炒 漂 亮 这 脚 世 界 波 直 接 干 碎 了",
+        "plainMs": 365.6,
+        "hotText": "我 炒 漂 亮 这 脚 世 界 波 直 接 干 碎 了",
+        "hotMs": 423.0,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "cl3",
+      "category": "colloquial",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 131.7,
+            "text": "哎"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 131.7,
+          "latencyMs": 731.7,
+          "text": "哎"
+        }
+      },
+      "streamingFullComputeMs": 667.6,
+      "streamingFullText": "哎呀这防守跟纸服的一样p",
+      "final": {
+        "plainText": "哎 呀 这 防 守 跟 纸 挥 的 一 样 p 的 什 么 玩 意 儿 呢",
+        "plainMs": 399.0,
+        "hotText": "哎 呀 这 防 守 跟 纸 挥 的 一 样 p 的 什 么 玩 意 儿 呢",
+        "hotMs": 434.9,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "cl4",
+      "category": "colloquial",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.9,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.9,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 133.4,
+            "text": "来"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 133.4,
+          "latencyMs": 733.4,
+          "text": "来"
+        }
+      },
+      "streamingFullComputeMs": 765.4,
+      "streamingFullText": "来了来了快传中哎呦差一",
+      "final": {
+        "plainText": "来 了 来 了 快 传 中 哎 呦 差 一 点 可 惜 了",
+        "plainMs": 477.0,
+        "hotText": "来 了 来 了 快 传 中 哎 呦 差 一 点 可 惜 了",
+        "hotMs": 466.1,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "nz1",
+      "category": "noise",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 177.1,
+            "text": "佩"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 177.1,
+          "latencyMs": 777.1,
+          "text": "佩"
+        }
+      },
+      "streamingFullComputeMs": 1020.9,
+      "streamingFullText": "佩德里这个处理球太细了反复看",
+      "final": {
+        "plainText": "佩 德 里 这 个 处 理 球 太 细 了 反 复 看 回 放 都 不 腻",
+        "plainMs": 755.8,
+        "hotText": "佩 德 里 这 个 处 理 球 太 细 了 反 复 看 回 放 都 不 腻",
+        "hotMs": 705.9,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "nz2",
+      "category": "noise",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 3.0,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 2.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 2.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 3.1,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 195.5,
+            "text": "看"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 195.5,
+          "latencyMs": 795.5,
+          "text": "看"
+        }
+      },
+      "streamingFullComputeMs": 625.5,
+      "streamingFullText": "看一下回放刚才到底",
+      "final": {
+        "plainText": "看 一 下 回 放 刚 才 到 底 越 没 越 歪",
+        "plainMs": 308.2,
+        "hotText": "看 一 下 回 放 刚 才 到 底 越 没 越 歪",
+        "hotMs": 347.4,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "nz3",
+      "category": "noise",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.9,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 2.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 2.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 2.3,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 2.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 148.7,
+            "text": "比"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 148.7,
+          "latencyMs": 748.7,
+          "text": "比"
+        }
+      },
+      "streamingFullComputeMs": 769.1,
+      "streamingFullText": "比分现在一比零先别急着下",
+      "final": {
+        "plainText": "比 分 现 在 一 比 零 先 别 急 着 下 节 论",
+        "plainMs": 364.3,
+        "hotText": "比 分 现 在 一 比 零 先 别 急 着 下 节 论",
+        "hotMs": 390.7,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    },
+    {
+      "id": "nz4",
+      "category": "noise",
+      "partial": {
+        "probes": [
+          {
+            "prefixMs": 100,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 200,
+            "computeMs": 2.4,
+            "text": ""
+          },
+          {
+            "prefixMs": 300,
+            "computeMs": 1.6,
+            "text": ""
+          },
+          {
+            "prefixMs": 400,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 500,
+            "computeMs": 1.5,
+            "text": ""
+          },
+          {
+            "prefixMs": 600,
+            "computeMs": 125.6,
+            "text": "诺"
+          }
+        ],
+        "firstToken": {
+          "audioLeadMs": 600,
+          "computeMs": 125.6,
+          "latencyMs": 725.6,
+          "text": "诺"
+        }
+      },
+      "streamingFullComputeMs": 1033.3,
+      "streamingFullText": "诺西阿拉这脚打门可惜了就差一",
+      "final": {
+        "plainText": "木 西 阿 拉 这 脚 打 门 可 惜 了 就 差 一 点 点",
+        "plainMs": 436.9,
+        "hotText": "穆 西 亚 拉 这 脚 打 门 可 惜 了 就 差 一 点 点",
+        "hotMs": 466.1,
+        "hints": [
+          "巴塞罗那",
+          "皇家马德里",
+          "佩德里",
+          "法比安鲁伊斯",
+          "穆西亚拉",
+          "Bellingham",
+          "贝林厄姆",
+          "亚马尔",
+          "罗德里戈",
+          "维尼修斯"
+        ]
+      }
+    }
+  ]
+}

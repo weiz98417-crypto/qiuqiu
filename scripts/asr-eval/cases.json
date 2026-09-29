@@ -1,0 +1,114 @@
+{
+  "version": 1,
+  "description": "ASR 自托管评估用例集(asr-selfhost-eval 9.1)。四类:球员名中外文混杂/比分数字/中文口语碎句/直播间噪声。噪声例由 tts-generate.mjs 后处理:语音增益 0.35 + 白噪声 SNR≈8dB。hotwords 为该例应命中的关键实体,模拟主路 voiceRecognitionHints 的子集;对照时两家引擎同批同 hints。",
+  "hints": [
+    "巴塞罗那",
+    "皇家马德里",
+    "佩德里",
+    "法比安鲁伊斯",
+    "穆西亚拉",
+    "Bellingham",
+    "贝林厄姆",
+    "亚马尔",
+    "罗德里戈",
+    "维尼修斯"
+  ],
+  "cases": [
+    {
+      "id": "pm1",
+      "category": "player-mixed",
+      "text": "佩德里在中场拿球,一记直塞找到法比安鲁伊斯,这球给得真漂亮。",
+      "hotwords": ["佩德里", "法比安鲁伊斯"]
+    },
+    {
+      "id": "pm2",
+      "category": "player-mixed",
+      "text": "穆西亚拉带球突入禁区,Bellingham 后点包抄,把比分改写成二比一。",
+      "hotwords": ["穆西亚拉", "贝林厄姆"]
+    },
+    {
+      "id": "pm3",
+      "category": "player-mixed",
+      "text": "亚马尔右路内切晃过防守,小角度爆射近角,球进了!",
+      "hotwords": ["亚马尔"]
+    },
+    {
+      "id": "pm4",
+      "category": "player-mixed",
+      "text": "罗德里戈分边,维尼修斯提速下底,贝林厄姆中路跟进推射入网。",
+      "hotwords": ["罗德里戈", "维尼修斯", "贝林厄姆"]
+    },
+    {
+      "id": "sc1",
+      "category": "score",
+      "text": "现在场上比分二比一,主队暂时领先。",
+      "hotwords": []
+    },
+    {
+      "id": "sc2",
+      "category": "score",
+      "text": "上半场结束,比分定格在2-1。",
+      "hotwords": []
+    },
+    {
+      "id": "sc3",
+      "category": "score",
+      "text": "三比二!第八十九分钟完成绝杀,这剧情谁敢想。",
+      "hotwords": []
+    },
+    {
+      "id": "sc4",
+      "category": "score",
+      "text": "扳平了,1-1,双方回到同一起跑线,下半场见真章。",
+      "hotwords": []
+    },
+    {
+      "id": "cl1",
+      "category": "colloquial",
+      "text": "嗯,这球走起来了,有点意思。",
+      "hotwords": []
+    },
+    {
+      "id": "cl2",
+      "category": "colloquial",
+      "text": "卧槽漂亮!这脚世界波直接干碎了。",
+      "hotwords": []
+    },
+    {
+      "id": "cl3",
+      "category": "colloquial",
+      "text": "哎呀,这防守跟纸糊的一样,踢的什么玩意儿。",
+      "hotwords": []
+    },
+    {
+      "id": "cl4",
+      "category": "colloquial",
+      "text": "来了来了快传中!哎哟,差一点,可惜了。",
+      "hotwords": []
+    },
+    {
+      "id": "nz1",
+      "category": "noise",
+      "text": "佩德里这个处理球,太细了,反复看回放都不腻。",
+      "hotwords": ["佩德里"]
+    },
+    {
+      "id": "nz2",
+      "category": "noise",
+      "text": "看一下回放,刚才到底越没越位。",
+      "hotwords": []
+    },
+    {
+      "id": "nz3",
+      "category": "noise",
+      "text": "比分现在一比零,先别急着下结论。",
+      "hotwords": []
+    },
+    {
+      "id": "nz4",
+      "category": "noise",
+      "text": "穆西亚拉这脚打门,啧,可惜了,就差一点点。",
+      "hotwords": ["穆西亚拉"]
+    }
+  ]
+}
