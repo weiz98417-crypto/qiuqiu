@@ -4,6 +4,7 @@ import (
 	"context"
 	"errors"
 	"sync"
+	"sync/atomic"
 	"testing"
 	"time"
 
@@ -44,11 +45,12 @@ func (sink *responseSinkStub) DeliverStatus(_ context.Context, status DeliverySt
 type responseSynthesizerStub struct {
 	audio SynthesizedAudio
 	err   error
-	calls int
+	// calls 由并发 Deliver 路径读写(-race 猎获过裸 int),必须原子。
+	calls atomic.Int64
 }
 
 func (stub *responseSynthesizerStub) SynthesizeResponse(context.Context, string, relationship.PresentationPlan, []relationship.CommunicationAct) (SynthesizedAudio, error) {
-	stub.calls++
+	stub.calls.Add(1)
 	return stub.audio, stub.err
 }
 
@@ -113,8 +115,8 @@ func TestResponseDeliveryServiceDeliversTextAndAudioOnce(t *testing.T) {
 	if err != nil {
 		t.Fatalf("deliver duplicate: %v", err)
 	}
-	if !duplicate.Duplicate || len(sink.replies) != 1 || len(sink.audio) != 1 || synthesizer.calls != 1 || played != 1 {
-		t.Fatalf("duplicate response was delivered: %+v replies=%d audio=%d synth=%d played=%d", duplicate, len(sink.replies), len(sink.audio), synthesizer.calls, played)
+	if !duplicate.Duplicate || len(sink.replies) != 1 || len(sink.audio) != 1 || synthesizer.calls.Load() != 1 || played != 1 {
+		t.Fatalf("duplicate response was delivered: %+v replies=%d audio=%d synth=%d played=%d", duplicate, len(sink.replies), len(sink.audio), synthesizer.calls.Load(), played)
 	}
 }
 

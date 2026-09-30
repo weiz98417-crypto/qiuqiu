@@ -53,15 +53,15 @@ func SeedDir(ctx context.Context, store Store, dir string) (int, error) {
 		if err != nil {
 			return err
 		}
-		if _, err := store.Get(ctx, entry.ID); err == nil {
-			return nil // 幂等：已导入过（或运营已改）——跳过。
-		} else if err != ErrNotFound {
-			return fmt.Errorf("knowledge seed lookup %s: %w", entry.ID, err)
-		}
-		if _, err := store.Put(ctx, entry, "seed"); err != nil {
+		// 幂等走原子插入：存在（含运营已改）即不动。先查后插的 Get–Put
+		// 窗口里，并发落地的运营编辑会被 seed 的 upsert 整条覆盖。
+		inserted, err := store.PutIfAbsent(ctx, entry, "seed")
+		if err != nil {
 			return fmt.Errorf("knowledge seed insert %s: %w", entry.ID, err)
 		}
-		seeded++
+		if inserted {
+			seeded++
+		}
 		return nil
 	})
 	if err != nil {

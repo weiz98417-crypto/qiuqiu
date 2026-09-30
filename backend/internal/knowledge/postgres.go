@@ -129,3 +129,31 @@ func (s *PostgresStore) Put(ctx context.Context, entry Entry, operator string) (
 }
 
 var _ Store = (*PostgresStore)(nil)
+
+// PutIfAbsent 仅当 id 不存在时插入（ON CONFLICT DO NOTHING）；返回是否真的
+// 插入。seed 幂等走这里——先查后插窗口里并发落地的运营编辑不被陈旧 YAML
+// 追平（DB 是事实源）。校验口径同 Put。
+func (s *PostgresStore) PutIfAbsent(ctx context.Context, entry Entry, operator string) (bool, error) {
+	entry, err := preparePut(entry)
+	if err != nil {
+		return false, err
+	}
+	topicsJSON, err := json.Marshal(entry.Topics)
+	if err != nil {
+		return false, err
+	}
+	triggersJSON, err := json.Marshal(entry.Triggers)
+	if err != nil {
+		return false, err
+	}
+	tags, err := s.pool.Exec(ctx, `
+		INSERT INTO knowledge_entries (`+entryColumns+`)
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
+		ON CONFLICT (id) DO NOTHING
+	`, entry.ID, topicsJSON, entry.Answer, entry.Source, entry.Confidence,
+		entry.EffectiveAt, triggersJSON, entry.Quote, strings.TrimSpace(operator))
+	if err != nil {
+		return false, err
+	}
+	return tags.RowsAffected() == 1, nil
+}

@@ -105,6 +105,100 @@ void main() {
       await service.dispose();
     });
 
+    test('start 在途期间会话快速交替：迟到落地不得回 armed 双持麦', () async {
+      final service = build();
+      await service.setEnabled(true);
+      await service.notifySessionStarted(); // suspended（stop 已落地）。
+      engine.startGate = Completer<void>();
+      final ending = service.notifySessionEnded(); // start 在途，phase 仍 suspended。
+      await pump();
+      await service.notifySessionStarted(); // 新会话接手：_sessionActive=true，
+      // phase==suspended 走空分支不会停收音——迟到 start 落地必须自查让麦。
+      engine.startGate!.complete();
+      await ending;
+      expect(service.phase, WakePhase.suspended,
+          reason: '会话再次活跃：迟到 start 落地不得把 KWS 送回 armed 抢麦');
+      expect(engine.started, isFalse, reason: '活跃会话期间 KWS 不得持收音');
+      await service.dispose();
+    });
+
+    test('disable 穿插 stop 在途：迟到挂起不得覆写关机收敛（卡死 suspended）',
+        () async {
+      final service = build();
+      await service.setEnabled(true);
+      engine.stopGate = Completer<void>();
+      final suspending = service.notifySessionStarted(); // stop 在途。
+      await pump();
+      await service.setEnabled(false); // disabled、引擎已释放。
+      engine.stopGate!.complete();
+      await suspending;
+      expect(service.phase, WakePhase.disabled,
+          reason: '关机收敛不被在途 stop 的迟到 suspended 覆写');
+      // 卡死复验：若迟到挂起覆写成 suspended 且引擎已缺失，setEnabled(true)
+      // 会被「非 disabled/failure 不落地」守卫永久拒收。重新落地必须成功，
+      // 且状态机对会话事件仍响应（会话旗标按设计跨开关存活：先互斥挂起，
+      // 会话结束即恢复监听）。
+      engine = _FakeEngine();
+      await service.setEnabled(true);
+      expect(service.phase, WakePhase.suspended,
+          reason: '会话旗标未清：重试落地照互斥挂起');
+      await service.notifySessionEnded();
+      expect(service.phase, WakePhase.armed, reason: '关机循环不留下死态');
+      await service.dispose();
+    });
+
+    test('started→ended 均落在 stop 在途窗内：不得卡 suspended', () async {
+      final service = build();
+      await service.setEnabled(true);
+      engine.stopGate = Completer<void>();
+      final suspending = service.notifySessionStarted(); // stop 在途。
+      await pump();
+      await service.notifySessionEnded(); // phase 仍 armed：早退只清旗标。
+      engine.stopGate!.complete();
+      await suspending;
+      expect(service.phase, WakePhase.armed,
+          reason: '会话未及接手就结束：恢复空闲监听而不是永久挂起');
+      expect(engine.started, isTrue);
+      await service.dispose();
+    });
+
+    test('disable 穿插 start 在途：迟到失败不得把 disabled 覆写成 failure',
+        () async {
+      engine.startGate = Completer<void>();
+      engine.startError = StateError('late boom');
+      final service = build();
+      final enabling = service.setEnabled(true);
+      await pump(); // start 挂闸。
+      await service.setEnabled(false);
+      engine.startGate!.complete();
+      await enabling;
+      expect(service.phase, WakePhase.disabled,
+          reason: '关机收敛不被迟到失败覆写');
+      expect(service.failureReason, isNull);
+      await service.dispose();
+    });
+
+    test('disable 穿插工厂在途：工厂迟到抛错不得把 disabled 覆写成 failure',
+        () async {
+      final gate = Completer<void>();
+      final service = WakeService(
+        engineFactory: (config) async {
+          await gate.future;
+          throw StateError('late factory boom');
+        },
+        now: () => current,
+      );
+      final enabling = service.setEnabled(true);
+      await pump();
+      await service.setEnabled(false);
+      gate.complete();
+      await enabling;
+      expect(service.phase, WakePhase.disabled,
+          reason: '关机收敛不被迟到工厂失败覆写');
+      expect(service.failureReason, isNull);
+      await service.dispose();
+    });
+
     test('唤醒无人接手：openTimeout 后回 armed，不自动二次唤醒', () async {
       final service = WakeService(
         engineFactory: (config) async => engine,
@@ -321,6 +415,9 @@ class _FakeEngine implements KwsEngine {
   /// 非空时 start() 挂起至此门释放——复现「落地越过互斥检查点」的在途竞态。
   Completer<void>? startGate;
 
+  /// 非空时 stop() 挂起至此门释放——复现 stop 在途窗内的穿插竞态。
+  Completer<void>? stopGate;
+
   final _controller = StreamController<KwsHit>.broadcast();
 
   @override
@@ -344,6 +441,10 @@ class _FakeEngine implements KwsEngine {
 
   @override
   Future<void> stop() async {
+    final gate = stopGate;
+    if (gate != null) {
+      await gate.future;
+    }
     stopped = true;
     started = false;
   }

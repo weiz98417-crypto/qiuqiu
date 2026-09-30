@@ -220,3 +220,11 @@ func defaultString(value, fallback string) string {
 	}
 	return value
 }
+
+// WithCircuitBreaker 替换默认熔断器（阈值/开窗可调；测试注入短开窗用）。
+func (c *Client) WithCircuitBreaker(breaker *resilience.CircuitBreaker) *Client {
+	if breaker != nil {
+		c.breaker = breaker
+	}
+	return c
+}

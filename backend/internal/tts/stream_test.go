@@ -11,8 +11,11 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"strings"
+	"sync"
 	"testing"
 	"time"
+
+	"qiuqiu/internal/resilience"
 )
 
 // sseEvent 组一个 openai-compat chat completions 流式事件：delta 携带
@@ -467,5 +470,64 @@ func TestMockClientStreamDetailed(t *testing.T) {
 	}
 	if len(chunks) != 1 || string(chunks[0].Data) != "fake-pcm" || chunks[0].Degraded {
 		t.Fatalf("mock chunks = %+v, want single deterministic chunk", chunks)
+	}
+}
+
+// ── 猎虫追加：半开探测被打断后名额泄漏 → 熔断假死 ──
+
+// 打断路径（onChunk 中止 / 调用方取消）不记熔断失败是对的（供应商无辜），
+// 但半开态的探测名额也不归还——Allow 发出去的探测没有结论回来，probeTaken
+// 永远 true，之后每一次 Allow 都拒绝：语音链路假死到进程重启。
+func TestBugInterruptedHalfOpenProbeMustNotStrandBreaker(t *testing.T) {
+	var mu sync.Mutex
+	healthy := false
+	entered := make(chan struct{}, 8)
+	release := make(chan struct{})
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		mu.Lock()
+		h := healthy
+		mu.Unlock()
+		entered <- struct{}{}
+		if !h {
+			http.Error(w, "down", http.StatusInternalServerError)
+			return
+		}
+		<-release
+		w.Header().Set("Content-Type", "text/event-stream")
+		fmt.Fprint(w, sseEvent(t, []byte("recovered")), sseDone())
+	}))
+	defer server.Close()
+
+	client := NewClient("tts-key").WithBaseURL(server.URL).WithHTTPClient(server.Client()).
+		WithCircuitBreaker(resilience.NewCircuitBreaker(3, 30*time.Millisecond))
+	// 三次失败 → open。
+	for i := 0; i < 3; i++ {
+		if _, err := client.Synthesize(context.Background(), "喂？", VoiceOpts{}); err == nil {
+			t.Fatalf("synthesize %d must fail", i)
+		}
+	}
+	// 等 openFor 过去，下一次调用成为半开探测。
+	time.Sleep(60 * time.Millisecond)
+	// 探测请求打到服务端后立即打断（打断语义：不回退、不记熔断）。
+	ctx, cancel := context.WithCancel(context.Background())
+	go func() {
+		<-entered
+		cancel()
+		close(release)
+	}()
+	if err := client.SynthesizeStreamDetailed(ctx, "一句话。", VoiceOpts{}, func(StreamChunk) error { return nil }); !errors.Is(err, context.Canceled) {
+		t.Fatalf("interrupted probe must surface ctx error, got %v", err)
+	}
+	// 服务恢复：下一次调用必须重新获得探测机会并成功——修复前名额未归还，
+	// 这里只能拿到 tts unavailable（熔断假死）。
+	mu.Lock()
+	healthy = true
+	mu.Unlock()
+	chunks, err := collectChunks(t, client, "还在吗。", VoiceOpts{})
+	if err != nil {
+		t.Fatalf("interrupted half-open probe stranded the breaker: %v", err)
+	}
+	if len(chunks) != 1 || chunks[0].Degraded {
+		t.Fatalf("chunks = %+v, want one healthy stream chunk", chunks)
 	}
 }

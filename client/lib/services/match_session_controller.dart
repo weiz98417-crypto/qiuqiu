@@ -1072,11 +1072,17 @@ class MatchSessionController extends ChangeNotifier {
   void queueAudioMetadata(PendingAudio metadata, {String? source}) {
     // deliveryKey 去重覆盖两条服务端下发通道：match_reaction（回合反应，
     // 恢复重发可能重复）与 backchannel（微反应 v1.1，重连后事件再投影会
-    // 重新触发）；两者都按下发键一进一出。
+    // 重新触发）；两者都按下发键一进一出。句粒度路径（voice-streaming-
+    // delivery 3.4）一个回合多帧共享同一 turn 级 deliveryKey，只有
+    // sentenceIndex 逐句区分——去重键并上句序号，重发仍逐句挡，正常流
+    // 的第 2..n 句不再被误标 skip（整段路径不带句序号，键不变）。
     final dedupeByDeliveryKey =
         source == 'match_reaction' || source == 'backchannel';
-    final duplicate =
-        dedupeByDeliveryKey && !_seenAudio.remember(metadata.deliveryKey);
+    final sentenceKey = (metadata.sentenceIndex ?? 0) > 0
+        ? '#s${metadata.sentenceIndex}'
+        : '';
+    final duplicate = dedupeByDeliveryKey &&
+        !_seenAudio.remember('${metadata.deliveryKey}$sentenceKey');
     final retracted = source == 'match_reaction' &&
         isRetractedMatchReaction(metadata.eventId, _state.retractedFactIds);
     _pendingAudio.add(metadata.copyWith(skip: duplicate || retracted));
@@ -1455,6 +1461,11 @@ class PendingAudio {
   final String? traceId;
   final String? eventId;
   final String? deliveryKey;
+
+  /// 句粒度帧的句序号（voice-streaming-delivery 3.4，0 基；服务端 wire 层
+  /// 对 0 省略，整段路径不带）。只参与去重键区分同回合的各句帧，
+  /// FIFO 配对仍按到达序。
+  final int? sentenceIndex;
   final int? byteLength;
   final bool skip;
 
@@ -1463,6 +1474,7 @@ class PendingAudio {
     this.traceId,
     this.eventId,
     this.deliveryKey,
+    this.sentenceIndex,
     this.byteLength,
     this.skip = false,
   });
@@ -1472,6 +1484,7 @@ class PendingAudio {
         traceId: traceId,
         eventId: eventId,
         deliveryKey: deliveryKey,
+        sentenceIndex: sentenceIndex,
         byteLength: byteLength,
         skip: skip ?? this.skip,
       );

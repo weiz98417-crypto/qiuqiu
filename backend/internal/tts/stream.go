@@ -95,12 +95,16 @@ func (c *Client) SynthesizeStreamDetailed(ctx context.Context, text string, opts
 		return nil
 	}
 	// 调用方经 onChunk 主动中止（含打断 cancel 的转发）：不回退、不记熔断。
+	// 打断的调用没有结论——半开探测名额照旧归还，否则熔断停在 half_open
+	// 假死（Allow 永远拒绝）。
 	if aborted {
+		c.breaker.ReleaseProbe()
 		return err
 	}
 	// 调用方取消了整个合成（打断语义，task 3.5 依赖）：不回退、不记熔断，
-	// 剩余音频不再合成——回退会违背「剩余句不下发」。
+	// 剩余音频不再合成——回退会违背「剩余句不下发」。探测名额同上归还。
 	if ctx.Err() != nil {
+		c.breaker.ReleaseProbe()
 		return ctx.Err()
 	}
 	// 流式失败（断流/超时/非 200/零分片）：记一次熔断失败后回退整段。

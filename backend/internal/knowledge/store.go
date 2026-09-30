@@ -29,11 +29,14 @@ type Record struct {
 }
 
 // Store 是策展面的持久化接缝。List/Get 供运营台读与 Library 装载；Put 是
-// 保存即生效的 upsert（存在则整条更新，created_by/created_at 保留首建值）。
+// 保存即生效的 upsert（存在则整条更新，created_by/created_at 保留首建值）；
+// PutIfAbsent 是幂等插入的原子面（seed 专用）——存在即不动、返回 false，
+// 消掉先查后插窗口里运营编辑被 seed 覆盖的竞态。
 type Store interface {
 	List(ctx context.Context) ([]Record, error)
 	Get(ctx context.Context, id string) (Record, error)
 	Put(ctx context.Context, entry Entry, operator string) (Record, error)
+	PutIfAbsent(ctx context.Context, entry Entry, operator string) (bool, error)
 }
 
 // preparePut 归一化并校验条目，两套实现共用一套口径：id/answer/topics 必填、
@@ -129,6 +132,22 @@ func (m *MemoryStore) Put(_ context.Context, entry Entry, operator string) (Reco
 	record.UpdatedAt = now
 	m.entries[entry.ID] = record
 	return record, nil
+}
+
+// PutIfAbsent 仅当 id 不存在时插入；返回是否真的插入。校验口径同 Put。
+func (m *MemoryStore) PutIfAbsent(_ context.Context, entry Entry, operator string) (bool, error) {
+	entry, err := preparePut(entry)
+	if err != nil {
+		return false, err
+	}
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	if _, ok := m.entries[entry.ID]; ok {
+		return false, nil
+	}
+	now := m.now().UTC()
+	m.entries[entry.ID] = Record{Entry: entry, CreatedBy: strings.TrimSpace(operator), CreatedAt: now, UpdatedAt: now}
+	return true, nil
 }
 
 var _ Store = (*MemoryStore)(nil)

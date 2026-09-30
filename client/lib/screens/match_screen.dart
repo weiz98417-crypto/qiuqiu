@@ -511,6 +511,7 @@ class _MatchScreenState extends State<MatchScreen> {
               traceId: message['traceId'] as String?,
               eventId: message['eventId']?.toString(),
               deliveryKey: message['deliveryKey']?.toString(),
+              sentenceIndex: _integer(message['sentenceIndex']),
               byteLength: _integer(message['byteLength']),
             ),
             source: message['source']?.toString());

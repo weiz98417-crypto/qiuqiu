@@ -148,6 +148,10 @@ class WakeService {
         throw StateError('wake engine unavailable on this platform');
       }
     } catch (error) {
+      if (_disposed || _phase != WakePhase.starting) {
+        // starting 期间被关掉：收敛归 setEnabled(false)，迟到失败不覆写。
+        return;
+      }
       _failureReason = error.toString();
       _setPhase(WakePhase.failure);
       return;
@@ -165,18 +169,13 @@ class WakeService {
       // starting/failure 期间会话已开：落地即挂起（麦克风让给 VAD），
       // 不起收音——重试落地不得绕过互斥去抢活跃 VAD 的麦克风。
       _pendingSuspend = false;
-      try {
-        await engine.stop();
-        _setPhase(WakePhase.suspended);
-      } catch (error) {
-        _failureReason = error.toString();
-        _setPhase(WakePhase.failure);
-      }
+      await _suspendLanded(engine);
       return;
     }
     try {
       await engine.start();
     } catch (error) {
+      if (_disposed || _phase != WakePhase.starting) return;
       _failureReason = error.toString();
       _setPhase(WakePhase.failure);
       return;
@@ -185,16 +184,26 @@ class WakeService {
     // 会留下 _pendingSuspend/_sessionActive——立即停收音让麦，不双持。
     if (_pendingSuspend || _sessionActive) {
       _pendingSuspend = false;
-      try {
-        await engine.stop();
-        _setPhase(WakePhase.suspended);
-      } catch (error) {
-        _failureReason = error.toString();
-        _setPhase(WakePhase.failure);
-      }
+      await _suspendLanded(engine);
       return;
     }
     _setPhase(WakePhase.armed);
+  }
+
+  /// 挂起落地（麦克风让给活跃会话）。stop 在途被关机穿插时收敛归
+  /// setEnabled(false)，迟到的 suspended 不覆写 disabled（否则
+  /// setEnabled(true) 被「非 disabled/failure 不落地」守卫永久拒收）。
+  Future<void> _suspendLanded(KwsEngine engine) async {
+    try {
+      await engine.stop();
+    } catch (error) {
+      if (_disposed || _phase != WakePhase.starting) return;
+      _failureReason = error.toString();
+      _setPhase(WakePhase.failure);
+      return;
+    }
+    if (_disposed || _phase != WakePhase.starting) return;
+    _setPhase(WakePhase.suspended);
   }
 
   /// 语音会话开始（VAD listening）：互斥挂起。armed/awakening/starting 均可
@@ -206,8 +215,7 @@ class WakeService {
     switch (_phase) {
       case WakePhase.armed:
       case WakePhase.awakening:
-        await _engine?.stop();
-        _setPhase(WakePhase.suspended);
+        await _suspendFromIdle(_engine);
         break;
       case WakePhase.starting:
         _pendingSuspend = true;
@@ -216,6 +224,43 @@ class WakeService {
       case WakePhase.suspended:
       case WakePhase.failure:
         break;
+    }
+  }
+
+  /// armed/awakening → suspended 的挂起路径。stop 在途窗内状态可能被
+  /// 穿插（关机收敛 / 会话快速翻面），每次 await 落地都复查后再动相位。
+  Future<void> _suspendFromIdle(KwsEngine? engine) async {
+    await engine?.stop();
+    if (_phase != WakePhase.armed && _phase != WakePhase.awakening) {
+      return; // 关机等穿插：收敛归 setEnabled(false)，迟到挂起不覆写。
+    }
+    if (_sessionActive) {
+      _setPhase(WakePhase.suspended);
+      return;
+    }
+    // 会话未及接手就结束（started→ended 均落 stop 在途窗内）：恢复
+    // 空闲监听而不是永久挂在 suspended。
+    if (engine == null) return;
+    try {
+      await engine.start();
+    } catch (error) {
+      if (_phase != WakePhase.armed && _phase != WakePhase.awakening) return;
+      _failureReason = error.toString();
+      _setPhase(WakePhase.failure);
+      return;
+    }
+    if (_sessionActive) {
+      // restart 在途期间会话又接手：立即停收音让麦，不落 armed 双持。
+      try {
+        await engine.stop();
+      } catch (_) {}
+      if (_phase == WakePhase.armed || _phase == WakePhase.awakening) {
+        _setPhase(WakePhase.suspended);
+      }
+      return;
+    }
+    if (_phase == WakePhase.armed || _phase == WakePhase.awakening) {
+      _setPhase(WakePhase.armed);
     }
   }
 
@@ -232,11 +277,22 @@ class WakeService {
     if (engine == null) return;
     try {
       await engine.start();
-      _setPhase(WakePhase.armed);
     } catch (error) {
+      if (_phase != WakePhase.suspended) return; // 在途穿插：收敛归它管。
       _failureReason = error.toString();
       _setPhase(WakePhase.failure);
+      return;
     }
+    if (_phase != WakePhase.suspended) return; // start 在途被关机穿插。
+    if (_sessionActive) {
+      // 快速交替：start 在途期间新会话已接手（notifySessionStarted 落在
+      // suspended 分支不会停收音）——立即停收音让麦，不落 armed 双持。
+      try {
+        await engine.stop();
+      } catch (_) {}
+      return;
+    }
+    _setPhase(WakePhase.armed);
   }
 
   /// 唤醒打开的会话里用户开口了：解除「无后续语音回静默」超时。

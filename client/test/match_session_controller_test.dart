@@ -312,6 +312,93 @@ void main() {
     );
   });
 
+  test('流式回合的句帧逐句播放：deliveryKey 去重不得吞掉第 2..n 句', () {
+    // 后端句粒度路径（voice-streaming-delivery 3.4）一个回合下发多帧
+    // voice_audio，共享同一 turn 级 deliveryKey，仅 sentenceIndex 逐句区分
+    // （0 基，wire 层对 0 省略）。按裸 deliveryKey 去重会把第 2..n 句误标
+    // skip——整轮只剩首句出声。
+    final controller = MatchSessionController();
+    const frames = [
+      PendingAudio(
+          mime: 'audio/wav',
+          traceId: 'trace-ws',
+          eventId: 'goal-1',
+          deliveryKey: 'goal:ws'),
+      PendingAudio(
+          mime: 'audio/wav',
+          traceId: 'trace-ws',
+          eventId: 'goal-1',
+          deliveryKey: 'goal:ws',
+          sentenceIndex: 1),
+      PendingAudio(
+          mime: 'audio/wav',
+          traceId: 'trace-ws',
+          eventId: 'goal-1',
+          deliveryKey: 'goal:ws',
+          sentenceIndex: 2),
+    ];
+    for (final frame in frames) {
+      controller.queueAudioMetadata(frame, source: 'match_reaction');
+    }
+    expect(controller.state.pendingAudioCount, 3);
+    for (var index = 0; index < 3; index++) {
+      controller.consumeAudio(Uint8List.fromList([index]),
+          soundEnabled: true, continuousEnabled: true);
+    }
+    final commands = controller.takeCommands();
+    expect(commands.whereType<PlayAudioCommand>(), hasLength(3),
+        reason: '每一句都该照常入播');
+    expect(
+      commands
+          .whereType<SendSocketCommand>()
+          .map((command) => command.message['type']),
+      isNot(contains('playback_result')),
+      reason: '句帧不是重发，不得被标 skipped 上报',
+    );
+  });
+
+  test('同回合句帧重发按句序号逐句去重', () {
+    final controller = MatchSessionController();
+    List<PendingAudio> turn() => const [
+          PendingAudio(
+              mime: 'audio/wav',
+              traceId: 'trace-ws',
+              eventId: 'goal-1',
+              deliveryKey: 'goal:ws'),
+          PendingAudio(
+              mime: 'audio/wav',
+              traceId: 'trace-ws',
+              eventId: 'goal-1',
+              deliveryKey: 'goal:ws',
+              sentenceIndex: 1),
+          PendingAudio(
+              mime: 'audio/wav',
+              traceId: 'trace-ws',
+              eventId: 'goal-1',
+              deliveryKey: 'goal:ws',
+              sentenceIndex: 2),
+        ];
+    for (final frame in turn()) {
+      controller.queueAudioMetadata(frame, source: 'match_reaction');
+    }
+    for (final frame in turn()) {
+      controller.queueAudioMetadata(frame, source: 'match_reaction');
+    }
+    expect(controller.state.pendingAudioCount, 6);
+    for (var index = 0; index < 6; index++) {
+      controller.consumeAudio(Uint8List.fromList([index]),
+          soundEnabled: true, continuousEnabled: true);
+    }
+    final commands = controller.takeCommands();
+    expect(commands.whereType<PlayAudioCommand>(), hasLength(3),
+        reason: '重发的句帧逐句跳过，已播的句子不重复出声');
+    final skipped = commands
+        .whereType<SendSocketCommand>()
+        .where((command) => command.message['type'] == 'playback_result')
+        .length;
+    expect(skipped, 3);
+  });
+
   test('retracting an active match reaction stops media and clears it', () {
     final controller = MatchSessionController();
     const presentation = CompanionPresentation(

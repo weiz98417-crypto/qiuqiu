@@ -192,3 +192,71 @@ func TestReloadRequiresStore(t *testing.T) {
 		t.Fatal("reload on file-loaded library must fail (no store)")
 	}
 }
+
+// ── 猎虫追加：SeedDir 幂等窗口覆盖并发运营编辑 ──
+
+// seedRaceStore 在 SeedDir 对目标 id 的写入（Put/PutIfAbsent）落地之前，
+// 注入一次运营台保存（保存即生效）——确定性重现「seed 查到未找到/开始
+// 写入」与「seed 写入生效」窗口里的并发交错。
+type seedRaceStore struct {
+	Store
+	injectID string
+	inject   Entry
+	fired    bool
+}
+
+func (s *seedRaceStore) fire(ctx context.Context, id string) error {
+	if s.fired || id != s.injectID {
+		return nil
+	}
+	s.fired = true
+	_, err := s.Store.Put(ctx, s.inject, "op-live")
+	return err
+}
+
+func (s *seedRaceStore) Put(ctx context.Context, entry Entry, operator string) (Record, error) {
+	if err := s.fire(ctx, entry.ID); err != nil {
+		return Record{}, err
+	}
+	return s.Store.Put(ctx, entry, operator)
+}
+
+func (s *seedRaceStore) PutIfAbsent(ctx context.Context, entry Entry, operator string) (bool, error) {
+	if err := s.fire(ctx, entry.ID); err != nil {
+		return false, err
+	}
+	return s.Store.PutIfAbsent(ctx, entry, operator)
+}
+
+// 幂等纪律的另一半：「运营在 DB 里的编辑永不被 seed 覆盖」。seed 的幂等
+// 判定与写入不是原子的——写入窗口里落地的运营编辑会被 seed 的 upsert
+// 整条覆盖。
+func TestBugSeedMustNotOverwriteOperatorEditLandedDuringSeed(t *testing.T) {
+	ctx := context.Background()
+	dir := writeSeedDir(t)
+	operatorEdit := Entry{
+		ID: "rule-offside", Topics: []string{"越位"},
+		Answer: "运营台复查后的最新口径。", Source: "运营台", Confidence: 0.9,
+		EffectiveAt: time.Date(2026, 9, 30, 0, 0, 0, 0, time.UTC),
+	}
+	store := &seedRaceStore{Store: NewMemoryStore(), injectID: "rule-offside", inject: operatorEdit}
+
+	seeded, err := SeedDir(ctx, store, dir)
+	if err != nil {
+		t.Fatalf("seed: %v", err)
+	}
+	record, err := store.Get(ctx, "rule-offside")
+	if err != nil {
+		t.Fatalf("get: %v", err)
+	}
+	if record.Answer != operatorEdit.Answer {
+		t.Fatalf("operator edit clobbered by seed: answer = %q, want %q", record.Answer, operatorEdit.Answer)
+	}
+	if record.CreatedBy != "op-live" {
+		t.Fatalf("created_by = %q, want op-live (seed must not steal provenance)", record.CreatedBy)
+	}
+	// 运营编辑占位后，rule-offside 不再计入 seed 新增；player-haaland 正常入种。
+	if seeded != 1 {
+		t.Fatalf("seeded = %d, want 1 (rule-offside must be skipped, player-haaland seeded)", seeded)
+	}
+}

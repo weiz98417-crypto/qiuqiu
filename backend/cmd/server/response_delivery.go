@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"encoding/binary"
 	"strings"
 
 	"qiuqiu/internal/companion"
@@ -116,13 +117,23 @@ func (sink *collectingResponseSink) Audio() conversation.AudioDelivery {
 	}
 }
 
-// isCanonicalWAV 判定本包 WAVFromPCM16 的 44 字节规范头(RIFF/WAVE/fmt ),
-// 合帧剥头才安全——非规范头的 WAV 完整产物走首帧回退。
+// isCanonicalWAV 判定本包 WAVFromPCM16 的 44 字节规范头(RIFF/WAVE/fmt ,
+// fmt 块定长 16、线性 PCM、单声道、24kHz、16 位、fmt 之后紧跟 data 块),
+// 合帧剥头才安全——非规范头的 WAV 完整产物走首帧回退。只看前 16 字节
+// 不够:fmt 与 data 之间夹了 LIST/INFO 等额外块的合法 WAV(供应商完整
+// 产物的真实形态)头 16 字节无异,剥 data[44:] 会把块字节当 PCM 拼进
+// 合并产物(音频腐蚀)。
 func isCanonicalWAV(data []byte) bool {
 	return len(data) > 44 &&
 		string(data[0:4]) == "RIFF" &&
 		string(data[8:12]) == "WAVE" &&
-		string(data[12:16]) == "fmt "
+		string(data[12:16]) == "fmt " &&
+		binary.LittleEndian.Uint32(data[16:20]) == 16 && // fmt 块定长 16（无扩展区）
+		binary.LittleEndian.Uint16(data[20:22]) == 1 && // 线性 PCM
+		binary.LittleEndian.Uint16(data[22:24]) == 1 && // 单声道
+		binary.LittleEndian.Uint32(data[24:28]) == tts.PCMStreamSampleRate && // 24kHz
+		binary.LittleEndian.Uint16(data[34:36]) == 16 && // 16 位
+		string(data[36:40]) == "data" // fmt 之后紧跟 data（排除夹块）
 }
 
 // mediaDeliveryRecorder 把投递服务的媒体记账事件落到互动账本（两条装配线

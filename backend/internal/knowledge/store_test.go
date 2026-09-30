@@ -105,6 +105,29 @@ func exerciseStoreParity(t *testing.T, store Store) {
 		if _, err := store.Put(ctx, entry, "阿琴"); err == nil {
 			t.Fatalf("put %+v = nil error, want validation failure", entry)
 		}
+		if _, err := store.PutIfAbsent(ctx, entry, "阿琴"); err == nil {
+			t.Fatalf("put-if-absent %+v = nil error, want validation failure", entry)
+		}
+	}
+
+	// PutIfAbsent：存在即不动（false、内容不被触碰），缺位才插入（true，
+	// 留痕同 Put）——seed 幂等的原子面。
+	inserted, err := store.PutIfAbsent(ctx, testEntry("rule-a", "越位", "不该落地的答案。", effective), "seed")
+	if err != nil {
+		t.Fatalf("put-if-absent existing: %v", err)
+	}
+	if inserted {
+		t.Fatal("put-if-absent on existing id must report false")
+	}
+	if got, err := store.Get(ctx, "rule-a"); err != nil || got.Answer != "复查后的新答案原文。" {
+		t.Fatalf("existing entry touched by put-if-absent: answer = %q err = %v", got.Answer, err)
+	}
+	inserted, err = store.PutIfAbsent(ctx, testEntry("rule-new", "定位球", "定位球答案原文。", effective), "seed")
+	if err != nil || !inserted {
+		t.Fatalf("put-if-absent missing id = %v, %v; want inserted", inserted, err)
+	}
+	if got, err := store.Get(ctx, "rule-new"); err != nil || got.CreatedBy != "seed" {
+		t.Fatalf("put-if-absent record = %+v err = %v; want created_by seed", got, err)
 	}
 }
 
