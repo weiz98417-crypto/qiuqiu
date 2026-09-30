@@ -1217,6 +1217,16 @@ class MatchSessionController extends ChangeNotifier {
     switch (status) {
       case 'text_fallback':
         _publish(_state.copyWith(notice: '这句没听清，已经用文字继续。'));
+      case 'truncated':
+        // 部分音频已播、流中断：内容已全文在字幕（文本先行），轻提示不误导。
+        _publish(_state.copyWith(
+          notice: '回答没播完，内容都在字幕里。',
+          phase: continuousEnabled
+              ? MatchSessionPhase.listening
+              : MatchSessionPhase.idle,
+        ));
+        _commands.add(const SchedulePresentationReturnCommand());
+        _finishFirstMeetingGreeting(continuousEnabled);
       case 'tts_fallback':
         _publish(_state.copyWith(
           notice: '声音暂时没出来，回答已显示在字幕里。',

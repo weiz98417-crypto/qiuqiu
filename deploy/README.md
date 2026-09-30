@@ -5,6 +5,10 @@
 `postgres_data` 卷是唯一的全量事实源：画像、事实账本（Interaction Ledger）与全部
 业务表都在里面，必须可恢复。备份用 `pg_dump`（custom 格式，可并行恢复、可压缩）：
 
+> 知识条目（`knowledge_entries`，knowledge-curation-console 起 DB 为唯一可写源、
+> repo YAML 只是 seed）也在整库 dump 内——上表即备份，无需单独导出；策展台
+> 编辑后记得确认当日备份任务在跑。
+
 ```bash
 # 手动备份（在仓库根目录，compose 项目内执行）
 mkdir -p backups

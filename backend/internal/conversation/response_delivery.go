@@ -30,6 +30,9 @@ type AudioDelivery struct {
 	DeliveryKey string
 	// SentenceIndex 是句粒度路径的句序号（0 基；整段路径恒 0，wire 层省略）。
 	SentenceIndex int
+	// SentenceCount 是本回合总句数（0=整段路径，wire 层省略；外部声音 #9：
+	// 流结束可感知，客户端可据 index==count-1 判终）。
+	SentenceCount int
 }
 
 type DeliveryStatus struct {
@@ -413,6 +416,7 @@ func (service *ResponseDeliveryService) deliverStreaming(ctx context.Context, re
 		return service.sink.DeliverAudio(ctx, AudioDelivery{
 			Data: sentence.Data, MIME: mime, TraceID: request.Trace.ID, Source: request.Source,
 			EventID: request.EventID, DeliveryKey: request.DeliveryKey, SentenceIndex: sentence.SentenceIndex,
+			SentenceCount: sentence.SentenceCount,
 		})
 	})
 	result.SentenceCount = sentenceCount
@@ -421,11 +425,13 @@ func (service *ResponseDeliveryService) deliverStreaming(ctx context.Context, re
 			service.interrupt(request.Trace.ID)
 			return result, ctx.Err()
 		}
-		// 已有句下发（播了就是播了）：客户端不该再收「声音暂时没出来」的
-		// 失真提示——跳过 tts_fallback 状态帧，媒体失败照记，FallbackReason
-		// 保留供观测；零帧才走完整 fallback（与整段路径同语义）。
+		// 已有句下发（播了就是播了）：不发误导性的 tts_fallback（声音明明
+		// 出过）——改发 truncated 截断信号，客户端轻提示「没播完，内容在
+		// 字幕里」；媒体 failed 照记，FallbackReason 保留观测。零帧才走
+		// 完整 fallback（与整段路径同语义）。
 		if result.TTSByteCount > 0 {
 			result.FallbackReason = streamErr.Error()
+			_ = service.sink.DeliverStatus(ctx, DeliveryStatus{Kind: "voice", State: "truncated", Reason: streamErr.Error(), TraceID: request.Trace.ID})
 			_ = service.recordMedia(ctx, request, result.TTSMime, "failed", streamErr.Error())
 			return result, nil
 		}

@@ -66,6 +66,14 @@ void main() {
     expect(controller.state.notice, isNotEmpty);
   });
 
+  test('truncated partial stream notifies without subtitle fallback', () {
+    final controller = MatchSessionController();
+    controller.handleVoiceStatus('truncated', continuousEnabled: true);
+    expect(controller.state.phase, MatchSessionPhase.listening);
+    expect(controller.state.notice, contains('字幕'));
+    expect(controller.state.subtitleFallback, isFalse);
+  });
+
   test('dispatch normalizes socket, transcript and playback events', () {
     final controller = MatchSessionController();
     controller.dispatch(const SocketSessionEvent(connected: true));

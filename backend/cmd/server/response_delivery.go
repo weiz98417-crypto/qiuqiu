@@ -41,8 +41,13 @@ func (sink websocketResponseSink) DeliverAudio(_ context.Context, delivery conve
 	}
 	// 句粒度路径（voice-streaming-delivery 3.4）：句序号随帧；整段路径
 	// 恒 0，wire 层省略（老客户端零感知，FIFO 配对按到达序不受影响）。
+	// sentenceCount 随帧下发（外部声音 #9：流结束可感知，客户端可据
+	// index==count-1 判终；0/缺省=整段路径）。
 	if delivery.SentenceIndex > 0 {
 		message["sentenceIndex"] = delivery.SentenceIndex
+	}
+	if delivery.SentenceCount > 0 {
+		message["sentenceCount"] = delivery.SentenceCount
 	}
 	return sink.writer.SendAudio(message, delivery.Data)
 }

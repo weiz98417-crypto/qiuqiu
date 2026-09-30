@@ -471,9 +471,10 @@ func TestResponseDeliveryStreamMidwayFailureFallsBackWithoutResending(t *testing
 	if len(sink.audio) != 1 {
 		t.Fatalf("delivered sentence must not be resent: %d frames", len(sink.audio))
 	}
-	// 已有句下发：不再发失真的 tts_fallback 状态帧；FallbackReason 保留观测。
-	if len(sink.statuses) != 0 {
-		t.Fatalf("partial delivery must not send fallback status, got %+v", sink.statuses)
+	// 已有句下发：不再发失真的 tts_fallback，改发 truncated 截断信号；
+	// FallbackReason 保留观测。
+	if len(sink.statuses) != 1 || sink.statuses[0].State != "truncated" {
+		t.Fatalf("partial delivery must send exactly one truncated status, got %+v", sink.statuses)
 	}
 	if result.FallbackReason == "" {
 		t.Fatalf("partial delivery must keep FallbackReason for observability, got %+v", result)
