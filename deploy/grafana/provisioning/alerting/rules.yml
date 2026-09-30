@@ -45,7 +45,7 @@ groups:
       # 演示环境正常 p95 在两位数 ms），持续 15m 才报；恢复通知由 contact
       # point 侧 disableResolveMessage: false 保证。
       - uid: qiuqiu-voice-latency-p95
-        title: 语音延迟 P95 超阈（> 5000ms 持续 15m）
+        title: 语音延迟 P95 超阈（> 3000ms 持续 15m）
         condition: C
         for: 5m
         noDataState: OK
@@ -106,8 +106,8 @@ groups:
             model:
               conditions:
                 - evaluator:
-                    # ── 显式阈值参数：P95 > 5000ms（观测一周后收紧）──
-                    params: [5000]
+                    # ── 显式阈值参数：P95 > 3000ms（2026-10-01 用户裁决跳过观测期,按预算直接收;偏差再回调）──
+                    params: [3000]
                     type: gt
                   operator:
                     type: and
@@ -131,7 +131,7 @@ groups:
       # 下发时刻；见 docs/design/trace-genai-alignment.md 保留清单）。
       # 阈值 P95 > 2500ms 宽松起步——Phase A 预算 ≈1.2-1.5s，真机预采后收紧。
       - uid: qiuqiu-tts-first-audio-p95
-        title: 首响 P95 超阈（tts_first_audio > 2500ms 持续 15m）
+        title: 首响 P95 超阈（tts_first_audio > 1800ms 持续 15m）
         condition: C
         for: 5m
         noDataState: OK
@@ -191,8 +191,8 @@ groups:
             model:
               conditions:
                 - evaluator:
-                    # ── 显式阈值参数：P95 > 2500ms（真机预采后收紧）──
-                    params: [2500]
+                    # ── 显式阈值参数：P95 > 1800ms（2026-10-01 用户裁决直接收紧至 Phase A 预算上界外）──
+                    params: [1800]
                     type: gt
                   operator:
                     type: and
@@ -216,7 +216,7 @@ groups:
       # client 均 NewCircuitBreaker(3, 10s)），告警取 30m 窗口错误 > 5 条：
       # 只有持续性真故障才达线，偶发单次失败不响。窗口与阈值宽松起步。
       - uid: qiuqiu-provider-error-count
-        title: LLM/TTS/ASR 供应商错误率超阈（30m 错误 > 5 条；熔断器落库代理）
+        title: LLM/TTS/ASR 供应商错误率超阈（30m 错误 > 3 条；熔断器落库代理）
         condition: C
         for: 5m
         noDataState: OK
@@ -277,7 +277,7 @@ groups:
               conditions:
                 - evaluator:
                     # ── 显式阈值参数：30m 窗口错误 > 5 条（观测一周后收紧）──
-                    params: [5]
+                    params: [3]
                     type: gt
                   operator:
                     type: and
@@ -298,16 +298,16 @@ groups:
 
       # ── ④ api-sports poller 停摆（freshness 超窗的落库代理，见文件头④）──
       # 原生 freshness 标签在内存不可查；此处以 provider 事件断流为停摆面：
-      # 近 24h 内有过 api-sports 事件（=有比赛进行中）但已 15m 无新事件。
+      # 近 24h 内有过 api-sports 事件（=有比赛进行中）但已 10m 无新事件。
       # 无 provider 事件（无比赛）时查询空返回 → noDataState: OK，不误报。
       - uid: qiuqiu-poller-stall
-        title: api-sports poller 停摆（24h 窗口内 15m 无 provider 事件）
+        title: api-sports poller 停摆（24h 窗口内 10m 无 provider 事件）
         condition: C
-        for: 0m # 15m 断流本身就是持续条件，不再加持有期
+        for: 0m # 10m 断流本身就是持续条件，不再加持有期
         noDataState: OK
         execErrState: KeepLast
         annotations:
-          summary: api-sports poller 疑似停摆：近期有比赛数据但 15m 无新 provider 事件
+          summary: api-sports poller 疑似停摆：近期有比赛数据但 10m 无新 provider 事件
         labels:
           severity: page
           source: qiuqiu-operations
@@ -364,9 +364,9 @@ groups:
             model:
               conditions:
                 - evaluator:
-                    # ── 显式阈值参数：断流 > 900s（15m；原生动态阈值 6–20s
-                    #    在演示环境过于敏感，宽松起步观测后收紧）──
-                    params: [900]
+                    # ── 显式阈值参数：断流 > 600s（10m；2026-10-01 用户裁决直接收紧;原生动态阈值 6–20s
+                    #    在演示环境过于敏感，直接收,不再等观测）──
+                    params: [600]
                     type: gt
                   operator:
                     type: and
