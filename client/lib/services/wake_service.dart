@@ -98,6 +98,12 @@ class WakeService {
 
   /// starting 未落地时的挂起/关闭请求落地旗标（测试用例覆盖）。
   bool _pendingSuspend = false;
+
+  /// 会话活跃（VAD 持麦）真值：notifySessionStarted/Ended 维护。failure 态
+  /// 期间的会话不经过 armed，状态机不留痕迹——failure→开关循环重试落地时
+  /// 据此避让，不让 KWS 与活跃 VAD 双持麦克风。
+  bool _sessionActive = false;
+
   bool _disposed = false;
   String? _failureReason;
 
@@ -155,8 +161,9 @@ class WakeService {
     }
     _engine = engine;
     _hitsSub = engine.hits.listen(_onHit);
-    if (_pendingSuspend) {
-      // starting 期间会话已开：落地即挂起（麦克风让给 VAD），不起收音。
+    if (_pendingSuspend || _sessionActive) {
+      // starting/failure 期间会话已开：落地即挂起（麦克风让给 VAD），
+      // 不起收音——重试落地不得绕过互斥去抢活跃 VAD 的麦克风。
       _pendingSuspend = false;
       try {
         await engine.stop();
@@ -178,9 +185,11 @@ class WakeService {
   }
 
   /// 语音会话开始（VAD listening）：互斥挂起。armed/awakening/starting 均可
-  /// 进入（用户手动开麦不等唤醒）。
+  /// 进入（用户手动开麦不等唤醒）；failure 态也登记会话态，供后续开关
+  /// 循环重试落地时避让。
   Future<void> notifySessionStarted() async {
     _openTimer?.cancel();
+    _sessionActive = true;
     switch (_phase) {
       case WakePhase.armed:
       case WakePhase.awakening:
@@ -199,7 +208,13 @@ class WakeService {
 
   /// 语音会话结束（VAD idle/停麦）：恢复空闲监听。
   Future<void> notifySessionEnded() async {
-    if (_phase != WakePhase.suspended) return;
+    _sessionActive = false;
+    if (_phase != WakePhase.suspended) {
+      // 会话在落地前已结束（starting/failure 期间开又关）：清掉挂起请求，
+      // 引擎落地后回 armed 而不是永久 suspended。
+      _pendingSuspend = false;
+      return;
+    }
     final engine = _engine;
     if (engine == null) return;
     try {

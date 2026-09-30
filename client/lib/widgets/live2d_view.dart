@@ -543,9 +543,11 @@ function applyPresentationMap(map) {
         setExpression(expression);
     }
     if (pendingMotion) {
-        var motion = pendingMotion;
+        var pending = pendingMotion;
         pendingMotion = null;
-        playMotion(motion);
+        // 对象形态缓冲 {name, hold}：回放时把 holdLastFrame 旗标一并交还
+        // playMotion（live2d-engine-swap 6.3），首话轮末帧保持不丢。
+        playMotion(pending.name, pending.hold);
     }
 }
 
@@ -608,7 +610,8 @@ var holdToken = 0;
 function playMotion(name, holdLastFrame) {
     if (!model) return;
     if (!mapReady) {
-        pendingMotion = name;
+        // 对象形态缓冲：连同 holdLastFrame 旗标，mapReady 后原样回放。
+        pendingMotion = { name: name, hold: holdLastFrame === true };
         return;
     }
     var m = resolveMotion(name);

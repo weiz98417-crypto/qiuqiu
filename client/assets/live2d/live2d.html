@@ -221,9 +221,11 @@ function applyPresentationMap(map) {
         setExpression(expression);
     }
     if (pendingMotion) {
-        var motion = pendingMotion;
+        var pending = pendingMotion;
         pendingMotion = null;
-        playMotion(motion);
+        // 对象形态缓冲 {name, priority, hold}：回放把 holdLastFrame 旗标
+        // （连同优先级）一并交还（live2d-engine-swap 6.3）。
+        playMotionGroup(pending.name, pending.priority, pending.hold);
     }
 }
 var actionMap = {
@@ -326,7 +328,8 @@ function canInterrupt(priority) {
 function playMotionGroup(group, priority, holdLastFrame) {
     if (!model) return;
     if (!mapReady) {
-        pendingMotion = group;
+        // 对象形态缓冲：连同 holdLastFrame 旗标与优先级，mapReady 后原样回放。
+        pendingMotion = { name: group, priority: priority, hold: holdLastFrame === true };
         return;
     }
     var motions = resolveMotions(group);

@@ -45,6 +45,11 @@ class SherpaKwsEngine implements KwsEngine {
   final _hits = StreamController<KwsHit>.broadcast();
   bool _bindingsReady = false;
 
+  /// 收音停歇旗标：stop() 先置位再拆流，已入队未投递的在途 _processPcm
+  /// 回调见旗标即返，不再触碰随后 free 的原生 stream（use-after-free 封口）。
+  /// 生产里只有 start 注册的收音回调消费它，初值不影响未 start 的实例。
+  bool _stopped = false;
+
   @override
   Stream<KwsHit> get hits => _hits.stream;
 
@@ -70,6 +75,7 @@ class SherpaKwsEngine implements KwsEngine {
       echoCancel: true,
       noiseSuppress: true,
     ));
+    _stopped = false;
     _micSub = micStream.listen(
       (pcm) => _processPcm(pcm, stream, spotter),
       onError: (Object error) {
@@ -86,6 +92,7 @@ class SherpaKwsEngine implements KwsEngine {
     sherpa_onnx.OnlineStream stream,
     sherpa_onnx.KeywordSpotter spotter,
   ) {
+    if (_stopped) return; // stop 已置停歇旗标：在途回调退场，不碰将释放的 stream。
     if (pcm.isEmpty) return;
     final samples = pcm16ToFloat32(pcm);
     stream.acceptWaveform(samples: samples, sampleRate: 16000);
@@ -102,10 +109,24 @@ class SherpaKwsEngine implements KwsEngine {
     }
   }
 
+  /// 测试缝：原生库在 flutter test 环境不可用，在途块处理以 nullptr 桩
+  /// stream/spotter 注入（构造不触原生），钉住「stop 后在途回调被忽略」契约。
+  @visibleForTesting
+  void processPcmForTest(
+    Uint8List pcm,
+    sherpa_onnx.OnlineStream stream,
+    sherpa_onnx.KeywordSpotter spotter,
+  ) =>
+      _processPcm(pcm, stream, spotter);
+
   @override
   Future<void> stop() async {
+    _stopped = true;
     _micSub?.cancel();
     _micSub = null;
+    // 缓一拍再 free：让已入队未投递的在途回调先见 _stopped 退场，
+    // 避免 free 与 acceptWaveform/decode 踩同一原生 stream。
+    await Future<void>.delayed(Duration.zero);
     _stream?.free();
     _stream = null;
     final recorder = _recorder;

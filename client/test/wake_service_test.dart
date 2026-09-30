@@ -1,7 +1,11 @@
 import 'dart:async';
+import 'dart:ffi' as ffi;
+import 'dart:typed_data';
 
 import 'package:flutter_test/flutter_test.dart';
+import 'package:qiuqiu/services/wake_engine_sherpa.dart';
 import 'package:qiuqiu/services/wake_service.dart';
+import 'package:sherpa_onnx/sherpa_onnx.dart' as sherpa;
 
 /// wake-word-kws 10.2：唤醒状态机用例（KWS 引擎以假实现注入——
 /// sherpa 原生库在测试环境不可用，接口替身按 wake_service_test 纪律）。
@@ -175,6 +179,32 @@ void main() {
       await service.dispose();
     });
 
+    test('failure 期间会话已开：开关循环重试落地即 suspended，不双持麦',
+        () async {
+      // 先制造 failure（模型缺失类），期间 VAD 会话已开（麦克风归会话）。
+      var attempt = 0;
+      final service = WakeService(
+        engineFactory: (config) async => attempt++ == 0 ? null : engine,
+        now: () => current,
+      );
+      await service.setEnabled(true);
+      expect(service.phase, WakePhase.failure);
+      await service.notifySessionStarted();
+      expect(service.phase, WakePhase.failure);
+
+      // 关开一次重试：落地前先确认会话态——活跃则进 suspended 而非 armed。
+      await service.setEnabled(false);
+      await service.setEnabled(true);
+      expect(service.phase, WakePhase.suspended);
+      expect(engine.started, isFalse, reason: '会话活跃：重试落地不得让 KWS 抢收音');
+
+      // 会话结束才恢复空闲监听。
+      await service.notifySessionEnded();
+      expect(service.phase, WakePhase.armed);
+      expect(engine.started, isTrue);
+      await service.dispose();
+    });
+
     test('关闭：任意态收敛 disabled 并释放引擎', () async {
       final service = build();
       await service.setEnabled(true);
@@ -193,6 +223,68 @@ void main() {
       expect(service.phase, WakePhase.disabled);
     });
   });
+
+  group('SherpaKwsEngine stop 契约', () {
+    // 原生库在测试环境不可用：stream/spotter 以 nullptr 桩构造（纯 Dart
+    // 赋值构造器，不触原生），解码排水经 isReady=false 短路——只观察
+    // acceptWaveform 是否被在途回调触碰。
+    test('stop 后在途 pcm 回调被忽略（use-after-free 封口）', () async {
+      final engine = SherpaKwsEngine(config: const WakeConfig());
+      final stream = _RecordingStream();
+      final spotter = _StubSpotter();
+
+      // stop 前：在途块照常受理（生产里此刻 stream 尚未释放）。
+      engine.processPcmForTest(_pcmChunk(), stream, spotter);
+      expect(stream.acceptCalls, 1);
+
+      // stop：置停歇旗标并释放引擎持有的 stream（未 start，此处为空操作）。
+      await engine.stop();
+
+      // stop 后送达的已入队块：见停歇旗标即返——不 acceptWaveform、
+      // 不解码、不触碰已 free 的原生 stream。
+      engine.processPcmForTest(_pcmChunk(), stream, spotter);
+      expect(stream.acceptCalls, 1, reason: 'stop 后在途回调必须被忽略');
+
+      await engine.dispose();
+    });
+  });
+}
+
+/// 100ms 级 pcm16 块替身：非空即可走进 acceptWaveform。
+Uint8List _pcmChunk() =>
+    Uint8List.fromList(List<int>.generate(640, (i) => i & 0xff));
+
+/// nullptr 桩 stream：构造只赋值不触原生；acceptWaveform/free 记账不调
+/// super（bindings 未初始化时 super 会抛）。
+class _RecordingStream extends sherpa.OnlineStream {
+  int acceptCalls = 0;
+  int freedCount = 0;
+
+  _RecordingStream() : super(ptr: ffi.nullptr);
+
+  @override
+  void acceptWaveform({required Float32List samples, required int sampleRate}) {
+    acceptCalls++;
+  }
+
+  @override
+  void free() {
+    freedCount++;
+  }
+}
+
+/// nullptr 桩 spotter：isReady 恒假，跳过解码排水（原生不可用）。
+class _StubSpotter extends sherpa.KeywordSpotter {
+  _StubSpotter()
+      : super.fromPtr(
+          ptr: ffi.nullptr,
+          config: const sherpa.KeywordSpotterConfig(
+            model: sherpa.OnlineModelConfig(tokens: 'test'),
+          ),
+        );
+
+  @override
+  bool isReady(sherpa.OnlineStream stream) => false;
 }
 
 /// 固定命中时刻：服务用注入的 now() 判冷却，KwsHit.at 仅作载体。
