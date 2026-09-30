@@ -58,3 +58,11 @@ artifacts/
 
 # 轮次模型 sidecar 本地环境（voice-turn-detection：uv venv，模型本体在仓库外）
 scripts/turn-model/.venv/
+
+# 唤醒词 KWS 本地资产（wake-word-kws：模型本体不入 git，落盘约定见
+# scripts/wake-model/README.md；keywords.txt 与评估脚本/结果照常入库）
+scripts/wake-model/model/
+scripts/wake-eval/dataset/*.wav
+scripts/wake-eval/node_modules/
+client/assets/wake/model/*
+!client/assets/wake/model/.gitkeep

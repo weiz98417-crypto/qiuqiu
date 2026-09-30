@@ -1,0 +1,793 @@
+{
+  "label": "iter5-nihao-t0.4",
+  "keywords": "n ǐ h ǎo q iú q iú @你好球球",
+  "phrases": [
+    "nihao"
+  ],
+  "params": {
+    "keywordsScore": 1.8,
+    "keywordsThreshold": 0.4,
+    "numTrailingBlanks": 1,
+    "cooldownMs": 1500
+  },
+  "model": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+  "wakeRate": 0.9,
+  "wakeHits": "9/10",
+  "positiveMisses": [
+    {
+      "id": "pos_nihao_Chloe_28",
+      "voice": "Chloe",
+      "text": "你好球球"
+    }
+  ],
+  "falseTriggerCases": [],
+  "falseTriggers": 0,
+  "falseTriggersPerHour": 0,
+  "negativeAudioSeconds": 53.1,
+  "doubleWake": [
+    {
+      "phrase": "nihao",
+      "caseId": "pos_nihao_冰糖_21+gap1.6s+pos_nihao_冰糖_21",
+      "hits": 2,
+      "awakenings": 2
+    }
+  ],
+  "gate": {
+    "wakeRatePass": false,
+    "falseTriggerPass": true,
+    "doubleWakePass": true
+  },
+  "perCase": [
+    {
+      "id": "pos_hei_冰糖_1",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球",
+      "voice": "冰糖",
+      "seconds": 1.28,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_冰糖_2",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿，球球！",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_冰糖_3",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_冰糖_4",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球",
+      "voice": "冰糖",
+      "seconds": 1.12,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_冰糖_5",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球，你看这个球",
+      "voice": "冰糖",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_Chloe_6",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球",
+      "voice": "Chloe",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_Chloe_7",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿，球球！",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_Chloe_8",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_Chloe_9",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球",
+      "voice": "Chloe",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hei_Chloe_10",
+      "kind": "positive",
+      "phrase": "hei",
+      "text": "嘿球球，你看这个球",
+      "voice": "Chloe",
+      "seconds": 2.56,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_冰糖_11",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球",
+      "voice": "冰糖",
+      "seconds": 1.12,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_冰糖_12",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨，球球！",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_冰糖_13",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球",
+      "voice": "冰糖",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_冰糖_14",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球",
+      "voice": "冰糖",
+      "seconds": 1.28,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_冰糖_15",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球，你看这个球",
+      "voice": "冰糖",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_Chloe_16",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球",
+      "voice": "Chloe",
+      "seconds": 1.28,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_Chloe_17",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨，球球！",
+      "voice": "Chloe",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_Chloe_18",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球",
+      "voice": "Chloe",
+      "seconds": 1.28,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_Chloe_19",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球",
+      "voice": "Chloe",
+      "seconds": 1.28,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_hai_Chloe_20",
+      "kind": "positive",
+      "phrase": "hai",
+      "text": "嗨球球，你看这个球",
+      "voice": "Chloe",
+      "seconds": 2.56,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": true
+    },
+    {
+      "id": "pos_nihao_冰糖_21",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球",
+      "voice": "冰糖",
+      "seconds": 1.12,
+      "hits": [
+        {
+          "offsetMs": 1067,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_冰糖_22",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好，球球！",
+      "voice": "冰糖",
+      "seconds": 1.28,
+      "hits": [
+        {
+          "offsetMs": 1280,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_冰糖_23",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [
+        {
+          "offsetMs": 1400,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_冰糖_24",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球",
+      "voice": "冰糖",
+      "seconds": 1.6,
+      "hits": [
+        {
+          "offsetMs": 1600,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_冰糖_25",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球，你看这个球",
+      "voice": "冰糖",
+      "seconds": 2.08,
+      "hits": [
+        {
+          "offsetMs": 1067,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_Chloe_26",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球",
+      "voice": "Chloe",
+      "seconds": 1.12,
+      "hits": [
+        {
+          "offsetMs": 1120,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_Chloe_27",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好，球球！",
+      "voice": "Chloe",
+      "seconds": 1.28,
+      "hits": [
+        {
+          "offsetMs": 1067,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_Chloe_28",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_Chloe_29",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [
+        {
+          "offsetMs": 1733,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "pos_nihao_Chloe_30",
+      "kind": "positive",
+      "phrase": "nihao",
+      "text": "你好球球，你看这个球",
+      "voice": "Chloe",
+      "seconds": 2.72,
+      "hits": [
+        {
+          "offsetMs": 1400,
+          "keyword": "你好球球",
+          "tokens": [
+            "n",
+            "ǐ",
+            "h",
+            "ǎo",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1,
+      "skipped": false
+    },
+    {
+      "id": "neg_01",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球球你说话呀",
+      "voice": "冰糖",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_02",
+      "kind": "negative",
+      "phrase": null,
+      "text": "这个球球进得漂亮",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_03",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球球落地反弹",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_04",
+      "kind": "negative",
+      "phrase": null,
+      "text": "嘿，球进了！",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_05",
+      "kind": "negative",
+      "phrase": null,
+      "text": "嘿，球没进，可惜了",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_06",
+      "kind": "negative",
+      "phrase": null,
+      "text": "嘿嘿，这球太棒了",
+      "voice": "Chloe",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_07",
+      "kind": "negative",
+      "phrase": null,
+      "text": "黑球白球，能进球的就是好球",
+      "voice": "冰糖",
+      "seconds": 2.88,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_08",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球球在禁区里混战",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_09",
+      "kind": "negative",
+      "phrase": null,
+      "text": "我求求你了，别再传中了",
+      "voice": "冰糖",
+      "seconds": 2.56,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_10",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球进了！球进了！",
+      "voice": "Chloe",
+      "seconds": 2.24,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_11",
+      "kind": "negative",
+      "phrase": null,
+      "text": "看这个球的弧线，太诡异了",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_12",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球球出底线了，门球",
+      "voice": "Chloe",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_13",
+      "kind": "negative",
+      "phrase": null,
+      "text": "嘿，你看这个任意球",
+      "voice": "冰糖",
+      "seconds": 2.24,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_14",
+      "kind": "negative",
+      "phrase": null,
+      "text": "这个球球停得真好",
+      "voice": "Chloe",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_15",
+      "kind": "negative",
+      "phrase": null,
+      "text": "求球稳住，别慌",
+      "voice": "冰糖",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_16",
+      "kind": "negative",
+      "phrase": null,
+      "text": "足球就是这样，一秒定生死",
+      "voice": "Chloe",
+      "seconds": 3.04,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_17",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球球传中，门前包抄",
+      "voice": "冰糖",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_18",
+      "kind": "negative",
+      "phrase": null,
+      "text": "他穿了黑色球衣",
+      "voice": "Chloe",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_19",
+      "kind": "negative",
+      "phrase": null,
+      "text": "罚球点球，全场安静",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_20",
+      "kind": "negative",
+      "phrase": null,
+      "text": "这球裁判判得有争议",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_21",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球迷都在唱队歌",
+      "voice": "冰糖",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_22",
+      "kind": "negative",
+      "phrase": null,
+      "text": "角球开出，头球攻门",
+      "voice": "Chloe",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_23",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球球被断掉了",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_24",
+      "kind": "negative",
+      "phrase": null,
+      "text": "嘿嘿，居然平了",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_25",
+      "kind": "negative",
+      "phrase": null,
+      "text": "这记倒钩太帅了",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    },
+    {
+      "id": "neg_26",
+      "kind": "negative",
+      "phrase": null,
+      "text": "球权又丢了，危险啊",
+      "voice": "Chloe",
+      "seconds": 2.24,
+      "hits": [],
+      "awakenings": 0,
+      "skipped": false
+    }
+  ]
+}

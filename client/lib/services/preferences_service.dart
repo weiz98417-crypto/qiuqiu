@@ -13,6 +13,8 @@ class PreferencesService {
   static const _keyDuplexPlaybackCapture = 'duplex_playback_capture';
   static const _keySubtitles = 'subtitles';
   static const _keySound = 'sound';
+  static const _keyWakeWord = 'wake_word';
+  static const _keyWakeIntroShown = 'wake_intro_shown';
   static const _keyFirstMeetingCompleted = 'first_meeting_completed';
   static const _keyAnonymousUserId = 'anonymous_user_id';
 
@@ -90,6 +92,8 @@ class PreferencesService {
       duplexPlaybackCapture: prefs.getBool(_keyDuplexPlaybackCapture) ?? true,
       subtitlesEnabled: prefs.getBool(_keySubtitles) ?? true,
       soundEnabled: prefs.getBool(_keySound) ?? true,
+      // 麦克风监听默认关（opt-in 纪律，wake-word-kws proposal 隐私口径）。
+      wakeWordEnabled: prefs.getBool(_keyWakeWord) ?? false,
     ).ensureOutputAvailable();
   }
 
@@ -113,6 +117,7 @@ class PreferencesService {
     );
     await prefs.setBool(_keySubtitles, profile.subtitlesEnabled);
     await prefs.setBool(_keySound, profile.soundEnabled);
+    await prefs.setBool(_keyWakeWord, profile.wakeWordEnabled);
   }
 
   Future<bool> hasCompletedFirstMeeting() async {
@@ -123,6 +128,17 @@ class PreferencesService {
   Future<void> markFirstMeetingCompleted() async {
     final prefs = await SharedPreferences.getInstance();
     await prefs.setBool(_keyFirstMeetingCompleted, true);
+  }
+
+  /// 唤醒词一句话引导是否已展示过（wake-word-kws 10.3 首启说明）。
+  Future<bool> hasShownWakeIntro() async {
+    final prefs = await SharedPreferences.getInstance();
+    return prefs.getBool(_keyWakeIntroShown) ?? false;
+  }
+
+  Future<void> markWakeIntroShown() async {
+    final prefs = await SharedPreferences.getInstance();
+    await prefs.setBool(_keyWakeIntroShown, true);
   }
 }
 
@@ -148,6 +164,9 @@ class UserProfile {
   final bool subtitlesEnabled;
   final bool soundEnabled;
 
+  /// 唤醒词监听（wake-word-kws）：默认关，设置页显式开启（opt-in 纪律）。
+  final bool wakeWordEnabled;
+
   const UserProfile({
     required this.nickname,
     required this.favoriteTeam,
@@ -156,6 +175,7 @@ class UserProfile {
     this.duplexPlaybackCapture = true,
     this.subtitlesEnabled = true,
     this.soundEnabled = true,
+    this.wakeWordEnabled = false,
   });
 
   bool get hasProfile => nickname.isNotEmpty;
@@ -187,6 +207,7 @@ class UserProfile {
     bool? duplexPlaybackCapture,
     bool? subtitlesEnabled,
     bool? soundEnabled,
+    bool? wakeWordEnabled,
   }) {
     return UserProfile(
       nickname: nickname ?? this.nickname,
@@ -198,6 +219,7 @@ class UserProfile {
           duplexPlaybackCapture ?? this.duplexPlaybackCapture,
       subtitlesEnabled: subtitlesEnabled ?? this.subtitlesEnabled,
       soundEnabled: soundEnabled ?? this.soundEnabled,
+      wakeWordEnabled: wakeWordEnabled ?? this.wakeWordEnabled,
     );
   }
 }

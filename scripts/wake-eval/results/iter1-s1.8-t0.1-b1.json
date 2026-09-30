@@ -1,0 +1,437 @@
+{
+  "label": "iter1-s1.8-t0.1-b1",
+  "keywords": "h ēi q iú q iú @嘿球球",
+  "params": {
+    "keywordsScore": 1.8,
+    "keywordsThreshold": 0.1,
+    "numTrailingBlanks": 1,
+    "cooldownMs": 1500
+  },
+  "model": "sherpa-onnx-kws-zipformer-wenetspeech-3.3M-2024-01-01",
+  "wakeRate": 0.5,
+  "wakeHits": "5/10",
+  "falseTriggerCases": [
+    {
+      "id": "neg_07",
+      "text": "黑球白球，能进球的就是好球",
+      "awakenings": 1
+    }
+  ],
+  "falseTriggers": 1,
+  "falseTriggersPerHour": 67.8,
+  "negativeAudioSeconds": 53.1,
+  "doubleWake": {
+    "caseId": "pos_冰糖_1+gap1.6s+pos_冰糖_1",
+    "hits": 0,
+    "awakenings": 0
+  },
+  "gate": {
+    "wakeRatePass": false,
+    "falseTriggerPass": false,
+    "doubleWakePass": false
+  },
+  "perCase": [
+    {
+      "id": "pos_冰糖_1",
+      "kind": "positive",
+      "text": "嘿球球",
+      "voice": "冰糖",
+      "seconds": 0.8,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "pos_冰糖_2",
+      "kind": "positive",
+      "text": "嘿，球球！",
+      "voice": "冰糖",
+      "seconds": 1.76,
+      "hits": [
+        {
+          "offsetMs": 1733,
+          "keyword": "嘿球球",
+          "tokens": [
+            "h",
+            "ēi",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1
+    },
+    {
+      "id": "pos_冰糖_3",
+      "kind": "positive",
+      "text": "嘿球球",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [
+        {
+          "offsetMs": 1400,
+          "keyword": "嘿球球",
+          "tokens": [
+            "h",
+            "ēi",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1
+    },
+    {
+      "id": "pos_冰糖_4",
+      "kind": "positive",
+      "text": "嘿球球",
+      "voice": "冰糖",
+      "seconds": 1.12,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "pos_冰糖_5",
+      "kind": "positive",
+      "text": "嘿球球，你看这个球",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [
+        {
+          "offsetMs": 1067,
+          "keyword": "嘿球球",
+          "tokens": [
+            "h",
+            "ēi",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1
+    },
+    {
+      "id": "pos_Chloe_6",
+      "kind": "positive",
+      "text": "嘿球球",
+      "voice": "Chloe",
+      "seconds": 1.12,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "pos_Chloe_7",
+      "kind": "positive",
+      "text": "嘿，球球！",
+      "voice": "Chloe",
+      "seconds": 1.28,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "pos_Chloe_8",
+      "kind": "positive",
+      "text": "嘿球球",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "pos_Chloe_9",
+      "kind": "positive",
+      "text": "嘿球球",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [
+        {
+          "offsetMs": 1733,
+          "keyword": "嘿球球",
+          "tokens": [
+            "h",
+            "ēi",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1
+    },
+    {
+      "id": "pos_Chloe_10",
+      "kind": "positive",
+      "text": "嘿球球，你看这个球",
+      "voice": "Chloe",
+      "seconds": 2.24,
+      "hits": [
+        {
+          "offsetMs": 1067,
+          "keyword": "嘿球球",
+          "tokens": [
+            "h",
+            "ēi",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1
+    },
+    {
+      "id": "neg_01",
+      "kind": "negative",
+      "text": "球球你说话呀",
+      "voice": "冰糖",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_02",
+      "kind": "negative",
+      "text": "这个球球进得漂亮",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_03",
+      "kind": "negative",
+      "text": "球球落地反弹",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_04",
+      "kind": "negative",
+      "text": "嘿，球进了！",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_05",
+      "kind": "negative",
+      "text": "嘿，球没进，可惜了",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_06",
+      "kind": "negative",
+      "text": "嘿嘿，这球太棒了",
+      "voice": "Chloe",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_07",
+      "kind": "negative",
+      "text": "黑球白球，能进球的就是好球",
+      "voice": "冰糖",
+      "seconds": 2.88,
+      "hits": [
+        {
+          "offsetMs": 1067,
+          "keyword": "嘿球球",
+          "tokens": [
+            "h",
+            "ēi",
+            "q",
+            "iú",
+            "q",
+            "iú"
+          ]
+        }
+      ],
+      "awakenings": 1
+    },
+    {
+      "id": "neg_08",
+      "kind": "negative",
+      "text": "球球在禁区里混战",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_09",
+      "kind": "negative",
+      "text": "我求求你了，别再传中了",
+      "voice": "冰糖",
+      "seconds": 2.56,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_10",
+      "kind": "negative",
+      "text": "球进了！球进了！",
+      "voice": "Chloe",
+      "seconds": 2.24,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_11",
+      "kind": "negative",
+      "text": "看这个球的弧线，太诡异了",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_12",
+      "kind": "negative",
+      "text": "球球出底线了，门球",
+      "voice": "Chloe",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_13",
+      "kind": "negative",
+      "text": "嘿，你看这个任意球",
+      "voice": "冰糖",
+      "seconds": 2.24,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_14",
+      "kind": "negative",
+      "text": "这个球球停得真好",
+      "voice": "Chloe",
+      "seconds": 2.08,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_15",
+      "kind": "negative",
+      "text": "求球稳住，别慌",
+      "voice": "冰糖",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_16",
+      "kind": "negative",
+      "text": "足球就是这样，一秒定生死",
+      "voice": "Chloe",
+      "seconds": 3.04,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_17",
+      "kind": "negative",
+      "text": "球球传中，门前包抄",
+      "voice": "冰糖",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_18",
+      "kind": "negative",
+      "text": "他穿了黑色球衣",
+      "voice": "Chloe",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_19",
+      "kind": "negative",
+      "text": "罚球点球，全场安静",
+      "voice": "冰糖",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_20",
+      "kind": "negative",
+      "text": "这球裁判判得有争议",
+      "voice": "Chloe",
+      "seconds": 1.76,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_21",
+      "kind": "negative",
+      "text": "球迷都在唱队歌",
+      "voice": "冰糖",
+      "seconds": 1.6,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_22",
+      "kind": "negative",
+      "text": "角球开出，头球攻门",
+      "voice": "Chloe",
+      "seconds": 2.4,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_23",
+      "kind": "negative",
+      "text": "球球被断掉了",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_24",
+      "kind": "negative",
+      "text": "嘿嘿，居然平了",
+      "voice": "Chloe",
+      "seconds": 1.92,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_25",
+      "kind": "negative",
+      "text": "这记倒钩太帅了",
+      "voice": "冰糖",
+      "seconds": 1.44,
+      "hits": [],
+      "awakenings": 0
+    },
+    {
+      "id": "neg_26",
+      "kind": "negative",
+      "text": "球权又丢了，危险啊",
+      "voice": "Chloe",
+      "seconds": 2.24,
+      "hits": [],
+      "awakenings": 0
+    }
+  ]
+}

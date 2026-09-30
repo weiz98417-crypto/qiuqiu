@@ -226,17 +226,31 @@ class _SettingsScreenState extends State<SettingsScreen> {
                     });
                   },
                 ),
+                // 唤醒词（wake-word-kws 10.3）：默认关，显式 opt-in（隐私
+                // 纪律）；本地推理、音频不落盘，口径写进副标题。
+                _PreferenceSwitch(
+                  index: '07',
+                  title: '唤醒词',
+                  subtitle: '页面前台空闲时喊「你好球球」就能叫醒球球；'
+                      '麦克风只在打开比赛页时监听，音频不保存、不上传。',
+                  value: _draft.wakeWordEnabled,
+                  onChanged: (value) {
+                    setState(() {
+                      _draft = _draft.copyWith(wakeWordEnabled: value);
+                    });
+                  },
+                ),
                 // 气氛感知（ambient-audio-observation 6.3）：只做说明、不做
                 // 独立开关——气氛旁路跟随观赛会话生效，sidecar 摘除后旁路
                 // 静默消失；文案即 design.md 的隐私口径。
                 const _PreferenceNote(
-                  index: '07',
+                  index: '08',
                   title: '气氛感知',
                   subtitle:
                       '观看比赛时，球球会分析现场声音的气氛（欢呼/嘘声）来陪你看球；音频不会被保存，比赛结束后不留任何声音记录。',
                 ),
                 const SizedBox(height: AppSpacing.lg),
-                const _SectionLabel(index: '08', label: '支持球队'),
+                const _SectionLabel(index: '09', label: '支持球队'),
                 const SizedBox(height: AppSpacing.sm),
                 DropdownMenu<String>(
                   width: double.infinity,
@@ -262,7 +276,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ),
                 if (widget.onOpenPortrait != null) ...[
                   const SizedBox(height: AppSpacing.lg),
-                  const _SectionLabel(index: '09', label: '球球懂我'),
+                  const _SectionLabel(index: '10', label: '球球懂我'),
                   const SizedBox(height: AppSpacing.xs),
                   ListTile(
                     contentPadding: EdgeInsets.zero,
@@ -274,7 +288,7 @@ class _SettingsScreenState extends State<SettingsScreen> {
                 ],
                 if (widget.sessions != null) ...[
                   const SizedBox(height: AppSpacing.lg),
-                  const _SectionLabel(index: '10', label: '账号与同步'),
+                  const _SectionLabel(index: '11', label: '账号与同步'),
                   const SizedBox(height: AppSpacing.xs),
                   ValueListenableBuilder<String?>(
                     valueListenable: _loginIdentifier,

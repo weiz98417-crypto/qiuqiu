@@ -22,6 +22,11 @@ dependencies:
   flutter_animate: ^4.5.0
   lottie: ^3.1.2
   vibration: ^2.0.0
+  # 唤醒词 KWS（wake-word-kws 10.2）：KeywordSpotter 端侧推理（Apache-2.0）。
+  # web 不编译（lib/services/wake_engine.dart conditional import 走 stub）。
+  sherpa_onnx: ^1.13.8
+  # KWS 模型资产落盘（assets/wake → 应用支持目录，sherpa 需真实文件路径）。
+  path_provider: ^2.1.5
 
 dev_dependencies:
   flutter_test:
@@ -49,6 +54,10 @@ flutter:
     - assets/live2d/models/qiuqiu/motions/
     - assets/live2d/models/qiuqiu/female_01Arkit_6.4096/
     - assets/live2d/cubismcore/
+    # 唤醒词（wake-word-kws）：keywords.txt 入库（词表配置化，换词不改代码）；
+    # model/ 不入库（.gitkeep 占位，模型由 scripts/wake-model/download.mjs
+    # WAKE_ASSETS=1 放置，见 client/README.md 落盘约定）。
+    - assets/wake/
   fonts:
     - family: Noto Sans SC
       fonts:

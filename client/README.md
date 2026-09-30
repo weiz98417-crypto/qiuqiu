@@ -24,3 +24,18 @@ flutter build web --release
 ```
 
 前后端同源部署不需要注入 WebSocket 地址；分开部署时再通过 `--dart-define` 注入 HTTPS 对应的 `wss://` 地址。不要把服务口令写进源码或 URL。
+
+## 唤醒词 KWS（wake-word-kws）
+
+- 形态：前台空闲态（比赛页打开、语音会话未激活）喊「你好球球」直接开一轮
+  听；词表/参数为评估门定稿（score=1.8 / threshold=0.3 / cooldown=1.5s），
+  见 `scripts/wake-eval/results/FINAL-nihao-s1.8-t0.3.json`。
+- 隐私：本地推理（sherpa-onnx KeywordSpotter int8），音频不落盘；麦克风监听
+  **默认关**，设置页「唤醒词」显式开启，首启有一句话引导。
+- 模型落盘：`assets/wake/model/` 不入库，先跑
+  `WAKE_ASSETS=1 node scripts/wake-model/download.mjs`（详见
+  `scripts/wake-model/README.md`）；`assets/wake/keywords.txt` 入库，换词
+  只改它并重跑评估门。
+- 平台：Android 先行（windows 作桌面开发验证通道）；web 排除
+  （`lib/services/wake_engine.dart` conditional import 走 stub，web 构建不
+  受影响）；iOS 留配置位。

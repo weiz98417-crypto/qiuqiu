@@ -19,6 +19,8 @@ import '../services/match_overview_service.dart';
 import '../services/portrait_service.dart';
 import '../services/streaming_transcription.dart';
 import '../services/turn_detector.dart';
+import '../services/wake_engine.dart';
+import '../services/wake_service.dart';
 import '../services/websocket_service.dart';
 import '../theme/app_theme.dart';
 import '../widgets/live2d_view.dart';
@@ -96,6 +98,15 @@ class _MatchScreenState extends State<MatchScreen> {
   /// 重新入队。播放器 pause 即销毁句柄，无法原地续播，只能整句重放。
   (Uint8List, PendingAudio)? _lastPlayback;
 
+  /// 唤醒词服务（wake-word-kws 10.3）：设置开启且平台支持时实例化。
+  /// 麦克风与 VAD 互斥——空闲态 KWS 持麦监听「你好球球」，VAD 收音即挂起，
+  /// VAD 停麦恢复；唤醒→与麦克风同路的 freeTalk 会话起路径。
+  WakeService? _wake;
+  /// 唤醒打开的会话：用户一直不说话的回静默兜底（proposal「无后续语音
+  /// 超时回静默」）；首句出口或会话结束即解除。
+  Timer? _wakeConversationTimer;
+  bool _wakeOpenSession = false;
+
   bool get _continuousEnabled => _profile.continuousConversation;
   bool get _insideMatch =>
       _sessionController.state.presence == MatchSessionPresence.active;
@@ -110,6 +121,12 @@ class _MatchScreenState extends State<MatchScreen> {
   String get _expression => _sessionController.state.expression;
 
   String? get _motion => _sessionController.state.motion;
+
+  /// live2d-engine-swap 6.3: true while the active presentation comes from an
+  /// acts row carrying the holdLastFrame slot; the rendering surfaces freeze
+  /// the motion's last frame until the ReturnMode decay (which drops
+  /// activePresentation, so the flag falls back to false) or the next apply.
+  bool get _holdLastFrame => _activePresentation?.holdLastFrame ?? false;
 
   String? get _notice => _sessionController.state.notice;
 
@@ -227,6 +244,62 @@ class _MatchScreenState extends State<MatchScreen> {
     _vad.setPlaybackCaptureEnabled(profile.duplexPlaybackCapture);
   }
 
+  /// 唤醒词开关同步（wake-word-kws 10.3）：设置页开关（默认关）落到
+  /// WakeService；web/不支持平台一律不开（web 排除，iOS 留配置位）。
+  Future<void> _syncWakeService(UserProfile profile) async {
+    if (kIsWeb || !isWakePlatformSupported || !profile.wakeWordEnabled) {
+      await _wake?.setEnabled(false);
+      return;
+    }
+    final wake = _wake ??= WakeService(engineFactory: createDefaultKwsEngine);
+    wake.onWake = _handleWake;
+    await wake.setEnabled(true);
+    if (_vad.isListening) {
+      // 进入页面时语音会话已在跑：KWS 落地即挂起。
+      await wake.notifySessionStarted();
+    }
+    if (wake.phase == WakePhase.armed) {
+      await _maybeShowWakeIntro();
+    }
+  }
+
+  /// 首启一句话引导（proposal opt-in 纪律）：首次 armed 只提示一次。
+  Future<void> _maybeShowWakeIntro() async {
+    if (await _preferences.hasShownWakeIntro()) return;
+    await _preferences.markWakeIntroShown();
+    if (!mounted) return;
+    _sessionController.setNotice(
+      '喊「你好球球」就能叫醒我；麦克风只在页面前台监听，音频不保存。',
+    );
+  }
+
+  /// 唤醒命中：presentation events 表 wake 行（ADR-0007 单一源，球球抬头
+  /// 看你）→ 先让 KWS 放麦 → 走与麦克风按钮同一条 freeTalk 会话起路径
+  /// （asr_start 既有链路），8s 无后续语音回静默（复用静默兜底语义）。
+  Future<void> _handleWake(KwsHit hit) async {
+    if (!mounted || !_insideMatch) return;
+    final performance = (await loadPresentationMap())
+        .eventFor(PresentationMap.wakeEventClass);
+    if (performance != null) {
+      _sessionController.setExpression(performance.$1);
+      _sessionController.setMotion(performance.$2);
+    }
+    // 先还麦克风（挂起 KWS）再起会话：两端Android 不得双持收音。
+    await _wake?.notifySessionStarted();
+    if (!mounted) return;
+    await _vad.startListening(VADMode.freeTalk);
+    _wakeOpenSession = true;
+    _wakeConversationTimer?.cancel();
+    _wakeConversationTimer = Timer(const Duration(seconds: 8), () {
+      if (!mounted || !_wakeOpenSession) return;
+      _wakeOpenSession = false;
+      if (_vad.isListening) {
+        // 无后续语音：停麦回静默；VAD idle 事件会把 KWS 恢复回 armed。
+        _vad.stopListening();
+      }
+    });
+  }
+
   Future<void> _initialize() async {
     final profile = await _preferences.load();
     final deviceId = await _preferences.loadOrCreateAnonymousUserId();
@@ -235,6 +308,8 @@ class _MatchScreenState extends State<MatchScreen> {
     await _audio.setMuted(!profile.soundEnabled);
     if (!mounted) return;
     _applyDuplexPlaybackCapture(profile);
+    await _syncWakeService(profile);
+    if (!mounted) return;
     setState(() {
       _profile = profile;
     });
@@ -672,12 +747,19 @@ class _MatchScreenState extends State<MatchScreen> {
     if (!mounted) return;
     switch (event.state) {
       case VADState.listening:
+        // 麦克风互斥（wake-word-kws 10.3）：VAD 收音起，KWS 挂起
+        // （唤醒路径已在起会话前先让麦，这里幂等兜底）。
+        unawaited(_wake?.notifySessionStarted());
         _sessionController.vadListening(
           hasPendingTranscript: _streamingTranscription.hasPendingFinal,
         );
         _runSessionCommands();
         break;
       case VADState.speaking:
+        // 唤醒开的会话出了声：解除「无后续语音回静默」兜底，转常态会话。
+        _wakeOpenSession = false;
+        _wakeConversationTimer?.cancel();
+        _wake?.notifyUserSpoke();
         _sessionController.vadSpeaking(
           continuousEnabled: _continuousEnabled,
         );
@@ -696,14 +778,24 @@ class _MatchScreenState extends State<MatchScreen> {
         }
         break;
       case VADState.idle:
+        // VAD 停麦（stopListening 唯一发射点）：KWS 恢复空闲监听。
+        _wakeOpenSession = false;
+        _wakeConversationTimer?.cancel();
+        unawaited(_wake?.notifySessionEnded());
         _sessionController.vadIdle();
         _runSessionCommands();
         break;
       case VADState.permissionDenied:
+        _wakeOpenSession = false;
+        _wakeConversationTimer?.cancel();
+        unawaited(_wake?.notifySessionEnded());
         _sessionController.vadPermissionDenied();
         _runSessionCommands();
         break;
       case VADState.failure:
+        _wakeOpenSession = false;
+        _wakeConversationTimer?.cancel();
+        unawaited(_wake?.notifySessionEnded());
         _sessionController.vadFailed();
         _runSessionCommands();
         break;
@@ -1023,6 +1115,7 @@ class _MatchScreenState extends State<MatchScreen> {
         saved.continuousConversation != _profile.continuousConversation;
     setState(() => _profile = saved);
     _applyDuplexPlaybackCapture(saved);
+    await _syncWakeService(saved);
     await _audio.setMuted(!saved.soundEnabled);
     if (_insideMatch && continuousChanged) {
       if (saved.continuousConversation) {
@@ -1147,6 +1240,7 @@ class _MatchScreenState extends State<MatchScreen> {
     _presentationReturnTimer?.cancel();
     _idleTicker?.cancel();
     _clockTicker?.cancel();
+    _wakeConversationTimer?.cancel();
     for (final subscription in _subscriptions) {
       unawaited(subscription.cancel());
     }
@@ -1156,6 +1250,7 @@ class _MatchScreenState extends State<MatchScreen> {
     _sessionController.dispose();
     _remoteTurn.dispose();
     _vad.dispose();
+    unawaited(_wake?.dispose());
     unawaited(_audio.dispose());
     unawaited(_socket.dispose());
     _sessions.close();
@@ -1193,6 +1288,7 @@ class _MatchScreenState extends State<MatchScreen> {
                         match: _match,
                         expression: _expression,
                         motion: _motion,
+                        holdLastFrame: _holdLastFrame,
                         isSpeaking: _phase == MatchSessionPhase.speaking,
                         phase: _phase,
                         socketStatus: _socketStatus,
@@ -1257,6 +1353,7 @@ class _LiveMatchExperience extends StatelessWidget {
   final MatchViewData match;
   final String expression;
   final String? motion;
+  final bool holdLastFrame;
   final bool isSpeaking;
   final MatchSessionPhase phase;
   final SocketStatus socketStatus;
@@ -1288,6 +1385,7 @@ class _LiveMatchExperience extends StatelessWidget {
     required this.match,
     required this.expression,
     required this.motion,
+    required this.holdLastFrame,
     required this.isSpeaking,
     required this.phase,
     required this.socketStatus,
@@ -1341,6 +1439,7 @@ class _LiveMatchExperience extends StatelessWidget {
                             live2dKey: live2dKey,
                             expression: expression,
                             motion: motion,
+                            holdLastFrame: holdLastFrame,
                             isSpeaking: isSpeaking,
                             socketStatus: socketStatus,
                             subtitlesEnabled: subtitlesEnabled,
@@ -1476,6 +1575,7 @@ class _CharacterStage extends StatelessWidget {
   final MatchViewData match;
   final String expression;
   final String? motion;
+  final bool holdLastFrame;
   final bool isSpeaking;
   final SocketStatus socketStatus;
   final bool subtitlesEnabled;
@@ -1492,6 +1592,7 @@ class _CharacterStage extends StatelessWidget {
     required this.live2dKey,
     required this.expression,
     required this.motion,
+    required this.holdLastFrame,
     required this.isSpeaking,
     required this.socketStatus,
     required this.subtitlesEnabled,
@@ -1518,6 +1619,7 @@ class _CharacterStage extends StatelessWidget {
               expression: expression,
               isSpeaking: isSpeaking,
               motion: motion,
+              holdLastFrame: holdLastFrame,
             ),
             // 进球爆屏：按事件 ID 边沿触发（每个新进球播一次，重建不重放）。
             Positioned.fill(
