@@ -11,3 +11,9 @@
 ## Sequencing
 
 波B,**依赖波A trace-genai-alignment 先落**(已满足)。完成后真机预采数据同时服务 Phase B 判据。与 live2d-engine-swap 在 client 侧交叉(live2d_view.dart)——本轮③未动 live2d_view,交叉未发生。
+
+## CEO 审查外部声音增量(2026-09-30)
+
+- 句间韵律连续性未评估:各句独立合成+独立 instruction,句界可能有韵律断裂——真机预采时加**韵律盲测**(整段 vs 句粒度 A/B,人耳判自然度);N 句 N 次 HTTP 的计费面在 MiMo 结束限时免费后复估。
+- 流结束信号:StreamedSentence.Final 现算出但不上 wire(客户端 FIFO 按到达序消费暂无需求);Phase B 字节级流式时补 sentenceCount/Final 下发。
+- 部分交付后静默的补注:截断时全文文本气泡已在屏(文本先行设计),音频截断的用户损失=表达力非信息;真机验证时确认体感。
