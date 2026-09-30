@@ -93,7 +93,8 @@ func (sink *collectingResponseSink) DeliverStatus(_ context.Context, status conv
 
 // Audio 把收集的帧合并为 HTTP 响应的单段音频：同构 canonical WAV（本包
 // WAVFromPCM16 的 44 字节头）剥头拼 PCM 重封装；混入完整产物分片（mock
-// 回放/降级回退）时无法安全拼容器——如实回退首帧（既有单帧行为）。
+// 回放/降级回退）时无法安全拼容器——如实回退首帧（有损降级；旧实现回末帧，
+// 同为有损，首帧保底更可预期）。
 func (sink *collectingResponseSink) Audio() conversation.AudioDelivery {
 	if len(sink.frames) == 0 {
 		return conversation.AudioDelivery{}
@@ -115,8 +116,13 @@ func (sink *collectingResponseSink) Audio() conversation.AudioDelivery {
 	}
 }
 
+// isCanonicalWAV 判定本包 WAVFromPCM16 的 44 字节规范头(RIFF/WAVE/fmt ),
+// 合帧剥头才安全——非规范头的 WAV 完整产物走首帧回退。
 func isCanonicalWAV(data []byte) bool {
-	return len(data) > 44 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WAVE"
+	return len(data) > 44 &&
+		string(data[0:4]) == "RIFF" &&
+		string(data[8:12]) == "WAVE" &&
+		string(data[12:16]) == "fmt "
 }
 
 // mediaDeliveryRecorder 把投递服务的媒体记账事件落到互动账本（两条装配线

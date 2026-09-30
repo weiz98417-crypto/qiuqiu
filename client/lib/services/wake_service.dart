@@ -181,6 +181,19 @@ class WakeService {
       _setPhase(WakePhase.failure);
       return;
     }
+    // 落地后复查：start() 在途期间会话开启（checkpoint 已过、未及避让）
+    // 会留下 _pendingSuspend/_sessionActive——立即停收音让麦，不双持。
+    if (_pendingSuspend || _sessionActive) {
+      _pendingSuspend = false;
+      try {
+        await engine.stop();
+        _setPhase(WakePhase.suspended);
+      } catch (error) {
+        _failureReason = error.toString();
+        _setPhase(WakePhase.failure);
+      }
+      return;
+    }
     _setPhase(WakePhase.armed);
   }
 

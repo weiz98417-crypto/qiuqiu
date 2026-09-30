@@ -125,6 +125,8 @@ func (r *useraffectRelay) classify(userID, signalID string, pcm []byte) {
 	}
 	r.mu.Lock()
 	if len(r.signals) >= useraffectRelayTableCapacity {
+		// 整表重置丢的是暂存结论：按丢弃条数计入 dropped（观测不低估）。
+		r.dropped.Add(int64(len(r.signals)))
 		r.signals = make(map[string]useraffect.Signal)
 	}
 	if traceID, waiting := r.waiters[signalID]; waiting {
@@ -145,6 +147,8 @@ func (r *useraffectRelay) bind(signalID, traceID string) {
 	}
 	r.mu.Lock()
 	if len(r.waiters) >= useraffectRelayTableCapacity {
+		// 整表重置丢的是挂点登记：该批话轮零合并，按丢弃条数计入 dropped。
+		r.dropped.Add(int64(len(r.waiters)))
 		r.waiters = make(map[string]string)
 	}
 	signal, ready := r.signals[signalID]

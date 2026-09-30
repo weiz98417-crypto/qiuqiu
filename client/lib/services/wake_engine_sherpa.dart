@@ -125,10 +125,17 @@ class SherpaKwsEngine implements KwsEngine {
     _micSub?.cancel();
     _micSub = null;
     // 缓一拍再 free：让已入队未投递的在途回调先见 _stopped 退场，
-    // 避免 free 与 acceptWaveform/decode 踩同一原生 stream。
+    // 避免 free 与 acceptWaveform/decode 踩同一原生 stream。捕获式释放：
+    // 只 free stop 进入时持有的那代 stream——缓拍窗口里若 start() 已插入
+    // 并换了新 _stream，老 stop 不得误释新代（generation 语义）。
+    final stream = _stream;
     await Future<void>.delayed(Duration.zero);
-    _stream?.free();
-    _stream = null;
+    if (stream != null && identical(_stream, stream)) {
+      stream.free();
+      if (identical(_stream, stream)) {
+        _stream = null;
+      }
+    }
     final recorder = _recorder;
     if (recorder != null && await recorder.isRecording()) {
       await recorder.stop();

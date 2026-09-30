@@ -91,6 +91,20 @@ void main() {
       await service.dispose();
     });
 
+    test('start() 在途期间会话开启：落地后复查即挂起，不双持麦', () async {
+      engine.startGate = Completer<void>();
+      final service = build();
+      final enabling = service.setEnabled(true);
+      await pump(); // start() 挂在闸门上，落地检查点已过。
+      await service.notifySessionStarted(); // 会话开启：_pendingSuspend 置位。
+      engine.startGate!.complete();
+      await enabling;
+      expect(service.phase, WakePhase.suspended,
+          reason: '落地后复查避让旗标，KWS 不与活跃 VAD 双持麦克风');
+      expect(engine.stopped, isTrue);
+      await service.dispose();
+    });
+
     test('唤醒无人接手：openTimeout 后回 armed，不自动二次唤醒', () async {
       final service = WakeService(
         engineFactory: (config) async => engine,
@@ -304,6 +318,9 @@ class _FakeEngine implements KwsEngine {
   bool disposed = false;
   Object? startError;
 
+  /// 非空时 start() 挂起至此门释放——复现「落地越过互斥检查点」的在途竞态。
+  Completer<void>? startGate;
+
   final _controller = StreamController<KwsHit>.broadcast();
 
   @override
@@ -315,6 +332,10 @@ class _FakeEngine implements KwsEngine {
 
   @override
   Future<void> start() async {
+    final gate = startGate;
+    if (gate != null) {
+      await gate.future;
+    }
     final error = startError;
     if (error != null) throw error;
     started = true;
