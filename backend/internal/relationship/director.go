@@ -87,7 +87,7 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 		state.Relationship.Version++
 		state.Match.Version++
 		// live2d-engine-swap 6.4: the semantic slot ships with the slot's
-		// next motion variant (celebration/talk/idle pools) so repeated
+		// next motion variant (celebrate/idle pools) so repeated
 		// applies do not replay the identical file; presentationFor stays a
 		// pure table lookup (ADR-0007) and the actual variant lands in the
 		// decision below, flagged for the trace/interaction audit.

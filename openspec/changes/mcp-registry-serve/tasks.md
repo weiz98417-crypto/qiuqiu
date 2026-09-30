@@ -3,7 +3,7 @@
 - [x] 5.1 ToolRegistry:interface + 注册表 + 内置 handler 入池迁移;CompanionToolSchemas 淘汰(schema 从注册表生成,23 名称保持兼容);trace 字段 `gen_ai.tool.*`(trace-genai-alignment 体系);注册表↔trace 一致性断言用例。
 - [x] 5.2 反向只读 server:go-sdk 依赖锁版本;`/mcp` 路由挂 ServeMux;JWT 只读 scope 中间件(匿名拒/写调用拒/越 scope 拒);四只读工具直调 matchstate/schedule 既有读函数;MCP inspector 实测往返。
 - [x] 5.3 红线与治理:白名单 config 结构(波2 消费)、2s 预算与静默降级语义文档化;宪法负例测试(MCP 路径对事实账本零写入)。
-- [ ] 5.4 ADR-0022 + 门禁:ADR 落库(分层与红线);go 全量 + pr tier。
+- [x] 5.4 ADR-0022 + 门禁:ADR-0022 落库(287ff89);go 全量 33 包+pr tier 由主会话全量门禁节统一收口(2026-09-30:go 33 包绿,pr tier 93/95 余 fulltime+p95 两既有抖动户)。
 
 ## Implementation notes(5.2/5.3,2026-09-30)
 

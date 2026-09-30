@@ -45,7 +45,7 @@ func AuditTraces(traces []companion.Trace) TraceAuditReport {
 		if isFactIntent(trace.Intent) && len(trace.RetrievedEvent) == 0 && trace.Intent != companion.IntentMatchStatus {
 			report.add(trace.ID, "warning", "grounding", "fact-oriented reply has no retrieved event")
 		}
-		if trace.Intent == companion.IntentMatchStatus && !tools["match.read_snapshot"] {
+		if trace.Intent == companion.IntentMatchStatus && !tools[companion.ToolCallMatchReadSnapshot] {
 			report.add(trace.ID, "blocker", "trajectory", "status reply skipped match.read_snapshot")
 		}
 		if trace.Intent == companion.IntentRecentEvent && !tools["match.search_events"] {
@@ -55,7 +55,7 @@ func AuditTraces(traces []companion.Trace) TraceAuditReport {
 			if trace.Claim == nil {
 				report.add(trace.ID, "blocker", "claim_safety", "match claim has no structured assessment")
 			}
-			if !tools["match.read_snapshot"] {
+			if !tools[companion.ToolCallMatchReadSnapshot] {
 				report.add(trace.ID, "blocker", "trajectory", "match claim skipped match.read_snapshot")
 			}
 			if !tools["match.search_events"] {

@@ -174,16 +174,15 @@ func (l *Library) buildTriggerIndex() {
 
 // TriggerLookup 返回该事件类型的知识附句条目（confidence 最高的命中），
 // 无命中 ok=false。走与 Search 相同的确信度阈值。nil 库安全（companion
-// 未挂知识库时照常降级为无附句）。
+// 未挂知识库时照常降级为无附句）。entries 与 triggerIdx 必须同一次读锁
+// 内取——两次加锁之间夹进 Reload 会让新索引下标套在旧快照上（错条目/
+// 越界），快照自洽不变量靠单锁维持。
 func (l *Library) TriggerLookup(eventType string) (Entry, bool) {
 	if l == nil {
 		return Entry{}, false
 	}
-	entries := l.snapshot()
-	if len(entries) == 0 {
-		return Entry{}, false
-	}
 	l.entriesMu.RLock()
+	entries := l.entries
 	indexes := l.triggerIdx[strings.TrimSpace(eventType)]
 	l.entriesMu.RUnlock()
 	for _, index := range indexes {

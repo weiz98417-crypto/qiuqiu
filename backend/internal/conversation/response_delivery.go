@@ -421,6 +421,14 @@ func (service *ResponseDeliveryService) deliverStreaming(ctx context.Context, re
 			service.interrupt(request.Trace.ID)
 			return result, ctx.Err()
 		}
+		// 已有句下发（播了就是播了）：客户端不该再收「声音暂时没出来」的
+		// 失真提示——跳过 tts_fallback 状态帧，媒体失败照记，FallbackReason
+		// 保留供观测；零帧才走完整 fallback（与整段路径同语义）。
+		if result.TTSByteCount > 0 {
+			result.FallbackReason = streamErr.Error()
+			_ = service.recordMedia(ctx, request, result.TTSMime, "failed", streamErr.Error())
+			return result, nil
+		}
 		return service.completeWithFallback(ctx, request, result, streamErr.Error(), streamErr)
 	}
 	if sentenceCount == 0 || result.TTSByteCount == 0 {

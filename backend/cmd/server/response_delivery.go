@@ -63,10 +63,11 @@ func (sink websocketResponseSink) DeliverStatus(_ context.Context, status conver
 
 // collectingResponseSink 是操作台 HTTP 语音路径的 ResponseSink：帧不外发，
 // 原地收集供 HTTP 响应返回（voice-streaming-delivery 3.1 双装配线合一——
-// WS 与 HTTP 两条装配线的差异从此只剩 sink 实现）。
+// WS 与 HTTP 两条装配线的差异从此只剩 sink 实现）。句粒度路径一句一帧，
+// frames 保留全序；Audio 返回合并视图。
 type collectingResponseSink struct {
 	reply    conversation.ReplyDelivery
-	audio    conversation.AudioDelivery
+	frames   []conversation.AudioDelivery
 	statuses []conversation.DeliveryStatus
 }
 
@@ -76,13 +77,41 @@ func (sink *collectingResponseSink) DeliverReply(_ context.Context, delivery con
 }
 
 func (sink *collectingResponseSink) DeliverAudio(_ context.Context, delivery conversation.AudioDelivery) error {
-	sink.audio = delivery
+	sink.frames = append(sink.frames, delivery)
 	return nil
 }
 
 func (sink *collectingResponseSink) DeliverStatus(_ context.Context, status conversation.DeliveryStatus) error {
 	sink.statuses = append(sink.statuses, status)
 	return nil
+}
+
+// Audio 把收集的帧合并为 HTTP 响应的单段音频：同构 canonical WAV（本包
+// WAVFromPCM16 的 44 字节头）剥头拼 PCM 重封装；混入完整产物分片（mock
+// 回放/降级回退）时无法安全拼容器——如实回退首帧（既有单帧行为）。
+func (sink *collectingResponseSink) Audio() conversation.AudioDelivery {
+	if len(sink.frames) == 0 {
+		return conversation.AudioDelivery{}
+	}
+	first := sink.frames[0]
+	if len(sink.frames) == 1 {
+		return first
+	}
+	pcm := make([]byte, 0, len(first.Data)*len(sink.frames))
+	for _, frame := range sink.frames {
+		if frame.MIME != first.MIME || !isCanonicalWAV(frame.Data) {
+			return first
+		}
+		pcm = append(pcm, frame.Data[44:]...)
+	}
+	return conversation.AudioDelivery{
+		Data: tts.WAVFromPCM16(pcm, tts.PCMStreamSampleRate), MIME: first.MIME,
+		TraceID: first.TraceID, Source: first.Source, EventID: first.EventID, DeliveryKey: first.DeliveryKey,
+	}
+}
+
+func isCanonicalWAV(data []byte) bool {
+	return len(data) > 44 && string(data[0:4]) == "RIFF" && string(data[8:12]) == "WAVE"
 }
 
 // mediaDeliveryRecorder 把投递服务的媒体记账事件落到互动账本（两条装配线
@@ -122,10 +151,10 @@ func (adapter responseSpeechSynthesizer) SynthesizeResponseStream(ctx context.Co
 	if len(sentences) == 0 {
 		return nil
 	}
-	streamer, streams := adapter.synthesizer.(tts.StreamingSynthesizer)
+	streamer, _ := adapter.synthesizer.(tts.StreamingSynthesizer)
 	for index, sentence := range sentences {
 		opts := tts.VoiceOpts{Instruction: mimoPerformanceInstruction(presentation, acts, len([]rune(sentence)))}
-		data, mime, err := adapter.synthesizeSentence(ctx, sentence, presentation, acts, streamer, streams, opts)
+		data, mime, err := adapter.synthesizeSentence(ctx, sentence, streamer, opts)
 		if err != nil {
 			return err
 		}
@@ -142,8 +171,8 @@ func (adapter responseSpeechSynthesizer) SynthesizeResponseStream(ctx context.Co
 	return nil
 }
 
-func (adapter responseSpeechSynthesizer) synthesizeSentence(ctx context.Context, sentence string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, streamer tts.StreamingSynthesizer, streams bool, opts tts.VoiceOpts) ([]byte, string, error) {
-	if !streams {
+func (adapter responseSpeechSynthesizer) synthesizeSentence(ctx context.Context, sentence string, streamer tts.StreamingSynthesizer, opts tts.VoiceOpts) ([]byte, string, error) {
+	if streamer == nil {
 		result, err := adapter.synthesizer.Synthesize(ctx, sentence, opts)
 		if err != nil {
 			return nil, "", err

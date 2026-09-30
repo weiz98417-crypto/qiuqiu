@@ -15,6 +15,7 @@ package main
 import (
 	"context"
 	"sync"
+	"sync/atomic"
 	"time"
 
 	"qiuqiu/internal/companion"
@@ -40,14 +41,21 @@ type voiceObservationAttacher interface {
 // useraffectRelayMaxInFlight 在途上限：宁失明不反压主路（与 ambient 同值）。
 const useraffectRelayMaxInFlight = 4
 
+// useraffectRelayTableCapacity 是 signals/waiters 的有界护栏（锚点表同纪律：
+// 满 64 整表重置）——慢泄漏面（Forward 被顶掉→waiter 悬挂；bind 不发生→
+// signal 滞留）在整场球赛的长连接内不无界增长。
+const useraffectRelayTableCapacity = 64
+
 type useraffectRelay struct {
 	classifier userAffectClassifier
 	attacher   voiceObservationAttacher
 	matchID    string
 	// minConfidence 之下的结论静默丢弃。
 	minConfidence float64
-	dropped       chan struct{}
-	inFlight      chan struct{}
+	// dropped 静默丢弃计数（sidecar 失败/置信门未过/在途饱和），atomic 与
+	// ambient_relay 同族同口径。
+	dropped  atomic.Int64
+	inFlight chan struct{}
 
 	mu sync.Mutex
 	// signals 与 waiters 二选一地 keyed by signalID：signal 先到则暂存等
@@ -70,7 +78,6 @@ func newUserAffectRelay(classifier userAffectClassifier, attacher voiceObservati
 		attacher:      attacher,
 		matchID:       matchID,
 		minConfidence: minConfidence,
-		dropped:       make(chan struct{}, 1024),
 		inFlight:      make(chan struct{}, useraffectRelayMaxInFlight),
 		signals:       make(map[string]useraffect.Signal),
 		waiters:       make(map[string]string),
@@ -78,18 +85,15 @@ func newUserAffectRelay(classifier userAffectClassifier, attacher voiceObservati
 }
 
 // Dropped 返回静默丢弃计数（sidecar 失败/置信门未过/在途饱和）。
-func (r *useraffectRelay) Dropped() int {
+func (r *useraffectRelay) Dropped() int64 {
 	if r == nil {
 		return 0
 	}
-	return len(r.dropped)
+	return r.dropped.Load()
 }
 
 func (r *useraffectRelay) countDropped() {
-	select {
-	case r.dropped <- struct{}{}:
-	default:
-	}
+	r.dropped.Add(1)
 }
 
 // Forward 把一段话轮终稿 PCM 旁送给 sidecar：立即返回。PCM 归旁路所有。
@@ -120,6 +124,9 @@ func (r *useraffectRelay) classify(userID, signalID string, pcm []byte) {
 		return
 	}
 	r.mu.Lock()
+	if len(r.signals) >= useraffectRelayTableCapacity {
+		r.signals = make(map[string]useraffect.Signal)
+	}
 	if traceID, waiting := r.waiters[signalID]; waiting {
 		delete(r.waiters, signalID)
 		r.mu.Unlock()
@@ -137,6 +144,9 @@ func (r *useraffectRelay) bind(signalID, traceID string) {
 		return
 	}
 	r.mu.Lock()
+	if len(r.waiters) >= useraffectRelayTableCapacity {
+		r.waiters = make(map[string]string)
+	}
 	signal, ready := r.signals[signalID]
 	if ready {
 		delete(r.signals, signalID)

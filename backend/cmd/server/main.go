@@ -993,8 +993,9 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 			return result, err
 		}
 		if deliveryResult.AudioDelivered {
-			result.AudioData = sink.audio.Data
-			result.AudioMIME = sink.audio.MIME
+			audio := sink.Audio()
+			result.AudioData = audio.Data
+			result.AudioMIME = audio.MIME
 			result.Trace.Voice = ensureVoiceMeta(result.Trace.Voice)
 			result.Trace.Voice.TTSStatus = "ok"
 			result.Trace.Voice.TTSMime = result.AudioMIME
