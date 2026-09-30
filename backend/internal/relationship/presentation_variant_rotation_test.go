@@ -133,26 +133,19 @@ func TestDirectorRotatesVariantAndFlagsReason(t *testing.T) {
 	if first.Presentation.Expression != "chat" || second.Presentation.Expression != "chat" {
 		t.Fatalf("talk slot expressions = (%q, %q), want chat/chat", first.Presentation.Expression, second.Presentation.Expression)
 	}
-	if first.Presentation.Motion == second.Presentation.Motion {
-		t.Fatalf("consecutive talk decisions repeated motion %q — rotation semantics broken", first.Presentation.Motion)
+	if first.Presentation.Motion != second.Presentation.Motion {
+		t.Fatalf("consecutive talk motions = (%q, %q), want identical canonical speak (speak 出池:live2d-motion-revert 钉死+phase-motions/workflows eval 契约)", first.Presentation.Motion, second.Presentation.Motion)
 	}
-	speakPool := map[string]bool{}
-	for _, name := range motionVariantPools["speak"] {
-		speakPool[name] = true
+	if first.Presentation.Motion != "speak" {
+		t.Fatalf("talk motion = %q, want canonical speak", first.Presentation.Motion)
 	}
-	if !speakPool[first.Presentation.Motion] || !speakPool[second.Presentation.Motion] {
-		t.Fatalf("talk motions = (%q, %q), both must stay inside the speak pool", first.Presentation.Motion, second.Presentation.Motion)
-	}
-	assertReasonFlagged := func(decision Decision, stage string) {
+	for _, decision := range []Decision{first, second} {
 		for _, code := range decision.ReasonCodes {
 			if code == "motion_variant_rotated" {
-				return
+				t.Fatalf("talk decision must not flag rotation after speak 出池: %+v", decision.ReasonCodes)
 			}
 		}
-		t.Fatalf("%s decision missing motion_variant_rotated reason code: %+v", stage, decision.ReasonCodes)
 	}
-	assertReasonFlagged(first, "first talk")
-	assertReasonFlagged(second, "second talk")
 
 	greeting, err := director.Apply(ctx, Signal{
 		ID: "rotation-greeting", Kind: SignalSessionOpened, UserID: "user-rotation", MatchID: "match-rotation", OccurredAt: now.Add(2 * time.Minute),

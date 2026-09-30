@@ -14,3 +14,7 @@
 ## Sequencing
 
 波D。纯客户端;与 voice-streaming-delivery 在 client 侧交叉(live2d_view.dart 音频消费/FIFO),错峰:**①先③后**。与 wake-word-kws 也都在 client 侧,同样错峰。
+
+## pr tier 回归修正(2026-09-30,实施后门禁抓出)
+
+6.4 的变体池首版含 `speak`(plain-talk 体)——pr tier 三连跑中 phase-motions(2/3)与 workflows(1/3)按轮转计数间歇红:两 eval 契约只认 speak/speak_01,且 live2d-motion-revert 本就钉死说姿落点(6.4 文档注释引用过该先例却把 speak 放进了池)。修正:speak 出池,celebrate/idle 两池保留防机械感价值;轮转测试改断言「连续 talk 决策同 canonical speak 且不 flag rotation」。教训:**变体池收窄的边界要对着既有 eval 契约逐池核,不能只核「同一 motion 组」**。

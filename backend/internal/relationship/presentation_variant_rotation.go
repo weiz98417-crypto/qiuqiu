@@ -25,10 +25,12 @@ import "sync"
 // specific motion files on purpose). presentation_variant_rotation_test.go
 // locks every pool to the client whitelist and to a single model motion
 // group via presentation-map.json.
+//
+// speak 出池（pr tier 回归修正，2026-09-30）：plain-talk 说姿同属
+// live2d-motion-revert 钉死的相位落点，且 phase-motions/workflows 两个
+// eval 契约只认 speak/speak_01——首跑轮到 speak_02 即红。防机械感的价值
+// 由 celebrate/idle 两池保留。
 var motionVariantPools = map[string][]string{
-	// Plain talk body (ActReact neutral, ActAcknowledge, ActTease, the
-	// user-turn base row): the two speak-group talk variants.
-	"speak": {"speak_01", "speak_02"},
 	// Celebration (goal-family rows: goal event, ActReact positive,
 	// observation confirmed rides observationPresentation and stays put):
 	// celebrate -> speak[0], celebrate_02 -> speak[1].
