@@ -8,6 +8,7 @@ import (
 	"time"
 
 	"qiuqiu/internal/matchstate"
+	"qiuqiu/internal/relationship"
 )
 
 func TestEvalProactiveLineThenUserAsksAboutRecordedMatchMemory(t *testing.T) {
@@ -547,4 +548,59 @@ func seedRealizerGoal(t *testing.T, store *matchstate.Store, matchID string) {
 
 func fixedTime() time.Time {
 	return time.Date(2026, 6, 1, 20, 0, 0, 0, time.UTC)
+}
+
+// TestEvalPresentationVariantRotationDoesNotRepeatConsecutively grades the
+// server-side variant rotation (live2d-engine-swap 6.4) on its product
+// semantics: two consecutive celebrations of the same semantic slot must not
+// replay the identical motion file, and the trace must record the actual
+// variant that shipped (Decision.Presentation.Motion, flagged by the
+// "motion_variant_rotated" reason code whenever the name left its row).
+func TestEvalPresentationVariantRotationDoesNotRepeatConsecutively(t *testing.T) {
+	relationship.ResetPresentationVariantRotation()
+	defer relationship.ResetPresentationVariantRotation()
+	ctx := context.Background()
+	store := matchstate.NewStore()
+	agent := NewAgent(NewStoreMemoryTools(store)).WithDirector(
+		relationship.NewDirector(relationship.NewMemoryRepository()),
+	)
+	matchID := "product-eval-variant-rotation"
+	if _, _, err := store.SetConfig(matchID, matchstate.MatchConfig{HomeTeam: "西班牙", AwayTeam: "德国"}); err != nil {
+		t.Fatalf("SetConfig error: %v", err)
+	}
+	celebrations := make([]string, 0, 2)
+	for index, clock := range []string{"24:10", "58:33"} {
+		goal, snapshot, err := store.Create(matchID, matchstate.MatchEvent{
+			EventType:     "goal",
+			Period:        "first_half",
+			Clock:         clock,
+			TeamID:        "home",
+			TeamName:      "西班牙",
+			PlayerName:    "佩德里",
+			Score:         matchstate.Score{Home: index + 1, Away: 0},
+			Description:   "佩德里：禁区内抢点破门。",
+			ProactiveText: "佩德里这一下太关键了。",
+		})
+		if err != nil {
+			t.Fatalf("Create goal %d error: %v", index, err)
+		}
+		response, err := agent.HandleMatchEvent(ctx, MatchEventRequest{
+			UserID: "eval-user", Event: goal, Snapshot: snapshot, OutputAllowed: true, Critical: true,
+		})
+		if err != nil {
+			t.Fatalf("HandleMatchEvent %d error: %v", index, err)
+		}
+		if response.Presentation.Expression != "excited" {
+			t.Fatalf("goal %d expression = %q, want excited (semantic slot must not drift)", index, response.Presentation.Expression)
+		}
+		if response.Trace.RelationshipDecision == nil ||
+			response.Trace.RelationshipDecision.Presentation.Motion != response.Presentation.Motion {
+			t.Fatalf("goal %d: trace does not record the actual variant (decision %+v vs shipped %q)",
+				index, response.Trace.RelationshipDecision, response.Presentation.Motion)
+		}
+		celebrations = append(celebrations, response.Presentation.Motion)
+	}
+	if celebrations[0] == celebrations[1] {
+		t.Fatalf("consecutive celebrations repeated motion %q — rotation semantics broken (%v)", celebrations[0], celebrations)
+	}
 }

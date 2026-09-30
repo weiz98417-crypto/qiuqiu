@@ -4,6 +4,7 @@ void sendLive2dState({
   required String expression,
   required bool speaking,
   String? motion,
+  bool holdLastFrame = false,
 }) {}
 
 void sendLive2dAudio(String dataUrl) {}

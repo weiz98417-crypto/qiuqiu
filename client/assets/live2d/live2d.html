@@ -274,6 +274,10 @@ async function loadModel() {
             '/live2d-assets/models/qiuqiu/female_01Arkit_6.model3.json?v=motionpack1',
             { autoUpdate: true, autoInteract: false }
         );
+        // live2d-engine-swap: the advanced fork ships its own audio-driven
+        // lipsync (only reachable via model.speak(), which no qiuqiu surface
+        // calls). Pin it off — the mouth is wLipSync-driven below.
+        try { model.internalModel.lipSync = false; } catch(e) {}
         app.stage.addChild(model);
         app.stage.addChild(fxLayer);
         resizeModel();
@@ -293,8 +297,8 @@ function setExpression(name) {
     setMood(name);
 }
 
-function playMotion(name) {
-    playMotionGroup(name, 3);
+function playMotion(name, holdLastFrame) {
+    playMotionGroup(name, 3, holdLastFrame === true);
 }
 
 function pick(list) {
@@ -319,7 +323,7 @@ function canInterrupt(priority) {
     return priority >= currentPriority;
 }
 
-function playMotionGroup(group, priority) {
+function playMotionGroup(group, priority, holdLastFrame) {
     if (!model) return;
     if (!mapReady) {
         pendingMotion = group;
@@ -330,7 +334,44 @@ function playMotionGroup(group, priority) {
     priority = priority || 1;
     if (!canInterrupt(priority)) return;
     var m = pick(motions);
-    try { model.motion(m[0], m[1], 3); } catch(e) {}
+    playMotionRow(m, holdLastFrame === true);
+}
+
+// live2d-engine-swap 6.3: holdLastFrame rows (acts holdLastFrame slots) play
+// one motion pass and then freeze the final frame (motionLastFrame) instead
+// of looping on — the freeze stands until the ReturnMode decay or the next
+// motion apply preempts it. The model's motions all loop (Meta.Loop), so
+// there is no finish callback: the pass is timed by the motion's duration
+// and a token invalidates the pending freeze whenever another motion plays,
+// so a stale freeze can never cut into a later body.
+var holdToken = 0;
+
+function playMotionRow(m, holdLastFrame) {
+    holdToken++;
+    try {
+        if (holdLastFrame && typeof model.motionLastFrame === 'function' &&
+                model.internalModel && model.internalModel.motionManager) {
+            var token = holdToken;
+            var row = m;
+            var manager = model.internalModel.motionManager;
+            model.motion(row[0], row[1], 3);
+            manager.loadMotion(row[0], row[1]).then(function(motion) {
+                if (!motion || token !== holdToken) return;
+                var seconds = typeof motion.getDuration === 'function' && motion.getDuration() > 0
+                    ? motion.getDuration()
+                    : (typeof motion.getLoopDuration === 'function' ? motion.getLoopDuration() : 0);
+                if (!seconds || seconds <= 0) return;
+                // Fire just before the loop wraps so the freeze lands on the
+                // final frame instead of one frame into the next pass.
+                setTimeout(function() {
+                    if (token !== holdToken) return;
+                    try { model.motionLastFrame(row[0], row[1]); } catch(e) {}
+                }, Math.max(0, seconds * 1000 - 30));
+            }).catch(function() {});
+        } else {
+            model.motion(m[0], m[1], 3);
+        }
+    } catch(e) {}
 }
 
 // Group names (`celebrate`, `idle`, …) pick among the group's variants;
@@ -777,7 +818,7 @@ function updateEffects(delta) {
     }
 }
 
-function performAction(action) {
+function performAction(action, holdLastFrame) {
     var config = actionMap[action] || actionMap.idle;
     if (!canInterrupt(config.priority)) return;
     currentMode = config.mode;
@@ -786,7 +827,7 @@ function performAction(action) {
     document.body.dataset.mood = config.mood;
     modeUntil = Date.now() + config.ms;
     setMood(config.mood);
-    playMotionGroup(config.motion, config.priority);
+    playMotionGroup(config.motion, config.priority, holdLastFrame === true);
     startPose(config.pose, config.ms);
     spawnEffect(config.effect);
     if (config.mode !== 'idle') scheduleIdle();
@@ -858,8 +899,11 @@ window.addEventListener('message', function(event) {
     if (data.type !== 'qiuqiu-live2d-state') return;
     if (data.expression) setExpression(data.expression);
     if (data.motion) {
-        if (actionMap[data.motion]) performAction(data.motion);
-        else playMotion(data.motion);
+        // holdLastFrame rides on the backend presentation apply
+        // (live2d-engine-swap 6.3): acts rows carrying the slot freeze the
+        // motion's last frame until the ReturnMode decay or the next apply.
+        if (actionMap[data.motion]) performAction(data.motion, data.holdLastFrame === true);
+        else playMotion(data.motion, data.holdLastFrame === true);
     }
     // Arm the hold before the speaking update so the mode reset below cannot
     // erase a hold this same apply just started (ADR-0007 ownership).

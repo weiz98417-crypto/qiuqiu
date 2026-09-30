@@ -13,11 +13,18 @@ class Live2dView extends StatefulWidget {
   final bool isSpeaking;
   final String? motion;
 
+  /// live2d-engine-swap 6.3: true while the active presentation comes from an
+  /// acts row carrying the holdLastFrame slot — the embedded page plays the
+  /// motion through and freezes its last frame until the ReturnMode decay or
+  /// the next motion apply preempts it.
+  final bool holdLastFrame;
+
   const Live2dView({
     super.key,
     required this.expression,
     required this.isSpeaking,
     this.motion,
+    this.holdLastFrame = false,
   });
 
   @override
@@ -107,7 +114,8 @@ class Live2dViewState extends State<Live2dView> {
     if (kIsWeb &&
         (widget.expression != oldWidget.expression ||
             widget.isSpeaking != oldWidget.isSpeaking ||
-            widget.motion != oldWidget.motion)) {
+            widget.motion != oldWidget.motion ||
+            widget.holdLastFrame != oldWidget.holdLastFrame)) {
       _syncState();
       return;
     }
@@ -123,9 +131,11 @@ class Live2dViewState extends State<Live2dView> {
           source: "setSpeaking(${widget.isSpeaking})",
         );
       }
-      if (widget.motion != null && widget.motion != oldWidget.motion) {
+      if ((widget.motion != null && widget.motion != oldWidget.motion) ||
+          widget.holdLastFrame != oldWidget.holdLastFrame) {
         _controller!.evaluateJavascript(
-          source: "playMotion('${widget.motion}')",
+          source:
+              "playMotion('${widget.motion}', ${widget.holdLastFrame})",
         );
       }
     }
@@ -159,6 +169,7 @@ class Live2dViewState extends State<Live2dView> {
         expression: widget.expression,
         speaking: widget.isSpeaking,
         motion: widget.motion,
+        holdLastFrame: widget.holdLastFrame,
       );
       return;
     }
@@ -169,7 +180,9 @@ class Live2dViewState extends State<Live2dView> {
     );
     controller.evaluateJavascript(source: 'setSpeaking(${widget.isSpeaking})');
     if (widget.motion != null) {
-      controller.evaluateJavascript(source: "playMotion('${widget.motion}')");
+      controller.evaluateJavascript(
+        source: "playMotion('${widget.motion}', ${widget.holdLastFrame})",
+      );
     }
   }
 
@@ -552,6 +565,10 @@ async function loadModel() {
             'qiuqiu://asset/models/qiuqiu/female_01Arkit_6.model3.json',
             { autoUpdate: true, autoInteract: false }
         );
+        // live2d-engine-swap: the advanced fork ships its own audio-driven
+        // lipsync (only reachable via model.speak(), which no qiuqiu surface
+        // calls). Pin it off — the mouth is wLipSync-driven below.
+        try { model.internalModel.lipSync = false; } catch(e) {}
         app.stage.addChild(model);
         resizeModel();
         window.addEventListener('resize', resizeModel);
@@ -579,18 +596,50 @@ function setExpression(name) {
     try { if (model) model.expression(idx); } catch(e) {}
 }
 
-function playMotion(name) {
+// live2d-engine-swap 6.3: holdLastFrame applies (acts holdLastFrame slots)
+// play one motion pass and then freeze the final frame (motionLastFrame)
+// instead of looping on — the freeze stands until the ReturnMode decay or
+// the next motion apply preempts it. The model's motions all loop
+// (Meta.Loop), so there is no finish callback: the pass is timed by the
+// motion's duration and a token invalidates the pending freeze whenever
+// another motion plays.
+var holdToken = 0;
+
+function playMotion(name, holdLastFrame) {
     if (!model) return;
     if (!mapReady) {
         pendingMotion = name;
         return;
     }
     var m = resolveMotion(name);
-    if (m) {
-        try { model.motion(m[0], m[1], 3); } catch(e) {}
+    if (!m) return;
+    holdToken++;
+    try {
+        if (holdLastFrame === true && typeof model.motionLastFrame === 'function' &&
+                model.internalModel && model.internalModel.motionManager) {
+            var token = holdToken;
+            var row = m;
+            var manager = model.internalModel.motionManager;
+            model.motion(row[0], row[1], 3);
+            manager.loadMotion(row[0], row[1]).then(function(motion) {
+                if (!motion || token !== holdToken) return;
+                var seconds = typeof motion.getDuration === 'function' && motion.getDuration() > 0
+                    ? motion.getDuration()
+                    : (typeof motion.getLoopDuration === 'function' ? motion.getLoopDuration() : 0);
+                if (!seconds || seconds <= 0) return;
+                // Fire just before the loop wraps so the freeze lands on the
+                // final frame instead of one frame into the next pass.
+                setTimeout(function() {
+                    if (token !== holdToken) return;
+                    try { model.motionLastFrame(row[0], row[1]); } catch(e) {}
+                }, Math.max(0, seconds * 1000 - 30));
+            }).catch(function() {});
+        } else {
+            model.motion(m[0], m[1], 3);
+        }
         // 指令动作刚播过：闲置轮播让路（idle-life-signals）。
         life.lastMotionAt = Date.now();
-    }
+    } catch(e) {}
 }
 
 // Exact motion names play their single row; group names (`idle`, `listen`,
@@ -704,7 +753,8 @@ setInterval(function() {
 }, 50);
 
 // idle 变体轮播：8-15s 随机播 idle 组一个变体（替换「永远第一个」的兜底）。
-// 说话中或 6s 内有指令动作时让路。
+// 说话中或 6s 内有指令动作时让路。轮播抢占也会清掉挂起的末帧保持
+// （live2d-engine-swap 6.3 的 holdToken）。
 setInterval(function() {
     if (!model || !mapReady || speaking) return;
     var now = Date.now();
@@ -714,6 +764,7 @@ setInterval(function() {
     var variants = groupVariants['idle'];
     if (!variants || !variants.length) return;
     var pick = variants[Math.floor(Math.random() * variants.length)];
+    holdToken++;
     try { model.motion(pick[0], pick[1], 3); } catch(e) {}
 }, 4000);
 

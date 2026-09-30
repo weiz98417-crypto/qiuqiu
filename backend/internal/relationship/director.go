@@ -42,7 +42,11 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 				refreshedDecision.RefreshCount = 1
 				refreshedDecision.ReasonCodes = append(refreshedDecision.ReasonCodes, "critical_fact_refreshed")
 				refreshedDecision.Speech = speechFor(signal, decision.Actions, state.Relationship, state.Match)
-				refreshedDecision.Presentation = presentationFor(state.Match.Affect, signal, decision.Actions)
+				refreshedPresentation, rotated := ApplyPresentationRotation(presentationFor(state.Match.Affect, signal, decision.Actions))
+				if rotated {
+					refreshedDecision.ReasonCodes = append(refreshedDecision.ReasonCodes, "motion_variant_rotated")
+				}
+				refreshedDecision.Presentation = refreshedPresentation
 			}
 			refreshed, found, refreshErr := d.repository.RefreshDecision(ctx, signal.UserID, signal.MatchID, signal.ID, refreshedDecision)
 			if refreshErr != nil {
@@ -82,6 +86,16 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 		state.Match.LastSignalID = signal.ID
 		state.Relationship.Version++
 		state.Match.Version++
+		// live2d-engine-swap 6.4: the semantic slot ships with the slot's
+		// next motion variant (celebration/talk/idle pools) so repeated
+		// applies do not replay the identical file; presentationFor stays a
+		// pure table lookup (ADR-0007) and the actual variant lands in the
+		// decision below, flagged for the trace/interaction audit.
+		presentation, variantRotated := ApplyPresentationRotation(presentationFor(state.Match.Affect, signal, actions))
+		reasonCodes := append([]string{"relationship_decision"}, reasons...)
+		if variantRotated {
+			reasonCodes = append(reasonCodes, "motion_variant_rotated")
+		}
 		decision := Decision{
 			ID:           decisionID,
 			SignalID:     signal.ID,
@@ -99,11 +113,11 @@ func (d *Director) Apply(ctx context.Context, signal Signal) (Decision, error) {
 				AnalysisAppetite:    state.Relationship.Preferences.AnalysisAppetite,
 				PredictionBanter:    state.Relationship.Banter["prediction"].Status == "allowed",
 			},
-			Presentation:  presentationFor(state.Match.Affect, signal, actions),
+			Presentation:  presentation,
 			Speech:        speechFor(signal, actions, state.Relationship, state.Match),
 			Memories:      selectedMemories,
 			PlaybackState: state.Match.PlaybackState,
-			ReasonCodes:   append([]string{"relationship_decision"}, reasons...),
+			ReasonCodes:   reasonCodes,
 			CreatedAt:     updatedAt,
 		}
 		err = d.repository.CompareAndSwap(ctx, ExpectedVersions{

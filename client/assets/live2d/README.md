@@ -15,8 +15,8 @@ The backend serves this folder at `/assets/`, plus `/live2d.html`, `/app.html`, 
 ## Display Bundle (rebuildable)
 
 `live2d-display-bundle.js` is built, not hand-maintained: source lives in
-`scripts/live2d-bundle/` (pixi.js-legacy 7.4.3 + pixi-live2d-display-lipsyncpatch
-0.5.0-ls-8, esbuild IIFE). Rebuild with:
+`scripts/live2d-bundle/` (pixi.js-legacy 7.4.3 + pixi-live2d-display-advanced
+1.1.0, esbuild IIFE). Rebuild with:
 
 ```
 cd scripts/live2d-bundle && npm install && npm run build
@@ -29,6 +29,16 @@ webviews (Android emulator). The bundle exposes the same globals the old
 hand-dropped 2023 bundle did (`window.PIXI`, `window.Live2DModel`), so
 `live2d.html` keeps consuming them unchanged; the only page-side adaptation
 was the pixi v7 async `app.init()` semantics.
+
+Engine base (live2d-engine-swap): the display library is
+pixi-live2d-display-advanced (active upstream) since the lipsyncpatch fork
+went 404. The advanced fork's own audio-driven lipsync is pinned off
+(`model.internalModel.lipSync = false` right after load in both surfaces);
+the mouth stays wLipSync-driven (below). The fork adds `motionLastFrame`
+(last-frame hold, used by the acts `holdLastFrame` slots of
+presentation-map.json) and `parallelMotion` (slot kept, not in production
+use). Regression: `node scripts/live2d-bundle/regression.mjs` drives all 17
+motions of presentation-map.json in Chrome and screenshots each.
 
 ## Lip Sync
 

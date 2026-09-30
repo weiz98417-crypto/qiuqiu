@@ -397,6 +397,13 @@ type PresentationPlan struct {
 	VoiceSpeed  float64     `json:"voiceSpeed"`
 	HoldMS      int         `json:"holdMs"`
 	ReturnMode  string      `json:"returnMode"`
+	// HoldLastFrame (live2d-engine-swap 6.3) rides on acts rows carrying
+	// "holdLastFrame": true in presentation-map.json: the client surfaces
+	// play the motion through and hold its last frame instead of dissolving
+	// back into the resting pose. The hold ends when the ReturnMode decay or
+	// the next presentation apply preempts it — orthogonal to HoldMS, which
+	// keeps owning the expression/mode window as before.
+	HoldLastFrame bool `json:"holdLastFrame,omitempty"`
 }
 
 type SpeechPlan struct {

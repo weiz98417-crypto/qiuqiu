@@ -486,6 +486,48 @@ void main() {
     expect(controller.state.activePresentation, isNull);
   });
 
+  test(
+      'a holdLastFrame presentation clears its hold on decay and on preemption '
+      '(live2d-engine-swap 6.3)', () {
+    final controller = MatchSessionController();
+    const held = CompanionPresentation(
+      expression: 'excited',
+      motion: 'celebrate',
+      voiceStyle: 'excited',
+      voiceEnergy: 0.9,
+      voiceSpeed: 1.05,
+      hold: Duration(seconds: 2),
+      returnMode: 'decay_to_focus',
+      holdLastFrame: true,
+    );
+    controller.activatePresentation(held);
+    expect(controller.state.activePresentation!.holdLastFrame, isTrue);
+
+    // ReturnMode decay: the resting apply carries no hold source —
+    // activePresentation drops and the resting body plays unheld, which is
+    // what clears the frozen last frame on the rendering surfaces.
+    controller.returnPresentation(held);
+    expect(controller.state.activePresentation, isNull);
+    expect(controller.state.expression, 'focus');
+    expect(controller.state.motion, 'focus');
+
+    // New presentation preemption: the second apply owns the body and its
+    // own hold flag; a plain (non-holding) apply replaces the held one.
+    const preempt = CompanionPresentation(
+      expression: 'chat',
+      motion: 'speak',
+      voiceStyle: 'natural',
+      voiceEnergy: 0.5,
+      voiceSpeed: 1,
+      hold: Duration(seconds: 2),
+      returnMode: 'decay_to_focus',
+    );
+    controller.activatePresentation(held);
+    controller.activatePresentation(preempt);
+    expect(controller.state.activePresentation, same(preempt));
+    expect(controller.state.activePresentation!.holdLastFrame, isFalse);
+  });
+
   test('projects selected and active audio input devices', () {
     final controller = MatchSessionController();
     controller.setAudioInputs(const [

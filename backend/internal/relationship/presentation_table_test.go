@@ -31,7 +31,8 @@ type presentationMapFile struct {
 }
 
 // actPerformances decodes one "acts" entry: named "expr/motion" strings plus
-// the optional energyDelta number.
+// the optional energyDelta number. The optional holdLastFrame boolean
+// (live2d-engine-swap 6.3) is reported separately.
 func (m *presentationMapFile) actPerformances(act string) (map[string]string, float64) {
 	performances := map[string]string{}
 	energy := 0.0
@@ -46,6 +47,23 @@ func (m *presentationMapFile) actPerformances(act string) (map[string]string, fl
 		}
 	}
 	return performances, energy
+}
+
+// actHoldLastFrame decodes the optional act-level "holdLastFrame" key of one
+// "acts" entry (live2d-engine-swap 6.3): a list of the quadrant keys whose
+// row holds the motion's last frame. Absent means none.
+func (m *presentationMapFile) actHoldLastFrame(act string) map[string]bool {
+	holds := map[string]bool{}
+	raw, ok := m.Acts[act]["holdLastFrame"]
+	if !ok {
+		return holds
+	}
+	var quadrants []string
+	_ = json.Unmarshal(raw, &quadrants)
+	for _, quadrant := range quadrants {
+		holds[quadrant] = true
+	}
+	return holds
 }
 
 func (m *presentationMapFile) motionGroup(name string) (string, bool) {
@@ -249,6 +267,28 @@ func TestPresentationTableMirrorsJSONActsAndEvents(t *testing.T) {
 		if energyDelta == 0 && foundDelta {
 			t.Errorf("act %q table row carries energyDelta %.2f that the json does not define", act, rowWithDelta.energyDelta)
 		}
+		// holdLastFrame (live2d-engine-swap 6.3): the act-level json
+		// quadrant list must equal exactly the table rows of the act that
+		// carry the flag, both directions.
+		hold := mapping.actHoldLastFrame(act)
+		for key, row := range tableActs {
+			if !strings.HasPrefix(key, string(wireAct)+"/") {
+				continue
+			}
+			if row.holdLastFrame != hold[string(row.quadrant)] {
+				t.Errorf("act %q key %q: table row holdLastFrame = %v, json = %v", act, key, row.holdLastFrame, hold[string(row.quadrant)])
+			}
+		}
+		for quadrant := range hold {
+			row, ok := tableActs[string(wireAct)+"/"+quadrant]
+			if !ok {
+				t.Errorf("act %q json holdLastFrame names unknown quadrant %q", act, quadrant)
+				continue
+			}
+			if !row.holdLastFrame {
+				t.Errorf("act %q json holdLastFrame names %q but the table row does not carry the flag", act, quadrant)
+			}
+		}
 	}
 	wireActNames := map[CommunicationAct]string{}
 	for jsonName, wireAct := range jsonActNames {
@@ -264,6 +304,9 @@ func TestPresentationTableMirrorsJSONActsAndEvents(t *testing.T) {
 		performances, _ := mapping.actPerformances(jsonName)
 		if performances[keyName] != row.expression+"/"+row.motion {
 			t.Errorf("table act row %q = (%q, %q) is not in the json acts section", key, row.expression, row.motion)
+		}
+		if row.holdLastFrame && !mapping.actHoldLastFrame(jsonName)[keyName] {
+			t.Errorf("table act row %q carries holdLastFrame that the json acts section does not define", key)
 		}
 	}
 }
@@ -533,5 +576,88 @@ func TestInterruptedDeliveryPresentationIsOneShotReaction(t *testing.T) {
 	}
 	if !ClientAcceptsExpression(plan.Expression) || !ClientAcceptsMotion(plan.Motion) {
 		t.Fatalf("interrupted presentation outside the client whitelist: %+v", plan)
+	}
+}
+
+// TestHoldLastFrameRidesOnActReactRows locks the last-frame-hold slot
+// (live2d-engine-swap 6.3): the celebration (positive) and chagrin
+// (negative) ActReact rows carry holdLastFrame into the emitted plan, the
+// neutral row does not, and no act outside the deliberate mirror carries
+// the flag. The Dart side of the three-way lock lives in
+// client/test/presentation_whitelist_contract_test.dart
+// (CompanionPresentation.actsHoldLastFrame).
+func TestHoldLastFrameRidesOnActReactRows(t *testing.T) {
+	userTurn := Signal{Kind: SignalUserTurn, User: &UserSignal{Text: "这球你怎么看"}}
+	positive := presentationFor(AffectState{Valence: 0.7, Arousal: 0.8}, userTurn, []CommunicationAct{ActReact})
+	if !positive.HoldLastFrame {
+		t.Fatalf("positive ActReact must carry holdLastFrame: %+v", positive)
+	}
+	negative := presentationFor(AffectState{Valence: -0.8, Arousal: 0.1}, userTurn, []CommunicationAct{ActReact})
+	if !negative.HoldLastFrame {
+		t.Fatalf("negative ActReact must carry holdLastFrame: %+v", negative)
+	}
+	neutral := presentationFor(AffectState{Valence: 0, Arousal: 0.3}, userTurn, []CommunicationAct{ActReact})
+	if neutral.HoldLastFrame {
+		t.Fatalf("neutral ActReact must not hold the last frame: %+v", neutral)
+	}
+	// The hold floor must outlive one full pass of the slot's landing motion
+	// plus a freeze window, or the ReturnMode decay lands before the motion
+	// finishes and the hold never shows. The hold slots land on the speak
+	// group (celebrate/complain -> speak[0]; the celebrate rotation pool
+	// adds speak[1]); pin the constant against the asset's Meta.Duration.
+	model := loadModelAsset(t)
+	freezeWindowMS := 1200.0
+	for _, variant := range model.FileReferences.Motions["speak"] {
+		motionPath := filepath.Join(filepath.FromSlash(presentationMapDir), filepath.FromSlash(variant.File))
+		data, err := os.ReadFile(motionPath)
+		if err != nil {
+			t.Fatalf("read %s: %v", variant.File, err)
+		}
+		var motion struct {
+			Meta struct {
+				Duration float64 `json:"Duration"`
+				Loop     bool    `json:"Loop"`
+			} `json:"Meta"`
+		}
+		if err := json.Unmarshal(data, &motion); err != nil {
+			t.Fatalf("parse %s: %v", variant.File, err)
+		}
+		if !motion.Meta.Loop {
+			t.Fatalf("%s no longer loops — re-audit the hold-floor arithmetic (a non-looping motion finishes on its own)", variant.File)
+		}
+		needed := motion.Meta.Duration*1000 + freezeWindowMS
+		if float64(holdLastFrameHoldFloorMS) < needed {
+			t.Fatalf("holdLastFrameHoldFloorMS = %d, but %s runs %.0fs and needs %.0fms of hold (pass + freeze window)", holdLastFrameHoldFloorMS, variant.File, motion.Meta.Duration, needed)
+		}
+	}
+	if positive.HoldMS != holdLastFrameHoldFloorMS {
+		t.Fatalf("positive ActReact HoldMS = %d, want the %dms hold floor", positive.HoldMS, holdLastFrameHoldFloorMS)
+	}
+	if negative.HoldMS != holdLastFrameHoldFloorMS {
+		t.Fatalf("negative ActReact HoldMS = %d, want the %dms hold floor", negative.HoldMS, holdLastFrameHoldFloorMS)
+	}
+	// The watching default and the interrupted one-shot must not hold: the
+	// ReturnMode decays straight into them and the decay apply preempts and
+	// clears any frame a previous presentation held.
+	mapping := loadPresentationMap(t)
+	reactHold := mapping.actHoldLastFrame("ActReact")
+	if !reactHold["positive"] || !reactHold["negative"] || reactHold["neutral"] {
+		t.Fatalf("presentation-map.json ActReact holdLastFrame = %v, want positive+negative only (mirror drifted)", reactHold)
+	}
+	for act := range mapping.Acts {
+		if act == "ActReact" {
+			continue
+		}
+		if len(mapping.actHoldLastFrame(act)) != 0 {
+			t.Errorf("act %q carries holdLastFrame in the json without mirrored table rows — extend presentationTable and the Dart actsHoldLastFrame mirror deliberately", act)
+		}
+	}
+	base := presentationFor(AffectState{}, userTurn, nil)
+	if base.HoldLastFrame {
+		t.Fatalf("user-turn base row must not hold the last frame: %+v", base)
+	}
+	interrupted := InterruptedDeliveryPresentation(AffectState{})
+	if interrupted.HoldLastFrame {
+		t.Fatalf("interrupted one-shot must not hold the last frame: %+v", interrupted)
 	}
 }

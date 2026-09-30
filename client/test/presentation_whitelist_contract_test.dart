@@ -31,6 +31,10 @@ void main() {
       (presentationMap['motions'] as Map).cast<String, dynamic>();
   final jsonPhases =
       (presentationMap['phases'] as Map).cast<String, dynamic>();
+  // 模型 motion 组名（resolveMotionName 的合法落点之一——组名由渲染面挑
+  // 组内变体；events/phases 行允许指到组名，如 var_overturn → "confused"
+  // 经 motionAliases 落到 idle 组）。
+  modelMotionGroups.addAll(motionGroups.keys.cast<String>());
 
   test('model ships the original 5-group / 9-motion inventory (live2d-motion-revert)', () {
     expect(motionGroups.keys, hasLength(5));
@@ -70,6 +74,72 @@ void main() {
     final loaded = await loadPresentationMap();
     expect(loaded.expressions, CompanionPresentation.expressionIndices);
     expect(loaded.motions, CompanionPresentation.motionVariants);
+    expect(loaded.actsHoldLastFrame, CompanionPresentation.actsHoldLastFrame);
+  });
+
+  test('acts holdLastFrame slots lock three-way (live2d-engine-swap 6.3)', () {
+    final jsonActs = (presentationMap['acts'] as Map).cast<String, dynamic>();
+    final jsonHold = <String, List<String>>{
+      for (final entry in jsonActs.entries)
+        if ((entry.value as Map)['holdLastFrame'] is List &&
+            ((entry.value as Map)['holdLastFrame'] as List).isNotEmpty)
+          entry.key: [
+            for (final quadrant
+                in (entry.value as Map)['holdLastFrame'] as List<dynamic>)
+              quadrant as String,
+          ],
+    };
+    // Dart mirror == JSON acts section == PresentationMap.fallback.
+    expect(
+      CompanionPresentation.actsHoldLastFrame,
+      jsonHold,
+      reason: 'actsHoldLastFrame drifted from presentation-map.json',
+    );
+    expect(PresentationMap.fallback.actsHoldLastFrame, jsonHold);
+    // Every named quadrant is a real key of its acts row, and the Go table
+    // rows are locked to the same slots by
+    // backend/internal/relationship/presentation_table_test.go
+    // (TestHoldLastFrameRidesOnActReactRows).
+    jsonHold.forEach((act, quadrants) {
+      final row = jsonActs[act] as Map;
+      expect(row.keys, containsAll(quadrants),
+          reason: 'act "$act" names unknown quadrants $quadrants');
+      expect(quadrants, isNotEmpty);
+    });
+  });
+
+  test('CompanionPresentation parses the holdLastFrame wire flag', () {
+    final holding = CompanionPresentation.fromReplyData(const {
+      'presentation': {
+        'expression': 'excited',
+        'motion': 'celebrate',
+        'voiceStyle': 'excited',
+        'voiceEnergy': 0.9,
+        'voiceSpeed': 1.05,
+        'holdMs': 2600,
+        'returnMode': 'watching',
+        'holdLastFrame': true,
+      },
+    });
+    expect(holding, isNotNull);
+    expect(holding!.holdLastFrame, isTrue);
+
+    // Legacy senders (and the ReturnMode decay apply, which re-enters
+    // through the same parser without the flag) default to not holding: the
+    // decay motion preempts and clears a held frame.
+    final plain = CompanionPresentation.fromReplyData(const {
+      'presentation': {
+        'expression': 'focus',
+        'motion': 'focus',
+        'voiceStyle': 'natural',
+        'voiceEnergy': 0.5,
+        'voiceSpeed': 1,
+        'holdMs': 1800,
+        'returnMode': 'decay_to_focus',
+      },
+    });
+    expect(plain, isNotNull);
+    expect(plain!.holdLastFrame, isFalse);
   });
 
   test('every whitelisted motion resolves into presentation-map.json', () {
@@ -223,10 +293,57 @@ void main() {
       reason: 'phases.idle is the affect-idle-tier marker, not a performance',
     );
   });
+
+  test('events rows lock three-way and resolve into whitelisted bodies', () {
+    final map = PresentationMap.fromJson(presentationMap);
+    final jsonEvents =
+        (presentationMap['events'] as Map).cast<String, dynamic>();
+    // Dart fallback mirror == JSON events == (Go rows locked on the backend
+    // side by presentation_table_test.go
+    // TestPresentationTableMirrorsJSONActsAndEvents).
+    expect(
+      PresentationMap.fallback.events,
+      jsonEvents,
+      reason: 'PresentationMap.fallback.events drifted from presentation-map.json',
+    );
+    expect(
+      map.events,
+      jsonEvents,
+      reason: 'PresentationMap.events parse drifted from presentation-map.json',
+    );
+    // wake-word-kws 10.3: the client-origin wake row must exist so the idle
+    // wake-up render has a single-source body.
+    expect(
+      jsonEvents,
+      contains(PresentationMap.wakeEventClass),
+      reason: 'events.wake (client-origin wake row) is missing',
+    );
+    jsonEvents.forEach((name, raw) {
+      final performance = map.eventFor(name);
+      expect(performance, isNotNull,
+          reason: 'event "$name" is not an "expression/motion" row');
+      // Expression may be a legacy alias (events.var_check "tense" →
+      // nervous); it must at least normalize into the whitelist.
+      expect(
+        CompanionPresentation.normalizeExpression(performance!.$1),
+        isNotNull,
+        reason: 'event "$name" targets unknown expression "${performance.$1}"',
+      );
+      expect(
+        resolvesMotionName(performance.$2),
+        isTrue,
+        reason: 'event "$name" targets unknown motion "${performance.$2}"',
+      );
+    });
+    // The wake row renders 球球抬头看你: happy face, leaning-in listen pose.
+    expect(map.eventFor(PresentationMap.wakeEventClass), ('happy', 'listen_01'));
+  });
 }
 
 bool resolvesMotionName(String name) {
   if (CompanionPresentation.motionVariants.containsKey(name)) return true;
+  // Model group names: the surfaces pick among the group's variants.
+  if (modelMotionGroups.contains(name)) return true;
   final legacy = CompanionPresentation.legacyMotionNames[name];
   if (legacy != null) {
     return CompanionPresentation.motionVariants.containsKey(legacy);
@@ -235,3 +352,6 @@ bool resolvesMotionName(String name) {
   if (alias != null) return resolvesMotionName(alias);
   return false;
 }
+
+/// Filled at main() start from the model3.json motion groups.
+final Set<String> modelMotionGroups = {};

@@ -103,6 +103,7 @@ func presentationFor(affect AffectState, signal Signal, actions []CommunicationA
 	if row := resolvePresentationRow(affect, signal, actions); row != nil {
 		plan.Expression = row.expression
 		plan.Motion = row.motion
+		plan.HoldLastFrame = row.holdLastFrame
 		if row.energyDelta != 0 {
 			plan.VoiceEnergy = clamp(plan.VoiceEnergy+row.energyDelta, 0, 1)
 		}
@@ -111,6 +112,12 @@ func presentationFor(affect AffectState, signal Signal, actions []CommunicationA
 				plan.VoiceStyle = tuning.voiceStyle
 				plan.HoldMS = tuning.holdMS
 			}
+		}
+		// holdLastFrame rows (live2d-engine-swap 6.3) floor the hold window:
+		// the surface plays one motion pass before freezing the last frame,
+		// so the hold must outlive the motion or it never shows.
+		if row.holdLastFrame && plan.HoldMS < holdLastFrameHoldFloorMS {
+			plan.HoldMS = holdLastFrameHoldFloorMS
 		}
 	}
 	return plan

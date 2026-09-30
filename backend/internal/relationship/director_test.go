@@ -6,6 +6,14 @@ import (
 	"time"
 )
 
+// speakVariantPool mirrors motionVariantPools["speak"] (live2d-engine-swap
+// 6.4): director-level talk-body assertions accept the whole rotation pool.
+var speakVariantPool = map[string]bool{"speak": true, "speak_01": true, "speak_02": true}
+
+// celebrateVariantPool mirrors motionVariantPools["celebrate"]: goal-event
+// assertions accept the whole rotation pool.
+var celebrateVariantPool = map[string]bool{"celebrate": true, "celebrate_02": true}
+
 func TestDirectorApplyIsIdempotent(t *testing.T) {
 	director := NewDirector(NewMemoryRepository())
 	now := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
@@ -579,7 +587,9 @@ func TestDirectorPlansPresentationForGreetingAndUserReply(t *testing.T) {
 	if err != nil {
 		t.Fatalf("reply Apply: %v", err)
 	}
-	if reply.Presentation.Expression != "chat" || reply.Presentation.Motion != "speak" {
+	// live2d-engine-swap 6.4: the talk slot rotates through its variant pool
+	// (speak_01/speak_02); the semantic body must stay the talk family.
+	if reply.Presentation.Expression != "chat" || !speakVariantPool[reply.Presentation.Motion] {
 		t.Fatalf("reply presentation = %+v", reply.Presentation)
 	}
 }

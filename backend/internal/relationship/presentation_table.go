@@ -39,6 +39,17 @@ const (
 // that rule against the asset itself.
 const emptyExpressionFileIndex = 0
 
+// holdLastFrameHoldFloorMS is the HoldMS floor for acts rows carrying the
+// holdLastFrame slot (live2d-engine-swap 6.3). The model's motion files all
+// loop (Meta.Loop), so the client surfaces play one pass by duration timer
+// and then freeze the final frame; the floor must cover one full pass of the
+// slot's landing group (speak: Speak_01 3.967s / Speak_02 6.2s — the
+// celebrate variant pool) plus a freeze window for the held frame, or the
+// ReturnMode decay lands before the motion ever finishes and the hold stays
+// invisible. presentation_table_test.go pins the constant against the motion
+// assets' Meta.Duration, so swapping a hold-slot motion re-arms it loudly.
+const holdLastFrameHoldFloorMS = 7400
+
 // watchingEventClass keys the terminal watching-default row. It is not a
 // model event type; the resolution falls through to it when nothing else
 // matched (delivery results, silenced turns, unknown events without acts).
@@ -54,6 +65,11 @@ type presentationRow struct {
 	expression  string
 	motion      string
 	energyDelta float64 // applied to the plan's voice energy (ActRepair)
+	// holdLastFrame mirrors the JSON acts row key "holdLastFrame": true
+	// (live2d-engine-swap 6.3) — the client holds the motion's last frame
+	// after it finishes; the ReturnMode decay or the next apply clears it.
+	// Opened on the celebration/chagrin ActReact rows; extend act by act.
+	holdLastFrame bool
 }
 
 // presentationTable mirrors presentation-map.json "events" + "acts" 1:1.
@@ -92,6 +108,12 @@ var presentationTable = []presentationRow{
 	// Trigger: updateAffect "shot_missed" (mild valence dip) — the
 	// near-miss gesture instead of the neutral watching default.
 	{eventClass: "shot_missed", expression: "sad", motion: "miss"},
+	// Trigger: wake-word-kws 10.3 — the client-origin wake event (KWS hit on
+	// the idle-state "你好球球" keyword). The backend never emits this class;
+	// the row exists purely so the ADR-0007 three-way lock (JSON == Go ==
+	// client) stays complete and the slot cannot silently die, same rule as
+	// var_overturn above.
+	{eventClass: "wake", expression: "happy", motion: "listen_01"},
 
 	// -- JSON "acts": user turns, first matching row in declaration order wins.
 	// Trigger: policy "explicit_analysis_request" (isTacticalQuestion) — a
@@ -124,9 +146,12 @@ var presentationTable = []presentationRow{
 	// Triggers: policy "user_emotion_reaction", "user_personal_share" and
 	// "unverified_fact_requires_reserve" (ActReact) — reacting is
 	// quadrant-colored: hyped along with the moment, subdued by a low one,
-	// plain while serene.
-	{act: ActReact, quadrant: QuadrantPositive, expression: "excited", motion: "celebrate"},
-	{act: ActReact, quadrant: QuadrantNegative, expression: "nervous", motion: "complain"},
+	// plain while serene. The celebration (positive) and chagrin (negative)
+	// rows carry holdLastFrame (live2d-engine-swap 6.3): the body plays
+	// through and freezes on the last frame until the ReturnMode decay or
+	// the next apply preempts it.
+	{act: ActReact, quadrant: QuadrantPositive, expression: "excited", motion: "celebrate", holdLastFrame: true},
+	{act: ActReact, quadrant: QuadrantNegative, expression: "nervous", motion: "complain", holdLastFrame: true},
 	{act: ActReact, quadrant: QuadrantNeutral, expression: "chat", motion: "speak"},
 	// Trigger: policy "default_acknowledgement" plus the boundary and
 	// repair-follow-through acks — the plain talking body, unchanged from

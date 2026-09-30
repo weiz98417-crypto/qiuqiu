@@ -37,12 +37,17 @@ void sendLive2dState({
   required String expression,
   required bool speaking,
   String? motion,
+  bool holdLastFrame = false,
 }) {
   final payload = jsonEncode({
     'type': 'qiuqiu-live2d-state',
     'expression': expression,
     'motion': motion,
     'speaking': speaking,
+    // live2d-engine-swap 6.3: rides on presentation applies routed through
+    // acts rows carrying the holdLastFrame slot; the web page freezes the
+    // motion's last frame until the ReturnMode decay or the next apply.
+    'holdLastFrame': holdLastFrame,
   });
   _postToLive2dFrame(payload);
 }

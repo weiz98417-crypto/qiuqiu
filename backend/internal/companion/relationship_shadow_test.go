@@ -12,6 +12,11 @@ import (
 	"qiuqiu/internal/relationship"
 )
 
+// celebrateVariantPool mirrors relationship motionVariantPools["celebrate"]
+// (live2d-engine-swap 6.4): the goal event's celebration body rotates
+// through the pool, so agent-level goal assertions accept all members.
+var celebrateVariantPool = map[string]bool{"celebrate": true, "celebrate_02": true}
+
 func TestAgentUsesRelationshipDecisionFallbackWithoutRealizer(t *testing.T) {
 	store := matchstate.NewStore()
 	agent := NewAgent(NewStoreMemoryTools(store)).WithDirector(
@@ -112,7 +117,7 @@ func TestAgentHandlesMutedMatchEventWithoutProducingSpeech(t *testing.T) {
 	if response.Decision.Speech != nil {
 		t.Fatalf("speech = %+v, want nil", response.Decision.Speech)
 	}
-	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "celebrate" {
+	if response.Presentation.Expression != "excited" || !celebrateVariantPool[response.Presentation.Motion] {
 		t.Fatalf("presentation = %+v", response.Presentation)
 	}
 }
@@ -171,7 +176,7 @@ func TestAgentHandlesAllowedMatchEventAsOnePlannedTurn(t *testing.T) {
 	if response.Decision.ID == "" || response.Trace.RelationshipDecision == nil || response.Trace.RelationshipDecision.ID != response.Decision.ID {
 		t.Fatalf("decision mismatch: response=%+v trace=%+v", response.Decision, response.Trace.RelationshipDecision)
 	}
-	if response.Presentation.Expression != "excited" || response.Presentation.Motion != "celebrate" {
+	if response.Presentation.Expression != "excited" || !celebrateVariantPool[response.Presentation.Motion] {
 		t.Fatalf("presentation = %+v", response.Presentation)
 	}
 }

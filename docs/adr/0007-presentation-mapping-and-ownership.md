@@ -1,5 +1,11 @@
 # 0007 · 表演映射表：单一源 JSON、全量覆盖不变式与所有权规则
 
+> **修订注（2026-09-30,live2d-engine-swap）**:本 ADR 增补两条,所有权规则(决定 4)不变。
+>
+> **末帧保持(holdLastFrame)**:acts 表新增可选槽 `holdLastFrame`(值为象限键数组,如 ActReact 的 `["positive","negative"]`)。命中的表演身体把动作播完一整遍后用 `motionLastFrame` 定格末帧(模型 motion 全部 Loop,无 finish 回调,由时长定时器触发);末帧由 ReturnMode 归位或新 motion 抢占时清——表情归位照旧,与 HoldMS 正交但为 hold 槽行设 HoldMS 下限(`holdLastFrameHoldFloorMS`,覆盖落点组最长动作一遍+定格窗,契约测试对着 motion3.json 的 Meta.Duration 锁)。三方镜像(Dart `CompanionPresentation.actsHoldLastFrame` == JSON acts 槽 == Go `presentationRow.holdLastFrame`)由两侧契约测试锁;先开庆祝类/懊恼类(ActReact positive/negative),逐 act 审核。
+>
+> **变体轮转**:同一语义槽的变体池在服务端轮转(`relationship.presentation_variant_rotation.go`,复用 backchannel 短语轮转模式 pool[rotation%len]);`presentationFor` 保持纯函数(决定 3),轮转在 Director 组装 Decision 时施加,reason code `motion_variant_rotated` + Decision.Presentation.Motion 即实际变体,trace/审计可见。池只收「落点组内变体同族」的槽(speak/celebrate/idle);live2d-motion-revert 钉死的语义落点(complain/tense/…)不轮转。
+
 ## 背景
 
 发射路径审计（2026-09-17）发现：白名单放开的 30 个表演槽位（17 动作 + 13 表情）中 9 个是死库存（后端零发射），4 种沟通动作（React/Ask/Repair/Acknowledge）对身体零影响；表情名→表情文件的映射存在三份互不一致的副本，`thinking` 指向一个空参数文件（渲染为无表情）；默认动作名 "focus" 在两个渲染面上播放不同动作；普通 session_opened 路径把 hello 表演算完即弃。

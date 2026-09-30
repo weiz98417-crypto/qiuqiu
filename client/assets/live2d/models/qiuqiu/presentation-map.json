@@ -34,7 +34,7 @@
     "wave": { "group": "hello", "variant": 0 }
   },
   "acts": {
-    "ActReact": { "positive": "excited/celebrate", "negative": "nervous/complain", "neutral": "chat/speak" },
+    "ActReact": { "positive": "excited/celebrate", "negative": "nervous/complain", "neutral": "chat/speak", "holdLastFrame": ["positive", "negative"] },
     "ActAsk": { "any": "thinking/think" },
     "ActAnalyze": { "any": "thinking/analysis" },
     "ActRecall": { "any": "happy/agree" },
@@ -51,7 +51,8 @@
     "shot_missed": "sad/miss",
     "goal_cancelled": "surprised/complain",
     "var_overturn": "surprised/confused",
-    "var_check": "tense/tense"
+    "var_check": "tense/tense",
+    "wake": "happy/listen_01"
   },
   "phases": {
     "user_speaking": "listening/listen_01",

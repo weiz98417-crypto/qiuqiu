@@ -73,11 +73,26 @@ for (const [name, index] of Object.entries(expressions)) {
   }
 }
 
-// Performance strings: "expression/motion" with both keys resolvable.
+// Performance strings: "expression/motion" with both keys resolvable. The
+// acts entries additionally carry the optional backend-routed slots
+// energyDelta (number) and holdLastFrame (live2d-engine-swap 6.3: list of
+// the quadrant keys whose row holds the motion's last frame).
 const performanceRows = [];
 for (const [act, row] of Object.entries(map.acts ?? {})) {
+  const holdQuadrants = row?.holdLastFrame;
+  if (holdQuadrants !== undefined) {
+    if (
+      !Array.isArray(holdQuadrants) ||
+      holdQuadrants.length === 0 ||
+      !holdQuadrants.every((q) => typeof q === 'string' && typeof row?.[q] === 'string')
+    ) {
+      failures.push(
+        `acts.${act}.holdLastFrame must be a non-empty list of the act's quadrant keys`,
+      );
+    }
+  }
   for (const [quadrant, raw] of Object.entries(row ?? {})) {
-    if (quadrant === 'energyDelta') continue;
+    if (quadrant === 'energyDelta' || quadrant === 'holdLastFrame') continue;
     performanceRows.push([`acts.${act}.${quadrant}`, raw]);
   }
 }

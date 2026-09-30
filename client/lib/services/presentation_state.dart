@@ -120,6 +120,22 @@ class CompanionPresentation {
     'focus': 'listen_02',
   };
 
+  /// The presentation-map.json acts rows carrying a `holdLastFrame` slot
+  /// (live2d-engine-swap 6.3): act name -> the quadrant keys whose body
+  /// plays the motion through and holds its last frame instead of dissolving
+  /// back into the resting pose; the ReturnMode decay or the next
+  /// presentation apply clears the hold. The acts rows are backend-routed
+  /// (the Go plan carries the flag on the wire), so this mirror exists for
+  /// the ADR-0007 three-way lock —
+  /// presentation_whitelist_contract_test.dart and
+  /// backend/internal/relationship/presentation_table_test.go fail loudly
+  /// when any of Dart == JSON == Go drifts. Opened on the celebration
+  /// (positive) and chagrin (negative) ActReact rows first; extend
+  /// deliberately, act by act.
+  static const actsHoldLastFrame = <String, List<String>>{
+    'ActReact': ['positive', 'negative'],
+  };
+
   /// Motion name -> (motion group, variant index) inside the model3.json —
   /// the synchronous fallback mirror of presentation-map.json's `motions`
   /// table (ADR-0007; locked to it by the contract test). Group names
@@ -170,6 +186,13 @@ class CompanionPresentation {
   final Duration hold;
   final String returnMode;
 
+  /// True when the backend routed this turn through an acts row carrying
+  /// `holdLastFrame: true` (live2d-engine-swap 6.3): the rendering surfaces
+  /// hold the motion's last frame after it finishes. Orthogonal to
+  /// [returnMode] — the hold ends when the ReturnMode decay or the next
+  /// presentation apply preempts it.
+  final bool holdLastFrame;
+
   /// Affect vector from the backend PresentationPlan (nullable for legacy
   /// senders); feeds the idle tier picker (see idle_tier_picker.dart).
   final double? valence;
@@ -183,6 +206,7 @@ class CompanionPresentation {
     required this.voiceSpeed,
     required this.hold,
     required this.returnMode,
+    this.holdLastFrame = false,
     this.valence,
     this.arousal,
   });
@@ -196,6 +220,7 @@ class CompanionPresentation {
       voiceSpeed: voiceSpeed ?? this.voiceSpeed,
       hold: hold,
       returnMode: returnMode ?? this.returnMode,
+      holdLastFrame: holdLastFrame,
       valence: valence,
       arousal: arousal,
     );
@@ -234,6 +259,7 @@ class CompanionPresentation {
       voiceSpeed: (presentation['voiceSpeed'] as num?)?.toDouble() ?? 1,
       hold: Duration(milliseconds: holdMs.clamp(0, 10000)),
       returnMode: returnMode,
+      holdLastFrame: presentation['holdLastFrame'] == true,
       valence:
           affect is Map ? (affect['valence'] as num?)?.toDouble() : null,
       arousal:
@@ -277,6 +303,10 @@ class PresentationMap {
   /// Asset path of the single-source mapping file (pubspec ships
   /// assets/live2d/models/qiuqiu/ as an asset directory).
   static const assetPath = 'assets/live2d/models/qiuqiu/presentation-map.json';
+
+  /// The client-origin events row (wake-word-kws 10.3): fired by
+  /// WakeService hits, rendered by the match screen via [eventFor].
+  static const wakeEventClass = 'wake';
 
   /// Synchronous fallback mirroring the asset: hand copies are unavoidable
   /// for const contexts and synchronous APIs, so
@@ -327,6 +357,21 @@ class PresentationMap {
       'match_end': 'happy/wave',
       'idle': 'affect-idle-tier',
     },
+    events: {
+      'goal': 'excited/celebrate',
+      'big_chance': 'excited/celebrate_02',
+      'save': 'surprised/tense',
+      'miss': 'sad/miss',
+      'shot_missed': 'sad/miss',
+      'goal_cancelled': 'surprised/complain',
+      'var_overturn': 'surprised/confused',
+      'var_check': 'tense/tense',
+      // 唤醒词（wake-word-kws 10.3）：client 发起的 events 行——空闲态喊
+      // 「你好球球」叫醒球球，抬头看你接住视线；后端不发射 wake，Go 侧行
+      // 仅为 ADR-0007 三方锁存活（presentation_table.go 同一提交改齐）。
+      'wake': 'happy/listen_01',
+    },
+    actsHoldLastFrame: CompanionPresentation.actsHoldLastFrame,
   );
 
   final Map<String, int> expressions;
@@ -336,10 +381,25 @@ class PresentationMap {
   /// idle marker ("affect-idle-tier") kept as-is.
   final Map<String, String> phases;
 
+  /// Backend-routed slice of the acts table (live2d-engine-swap 6.3): act
+  /// name -> the quadrant keys whose row holds the motion's last frame.
+  /// Locked to the JSON and CompanionPresentation.actsHoldLastFrame by the
+  /// contract test.
+  final Map<String, List<String>> actsHoldLastFrame;
+
+  /// Match/client event class -> raw performance string ("expression/motion")
+  /// (JSON "events"). Mostly backend-routed; `wake` is the one client-origin
+  /// row (wake-word-kws 10.3) resolved by [eventFor]. Locked to the JSON by
+  /// the contract test (and to the Go mirror by
+  /// backend/internal/relationship/presentation_table_test.go).
+  final Map<String, String> events;
+
   const PresentationMap({
     required this.expressions,
     required this.motions,
     required this.phases,
+    this.events = const {},
+    this.actsHoldLastFrame = const {},
   });
 
   factory PresentationMap.fromJson(Map<String, dynamic> json) {
@@ -347,7 +407,19 @@ class PresentationMap {
       expressions: _parseExpressions(json['expressions']),
       motions: _parseMotions(json['motions']),
       phases: _parsePhases(json['phases']),
+      events: _parsePhases(json['events']),
+      actsHoldLastFrame: _parseActsHoldLastFrame(json['acts']),
     );
+  }
+
+  /// Resolves an events row "expression/motion"; null for an absent or
+  /// malformed row (callers keep the current body).
+  (String, String)? eventFor(String eventClass) {
+    final raw = events[eventClass];
+    if (raw == null) return null;
+    final parts = raw.split('/');
+    if (parts.length != 2) return null;
+    return (parts[0], parts[1]);
   }
 
   /// Resolves a phases row "expression/motion"; null for the idle marker
@@ -391,6 +463,20 @@ class PresentationMap {
     return Map.unmodifiable({
       for (final entry in raw.entries)
         if (entry.value != null) entry.key.toString(): entry.value.toString(),
+    });
+  }
+
+  static Map<String, List<String>> _parseActsHoldLastFrame(Object? raw) {
+    if (raw is! Map) return const {};
+    return Map.unmodifiable({
+      for (final entry in raw.entries)
+        if (entry.value is Map &&
+            ((entry.value as Map)['holdLastFrame'] is List) &&
+            ((entry.value as Map)['holdLastFrame'] as List).isNotEmpty)
+          entry.key.toString(): [
+            for (final quadrant in (entry.value as Map)['holdLastFrame'] as List)
+              if (quadrant is String) quadrant,
+          ],
     });
   }
 }
