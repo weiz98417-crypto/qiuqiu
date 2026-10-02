@@ -1,7 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from 'react';
-import { Badge, Button, Card, Col, Descriptions, Empty, Input, List, Row, Select, Space, Tag, Typography } from 'antd';
+import { App as AntApp, Badge, Button, Card, Col, Descriptions, Empty, Input, List, Row, Select, Space, Tag, Typography } from 'antd';
 import { Link } from 'react-router-dom';
-import { getAccessToken, getToken } from '../api/client';
+import { consoleApi, getAccessToken, getToken } from '../api/client';
+import type { TraceRow } from '../api/client';
+import { WhyDrawer } from '../api/traceEvidence';
 import { INTERACTION_KINDS, kindMeta } from '../api/kinds';
 import { fmtDateTime, fmtTime } from '../api/format';
 import ConsolePageShell from '../components/ConsolePageShell';
@@ -10,7 +12,8 @@ const { Text } = Typography;
 
 // 直播监听（operations-live-stream，ADR-0021）：/ws/ops 只读旁路流的运营面。
 // 隐私纪律——wire 事件不含任何正文字段，本页也只呈现元数据（kind/路由/状态/
-// 延迟），正文请循「打开比赛页」回到业务页。
+// 延迟），正文请循「打开比赛页」回到业务页；回合侧写循「回合回放」直达
+// WhyDrawer（快修 P2-8：值班场景先看到延迟尖峰 → 一键取证，不再人工跨三页）。
 
 // /ws/ops 下行事件形状（backend/cmd/server/ops_stream.go OpsEventWire）。
 interface OpsEventRow {
@@ -69,14 +72,22 @@ const KIND_OPTIONS = [
 ];
 
 export default function LiveMonitor() {
+  const { message: messageApi } = AntApp.useApp();
   const [status, setStatus] = useState<StreamStatus>('connecting');
   const [rows, setRows] = useState<OpsEventRow[]>([]);
   const [selected, setSelected] = useState<OpsEventRow | null>(null);
   const [kindFilter, setKindFilter] = useState<string>('');
   const [userIdFilter, setUserIdFilter] = useState('');
+  // 暂停（快修 P2-8）：冻结入列、WS 保持连接——值班先看清一条再放行新事件。
+  // 暂停期间到达的事件被丢弃（服务端无回放，不缓存），继续即恢复实时。
+  const [paused, setPaused] = useState(false);
+  const pausedRef = useRef(false);
   // connectNonce 驱动 WS 建连 effect：退避重连与手动重连都走同一条
   // cleanup 路径（关旧连接 + 清定时器），StrictMode 双跑也对称。
   const [connectNonce, setConnectNonce] = useState(0);
+  // 回合回放（快修 P2-8）：按选中事件的 traceId 直取 trace 开 WhyDrawer。
+  const [drawerTrace, setDrawerTrace] = useState<TraceRow | null>(null);
+  const [replayLoading, setReplayLoading] = useState(false);
   const attemptRef = useRef(0);
   const reconnectTimer = useRef<number | null>(null);
   // 相对时间的时钟：15s 一跳，列表行的「N 秒前」保持新鲜。
@@ -107,6 +118,7 @@ export default function LiveMonitor() {
     };
     socket.onmessage = (event) => {
       if (disposed || typeof event.data !== 'string') return;
+      if (pausedRef.current) return;
       let message: OpsEventRow;
       try {
         message = JSON.parse(event.data);
@@ -157,6 +169,33 @@ export default function LiveMonitor() {
     setConnectNonce((nonce) => nonce + 1);
   }, []);
 
+  const togglePaused = useCallback(() => {
+    setPaused((prev) => {
+      pausedRef.current = !prev;
+      return !prev;
+    });
+  }, []);
+
+  // 回合回放：按 traceId 在该比赛最近 traces 里找行开 WhyDrawer。trace 有
+  // 保留期，找不到时如实提示而不是静默失败。
+  const openReplay = useCallback(async () => {
+    if (!selected?.traceId || !selected.matchId || replayLoading) return;
+    setReplayLoading(true);
+    try {
+      const { traces } = await consoleApi.traces(selected.matchId, '', 200);
+      const found = traces.find((trace) => trace.id === selected.traceId);
+      if (!found) {
+        messageApi.warning('该回合的 trace 不在最近 200 条内（可能已过保留期）');
+        return;
+      }
+      setDrawerTrace(found);
+    } catch (err) {
+      messageApi.error(err instanceof Error ? err.message : String(err));
+    } finally {
+      setReplayLoading(false);
+    }
+  }, [selected, replayLoading, messageApi]);
+
   const visibleRows = useMemo(() => {
     const needle = userIdFilter.trim().toLowerCase();
     return rows.filter((row) => {
@@ -184,6 +223,9 @@ export default function LiveMonitor() {
             title="实时事件流"
             extra={
               <Space wrap>
+                <Button size="small" type={paused ? 'primary' : 'default'} onClick={togglePaused}>
+                  {paused ? '继续' : '暂停'}
+                </Button>
                 <Select
                   aria-label="按类型过滤"
                   placeholder="全部"
@@ -203,6 +245,11 @@ export default function LiveMonitor() {
               </Space>
             }
           >
+            {paused ? (
+              <div style={{ marginBottom: 8 }}>
+                <Tag color="warning">已暂停——期间到达的事件不缓存，点「继续」恢复实时</Tag>
+              </div>
+            ) : null}
             <div style={{ maxHeight: 560, overflowY: 'auto' }}>
               <List
                 size="small"
@@ -266,11 +313,21 @@ export default function LiveMonitor() {
             title="事件详情"
             extra={
               selected ? (
-                <Link to={`/console/match/${encodeURIComponent(selected.matchId)}`}>
-                  <Button size="small" type="primary" disabled={!selected.matchId}>
-                    打开比赛页
+                <Space wrap>
+                  <Button
+                    size="small"
+                    onClick={() => void openReplay()}
+                    disabled={!selected.traceId || !selected.matchId}
+                    loading={replayLoading}
+                  >
+                    回合回放
                   </Button>
-                </Link>
+                  <Link to={`/console/match/${encodeURIComponent(selected.matchId)}`}>
+                    <Button size="small" type="primary" disabled={!selected.matchId}>
+                      打开比赛页
+                    </Button>
+                  </Link>
+                </Space>
               ) : null
             }
           >
@@ -308,6 +365,7 @@ export default function LiveMonitor() {
           </Card>
         </Col>
       </Row>
+      <WhyDrawer trace={drawerTrace} onClose={() => setDrawerTrace(null)} />
     </ConsolePageShell>
   );
 }
