@@ -44,7 +44,7 @@ func (m *StoreMemoryTools) Snapshot(ctx context.Context, matchID string) (matchs
 
 func (m *StoreMemoryTools) RecentEvents(ctx context.Context, matchID string, limit int) ([]matchstate.MatchEvent, error) {
 	_ = ctx
-	events := activeOnly(m.store.PublicEvents(matchID))
+	events := matchstate.ActiveEvents(m.store.PublicEvents(matchID))
 	if limit > 0 && len(events) > limit {
 		events = events[:limit]
 	}
@@ -55,8 +55,8 @@ func (m *StoreMemoryTools) EventsByPlayer(ctx context.Context, matchID, playerNa
 	_ = ctx
 	playerName = strings.TrimSpace(playerName)
 	var out []matchstate.MatchEvent
-	for _, ev := range activeOnly(m.store.PublicEvents(matchID)) {
-		if eventHasPlayer(ev, playerName) {
+	for _, ev := range matchstate.ActiveEvents(m.store.PublicEvents(matchID)) {
+		if matchstate.EventHasPlayer(ev, playerName) {
 			out = append(out, ev)
 		}
 		if limit > 0 && len(out) >= limit {
@@ -285,31 +285,6 @@ func (m *StoreMemoryTools) trimTracesAndTurnsLocked(matchID string) {
 		}
 	}
 	m.turns = turns
-}
-
-func activeOnly(events []matchstate.MatchEvent) []matchstate.MatchEvent {
-	out := make([]matchstate.MatchEvent, 0, len(events))
-	for _, ev := range events {
-		if ev.Status == "active" {
-			out = append(out, ev)
-		}
-	}
-	return out
-}
-
-func eventHasPlayer(ev matchstate.MatchEvent, playerName string) bool {
-	if playerName == "" {
-		return false
-	}
-	if strings.EqualFold(ev.PlayerName, playerName) {
-		return true
-	}
-	for _, participant := range ev.Participants {
-		if strings.EqualFold(participant.Name, playerName) {
-			return true
-		}
-	}
-	return false
 }
 
 func mergeTurns(a, b []ConversationTurn, limit int) []ConversationTurn {

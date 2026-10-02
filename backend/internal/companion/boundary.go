@@ -34,11 +34,14 @@ func sanitizeVoiceMetadata(meta *VoiceTraceMetadata) *VoiceTraceMetadata {
 }
 
 type ToolSchema struct {
-	Name              string            `json:"name"`
-	Description       string            `json:"description"`
-	MutatesMatchFacts bool              `json:"mutatesMatchFacts"`
-	Input             map[string]string `json:"input"`
-	Output            map[string]string `json:"output"`
+	Name              string `json:"name"`
+	Description       string `json:"description"`
+	MutatesMatchFacts bool   `json:"mutatesMatchFacts"`
+	// ServedOverMCP 标记该工具经 /mcp 只读 server 对外供给（ADR-0022）——
+	// 供给清单从注册表派生，不再手工列表。
+	ServedOverMCP bool              `json:"servedOverMCP"`
+	Input         map[string]string `json:"input"`
+	Output        map[string]string `json:"output"`
 }
 
 func CompanionToolSchemas() []ToolSchema {
@@ -91,6 +94,23 @@ func (registry *ToolRegistry) Allowed(name string) bool {
 	return ok && !schema.MutatesMatchFacts
 }
 
+// ServedMCPNames 按登记序返回声明 ServedOverMCP 且不改比赛事实的工具名
+// ——/mcp 只读 server 的供给清单单一源（ADR-0022），不再手工列表。
+func (registry *ToolRegistry) ServedMCPNames() []string {
+	names := make([]string, 0, 4)
+	for _, name := range registry.order {
+		if schema := registry.byName[name]; schema.ServedOverMCP && !schema.MutatesMatchFacts {
+			names = append(names, name)
+		}
+	}
+	return names
+}
+
+// ServedMCPToolNames 是注册表级供给清单。
+func ServedMCPToolNames() []string {
+	return userAgentTools.ServedMCPNames()
+}
+
 var userAgentTools = func() *ToolRegistry {
 	registry := NewToolRegistry()
 	for _, schema := range userAgentToolSchemas() {
@@ -98,6 +118,7 @@ var userAgentTools = func() *ToolRegistry {
 	}
 	return registry
 }()
+
 // userAgentToolSchemas 是工具描述数据：注册表(userAgentTools)的唯一输入。
 func userAgentToolSchemas() []ToolSchema {
 	return []ToolSchema{
@@ -105,6 +126,7 @@ func userAgentToolSchemas() []ToolSchema {
 			Name:              ToolCallMatchReadSnapshot,
 			Description:       "Read the current score, clock, period, teams, and compact recent-event snapshot.",
 			MutatesMatchFacts: false,
+			ServedOverMCP:     true,
 			Input:             map[string]string{"matchId": "string"},
 			Output:            map[string]string{"snapshot": "matchstate.Snapshot"},
 		},
@@ -126,6 +148,7 @@ func userAgentToolSchemas() []ToolSchema {
 			Name:              ToolCallScheduleReadToday,
 			Description:       "Read today's fixture list from the schedule reader; never mutates match facts.",
 			MutatesMatchFacts: false,
+			ServedOverMCP:     true,
 			Input:             map[string]string{"scope": "string"},
 			Output:            map[string]string{"fixtures": "[]schedule.ScheduleMatch"},
 		},
@@ -140,6 +163,7 @@ func userAgentToolSchemas() []ToolSchema {
 			Name:              ToolCallMatchSearchEvents,
 			Description:       "Read recent active match events, optionally filtered by intent in the agent policy.",
 			MutatesMatchFacts: false,
+			ServedOverMCP:     true,
 			Input:             map[string]string{"matchId": "string", "limit": "int"},
 			Output:            map[string]string{"events": "[]matchstate.MatchEvent"},
 		},
@@ -147,6 +171,7 @@ func userAgentToolSchemas() []ToolSchema {
 			Name:              ToolCallMatchGetPlayerTimeline,
 			Description:       "Read active events involving a named player.",
 			MutatesMatchFacts: false,
+			ServedOverMCP:     true,
 			Input:             map[string]string{"matchId": "string", "playerName": "string", "limit": "int"},
 			Output:            map[string]string{"events": "[]matchstate.MatchEvent"},
 		},

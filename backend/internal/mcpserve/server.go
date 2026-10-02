@@ -50,16 +50,11 @@ type Deps struct {
 	Schedules companion.ScheduleReader
 }
 
-// servedToolNames 是本 server 暴露的四个只读工具名（companion 注册表常量，
-// 与 agent 侧同源）。一致性测试断言这四个名字经 IsUserAgentToolAllowed
-// 为 true 且都在 CompanionToolSchemas 里。
+// servedToolNames 从 companion 注册表派生（ServedOverMCP 标记），不再手工
+// 列表——注册表是供给清单单一源（ADR-0022）。一致性测试仍锁定「恰好这
+// 四个名字」，防注册表改标时供给面悄悄漂移。
 func servedToolNames() []string {
-	return []string{
-		companion.ToolCallMatchReadSnapshot,
-		companion.ToolCallMatchSearchEvents,
-		companion.ToolCallMatchGetPlayerTimeline,
-		companion.ToolCallScheduleReadToday,
-	}
+	return companion.ServedMCPToolNames()
 }
 
 // servedToolSchemas 从 companion 注册表取四工具的描述；缺任何一条都是
@@ -302,7 +297,7 @@ func (deps Deps) searchEvents(req *mcp.CallToolRequest) (*mcp.CallToolResult, er
 		return toolError("matchId is required")
 	}
 	limit := clampLimit(args.Limit)
-	events := activeOnly(deps.Matches.PublicEvents(args.MatchID))
+	events := matchstate.ActiveEvents(deps.Matches.PublicEvents(args.MatchID))
 	if len(events) > limit {
 		events = events[:limit]
 	}
@@ -331,8 +326,8 @@ func (deps Deps) playerTimeline(req *mcp.CallToolRequest) (*mcp.CallToolResult, 
 	}
 	limit := clampLimit(args.Limit)
 	events := make([]matchstate.MatchEvent, 0, limit)
-	for _, event := range activeOnly(deps.Matches.PublicEvents(args.MatchID)) {
-		if eventHasPlayer(event, args.PlayerName) {
+	for _, event := range matchstate.ActiveEvents(deps.Matches.PublicEvents(args.MatchID)) {
+		if matchstate.EventHasPlayer(event, args.PlayerName) {
 			events = append(events, event)
 		}
 		if len(events) >= limit {
@@ -366,36 +361,8 @@ func (deps Deps) readToday(ctx context.Context, req *mcp.CallToolRequest) (*mcp.
 	return textResult(todayResult{Scope: strings.TrimSpace(args.Scope), Fixtures: fixtures, Count: len(fixtures)})
 }
 
-// ---- read helpers mirrored from the companion agent's established 口径 ----
-
-// activeOnly keeps Status=="active" events, exactly like the agent-side
-// event reads (internal/companion/memory.go).
-func activeOnly(events []matchstate.MatchEvent) []matchstate.MatchEvent {
-	out := make([]matchstate.MatchEvent, 0, len(events))
-	for _, event := range events {
-		if event.Status == "active" {
-			out = append(out, event)
-		}
-	}
-	return out
-}
-
-// eventHasPlayer matches PlayerName or any participant name, case-folded,
-// exactly like the agent-side player timeline read.
-func eventHasPlayer(event matchstate.MatchEvent, playerName string) bool {
-	if playerName == "" {
-		return false
-	}
-	if strings.EqualFold(event.PlayerName, playerName) {
-		return true
-	}
-	for _, participant := range event.Participants {
-		if strings.EqualFold(participant.Name, playerName) {
-			return true
-		}
-	}
-	return false
-}
+// read 口径（activeOnly/eventHasPlayer）已下沉 matchstate 公共谓词,
+// 与 agent 侧共用单一实现。
 
 // ---- mounting ----
 

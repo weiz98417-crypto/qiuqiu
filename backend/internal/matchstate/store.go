@@ -2201,3 +2201,32 @@ var allowedPeriods = map[string]bool{
 	"extra_time":  true,
 	"fulltime":    true,
 }
+
+// ActiveEvents 只保留 status=="active" 的事件——agent 事件读与 MCP 只读
+// server（ADR-0022）共用的单一口径：两处各写一份谓词曾镜像漂移，收编于此。
+func ActiveEvents(events []MatchEvent) []MatchEvent {
+	out := make([]MatchEvent, 0, len(events))
+	for _, event := range events {
+		if event.Status == "active" {
+			out = append(out, event)
+		}
+	}
+	return out
+}
+
+// EventHasPlayer 报告事件的主角或任一参与者是否命中给定球员名（大小写
+// 不敏感）。口径同 ActiveEvents：agent 时间线读与 MCP player_timeline 共用。
+func EventHasPlayer(event MatchEvent, playerName string) bool {
+	if playerName == "" {
+		return false
+	}
+	if strings.EqualFold(event.PlayerName, playerName) {
+		return true
+	}
+	for _, participant := range event.Participants {
+		if strings.EqualFold(participant.Name, playerName) {
+			return true
+		}
+	}
+	return false
+}
