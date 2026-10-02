@@ -10,6 +10,7 @@ export '../services/match_view_data.dart';
 
 import '../services/audio_player.dart';
 import '../services/idle_tier_picker.dart';
+import '../services/lipsync_health_reporter.dart';
 import '../services/preferences_service.dart';
 import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
@@ -56,6 +57,7 @@ class _MatchScreenState extends State<MatchScreen> {
   static const _configuredSocketUrl = String.fromEnvironment('QIUQIU_WS_URL');
 
   final WebSocketService _socket = WebSocketService();
+  final LipSyncHealthReporter _lipSyncHealth = LipSyncHealthReporter();
   final AudioPlayerService _audio = AudioPlayerService();
   final PreferencesService _preferences = PreferencesService();
   final SessionService _sessions = SessionService();
@@ -1104,6 +1106,14 @@ class _MatchScreenState extends State<MatchScreen> {
     _socket.send({'type': 'set_talkativeness', 'talkativeness': tier});
   }
 
+  /// 嘴型退化上报（快修 P1）：限频后走 lipsync_event 落服务端日志/观测，
+  /// 断线时静默丢（下一集比赛重触发）。
+  void _reportLipSyncDegraded(String reason) {
+    if (_lipSyncHealth.shouldReport(reason)) {
+      _socket.send({'type': 'lipsync_event', 'reason': reason});
+    }
+  }
+
   Future<void> _openSettings() async {
     final saved = await Navigator.push<UserProfile>(
       context,
@@ -1316,6 +1326,7 @@ class _MatchScreenState extends State<MatchScreen> {
                         audioInputLabel: _audioInputLabel,
                         onChooseAudioInput: _chooseAudioInput,
                         onOpenSettings: _openSettings,
+                        onLipSyncDegraded: _reportLipSyncDegraded,
                         onLeave: _leaveMatch,
                         onSwitchMatch: _switchMatch,
                         onReturnToCatalog: () => _leaveMatch(confirm: false),
@@ -1382,6 +1393,7 @@ class _LiveMatchExperience extends StatelessWidget {
   final VoidCallback onSwitchMatch;
   final VoidCallback onReturnToCatalog;
   final VoidCallback onReconnect;
+  final void Function(String reason)? onLipSyncDegraded;
   final VoidCallback onOpenText;
   final VoidCallback onCloseText;
   final VoidCallback onSendText;
@@ -1414,6 +1426,7 @@ class _LiveMatchExperience extends StatelessWidget {
     required this.onSwitchMatch,
     required this.onReturnToCatalog,
     required this.onReconnect,
+    this.onLipSyncDegraded,
     required this.onOpenText,
     required this.onCloseText,
     required this.onSendText,
@@ -1459,6 +1472,7 @@ class _LiveMatchExperience extends StatelessWidget {
                             onReturnToCatalog: onReturnToCatalog,
                             onOpenSettings: onOpenSettings,
                             onReconnect: onReconnect,
+                            onLipSyncDegraded: onLipSyncDegraded,
                           ),
                         ),
                         ConversationDock(
@@ -1595,6 +1609,7 @@ class _CharacterStage extends StatelessWidget {
   final VoidCallback onReturnToCatalog;
   final VoidCallback onOpenSettings;
   final VoidCallback onReconnect;
+  final void Function(String reason)? onLipSyncDegraded;
 
   const _CharacterStage({
     required this.match,
@@ -1612,6 +1627,7 @@ class _CharacterStage extends StatelessWidget {
     required this.onReturnToCatalog,
     required this.onOpenSettings,
     required this.onReconnect,
+    this.onLipSyncDegraded,
   });
 
   @override
@@ -1629,6 +1645,7 @@ class _CharacterStage extends StatelessWidget {
               isSpeaking: isSpeaking,
               motion: motion,
               holdLastFrame: holdLastFrame,
+              onLipSyncDegraded: onLipSyncDegraded,
             ),
             // 进球爆屏：按事件 ID 边沿触发（每个新进球播一次，重建不重放）。
             Positioned.fill(

@@ -20,12 +20,17 @@ class Live2dView extends StatefulWidget {
   /// the next motion apply preempts it.
   final bool holdLastFrame;
 
+  /// 嘴型退化上报（快修 P1）：wLipSync vendor 不可用 / 解码失败 / 说话期
+  /// 整秒落在随机抖动兜底时由内嵌页回调。调用方自行限频。
+  final void Function(String reason)? onLipSyncDegraded;
+
   const Live2dView({
     super.key,
     required this.expression,
     required this.isSpeaking,
     this.motion,
     this.holdLastFrame = false,
+    this.onLipSyncDegraded,
   });
 
   @override
@@ -296,6 +301,14 @@ class Live2dViewState extends State<Live2dView> {
                     if (mounted) setState(() => _loadFailed = true);
                   },
                 );
+                controller.addJavaScriptHandler(
+                  handlerName: 'onLipSyncDegraded',
+                  callback: (args) {
+                    if (args.isNotEmpty && args.first != null) {
+                      widget.onLipSyncDegraded?.call(args.first.toString());
+                    }
+                  },
+                );
               } else {
                 _webReadyTimeout?.cancel();
                 _webReadyTimeout = Timer(const Duration(seconds: 8), () {
@@ -360,9 +373,16 @@ class Live2dViewState extends State<Live2dView> {
 // vendor/wlipsync/) analyzes the queued TTS audio. Playback stays in the
 // platform player; this page only taps the bytes for mouth driving. When the
 // analyser is unavailable the mouth falls back to the audio envelope, then to
-// the legacy random jitter.
+// the legacy random jitter. Degradation is reported (快修 P1) instead of
+// dying silently in the console.
 (function() {
     var state = { ctx: null, node: null, buffer: null, source: null, startedAt: 0, pendingStart: false };
+
+    window.__reportLipSyncDegraded = function(reason) {
+        if (window.flutter_inappwebview && window.flutter_inappwebview.callHandler) {
+            window.flutter_inappwebview.callHandler('onLipSyncDegraded', String(reason));
+        }
+    };
 
     function ensureCtx() {
         if (!state.ctx) {
@@ -388,6 +408,7 @@ class Live2dViewState extends State<Live2dView> {
             state.node = await wlipsync.createWLipSyncNode(ctx, profile);
         } catch (e) {
             console.warn('wLipSync unavailable, using envelope fallback:', e);
+            window.__reportLipSyncDegraded('vendor_unavailable');
         }
     })();
 
@@ -406,7 +427,10 @@ class Live2dViewState extends State<Live2dView> {
                         window.qLipSync.start();
                     }
                 })
-                .catch(function(e) { console.warn('lip sync decode failed:', e); });
+                .catch(function(e) {
+                    console.warn('lip sync decode failed:', e);
+                    window.__reportLipSyncDegraded('decode_failed');
+                });
         },
         start: function() {
             var ctx = ensureCtx();
@@ -499,6 +523,7 @@ var model = null;
 var speaking = false;
 window.modelReady = false;
 var mouth = { open: 0, form: 0, funnel: 0, stretch: 0 };
+var mouthJitterTicks = 0;
 // 表演映射单一源 (ADR-0007): expression/motion names resolve through
 // presentation-map.json, fetched over the same qiuqiu://asset scheme as the
 // model and the lipsync profile. Name-driven calls arriving before the map
@@ -688,19 +713,31 @@ function applyMouth() {
 setInterval(function() {
     if (!model) return;
     var target = { open: 0, form: 0, funnel: 0, stretch: 0 };
+    var mode = 'idle';
     if (speaking) {
         var q = window.qLipSync;
         var viseme = q ? q.sample() : null;
         var envelope = viseme || (q ? q.sampleEnvelope() : null);
         if (viseme) {
             target = viseme;
+            mode = 'viseme';
         } else if (envelope) {
             target = envelope;
+            mode = 'envelope';
         } else {
             // Analyser not ready (vendor libs missing or audio not decoded):
             // legacy random jaw jitter keeps the mouth alive.
             target.open = 0.25 + Math.random() * 0.75;
+            mode = 'jitter';
         }
+    }
+    // 嘴型退化遥测（快修 P1）：说话期整秒（20 拍 × 50ms）落在随机抖动
+    // 兜底即上报一次；包络腿是解码在途的正常形态，不算退化。
+    if (mode === 'jitter') {
+        mouthJitterTicks++;
+        if (mouthJitterTicks === 20) window.__reportLipSyncDegraded('jitter_fallback');
+    } else {
+        mouthJitterTicks = 0;
     }
     mouth.open += (target.open - mouth.open) * 0.5;
     mouth.form += (target.form - mouth.form) * 0.3;

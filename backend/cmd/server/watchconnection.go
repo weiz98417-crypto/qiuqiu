@@ -888,10 +888,10 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 	})
 }
 
-// readMessages is the inbound 16-case read loop: identity binding, session
+// readMessages is the inbound 17-case read loop: identity binding, session
 // lifecycle, talkativeness, activity/interrupt, ASR streaming, turn detection
-// queries, playback and display acknowledgements. It closes the connection
-// context on exit.
+// queries, playback and display acknowledgements, client health telemetry. It
+// closes the connection context on exit.
 func (c *watchConnection) readMessages() {
 	defer c.connectionCancel()
 	for {
@@ -1188,6 +1188,16 @@ func (c *watchConnection) readMessages() {
 			transcript := strings.TrimSpace(str(req, "transcript"))
 			log.Printf("voice duplex event: user=%q match=%q event=%q transcript_len=%d streak=%d",
 				c.identity.Get(), c.matchID, event, len([]rune(transcript)), streak)
+		case "lipsync_event":
+			// 嘴型退化遥测（快修 P1）：客户端限频后的状态沿上报——vendor
+			// 不可用 / 解码失败 / 说话期整秒落在随机抖动兜底。服务端只落
+			// 结构化日志，不参与任何判定。
+			reason := strings.TrimSpace(str(req, "reason"))
+			if reason == "" {
+				continue
+			}
+			log.Printf("lipsync degraded event: user=%q match=%q reason=%q",
+				c.identity.Get(), c.matchID, reason)
 		case "turn_query":
 			// 轮次检测提前问（voice-turn-detection 决策 c）：客户端 model
 			// 插槽在静默累计 600ms 起咨询，服务端只做转发——sidecar 结论以
