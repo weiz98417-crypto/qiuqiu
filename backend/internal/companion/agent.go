@@ -13,6 +13,7 @@ import (
 	"time"
 	"unicode"
 
+	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/matchstate"
@@ -321,21 +322,6 @@ func (a *Agent) observationResponses(ctx context.Context, resolutions []observat
 	return responses, nil
 }
 
-func observationPresentation(status observation.Status) relationship.PresentationPlan {
-	switch status {
-	case observation.StatusConfirmed:
-		// Trigger: observation resolved to confirmed — the called shot landed,
-		// so the body celebrates (client accepts 'cheer' as a legacy alias).
-		return relationship.PresentationPlan{Expression: "excited", Motion: "celebrate", VoiceStyle: "excited", VoiceEnergy: 0.9, VoiceSpeed: 1.05, HoldMS: 1800, ReturnMode: "watching"}
-	case observation.StatusContradicted:
-		// Trigger: observation resolved to contradicted — the called shot was
-		// wrong, so the body plays the near-miss gesture.
-		return relationship.PresentationPlan{Expression: "deflated", Motion: "miss", VoiceStyle: "soft", VoiceEnergy: 0.45, VoiceSpeed: 0.95, HoldMS: 1600, ReturnMode: "watching"}
-	default:
-		return relationship.PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"}
-	}
-}
-
 func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 	if event, ok := interactionEventForInput(input); ok {
 		if err := a.recordInteraction(ctx, event); err != nil {
@@ -378,7 +364,7 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 			return TurnPlan{}, err
 		}
 		plan := TurnPlan{Kind: input.Kind, Intent: IntentMatchReaction, Reply: response.Reply, Trace: response.Trace, Decision: &response.Decision, Presentation: response.Presentation}
-		factRevision := matchstate.DeliveryKey(input.MatchEvent.Event)
+		factRevision := deliverykey.ForEvent(input.MatchEvent.Event)
 		stale := input.MatchEvent.Critical && response.Decision.ID != "" && response.Decision.FactRevision != factRevision
 		if !stale {
 			if err := a.markPriorFactTurnsStale(ctx, input.MatchEvent.UserID, input.MatchEvent.Event.MatchID, input.MatchEvent.Event.ID, response.Trace.ID, response.Trace.CreatedAt); err != nil {
@@ -449,7 +435,7 @@ func (a *Agent) Plan(ctx context.Context, input TurnInput) (TurnPlan, error) {
 			Intent:       IntentRecentEvent,
 			Reply:        resolution.ReliableText,
 			Trace:        trace,
-			Presentation: observationPresentation(resolution.Status),
+			Presentation: relationship.ObservationResolvedPresentation(string(resolution.Status)),
 		}
 		if err := a.recordTurn(ctx, interaction.Event{
 			ID:            trace.ID,
@@ -565,7 +551,7 @@ func interactionEventForInput(input TurnInput) (interaction.Event, bool) {
 		}
 		event := input.MatchEvent.Event
 		revision := fmt.Sprintf("%d:%s", event.FactRevision, event.FactStatus)
-		return interaction.Event{ID: interactionEventID("fact", input.MatchEvent.UserID, event.MatchID, event.ID+":"+revision), Kind: interaction.KindFactRevision, SignalID: event.ID, UserID: input.MatchEvent.UserID, MatchID: event.MatchID, FactIDs: []string{event.ID}, FactRevision: revision, DeliveryKey: matchstate.DeliveryKey(event), Source: string(input.Kind), CreatedAt: input.MatchEvent.Now}, true
+		return interaction.Event{ID: interactionEventID("fact", input.MatchEvent.UserID, event.MatchID, event.ID+":"+revision), Kind: interaction.KindFactRevision, SignalID: event.ID, UserID: input.MatchEvent.UserID, MatchID: event.MatchID, FactIDs: []string{event.ID}, FactRevision: revision, DeliveryKey: deliverykey.ForEvent(event), Source: string(input.Kind), CreatedAt: input.MatchEvent.Now}, true
 	case TurnKindFirstMeeting:
 		if input.FirstMeeting == nil || input.FirstMeeting.SignalID == "" {
 			return interaction.Event{}, false
@@ -850,7 +836,7 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 				if err := a.recordScheduleLookupTurn(ctx, lookup, trace); err != nil {
 					return Response{}, err
 				}
-				return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
+				return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: relationship.ScheduleLookupPresentation()}, nil
 			}
 		}
 	}
@@ -881,7 +867,7 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 				if err := a.recordScheduleLookupTurn(ctx, lookup, trace); err != nil {
 					return Response{}, err
 				}
-				return Response{Intent: IntentSchedule, Reply: currentReply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
+				return Response{Intent: IntentSchedule, Reply: currentReply, Trace: trace, Presentation: relationship.ScheduleLookupPresentation()}, nil
 			}
 		}
 	}
@@ -916,7 +902,7 @@ func (a *Agent) ResolveScheduleLookup(ctx context.Context, lookup ScheduleLookup
 	if err := a.recordScheduleLookupTurn(ctx, lookup, trace); err != nil {
 		return Response{}, err
 	}
-	return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: scheduleLookupPresentation()}, nil
+	return Response{Intent: IntentSchedule, Reply: reply, Trace: trace, Presentation: relationship.ScheduleLookupPresentation()}, nil
 }
 
 func scheduleLookupAcknowledgement(scope ScheduleScope) string {
@@ -927,18 +913,6 @@ func scheduleLookupAcknowledgement(scope ScheduleScope) string {
 		return "我去找找明天的比赛，找到后告诉你。"
 	default:
 		return "我去找找今天和明天的比赛，找到后告诉你。"
-	}
-}
-
-func scheduleLookupPresentation() relationship.PresentationPlan {
-	return relationship.PresentationPlan{
-		Expression:  "focus",
-		Motion:      "speak",
-		VoiceStyle:  "calm",
-		VoiceEnergy: 0.55,
-		VoiceSpeed:  1,
-		HoldMS:      1400,
-		ReturnMode:  "watching",
 	}
 }
 
@@ -1245,7 +1219,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		req.Now = time.Now().UTC()
 	}
 	start := time.Now()
-	deliveryKey := matchstate.DeliveryKey(req.Event)
+	deliveryKey := deliverykey.ForEvent(req.Event)
 	trace := Trace{
 		ID:             stableTraceID(req.UserID, req.Event.MatchID, "match:"+deliveryKey),
 		MatchID:        req.Event.MatchID,
@@ -1369,7 +1343,7 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 	if now.IsZero() {
 		now = time.Now().UTC()
 	}
-	deliveryKey := matchstate.DeliveryKey(ev)
+	deliveryKey := deliverykey.ForEvent(ev)
 	signalID := "match:" + userID + ":" + ev.ID
 	return a.director.Apply(ctx, relationship.Signal{
 		ID:           signalID,

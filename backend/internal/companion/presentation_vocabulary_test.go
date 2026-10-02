@@ -13,10 +13,10 @@ import (
 // rejects the plan and the body stays frozen.
 func TestCompanionPresentationsStayInsideClientWhitelist(t *testing.T) {
 	plans := map[string]relationship.PresentationPlan{
-		"observation_confirmed":     observationPresentation(observation.StatusConfirmed),
-		"observation_contradicted":  observationPresentation(observation.StatusContradicted),
-		"observation_corroborating": observationPresentation(observation.StatusCorroborating),
-		"schedule_lookup":           scheduleLookupPresentation(),
+		"observation_confirmed":     relationship.ObservationResolvedPresentation(string(observation.StatusConfirmed)),
+		"observation_contradicted":  relationship.ObservationResolvedPresentation(string(observation.StatusContradicted)),
+		"observation_corroborating": relationship.ObservationResolvedPresentation(string(observation.StatusCorroborating)),
+		"schedule_lookup":           relationship.ScheduleLookupPresentation(),
 	}
 	for name, plan := range plans {
 		if !relationship.ClientAcceptsExpression(plan.Expression) {
@@ -35,11 +35,11 @@ func TestCompanionPresentationsStayInsideClientWhitelist(t *testing.T) {
 // celebrates with the first-class celebrate group, a contradicted one plays
 // the near-miss gesture.
 func TestObservationPresentationEmitsNewMotionGroups(t *testing.T) {
-	confirmed := observationPresentation(observation.StatusConfirmed)
+	confirmed := relationship.ObservationResolvedPresentation(string(observation.StatusConfirmed))
 	if confirmed.Expression != "excited" || confirmed.Motion != "celebrate" {
 		t.Fatalf("confirmed = (%q, %q), want (excited, celebrate)", confirmed.Expression, confirmed.Motion)
 	}
-	contradicted := observationPresentation(observation.StatusContradicted)
+	contradicted := relationship.ObservationResolvedPresentation(string(observation.StatusContradicted))
 	if contradicted.Expression != "deflated" || contradicted.Motion != "miss" {
 		t.Fatalf("contradicted = (%q, %q), want (deflated, miss)", contradicted.Expression, contradicted.Motion)
 	}

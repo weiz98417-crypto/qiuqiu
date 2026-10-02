@@ -302,7 +302,7 @@ func (a *Agent) RecoverOpenThreads(ctx context.Context, userID, matchID string, 
 			Response: ProactiveResponse{
 				Reply:        reply,
 				Trace:        trace,
-				Presentation: threadRecoveryPresentation(thread.Kind),
+				Presentation: relationship.ThreadRecoveryPresentation(thread.Kind == memory.ThreadEmotionalMoment),
 			},
 		})
 	}
@@ -349,17 +349,6 @@ func (a *Agent) openThreadRecoveryReply(ctx context.Context, matchID string, thr
 	default:
 		return "", nil, false
 	}
-}
-
-// threadRecoveryPresentation keeps recovery turns visibly calm; no match
-// affect is fabricated for them.
-func threadRecoveryPresentation(kind memory.ThreadKind) relationship.PresentationPlan {
-	plan := relationship.PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"}
-	if kind == memory.ThreadEmotionalMoment {
-		plan.VoiceStyle = "soft"
-		plan.VoiceEnergy = 0.45
-	}
-	return plan
 }
 
 // AddressOpenThread closes one open thread as answered; called after the

@@ -285,3 +285,48 @@ func InterruptedDeliveryPresentation(affect AffectState) PresentationPlan {
 		ReturnMode:  "decay_to_focus",
 	}
 }
+
+// ObservationResolvedPresentation builds the called-shot reaction of an
+// observation resolution (收口自 companion 内联,快修 P2):confirmed 庆祝、
+// contradicted 近失、其余(含 corroborating 中间态)平静——后台回合不编造
+// 比赛情绪。resolution 取 observation.Status 的字符串值。
+func ObservationResolvedPresentation(resolution string) PresentationPlan {
+	switch resolution {
+	case "confirmed":
+		// Trigger: observation resolved to confirmed — the called shot landed,
+		// so the body celebrates (client accepts 'cheer' as a legacy alias).
+		return PresentationPlan{Expression: "excited", Motion: "celebrate", VoiceStyle: "excited", VoiceEnergy: 0.9, VoiceSpeed: 1.05, HoldMS: 1800, ReturnMode: "watching"}
+	case "contradicted":
+		// Trigger: observation resolved to contradicted — the called shot was
+		// wrong, so the body plays the near-miss gesture.
+		return PresentationPlan{Expression: "deflated", Motion: "miss", VoiceStyle: "soft", VoiceEnergy: 0.45, VoiceSpeed: 0.95, HoldMS: 1600, ReturnMode: "watching"}
+	default:
+		return PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"}
+	}
+}
+
+// ScheduleLookupPresentation is the schedule lookup turn's calm body state
+// (收口自 companion 内联,快修 P2)。
+func ScheduleLookupPresentation() PresentationPlan {
+	return PresentationPlan{
+		Expression:  "focus",
+		Motion:      "speak",
+		VoiceStyle:  "calm",
+		VoiceEnergy: 0.55,
+		VoiceSpeed:  1,
+		HoldMS:      1400,
+		ReturnMode:  "watching",
+	}
+}
+
+// ThreadRecoveryPresentation keeps recovery turns visibly calm; no match
+// affect is fabricated for them (收口自 companion 内联,快修 P2)。emotional
+// 软化嗓音(情绪型未完话题)。
+func ThreadRecoveryPresentation(emotional bool) PresentationPlan {
+	plan := PresentationPlan{Expression: "focus", Motion: "speak", VoiceStyle: "calm", VoiceEnergy: 0.55, VoiceSpeed: 1, HoldMS: 1200, ReturnMode: "watching"}
+	if emotional {
+		plan.VoiceStyle = "soft"
+		plan.VoiceEnergy = 0.45
+	}
+	return plan
+}
