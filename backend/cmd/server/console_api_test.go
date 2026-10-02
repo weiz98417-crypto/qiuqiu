@@ -21,6 +21,7 @@ import (
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/relationship"
@@ -34,31 +35,33 @@ const (
 )
 
 type consoleHarness struct {
-	cfg         *config.Config
-	store       *matchstate.Store
-	traces      *companion.StoreMemoryTools
-	sessions    *conversation.WatchSessionRegistry
-	fakeThreads *memory.Fake
-	overlays    *memory.MemoryPortraitOverlays
-	queue       *memory.Queue
-	operators   *operatorauth.MemoryStore
-	ring        *interruptionRing
-	console     http.HandlerFunc
-	matchAPI    http.HandlerFunc
+	cfg          *config.Config
+	store        *matchstate.Store
+	traces       *companion.StoreMemoryTools
+	sessions     *conversation.WatchSessionRegistry
+	fakeThreads  *memory.Fake
+	overlays     *memory.MemoryPortraitOverlays
+	queue        *memory.Queue
+	operators    *operatorauth.MemoryStore
+	ring         *interruptionRing
+	clientHealth *observation.ClientHealthLedger
+	console      http.HandlerFunc
+	matchAPI     http.HandlerFunc
 }
 
 func newConsoleHarness(t *testing.T) *consoleHarness {
 	t.Helper()
 	store := matchstate.NewStore()
 	harness := &consoleHarness{
-		cfg:         &config.Config{Environment: "development", AppToken: "qiuqiu-dev-token"},
-		store:       store,
-		traces:      companion.NewStoreMemoryTools(store),
-		sessions:    conversation.NewWatchSessionRegistry(context.Background(), conversation.Config{}),
-		fakeThreads: memory.NewFake(),
-		overlays:    memory.NewMemoryPortraitOverlays(),
-		operators:   operatorauth.NewMemoryStore(),
-		ring:        newInterruptionRing(),
+		cfg:          &config.Config{Environment: "development", AppToken: "qiuqiu-dev-token"},
+		store:        store,
+		traces:       companion.NewStoreMemoryTools(store),
+		sessions:     conversation.NewWatchSessionRegistry(context.Background(), conversation.Config{}),
+		fakeThreads:  memory.NewFake(),
+		overlays:     memory.NewMemoryPortraitOverlays(),
+		operators:    operatorauth.NewMemoryStore(),
+		ring:         newInterruptionRing(),
+		clientHealth: observation.NewClientHealthLedger(),
 	}
 	harness.queue = memory.NewQueue(memory.NewMemobase(memory.MemobaseConfig{}), nil, nil,
 		memory.WithThreads(harness.fakeThreads), memory.WithPortraitOverlays(harness.overlays))
@@ -67,7 +70,7 @@ func newConsoleHarness(t *testing.T) *consoleHarness {
 	harness.console = handleConsoleAPI(consoleAPI{
 		cfg: harness.cfg, authz: authz, matches: harness.store, traces: harness.traces,
 		sessions: harness.sessions, memories: harness.queue, operators: harness.operators,
-		writes: writes, interruptions: harness.ring,
+		writes: writes, interruptions: harness.ring, clientHealth: harness.clientHealth,
 	})
 	harness.matchAPI = handleMatchAPIWithOperatorAuth(harness.store, harness.traces, harness.traces, harness.cfg, nil,
 		nil, nil, nil, authz, writes)
@@ -97,12 +100,12 @@ func (h *consoleHarness) seedLiveMatch(t *testing.T) {
 }
 
 type consoleRequest struct {
-	method        string
-	path          string
-	body          string
-	token         string
+	method         string
+	path           string
+	body           string
+	token          string
 	idempotencyKey string
-	handler       http.Handler
+	handler        http.Handler
 }
 
 func doConsoleRequest(t *testing.T, request consoleRequest) *httptest.ResponseRecorder {
@@ -662,5 +665,62 @@ func TestConsoleOperatorsManagement(t *testing.T) {
 	joinedAll := strings.Join(joined, ",")
 	if !strings.Contains(joinedAll, consoleDirectorName+":operator.create") || !strings.Contains(joinedAll, consoleDirectorName+":operator.revoke") {
 		t.Fatalf("audit = %v, want director-attributed create and revoke", joined)
+	}
+}
+
+// TestConsoleClientHealth 锁快修 P1 的遥测端点：匿名 401、auditor 可读
+// （traceReadScope）、空账本 200 空快照、记录后计数与新在前事件、以及
+// Operations Observation 隐私哨兵——响应体不出现用户身份。
+func TestConsoleClientHealth(t *testing.T) {
+	harness := newConsoleHarness(t)
+	harness.seedOperators(t)
+
+	if got := doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/client-health", handler: harness.console}); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous client-health = %d, want 401", got.Code)
+	}
+
+	// 空账本:200 空快照,面板显示零而非报错。
+	recorder := doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/client-health", token: consoleAuditorToken, handler: harness.console})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("empty client-health = %d, want 200", recorder.Code)
+	}
+	var empty struct {
+		Counters map[string]int64    `json:"counters"`
+		Recent   []map[string]string `json:"recent"`
+	}
+	decodeConsoleJSON(t, recorder, &empty)
+	if len(empty.Counters) != 0 || len(empty.Recent) != 0 {
+		t.Fatalf("empty snapshot = %v/%v, want zero", empty.Counters, empty.Recent)
+	}
+
+	harness.clientHealth.Record("self_interrupt_suspected", "m1", time.Date(2026, 10, 3, 20, 0, 0, 0, time.UTC))
+	harness.clientHealth.Record("duplex_degraded", "m1", time.Date(2026, 10, 3, 20, 1, 0, 0, time.UTC))
+	harness.clientHealth.Record("lipsync_jitter_fallback", "m2", time.Date(2026, 10, 3, 20, 2, 0, 0, time.UTC))
+
+	recorder = doConsoleRequest(t, consoleRequest{method: http.MethodGet, path: "/api/console/client-health", token: consoleDirectorToken, handler: harness.console})
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("client-health = %d", recorder.Code)
+	}
+	var payload struct {
+		Counters map[string]int64 `json:"counters"`
+		Recent   []struct {
+			Kind    string `json:"kind"`
+			At      string `json:"at"`
+			MatchID string `json:"matchId"`
+		} `json:"recent"`
+	}
+	decodeConsoleJSON(t, recorder, &payload)
+	if payload.Counters["self_interrupt_suspected"] != 1 || payload.Counters["duplex_degraded"] != 1 || payload.Counters["lipsync_jitter_fallback"] != 1 {
+		t.Fatalf("counters = %v", payload.Counters)
+	}
+	if len(payload.Recent) != 3 || payload.Recent[0].Kind != "lipsync_jitter_fallback" || payload.Recent[2].Kind != "self_interrupt_suspected" {
+		t.Fatalf("recent = %+v, want newest first", payload.Recent)
+	}
+	if payload.Recent[0].MatchID != "m2" {
+		t.Fatalf("matchId = %q, want m2", payload.Recent[0].MatchID)
+	}
+	// 隐私哨兵:裁剪面只有种类/时间/比赛,响应体不出现任何用户身份形状。
+	if strings.Contains(recorder.Body.String(), "user") || strings.Contains(recorder.Body.String(), "userId") {
+		t.Fatalf("response leaks user identity: %s", recorder.Body.String())
 	}
 }

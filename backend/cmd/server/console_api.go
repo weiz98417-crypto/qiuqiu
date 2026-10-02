@@ -31,6 +31,7 @@ import (
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/relationship"
@@ -62,6 +63,9 @@ type consoleAPI struct {
 	characterSettings *relationship.CharacterSettings
 	writes            *operatorwrite.Service
 	interruptions     *interruptionRing
+	// clientHealth 是客户端语音健康遥测账本（快修 P1 观测面）；nil 时端点
+	// 返回空快照——无遥测不报错，面板显示零。
+	clientHealth *observation.ClientHealthLedger
 	// ADR-0010 human channel: the HS256 signing secret (QIUQIU_JWT_SECRET).
 	jwtSecret string
 }
@@ -143,6 +147,9 @@ func handleConsoleAPI(deps consoleAPI) http.HandlerFunc {
 func consoleRoutes(deps consoleAPI) []route {
 	return []route{
 		{method: http.MethodGet, pattern: "/api/console/overview", scope: traceReadScope, handler: deps.handleOverview},
+		// 客户端语音健康遥测（快修 P1 观测面）：聚合计数 + 最近事件,
+		// Operations Observation 纪律——不见用户身份与正文。
+		{method: http.MethodGet, pattern: "/api/console/client-health", scope: traceReadScope, handler: deps.handleClientHealth},
 		{method: http.MethodGet, pattern: "/api/console/matches/{matchId}/users", scope: traceReadScope, handler: deps.handleMatchUsers},
 		{method: http.MethodGet, pattern: "/api/console/threads", scope: traceReadScope, handler: deps.handleListThreads},
 		{method: http.MethodPatch, pattern: "/api/console/threads/{threadId}", scope: matchWriteScope, handler: deps.handlePatchThread},
@@ -288,6 +295,29 @@ func newOperatorToken() string {
 		panic(err)
 	}
 	return hex.EncodeToString(buf)
+}
+
+// consoleClientHealthEvent 是遥测事件的 wire 形状：已裁剪——无用户身份、
+// 无正文，只有种类/时间/比赛归属（Operations Observation 纪律）。
+type consoleClientHealthEvent struct {
+	Kind    string `json:"kind"`
+	At      string `json:"at"`
+	MatchID string `json:"matchId,omitempty"`
+}
+
+// handleClientHealth 返回客户端语音健康遥测快照（快修 P1 观测面）：聚合
+// 计数 + 最近事件（新在前）。账本缺席（nil）返回空快照——面板显示零而非报错。
+func (deps consoleAPI) handleClientHealth(w http.ResponseWriter, r *http.Request) {
+	counters, recent := deps.clientHealth.Snapshot()
+	events := make([]consoleClientHealthEvent, len(recent))
+	for i, event := range recent {
+		events[i] = consoleClientHealthEvent{
+			Kind:    event.Kind,
+			At:      event.At.Format(time.RFC3339),
+			MatchID: event.MatchID,
+		}
+	}
+	writeJSON(w, http.StatusOK, map[string]any{"counters": counters, "recent": events})
 }
 
 func (deps consoleAPI) handleOverview(w http.ResponseWriter, r *http.Request) {

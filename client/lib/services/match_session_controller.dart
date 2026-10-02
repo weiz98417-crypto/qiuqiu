@@ -192,18 +192,56 @@ class MatchSessionController extends ChangeNotifier {
   static const double selfInterruptMinOverlap = 0.5;
   static const int selfInterruptDegradeThreshold = 3;
 
-  MatchSessionController({MatchViewData initialMatch = const MatchViewData()})
-      : _state = MatchSessionState(match: initialMatch);
+  /// 自动恢复（快修 P1）：降级是外放/嘈杂环境的临时响应——不塞后台定时
+  /// 器，改在用户播放期开口的那一刻惰性判定：距上次降级满退避间隔即恢复
+  /// 抢话（本次开口直接生效），再降级则间隔翻倍（封顶 30 分钟）。手动重开
+  /// （设置页）即重置退避。
+  static const Duration duplexRecoveryInitialDelay = Duration(minutes: 3);
+  static const Duration duplexRecoveryMaxDelay = Duration(minutes: 30);
+  DateTime? _duplexDegradedAt;
+  Duration _duplexRecoveryDelay = duplexRecoveryInitialDelay;
+  final DateTime Function() _clock;
+
+  MatchSessionController({
+    MatchViewData initialMatch = const MatchViewData(),
+    DateTime Function()? clock,
+  })  : _clock = clock ?? DateTime.now,
+        _state = MatchSessionState(match: initialMatch);
 
   MatchSessionState get state => _state;
 
   bool get duplexPlaybackCapture => _duplexPlaybackCapture;
 
-  /// duplex_playback_capture 总开关。重新开启时清空误打断连击——降级
-  /// 是对连续回声的临时响应，不追责到下一次会话。
+  /// duplex_playback_capture 总开关。重新开启时清空误打断连击与恢复退避
+  /// ——降级是对连续回声的临时响应，不追责到下一次会话。
   void setDuplexPlaybackCapture(bool enabled) {
     _duplexPlaybackCapture = enabled;
-    if (enabled) _selfInterruptStreak = 0;
+    if (enabled) {
+      _selfInterruptStreak = 0;
+      _duplexDegradedAt = null;
+      _duplexRecoveryDelay = duplexRecoveryInitialDelay;
+    }
+  }
+
+  /// 播放期开口的惰性恢复点：退避到期即重开抢话并发 recovered 遥测。
+  /// 返回是否刚刚恢复了。恢复成功即为本轮退避翻倍（封顶），供下次降级用。
+  bool _maybeRecoverDuplex() {
+    final degradedAt = _duplexDegradedAt;
+    if (degradedAt == null) return false;
+    if (_clock().difference(degradedAt) < _duplexRecoveryDelay) {
+      return false;
+    }
+    _duplexPlaybackCapture = true;
+    _duplexDegradedAt = null;
+    _selfInterruptStreak = 0;
+    _duplexRecoveryDelay =
+        _duplexRecoveryDelay * 2 >= duplexRecoveryMaxDelay
+            ? duplexRecoveryMaxDelay
+            : _duplexRecoveryDelay * 2;
+    _commands.add(const SendSocketCommand(
+        {'type': 'duplex_event', 'event': 'duplex_recovered'}));
+    _publish(_state.copyWith(notice: '已恢复抢话；若再连续误打断会自动降级。'));
+    return true;
   }
 
   /// Loads presentation-map.json once so the phase rows below render from the
@@ -867,11 +905,14 @@ class MatchSessionController extends ChangeNotifier {
   MatchSessionState vadSpeaking({required bool continuousEnabled}) {
     // 半双工降级（duplex_playback_capture=off）：播放期 VAD 事件整体
     // 忽略——user_activity speaking 会在服务端取消排程话轮，等价打断，
-    // 所以连活动上报一并跳过。手动打断路径不受影响。
+    // 所以连活动上报一并跳过。手动打断路径不受影响。降级满退避间隔时
+    // 在这里惰性恢复（快修 P1）：本次开口直接按抢断路径走。
     if (!_duplexPlaybackCapture &&
         (_state.phase == MatchSessionPhase.speaking ||
             _state.awaitingFirstMeetingGreeting)) {
-      return _state;
+      if (!_maybeRecoverDuplex()) {
+        return _state;
+      }
     }
     _commands.add(const SendSocketCommand(
         {'type': 'user_activity', 'state': 'speaking'}));
@@ -928,10 +969,11 @@ class MatchSessionController extends ChangeNotifier {
     if (_selfInterruptStreak < selfInterruptDegradeThreshold) return;
     _duplexPlaybackCapture = false;
     _selfInterruptStreak = 0;
+    _duplexDegradedAt = _clock();
     _commands.add(const SendSocketCommand(
         {'type': 'duplex_event', 'event': 'duplex_degraded'}));
     _publish(_state.copyWith(
-        notice: '连续误打断，已暂时改回半双工；可在设置里重新打开抢话。'));
+        notice: '连续误打断，已暂时改回半双工；稍后再开口会自动恢复抢话。'));
   }
 
   MatchSessionState vadSentenceStreamed() {

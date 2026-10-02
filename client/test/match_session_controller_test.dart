@@ -775,6 +775,87 @@ void main() {
         contains(isA<SendSocketCommand>()),
       );
     });
+
+    test('自动恢复：降级满退避间隔后播放期开口即恢复并发 recovered 遥测',
+        () {
+      var now = DateTime(2026, 10, 3, 20);
+      final controller = MatchSessionController(clock: () => now);
+      replayGatedCycle(controller);
+      replayGatedCycle(controller);
+      replayGatedCycle(controller);
+      expect(controller.duplexPlaybackCapture, isFalse);
+      controller.takeCommands();
+
+      // 退避未满（初始 3 分钟）：开口仍被忽略。
+      now = now.add(const Duration(minutes: 2));
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.duplexPlaybackCapture, isFalse);
+      expect(controller.takeCommands(), isEmpty);
+
+      // 满间隔：同一开口直接按抢断路径走，并带 recovered 遥测。
+      now = now.add(const Duration(minutes: 2));
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.duplexPlaybackCapture, isTrue);
+      final commands = controller.takeCommands();
+      expect(
+        commands.whereType<SendSocketCommand>().map((c) => c.message['event']),
+        contains('duplex_recovered'),
+      );
+      expect(
+        commands.whereType<SendSocketCommand>().map((c) => c.message['type']),
+        containsAll(['user_activity', 'interrupt']),
+      );
+    });
+
+    test('自动恢复退避：再次降级间隔翻倍，手动重开即重置', () {
+      var now = DateTime(2026, 10, 3, 20);
+      final controller = MatchSessionController(clock: () => now);
+      // 第一轮降级 → 3 分钟后开口恢复。
+      for (var i = 0; i < 3; i++) {
+        replayGatedCycle(controller);
+      }
+      expect(controller.duplexPlaybackCapture, isFalse);
+      now = now.add(const Duration(minutes: 3));
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      controller.takeCommands();
+      expect(controller.duplexPlaybackCapture, isTrue);
+
+      // 立刻再降级：间隔翻倍到 6 分钟——3 分钟开口不恢复，满 6 分钟才恢复。
+      for (var i = 0; i < 3; i++) {
+        replayGatedCycle(controller);
+      }
+      expect(controller.duplexPlaybackCapture, isFalse);
+      now = now.add(const Duration(minutes: 3));
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.duplexPlaybackCapture, isFalse);
+      expect(controller.takeCommands(), isEmpty);
+
+      now = now.add(const Duration(minutes: 3));
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.duplexPlaybackCapture, isTrue);
+      expect(
+        controller.takeCommands().whereType<SendSocketCommand>().map((c) => c.message['event']),
+        contains('duplex_recovered'),
+      );
+
+      // 手动重开（设置页）即重置退避：再降级后又从初始 3 分钟起算。
+      controller.setDuplexPlaybackCapture(true);
+      for (var i = 0; i < 3; i++) {
+        replayGatedCycle(controller);
+      }
+      expect(controller.duplexPlaybackCapture, isFalse);
+      now = now.add(const Duration(minutes: 3));
+      controller.dispatch(const PlaybackSessionEvent('started', traceId: 't'));
+      controller.takeCommands();
+      controller.vadSpeaking(continuousEnabled: true);
+      expect(controller.duplexPlaybackCapture, isTrue);
+    });
   });
 
   test('自打断判定纯函数边界', () {

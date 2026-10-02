@@ -4,6 +4,8 @@ import type { ColumnsType } from 'antd/es/table';
 import { Link } from 'react-router-dom';
 import { consoleApi } from '../api/client';
 import type { AuditRow, ConsoleMatch, Overview as OverviewData } from '../api/client';
+import { clientHealthApi, clientHealthKindLabels } from '../api/clientHealth';
+import type { ClientHealthEvent } from '../api/clientHealth';
 import { fmtDateTime, fmtTime } from '../api/format';
 import { useAsync } from '../api/useAsync';
 import ConsolePageShell from '../components/ConsolePageShell';
@@ -52,10 +54,28 @@ function cellBorder(style: React.CSSProperties): React.CSSProperties {
 
 export default function Overview() {
   const { data, loading, error, reload } = useAsync<OverviewData>(() => consoleApi.overview(), []);
+  const health = useAsync(
+    () => clientHealthApi.snapshot(),
+    [],
+  );
 
   const aging = data?.threadAging ?? { today: 0, d1to3: 0, d3plus: 0 };
   const memory = data?.memory;
   const matchRows = useMemo(() => data?.matches ?? [], [data]);
+  const healthCounters = useMemo(
+    () => Object.entries(health.data?.counters ?? {}).sort((a, b) => b[1] - a[1]),
+    [health.data],
+  );
+  const healthColumns: ColumnsType<ClientHealthEvent> = [
+    {
+      title: '事件',
+      dataIndex: 'kind',
+      key: 'kind',
+      render: (kind: string) => clientHealthKindLabels[kind] ?? <code style={{ fontSize: 12 }}>{kind}</code>,
+    },
+    { title: '比赛', dataIndex: 'matchId', key: 'matchId', width: 110, render: (id?: string) => id ?? '—' },
+    { title: '时间', dataIndex: 'at', key: 'at', width: 110, render: fmtTime },
+  ];
 
   return (
     <ConsolePageShell
@@ -219,6 +239,48 @@ export default function Overview() {
             <div style={{ color: '#AAB4C0', fontSize: 12 }}>
               白名单事件 {data?.backchannel?.whitelistEvents ?? 0}
             </div>
+          </Card>
+        </Col>
+
+        {/* 八格 · 客户端语音健康（快修 P1 观测面）：抢话误打断/降级/恢复 +
+            嘴型退化。进程内遥测，重启清零；只见种类与计数,不见用户身份。 */}
+        <Col span={12}>
+          <Card
+            data-cell="client-health"
+            title="客户端语音健康"
+            style={cellBorder({ height: '100%' })}
+            extra={<Link to="/console/observation">观测页 →</Link>}
+          >
+            <Row gutter={16}>
+              <Col span={8}>
+                {healthCounters.length === 0 ? (
+                  <Empty description="暂无健康事件" imageStyle={{ height: 40 }} />
+                ) : (
+                  healthCounters.slice(0, 4).map(([kind, count]) => (
+                    <Statistic
+                      key={kind}
+                      title={clientHealthKindLabels[kind] ?? kind}
+                      value={count}
+                      style={{ marginBottom: 8 }}
+                      loading={health.loading}
+                    />
+                  ))
+                )}
+              </Col>
+              <Col span={16}>
+                <div style={{ marginBottom: 4, color: '#AAB4C0', fontSize: 12 }}>最近事件</div>
+                <Table<ClientHealthEvent>
+                  size="small"
+                  rowKey={(row) => `${row.kind}-${row.at}-${row.matchId ?? ''}`}
+                  columns={healthColumns}
+                  dataSource={health.data?.recent ?? []}
+                  pagination={false}
+                  scroll={{ y: 200 }}
+                  loading={health.loading}
+                  locale={{ emptyText: <Empty description="暂无事件" imageStyle={{ height: 40 }} /> }}
+                />
+              </Col>
+            </Row>
           </Card>
         </Col>
       </Row>

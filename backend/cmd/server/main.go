@@ -604,6 +604,9 @@ func main() {
 		watchSessions.WithStore(deliveryStore)
 	}
 	mux.HandleFunc("/health", hub.HandleHealth)
+	// 客户端语音健康遥测账本（快修 P1 观测面）：watch 连接与 console 面板
+	// 共享同一实例；进程内环形缓冲，重启清零。
+	clientHealthLedger := observation.NewClientHealthLedger()
 	mux.HandleFunc("/api/sessions/", handleSessionAPI(sessionManager, cfg))
 	mux.HandleFunc("/api/me/", handlePrivacyAPI(sessionManager, cfg, privacyService))
 	mux.HandleFunc("/api/me/character", handleCharacterAPI(sessionManager, cfg, characterSettings, interactionLedger))
@@ -626,6 +629,7 @@ func main() {
 		preferences:   memoryPreferenceStore,
 		writes:        operatorWrites,
 		interruptions: sharedInterruptions,
+		clientHealth:  clientHealthLedger,
 		jwtSecret:     cfg.JWTSecret,
 	}))
 	// 知识策展面（knowledge-curation-console）：/api/console/knowledge 子树，
@@ -694,6 +698,7 @@ func main() {
 		ambient:          ambientSidecar,
 		turnSidecar:      turnSidecar,
 		userAffect:       userAffectSidecar,
+		clientHealth:     clientHealthLedger,
 	}))
 	// /ws/ops 运营观测流（operations-live-stream）：复用鉴权链升级 + 运营
 	// 面放行；订阅者只收裁剪后的 wire 事件（无正文）。

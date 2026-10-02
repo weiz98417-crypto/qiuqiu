@@ -31,6 +31,7 @@ import (
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
+	"qiuqiu/internal/observation"
 	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/relationship"
 	"qiuqiu/internal/ws"
@@ -71,6 +72,9 @@ type watchDeps struct {
 	// userAffect 是用户语音情绪 sidecar 客户端（user-voice-affect 波1）：
 	// URL 未配置时 nil，旁路整体消失。
 	userAffect *useraffect.Client
+	// clientHealth 是客户端语音健康遥测账本（快修 P1 观测面）：nil 即只落
+	// 结构化日志，不进观测面板。
+	clientHealth *observation.ClientHealthLedger
 }
 
 // watchConnection 承载一条 /ws/match/ 连接跨四相的全部状态。字段与拆分前
@@ -1188,6 +1192,7 @@ func (c *watchConnection) readMessages() {
 			transcript := strings.TrimSpace(str(req, "transcript"))
 			log.Printf("voice duplex event: user=%q match=%q event=%q transcript_len=%d streak=%d",
 				c.identity.Get(), c.matchID, event, len([]rune(transcript)), streak)
+			c.deps.clientHealth.Record(event, c.matchID, time.Now().UTC())
 		case "lipsync_event":
 			// 嘴型退化遥测（快修 P1）：客户端限频后的状态沿上报——vendor
 			// 不可用 / 解码失败 / 说话期整秒落在随机抖动兜底。服务端只落
@@ -1198,6 +1203,7 @@ func (c *watchConnection) readMessages() {
 			}
 			log.Printf("lipsync degraded event: user=%q match=%q reason=%q",
 				c.identity.Get(), c.matchID, reason)
+			c.deps.clientHealth.Record("lipsync_"+reason, c.matchID, time.Now().UTC())
 		case "turn_query":
 			// 轮次检测提前问（voice-turn-detection 决策 c）：客户端 model
 			// 插槽在静默累计 600ms 起咨询，服务端只做转发——sidecar 结论以
