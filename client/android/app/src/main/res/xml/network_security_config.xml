@@ -1,0 +1,12 @@
+<?xml version="1.0" encoding="utf-8"?>
+<!-- Release 构建仅对回环放行明文:Live2D 资产出自应用内嵌的 127.0.0.1
+     HTTP 服务器(live2d_asset_server.dart);10.0.2.2 保留给 debug 的
+     本地部署形态(ADR-0020)。其余域名维持平台默认的 https 强制。 -->
+<network-security-config>
+    <base-config cleartextTrafficPermitted="false" />
+    <domain-config cleartextTrafficPermitted="true">
+        <domain includeSubdomains="false">127.0.0.1</domain>
+        <domain includeSubdomains="false">localhost</domain>
+        <domain includeSubdomains="false">10.0.2.2</domain>
+    </domain-config>
+</network-security-config>

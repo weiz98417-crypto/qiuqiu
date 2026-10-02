@@ -5,6 +5,7 @@ import 'package:flutter/material.dart';
 import 'package:flutter/services.dart';
 import 'package:flutter_inappwebview/flutter_inappwebview.dart';
 
+import '../services/live2d_asset_server.dart';
 import 'live2d_bridge_stub.dart' if (dart.library.html) 'live2d_bridge_web.dart'
     as live2d_bridge;
 
@@ -35,6 +36,10 @@ class Live2dViewState extends State<Live2dView> {
   InAppWebViewController? _controller;
   bool _modelReady = false;
   bool _loadFailed = false;
+
+  /// 非 Web 构建的资产基址(应用内嵌 loopback 服务器)。
+  /// release 真机没有 flutter run 资产服务与模拟器回环,资产必须出自本应用。
+  String? _assetBase;
 
   void evaluateJS(String js) {
     _controller?.evaluateJavascript(source: js);
@@ -104,6 +109,12 @@ class Live2dViewState extends State<Live2dView> {
           _readyPoll?.cancel();
           setState(() => _modelReady = true);
         }
+      });
+    } else {
+      Live2dAssetServer.instance.start().then((origin) {
+        if (mounted) setState(() => _assetBase = origin);
+      }).catchError((_) {
+        if (mounted) setState(() => _loadFailed = true);
       });
     }
   }
@@ -203,14 +214,16 @@ class Live2dViewState extends State<Live2dView> {
         IgnorePointer(
           child: InAppWebView(
             initialUrlRequest: kIsWeb ? URLRequest(url: _webLive2dUrl) : null,
-            initialData: kIsWeb
+            initialData: kIsWeb || _assetBase == null
                 ? null
                 : InAppWebViewInitialData(
+                    // 非 Web 构建统一改写到应用内嵌 loopback 服务器(同源、
+                    // secure context);10.0.2.2 是模拟器回环,真机必挂。
                     data: _htmlContent.replaceAll(
-                        'qiuqiu://asset/', 'http://10.0.2.2:8081/assets/assets/live2d/'),
+                        'qiuqiu://asset/', '$_assetBase/live2d-assets/'),
                     mimeType: 'text/html',
                     encoding: 'utf8',
-                    baseUrl: WebUri('http://10.0.2.2:8080/'),
+                    baseUrl: WebUri(_assetBase!),
                   ),
             initialSettings: InAppWebViewSettings(
               transparentBackground: true,
