@@ -49,6 +49,12 @@ export interface KnowledgeUpdate {
   effectiveAt: string;
 }
 
+// POST（新建条目）请求体：id 由策展人命名（slug），其余字段与更新一致；
+// 后端同 id 已存在返回 409。
+export interface KnowledgeCreate extends KnowledgeUpdate {
+  id: string;
+}
+
 export const knowledgeApi = {
   list: (query: KnowledgeQuery = {}) => {
     const params = new URLSearchParams();
@@ -65,6 +71,11 @@ export const knowledgeApi = {
   update: (id: string, payload: KnowledgeUpdate) =>
     api<{ entry: KnowledgeEntry }>(`/api/console/knowledge/${encodeURIComponent(id)}`, {
       method: 'PUT',
+      body: payload,
+    }),
+  create: (payload: KnowledgeCreate) =>
+    api<{ entry: KnowledgeEntry }>('/api/console/knowledge', {
+      method: 'POST',
       body: payload,
     }),
 };
@@ -85,5 +96,14 @@ export const knowledgeStatusColors: Record<KnowledgeStatus, string> = {
 export function validateKnowledgeConfidence(value: number | null): string | undefined {
   if (value === null || Number.isNaN(value)) return '请填写确信度';
   if (value < 0 || value > 1) return '确信度必须在 0 到 1 之间';
+  return undefined;
+}
+
+// 新建条目 id 的前端镜像校验（与后端 knowledgeIDPattern 同一约束）：slug——
+// 小写字母/数字开头，可含连字符（seed 惯用法如 rule-red-card），2-64 字符。
+export function validateKnowledgeId(value: string | undefined): string | undefined {
+  const id = (value ?? '').trim();
+  if (!id) return '请填写条目 id';
+  if (!/^[a-z0-9][a-z0-9-]{1,63}$/.test(id)) return 'id 只能是小写字母、数字和连字符（2-64 字符）';
   return undefined;
 }

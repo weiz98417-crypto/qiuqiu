@@ -12,6 +12,7 @@ import (
 	"errors"
 	"log"
 	"net/http"
+	"regexp"
 	"strconv"
 	"strings"
 	"time"
@@ -62,6 +63,7 @@ func handleKnowledgeAPI(deps knowledgeAPI) http.HandlerFunc {
 func knowledgeRoutes(deps knowledgeAPI) []route {
 	return []route{
 		{method: http.MethodGet, pattern: "/api/console/knowledge", scope: traceReadScope, handler: deps.handleList},
+		{method: http.MethodPost, pattern: "/api/console/knowledge", scope: matchWriteScope, handler: deps.handlePost},
 		{method: http.MethodGet, pattern: "/api/console/knowledge/{entryId}", scope: traceReadScope, handler: deps.handleGet},
 		{method: http.MethodPut, pattern: "/api/console/knowledge/{entryId}", scope: matchWriteScope, handler: deps.handlePut},
 	}
@@ -203,6 +205,20 @@ type knowledgeUpdateRequest struct {
 	EffectiveAt string   `json:"effectiveAt"`
 }
 
+// knowledgeCreateRequest 是 POST（新建条目）请求体：id 由策展人命名
+// （slug：小写字母/数字/连字符，见 knowledgeIDPattern），其余字段同 PUT。
+type knowledgeCreateRequest struct {
+	ID string `json:"id"`
+	knowledgeUpdateRequest
+}
+
+// errKnowledgeDuplicate 是同 id 已存在的哨兵（映射 409）。
+var errKnowledgeDuplicate = errors.New("knowledge entry id already exists")
+
+// knowledgeIDPattern 是新建条目的 id 形状：slug——小写字母/数字开头，
+// 可含连字符（seed 惯用法如 rule-red-card / format-duration），2-64 字符。
+var knowledgeIDPattern = regexp.MustCompile(`^[a-z0-9][a-z0-9-]{1,63}$`)
+
 // parseKnowledgeEffectiveAt 接受日期（2026-07-01，repo YAML 惯用法）与
 // RFC3339 两种形状。
 func parseKnowledgeEffectiveAt(raw string) (time.Time, error) {
@@ -269,6 +285,57 @@ func (deps knowledgeAPI) handlePut(w http.ResponseWriter, r *http.Request) {
 		}
 		appendKnowledgeAudit(deps.operators, claims, "knowledge.update", entryID)
 		return operatorwrite.JSONResponse(http.StatusOK, map[string]any{
+			"entry": knowledgeEntryViewModel(time.Now(), record),
+		})
+	})
+}
+
+// handlePost 新建条目：同 id 已存在返回 409（走 PutIfAbsent 原子面，
+// 消掉先查后插窗口里 seed/并发写入的竞态）。保存即生效口径同 handlePut；
+// triggers/quote 不在新建表单——事件附句策展仍走 seed 与后续编辑。
+func (deps knowledgeAPI) handlePost(w http.ResponseWriter, r *http.Request) {
+	if deps.store == nil || deps.library == nil {
+		knowledgeUnavailable(w)
+		return
+	}
+	claims, ok := operatorClaims(deps.authz, w, r)
+	if !ok {
+		return
+	}
+	var request knowledgeCreateRequest
+	body, err := decodeOperatorJSON(w, r, &request)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	entryID := strings.TrimSpace(request.ID)
+	if !knowledgeIDPattern.MatchString(entryID) {
+		http.Error(w, "id must be a slug: lowercase letters, digits and hyphens (2-64 chars)", http.StatusBadRequest)
+		return
+	}
+	effectiveAt, err := parseKnowledgeEffectiveAt(request.EffectiveAt)
+	if err != nil {
+		http.Error(w, "effectiveAt must be a date (2026-07-01) or RFC3339 timestamp", http.StatusBadRequest)
+		return
+	}
+	entry := knowledge.Entry{
+		ID:          entryID,
+		Topics:      request.Topics,
+		Answer:      request.Answer,
+		Source:      request.Source,
+		Confidence:  request.Confidence,
+		EffectiveAt: effectiveAt,
+	}
+	executeOperatorWrite(w, r, deps.writes, "knowledge", "knowledge.create", body, func(ctx context.Context) (operatorwrite.Response, error) {
+		record, inserted, err := deps.library.PutIfAbsent(ctx, entry, operatorName(claims))
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		if !inserted {
+			return operatorwrite.Response{}, operatorError(http.StatusConflict, errKnowledgeDuplicate)
+		}
+		appendKnowledgeAudit(deps.operators, claims, "knowledge.create", entryID)
+		return operatorwrite.JSONResponse(http.StatusCreated, map[string]any{
 			"entry": knowledgeEntryViewModel(time.Now(), record),
 		})
 	})

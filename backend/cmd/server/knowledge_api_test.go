@@ -320,3 +320,121 @@ func TestKnowledgeAPIIdempotentReplay(t *testing.T) {
 		t.Fatalf("decode replay body: %v", err)
 	}
 }
+
+// doKnowledgeRequestWithKey 与 doKnowledgeRequest 同形,但幂等键显式给定——
+// 「同 id 重复新建」要换新键才会真正打到 PutIfAbsent(同键同体会走幂等重放)。
+func doKnowledgeRequestWithKey(t *testing.T, handler http.HandlerFunc, method, path, token, body, key string) *httptest.ResponseRecorder {
+	t.Helper()
+	request := httptest.NewRequest(method, path, strings.NewReader(body))
+	if token != "" {
+		request.Header.Set("Authorization", "Bearer "+token)
+	}
+	if body != "" {
+		request.Header.Set("Idempotency-Key", key)
+		request.Header.Set("Content-Type", "application/json")
+	}
+	recorder := httptest.NewRecorder()
+	handler.ServeHTTP(recorder, request)
+	return recorder
+}
+
+func TestKnowledgeAPICreateFlow(t *testing.T) {
+	h := newKnowledgeHarness(t)
+	h.seedOperators(t)
+
+	body := `{"id":"rule-stoppage","topics":["补时","伤停补时"],"answer":"补时答案原文。","source":"IFAB Law 7","confidence":0.9,"effectiveAt":"2026-08-01"}`
+	recorder := doKnowledgeRequest(t, h.handler, http.MethodPost, "/api/console/knowledge", consoleDirectorToken, body)
+	if recorder.Code != http.StatusCreated {
+		t.Fatalf("post = %d body=%s, want 201", recorder.Code, recorder.Body.String())
+	}
+	var created struct {
+		Entry knowledgeEntryView `json:"entry"`
+	}
+	decodeConsoleJSON(t, recorder, &created)
+	if created.Entry.ID != "rule-stoppage" || created.Entry.CreatedBy != consoleDirectorName {
+		t.Fatalf("created = %+v, want id=rule-stoppage createdBy=%s", created.Entry, consoleDirectorName)
+	}
+
+	// 同 id 换键重复新建:409(PutIfAbsent 原子面),且原条目不被覆盖。
+	duplicate := doKnowledgeRequestWithKey(t, h.handler, http.MethodPost, "/api/console/knowledge", consoleDirectorToken,
+		`{"id":"rule-stoppage","topics":["补时"],"answer":"覆盖尝试。","confidence":0.5,"effectiveAt":"2026-08-01"}`, "test-knowledge-duplicate-key")
+	if duplicate.Code != http.StatusConflict {
+		t.Fatalf("duplicate post = %d body=%s, want 409", duplicate.Code, duplicate.Body.String())
+	}
+
+	// GET 可见,答案仍是首次新建值。
+	recorder = doKnowledgeRequest(t, h.handler, http.MethodGet, "/api/console/knowledge/rule-stoppage", consoleDirectorToken, "")
+	if recorder.Code != http.StatusOK {
+		t.Fatalf("get = %d", recorder.Code)
+	}
+	var fetched struct {
+		Entry knowledgeEntryView `json:"entry"`
+	}
+	decodeConsoleJSON(t, recorder, &fetched)
+	if fetched.Entry.Answer != "补时答案原文。" || fetched.Entry.CreatedBy != consoleDirectorName {
+		t.Fatalf("fetched = %+v, want first-create answer and creator", fetched.Entry)
+	}
+
+	// 运行时生效:库快照已换血,检索命中新条目。
+	entry, ok := h.library.Search(context.Background(), "这场补时几分钟")
+	if !ok || entry.Answer != "补时答案原文。" {
+		t.Fatalf("runtime search = %+v ok=%v, want created entry", entry, ok)
+	}
+
+	// 审计落账:knowledge.create 归属 director。
+	audits, err := h.operators.RecentAudit(context.Background(), 10)
+	if err != nil {
+		t.Fatalf("recent audit: %v", err)
+	}
+	if len(audits) != 1 || audits[0].OperatorName != consoleDirectorName || audits[0].Action != "knowledge.create" || audits[0].Object != "rule-stoppage" {
+		t.Fatalf("audits = %+v, want one knowledge.create on rule-stoppage", audits)
+	}
+}
+
+func TestKnowledgeAPICreateValidation(t *testing.T) {
+	h := newKnowledgeHarness(t)
+	h.seedOperators(t)
+	cases := []struct {
+		name string
+		body string
+	}{
+		{"missing id", `{"topics":["越位"],"answer":"答案","confidence":0.9,"effectiveAt":"2026-07-01"}`},
+		{"uppercase id", `{"id":"Rule-Offside","topics":["越位"],"answer":"答案","confidence":0.9,"effectiveAt":"2026-07-01"}`},
+		{"single char id", `{"id":"a","topics":["越位"],"answer":"答案","confidence":0.9,"effectiveAt":"2026-07-01"}`},
+		{"id with underscore", `{"id":"rule_offside","topics":["越位"],"answer":"答案","confidence":0.9,"effectiveAt":"2026-07-01"}`},
+		{"missing topics", `{"id":"rule-offside","topics":[],"answer":"答案","confidence":0.9,"effectiveAt":"2026-07-01"}`},
+		{"missing answer", `{"id":"rule-offside","topics":["越位"],"answer":"  ","confidence":0.9,"effectiveAt":"2026-07-01"}`},
+		{"confidence out of range", `{"id":"rule-offside","topics":["越位"],"answer":"答案","confidence":1.5,"effectiveAt":"2026-07-01"}`},
+		{"bad effectiveAt", `{"id":"rule-offside","topics":["越位"],"answer":"答案","confidence":0.9,"effectiveAt":"下一个转会窗"}`},
+	}
+	for _, tc := range cases {
+		if got := doKnowledgeRequest(t, h.handler, http.MethodPost, "/api/console/knowledge", consoleDirectorToken, tc.body); got.Code != http.StatusBadRequest {
+			t.Fatalf("%s: post = %d body=%s, want 400", tc.name, got.Code, got.Body.String())
+		}
+	}
+}
+
+func TestKnowledgeAPICreateAuthAndUnavailable(t *testing.T) {
+	h := newKnowledgeHarness(t)
+	h.seedOperators(t)
+	body := `{"id":"rule-stoppage","topics":["补时"],"answer":"答案","confidence":0.9,"effectiveAt":"2026-08-01"}`
+
+	// 匿名 401;auditor 只读 403。
+	if got := doKnowledgeRequest(t, h.handler, http.MethodPost, "/api/console/knowledge", "", body); got.Code != http.StatusUnauthorized {
+		t.Fatalf("anonymous post = %d, want 401", got.Code)
+	}
+	if got := doKnowledgeRequest(t, h.handler, http.MethodPost, "/api/console/knowledge", consoleAuditorToken, body); got.Code != http.StatusForbidden {
+		t.Fatalf("auditor post = %d, want 403", got.Code)
+	}
+
+	// 无库降级 501。
+	cfg := &config.Config{Environment: "development", AppToken: "qiuqiu-dev-token"}
+	authz := newOperatorAuthz(cfg, h.operators)
+	handler := handleKnowledgeAPI(knowledgeAPI{
+		cfg: cfg, authz: authz, library: nil, store: nil,
+		writes: operatorwrite.NewMemoryService(), operators: h.operators,
+	})
+	if got := doKnowledgeRequest(t, handler, http.MethodPost, "/api/console/knowledge", consoleDirectorToken, body); got.Code != http.StatusNotImplemented {
+		t.Fatalf("post without store = %d, want 501", got.Code)
+	}
+}

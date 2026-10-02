@@ -134,6 +134,30 @@ func (l *Library) Put(ctx context.Context, entry Entry, operator string) (Record
 	return record, nil
 }
 
+// PutIfAbsent 仅当 id 不存在时插入（seed 导入与运营台「新建条目」共用），
+// 已存在即原样不动并返回 false——消掉先查后插窗口里同 id 竞态覆盖的口子。
+// 校验口径同 Put；插入成功后快照换血，运行时检索立刻可见。
+func (l *Library) PutIfAbsent(ctx context.Context, entry Entry, operator string) (Record, bool, error) {
+	if l == nil || l.store == nil {
+		return Record{}, false, fmt.Errorf("knowledge library: put requires a store-backed library")
+	}
+	inserted, err := l.store.PutIfAbsent(ctx, entry, operator)
+	if err != nil {
+		return Record{}, false, err
+	}
+	if !inserted {
+		return Record{}, false, nil
+	}
+	record, err := l.store.Get(ctx, entry.ID)
+	if err != nil {
+		return record, true, err
+	}
+	if err := l.Reload(ctx); err != nil {
+		return record, true, err
+	}
+	return record, true, nil
+}
+
 // Store 返回底层策展存储；文件直读模式返回 nil。
 func (l *Library) Store() Store {
 	if l == nil {

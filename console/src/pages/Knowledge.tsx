@@ -26,6 +26,7 @@ import {
   knowledgeStatusColors,
   knowledgeStatusLabels,
   validateKnowledgeConfidence,
+  validateKnowledgeId,
 } from '../api/knowledge';
 import type { KnowledgeEntry, KnowledgeList, KnowledgeStatus, KnowledgeUpdate } from '../api/knowledge';
 
@@ -36,8 +37,10 @@ const { Paragraph, Text } = Typography;
 // 列表交互照 Coze 资源列表：筛选栏 + 服务端分页表格 + 行内编辑入口）。
 // 保存即生效（后端 executeOperatorWrite + 审计），无草稿流（qiuqiu 运营
 // 一两人，直接保存 + 审计即足够，见 proposal Non-goals）。
+// 新建条目走同一抽屉（id 字段仅新建态出现），同 id 已存在由后端 409。
 
 interface KnowledgeFormValues {
+  id?: string;
   topics: string[];
   answer: string;
   source?: string;
@@ -70,10 +73,12 @@ export default function Knowledge() {
   );
 
   const [editing, setEditing] = useState<KnowledgeEntry | null>(null);
+  const [creating, setCreating] = useState(false);
   const [saving, setSaving] = useState(false);
 
   const openEditor = useCallback(
     (entry: KnowledgeEntry) => {
+      setCreating(false);
       setEditing(entry);
       form.setFieldsValue({
         topics: entry.topics,
@@ -86,14 +91,20 @@ export default function Knowledge() {
     [form],
   );
 
+  const openCreator = useCallback(() => {
+    setEditing(null);
+    setCreating(true);
+    form.resetFields();
+  }, [form]);
+
   const closeEditor = useCallback(() => {
     setEditing(null);
+    setCreating(false);
     form.resetFields();
   }, [form]);
 
   const saveEntry = useCallback(
     async (values: KnowledgeFormValues) => {
-      if (!editing) return;
       setSaving(true);
       try {
         const payload: KnowledgeUpdate = {
@@ -103,8 +114,14 @@ export default function Knowledge() {
           confidence: values.confidence,
           effectiveAt: values.effectiveAt.format('YYYY-MM-DD'),
         };
-        await knowledgeApi.update(editing.id, payload);
-        messageApi.success(`已保存并生效：${editing.id}`);
+        if (creating) {
+          const id = (values.id ?? '').trim();
+          await knowledgeApi.create({ id, ...payload });
+          messageApi.success(`已新建并生效：${id}`);
+        } else if (editing) {
+          await knowledgeApi.update(editing.id, payload);
+          messageApi.success(`已保存并生效：${editing.id}`);
+        }
         closeEditor();
         await list.reload();
       } catch (err) {
@@ -113,7 +130,7 @@ export default function Knowledge() {
         setSaving(false);
       }
     },
-    [editing, closeEditor, list, messageApi],
+    [creating, editing, closeEditor, list, messageApi],
   );
 
   const columns: ColumnsType<KnowledgeEntry> = [
@@ -260,6 +277,9 @@ export default function Knowledge() {
           >
             待复查
           </Button>
+          <Button type="primary" onClick={openCreator} data-testid="knowledge-create">
+            新建条目
+          </Button>
         </Space>
         <Table<KnowledgeEntry>
           size="small"
@@ -280,9 +300,9 @@ export default function Knowledge() {
         />
       </Card>
       <Drawer
-        title={editing ? `编辑知识条目 · ${editing.id}` : '编辑知识条目'}
+        title={creating ? '新建知识条目' : editing ? `编辑知识条目 · ${editing.id}` : '编辑知识条目'}
         width={520}
-        open={Boolean(editing)}
+        open={Boolean(editing) || creating}
         onClose={closeEditor}
         destroyOnHidden
         footer={
@@ -290,13 +310,13 @@ export default function Knowledge() {
             <Space style={{ float: 'right' }}>
               <Button onClick={closeEditor}>取消</Button>
               <Button type="primary" loading={saving} onClick={() => form.submit()}>
-                保存并生效
+                {creating ? '新建并生效' : '保存并生效'}
               </Button>
             </Space>
           ) : null
         }
       >
-        {editing ? (
+        {editing || creating ? (
           <>
             {!isDirector ? (
               <Alert
@@ -311,6 +331,22 @@ export default function Knowledge() {
               layout="vertical"
               onFinish={(values) => void saveEntry(values)}
             >
+              {creating ? (
+                <Form.Item
+                  name="id"
+                  label="条目 id"
+                  extra="slug：小写字母、数字和连字符（如 rule-red-card）；与 seed 条目撞 id 会被拒绝"
+                  rules={[
+                    { required: true, message: '请填写条目 id' },
+                    { validator: (_rule, value: string | undefined) => {
+                        const problem = validateKnowledgeId(value);
+                        return problem ? Promise.reject(new Error(problem)) : Promise.resolve();
+                      } },
+                  ]}
+                >
+                  <Input placeholder="如：rule-stoppage" />
+                </Form.Item>
+              ) : null}
               <Form.Item
                 name="topics"
                 label="匹配关键词（topics）"

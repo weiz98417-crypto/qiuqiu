@@ -31,7 +31,7 @@ if (!window.matchMedia) {
 }
 
 const { knowledgeApiMocks, operatorState } = vi.hoisted(() => ({
-  knowledgeApiMocks: { list: vi.fn(), update: vi.fn(), get: vi.fn() },
+  knowledgeApiMocks: { list: vi.fn(), update: vi.fn(), create: vi.fn(), get: vi.fn() },
   operatorState: { operator: null as null | { name: string; scopes: string[] } },
 }));
 
@@ -81,6 +81,7 @@ beforeEach(() => {
   operatorState.operator = { name: '阿琴', scopes: ['operator:match:write'] };
   knowledgeApiMocks.list.mockResolvedValue(listPayload([]));
   knowledgeApiMocks.update.mockResolvedValue({ entry: entry({}) });
+  knowledgeApiMocks.create.mockResolvedValue({ entry: entry({ id: 'rule-stoppage' }) });
 });
 
 afterEach(() => {
@@ -212,5 +213,90 @@ describe('Knowledge 策展台', () => {
     fireEvent.click(screen.getByText('编辑'));
     await waitFor(() => expect(screen.getByText('审计角色只读，不能保存修改')).toBeInTheDocument());
     expect(screen.queryByRole('button', { name: '保存并生效' })).not.toBeInTheDocument();
+  });
+
+  it('新建条目：非法 id 被 slug 校验拦在客户端，不发请求', async () => {
+    renderPage();
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('knowledge-create'));
+    await waitFor(() => expect(screen.getByText('新建知识条目')).toBeInTheDocument());
+    fireEvent.change(screen.getByPlaceholderText('如：rule-stoppage'), {
+      target: { value: 'Rule_Offside' },
+    });
+    fireEvent.click(screen.getByRole('button', { name: '新建并生效' }));
+    await waitFor(() =>
+      expect(screen.getByText('id 只能是小写字母、数字和连字符（2-64 字符）')).toBeInTheDocument(),
+    );
+    expect(knowledgeApiMocks.create).not.toHaveBeenCalled();
+  });
+
+  it('新建条目：合法提交按契约形状 POST（id + 去空白字段）并刷新列表', async () => {
+    renderPage();
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('knowledge-create'));
+    await waitFor(() => expect(screen.getByPlaceholderText('如：rule-stoppage')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText('如：rule-stoppage'), {
+      target: { value: ' rule-stoppage ' },
+    });
+    // topics：tags 模式的搜索输入（placeholder 不是 input 属性,按类名查）,
+    // 逗号触发 tokenSeparators 成签。
+    const searchInput = document.body.querySelector(
+      '.ant-drawer-body input.ant-select-input',
+    ) as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: '补时,' } });
+    fireEvent.change(document.body.querySelector('textarea')!, {
+      target: { value: '  新条目答案。  ' },
+    });
+    fireEvent.change(screen.getByPlaceholderText(/IFAB/), { target: { value: 'IFAB Law 7' } });
+    const confidenceInput = document.body.querySelector('input[role="spinbutton"]') as HTMLInputElement;
+    fireEvent.change(confidenceInput, { target: { value: '0.9' } });
+    fireEvent.blur(confidenceInput);
+    // 测试环境无 ConfigProvider，antd 默认英文 locale，DatePicker placeholder 是 en 口径。
+    const dateInput = screen.getByPlaceholderText('Select date');
+    fireEvent.change(dateInput, { target: { value: '2026-08-01' } });
+    fireEvent.keyDown(dateInput, { key: 'Enter', keyCode: 13, which: 13 });
+
+    fireEvent.click(screen.getByRole('button', { name: '新建并生效' }));
+    await waitFor(() => expect(knowledgeApiMocks.create).toHaveBeenCalled());
+    expect(knowledgeApiMocks.create).toHaveBeenCalledWith(
+      expect.objectContaining({
+        id: 'rule-stoppage',
+        answer: '新条目答案。',
+        topics: ['补时'],
+        source: 'IFAB Law 7',
+        confidence: 0.9,
+        effectiveAt: '2026-08-01',
+      }),
+    );
+    // 新建成功后列表重取。
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('新建条目：同 id 撞车时把 409 的服务端错误透出', async () => {
+    knowledgeApiMocks.create.mockRejectedValue(new Error('knowledge entry id already exists'));
+    renderPage();
+    await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalled());
+    fireEvent.click(screen.getByTestId('knowledge-create'));
+    await waitFor(() => expect(screen.getByPlaceholderText('如：rule-stoppage')).toBeInTheDocument());
+
+    fireEvent.change(screen.getByPlaceholderText('如：rule-stoppage'), {
+      target: { value: 'rule-stoppage' },
+    });
+    const searchInput = document.body.querySelector(
+      '.ant-drawer-body input.ant-select-input',
+    ) as HTMLInputElement;
+    fireEvent.change(searchInput, { target: { value: '补时,' } });
+    fireEvent.change(document.body.querySelector('textarea')!, { target: { value: '答案。' } });
+    const confidenceInput = document.body.querySelector('input[role="spinbutton"]') as HTMLInputElement;
+    fireEvent.change(confidenceInput, { target: { value: '0.9' } });
+    fireEvent.blur(confidenceInput);
+    const dateInput = screen.getByPlaceholderText('Select date');
+    fireEvent.change(dateInput, { target: { value: '2026-08-01' } });
+    fireEvent.keyDown(dateInput, { key: 'Enter', keyCode: 13, which: 13 });
+    fireEvent.click(screen.getByRole('button', { name: '新建并生效' }));
+    await waitFor(() =>
+      expect(screen.getAllByText('knowledge entry id already exists').length).toBeGreaterThan(0),
+    );
   });
 });
