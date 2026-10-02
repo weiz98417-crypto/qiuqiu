@@ -228,14 +228,9 @@ func (c *watchConnection) attachVoiceStages(traceID, signalID string, anchor tim
 		if audio.SynthesisMS > 0 {
 			patch.Stages[companion.VoiceStageTTSSynthesized] = audio.SynthesisMS
 		}
-		// 首段音频锚点（voice-streaming-delivery 3.6）：句粒度路径下
-		// tts_first_audio = turn_decided 耗时 + 首帧相对 Deliver 进入的
-		// 毫秒；五段锚点自此变六段。
-		if audio.FirstAudioMS > 0 {
-			if turnDecidedElapsed, ok := c.voiceStages.takeTurnDecided(signalID); ok {
-				patch.Stages[companion.VoiceStageTTSFirstAudio] = turnDecidedElapsed + audio.FirstAudioMS
-			}
-		}
+		// tts_first_audio 锚点随句粒度投递降级休眠（2026-10-01 盲测裁决回
+		// 整段）：整段路径无首帧概念，turn_decided 耗时缓冲照记不取，锚点
+		// 常量与 Grafana 规则①b保留——未来合成路径复活时零成本重接。
 		patch.TTSMeta = &companion.VoiceTraceMetadata{
 			TTSStatus:    "ok",
 			TTSMime:      audio.TTSMime,

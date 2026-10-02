@@ -12,6 +12,10 @@
 
 波B,**依赖波A trace-genai-alignment 先落**(已满足)。完成后真机预采数据同时服务 Phase B 判据。与 live2d-engine-swap 在 client 侧交叉(live2d_view.dart)——本轮③未动 live2d_view,交叉未发生。
 
+## 最终裁决(2026-10-01):句粒度降级回整段
+
+韵律盲测(10 对双盲,用户亲测)逐句版 80% 被嫌弃(判据线 30%),返工一轮(全文长度基准+延续感指令)后按用户裁决**直接降级回整段合成**——整段的全文韵律上下文不可替代。延迟代价(首响实测 3-7s)如实接受。SynthesizeResponseStream/deliverStreaming/truncated/sentenceIndex wire 从生产路径拆除;流式合成与句聚合器作为已测库保留;真机预采与 Phase B 判据随之冻结(见 ADR-0023 消费先于产能)。
+
 ## CEO 审查外部声音增量(2026-09-30)
 
 - 句间韵律连续性未评估:各句独立合成+独立 instruction,句界可能有韵律断裂——真机预采时加**韵律盲测**(整段 vs 句粒度 A/B,人耳判自然度);N 句 N 次 HTTP 的计费面在 MiMo 结束限时免费后复估。

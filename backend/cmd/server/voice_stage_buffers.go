@@ -83,8 +83,9 @@ func (b *voiceStageBuffers) take(signalID string) (int, bool, *companion.VoiceTu
 	return asr, hasAsr, verdict
 }
 
-// recordTurnDecided 记 turn_decided 锚点耗时（audio 半算 tts_first_audio
-// 的基准段；容量纪律与 asr 同）。
+// recordTurnDecided 记 turn_decided 锚点耗时。取用方（tts_first_audio 合成）
+// 随句粒度投递降级休眠（2026-10-01 盲测裁决回整段）；缓冲照记，未来合成
+// 路径复活时零成本重接。
 func (b *voiceStageBuffers) recordTurnDecided(signalID string, elapsedMS int) {
 	if signalID == "" || elapsedMS < 0 {
 		return
@@ -95,13 +96,4 @@ func (b *voiceStageBuffers) recordTurnDecided(signalID string, elapsedMS int) {
 		b.turnDecided = make(map[string]int)
 	}
 	b.turnDecided[signalID] = elapsedMS
-}
-
-// takeTurnDecided 取走 turn_decided 耗时。
-func (b *voiceStageBuffers) takeTurnDecided(signalID string) (int, bool) {
-	b.mu.Lock()
-	defer b.mu.Unlock()
-	elapsed, ok := b.turnDecided[signalID]
-	delete(b.turnDecided, signalID)
-	return elapsed, ok
 }

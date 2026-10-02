@@ -2,15 +2,11 @@ package main
 
 import (
 	"context"
-	"encoding/binary"
-	"strings"
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/conversation"
 	"qiuqiu/internal/interaction"
 	"qiuqiu/internal/relationship"
-	"qiuqiu/internal/speech"
-	"qiuqiu/internal/tts"
 )
 
 type websocketResponseSink struct{ writer *wsWriter }
@@ -39,16 +35,6 @@ func (sink websocketResponseSink) DeliverAudio(_ context.Context, delivery conve
 		"eventId":     delivery.EventID,
 		"deliveryKey": delivery.DeliveryKey,
 		"source":      delivery.Source,
-	}
-	// 句粒度路径（voice-streaming-delivery 3.4）：句序号随帧；整段路径
-	// 恒 0，wire 层省略（老客户端零感知，FIFO 配对按到达序不受影响）。
-	// sentenceCount 随帧下发（外部声音 #9：流结束可感知，客户端可据
-	// index==count-1 判终；0/缺省=整段路径）。
-	if delivery.SentenceIndex > 0 {
-		message["sentenceIndex"] = delivery.SentenceIndex
-	}
-	if delivery.SentenceCount > 0 {
-		message["sentenceCount"] = delivery.SentenceCount
 	}
 	return sink.writer.SendAudio(message, delivery.Data)
 }
@@ -92,48 +78,13 @@ func (sink *collectingResponseSink) DeliverStatus(_ context.Context, status conv
 	return nil
 }
 
-// Audio 把收集的帧合并为 HTTP 响应的单段音频：同构 canonical WAV（本包
-// WAVFromPCM16 的 44 字节头）剥头拼 PCM 重封装；混入完整产物分片（mock
-// 回放/降级回退）时无法安全拼容器——如实回退首帧（有损降级；旧实现回末帧，
-// 同为有损，首帧保底更可预期）。
+// Audio 返回收集的音频帧。句粒度投递降级回整段后（2026-10-01 盲测裁决）
+// 恒为单帧；多帧合并逻辑随 deliverStreaming 删除（git 历史可查）。
 func (sink *collectingResponseSink) Audio() conversation.AudioDelivery {
 	if len(sink.frames) == 0 {
 		return conversation.AudioDelivery{}
 	}
-	first := sink.frames[0]
-	if len(sink.frames) == 1 {
-		return first
-	}
-	pcm := make([]byte, 0, len(first.Data)*len(sink.frames))
-	for _, frame := range sink.frames {
-		if frame.MIME != first.MIME || !isCanonicalWAV(frame.Data) {
-			return first
-		}
-		pcm = append(pcm, frame.Data[44:]...)
-	}
-	return conversation.AudioDelivery{
-		Data: tts.WAVFromPCM16(pcm, tts.PCMStreamSampleRate), MIME: first.MIME,
-		TraceID: first.TraceID, Source: first.Source, EventID: first.EventID, DeliveryKey: first.DeliveryKey,
-	}
-}
-
-// isCanonicalWAV 判定本包 WAVFromPCM16 的 44 字节规范头(RIFF/WAVE/fmt ,
-// fmt 块定长 16、线性 PCM、单声道、24kHz、16 位、fmt 之后紧跟 data 块),
-// 合帧剥头才安全——非规范头的 WAV 完整产物走首帧回退。只看前 16 字节
-// 不够:fmt 与 data 之间夹了 LIST/INFO 等额外块的合法 WAV(供应商完整
-// 产物的真实形态)头 16 字节无异,剥 data[44:] 会把块字节当 PCM 拼进
-// 合并产物(音频腐蚀)。
-func isCanonicalWAV(data []byte) bool {
-	return len(data) > 44 &&
-		string(data[0:4]) == "RIFF" &&
-		string(data[8:12]) == "WAVE" &&
-		string(data[12:16]) == "fmt " &&
-		binary.LittleEndian.Uint32(data[16:20]) == 16 && // fmt 块定长 16（无扩展区）
-		binary.LittleEndian.Uint16(data[20:22]) == 1 && // 线性 PCM
-		binary.LittleEndian.Uint16(data[22:24]) == 1 && // 单声道
-		binary.LittleEndian.Uint32(data[24:28]) == tts.PCMStreamSampleRate && // 24kHz
-		binary.LittleEndian.Uint16(data[34:36]) == 16 && // 16 位
-		string(data[36:40]) == "data" // fmt 之后紧跟 data（排除夹块）
+	return sink.frames[0]
 }
 
 // mediaDeliveryRecorder 把投递服务的媒体记账事件落到互动账本（两条装配线
@@ -157,76 +108,6 @@ func (adapter responseSpeechSynthesizer) SynthesizeResponse(ctx context.Context,
 		return conversation.SynthesizedAudio{}, err
 	}
 	return conversation.SynthesizedAudio{Data: result.AudioData, MIME: result.MimeType}, nil
-}
-
-// SynthesizeResponseStream 实现句粒度可选能力接口（voice-streaming-delivery
-// 3.4）：整段 realizer 文本经句聚合器切句，逐句合成——synthesizer 支持
-// tts.StreamingSynthesizer 时走流式分片（pcm16 聚合成整句 WAV），否则回
-// 退整段合成单句。一句一帧、帧帧完整可播；ctx 取消即中止（打断语义，
-// 剩余句不再合成）。
-func (adapter responseSpeechSynthesizer) SynthesizeResponseStream(ctx context.Context, text string, presentation relationship.PresentationPlan, acts []relationship.CommunicationAct, onChunk func(conversation.StreamedSentence) error) error {
-	aggregator := speech.NewAggregator()
-	sentences := aggregator.Feed(text)
-	if tail := aggregator.Flush(); tail != "" {
-		sentences = append(sentences, tail)
-	}
-	if len(sentences) == 0 {
-		return nil
-	}
-	streamer, _ := adapter.synthesizer.(tts.StreamingSynthesizer)
-	for index, sentence := range sentences {
-		opts := tts.VoiceOpts{Instruction: mimoPerformanceInstruction(presentation, acts, len([]rune(sentence)))}
-		data, mime, err := adapter.synthesizeSentence(ctx, sentence, streamer, opts)
-		if err != nil {
-			return err
-		}
-		if len(data) == 0 {
-			continue
-		}
-		if err := onChunk(conversation.StreamedSentence{
-			Data: data, MIME: mime, SentenceIndex: index, SentenceCount: len(sentences),
-			Final: index == len(sentences)-1,
-		}); err != nil {
-			return err
-		}
-	}
-	return nil
-}
-
-func (adapter responseSpeechSynthesizer) synthesizeSentence(ctx context.Context, sentence string, streamer tts.StreamingSynthesizer, opts tts.VoiceOpts) ([]byte, string, error) {
-	if streamer == nil {
-		result, err := adapter.synthesizer.Synthesize(ctx, sentence, opts)
-		if err != nil {
-			return nil, "", err
-		}
-		return result.AudioData, result.MimeType, nil
-	}
-	var pcm []byte
-	passthrough := []byte(nil)
-	passthroughMIME := ""
-	err := streamer.SynthesizeStreamDetailed(ctx, sentence, opts, func(chunk tts.StreamChunk) error {
-		if chunk.Degraded {
-			// REPLACE 契约：回退分片是完整产物，丢弃此前残缺前缀。
-			passthrough = chunk.Data
-			passthroughMIME = chunk.MimeType
-			return nil
-		}
-		if !strings.HasPrefix(chunk.MimeType, "audio/pcm") {
-			// 完整产物分片（如 mock 回放 mp3）：直通，不二次封装。
-			passthrough = chunk.Data
-			passthroughMIME = chunk.MimeType
-			return nil
-		}
-		pcm = append(pcm, chunk.Data...)
-		return nil
-	})
-	if err != nil {
-		return nil, "", err
-	}
-	if passthrough != nil {
-		return passthrough, passthroughMIME, nil
-	}
-	return tts.WAVFromPCM16(pcm, tts.PCMStreamSampleRate), "audio/wav", nil
 }
 
 func newResponseDeliveryService(writer *wsWriter, agent *companion.Agent, synthesizer speechSynthesizer, tracker *replyDeliveryTracker) *conversation.ResponseDeliveryService {
