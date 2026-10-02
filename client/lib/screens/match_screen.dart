@@ -1097,6 +1097,13 @@ class _MatchScreenState extends State<MatchScreen> {
     if (shouldClearTextInput(sent)) _textController.clear();
   }
 
+  /// 话痨档位即时通道（settings_screen onTalkativenessChanged）：走
+  /// set_talkativeness 即时就地生效并由后端持久化 + ack；断线时 send
+  /// 静默 false，下一条 user_speech 仍内联携带兜底。
+  void _sendTalkativeness(String tier) {
+    _socket.send({'type': 'set_talkativeness', 'talkativeness': tier});
+  }
+
   Future<void> _openSettings() async {
     final saved = await Navigator.push<UserProfile>(
       context,
@@ -1104,6 +1111,7 @@ class _MatchScreenState extends State<MatchScreen> {
         builder: (_) => SettingsScreen(
           initialProfile: _profile,
           onSave: _preferences.save,
+          onTalkativenessChanged: _sendTalkativeness,
           onOpenPortrait: _deviceId.isEmpty ? null : _openPortrait,
           sessions: _sessions,
           baseUrl: normalizeAPIBaseURL(_socketUrl()),
