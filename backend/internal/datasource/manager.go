@@ -3,8 +3,8 @@ package datasource
 import (
 	"context"
 	"errors"
-	"log"
 	"fmt"
+	"log"
 	"sort"
 	"strconv"
 	"strings"
@@ -57,6 +57,9 @@ type ManagerConfig struct {
 	// AutoConfirmWindow 是稳定窗(ADR-0024):>0 启用信任分级自动确认,
 	// <=0 禁用(生产建议 30s)。
 	AutoConfirmWindow time.Duration
+	// EspnPollInterval 是 ESPN 快照轮询节拍:<=0 用生产默认 5s(ESPN 无 SLA,
+	// 不快于 5s);测试注入小值。
+	EspnPollInterval time.Duration
 }
 
 type SourceConfig struct {
@@ -64,6 +67,9 @@ type SourceConfig struct {
 	FixtureID     int        `json:"fixtureId,omitempty"`
 	ImportHistory bool       `json:"importHistory,omitempty"`
 	ExpectedDelay string     `json:"expectedDelay,omitempty"`
+	// ESPN 快照源(auto-hosting 2.4):联赛 slug + ESPN event ID。
+	League      string `json:"league,omitempty"`
+	EspnEventID string `json:"espnEventId,omitempty"`
 }
 
 type SourceStatus struct {
@@ -100,6 +106,7 @@ type Manager struct {
 	cancel      context.CancelFunc
 	store       matchstate.Repository
 	client      EventsClient
+	espnClient  EspnClient
 	config      ManagerConfig
 	controlMu   sync.Mutex
 	mu          sync.RWMutex
@@ -120,6 +127,12 @@ type sourceRun struct {
 type latencySample struct {
 	at      time.Time
 	latency time.Duration
+}
+
+// WithEspnClient 装配 ESPN 快照源客户端(nil 即 ESPN 源 unconfigured)。
+func (m *Manager) WithEspnClient(client EspnClient) *Manager {
+	m.espnClient = client
+	return m
 }
 
 func NewManager(parent context.Context, store matchstate.Repository, client EventsClient, config ManagerConfig) *Manager {
@@ -160,6 +173,10 @@ func (m *Manager) Status(matchID string) MatchSourceStatus {
 	if m.client == nil {
 		apiState = StateUnconfigured
 	}
+	espnState := StateStandby
+	if m.espnClient == nil {
+		espnState = StateUnconfigured
+	}
 	status := MatchSourceStatus{
 		MatchID:      matchID,
 		ActiveSource: active,
@@ -167,6 +184,7 @@ func (m *Manager) Status(matchID string) MatchSourceStatus {
 			SourceManual:    {Type: SourceManual, State: StateReady, Freshness: FreshnessUnknown, UserMayLead: true, ExpectedDelay: defaultExpectedDelay(manualDelay)},
 			SourceReplay:    {Type: SourceReplay, State: StateReady, Freshness: FreshnessUnknown, UserMayLead: true},
 			SourceAPISports: {Type: SourceAPISports, State: apiState, Freshness: FreshnessOffline, UserMayLead: true},
+			SourceESPN:      {Type: SourceESPN, State: espnState, Freshness: FreshnessOffline, UserMayLead: true},
 		},
 	}
 	m.mu.RLock()
@@ -215,7 +233,7 @@ func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus,
 	if config.Type == "" {
 		config.Type = SourceManual
 	}
-	if config.Type != SourceManual && config.Type != SourceReplay && config.Type != SourceAPISports {
+	if config.Type != SourceManual && config.Type != SourceReplay && config.Type != SourceAPISports && config.Type != SourceESPN {
 		return MatchSourceStatus{}, fmt.Errorf("unsupported source %q", config.Type)
 	}
 
@@ -225,6 +243,14 @@ func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus,
 		}
 		if config.FixtureID <= 0 {
 			return MatchSourceStatus{}, fmt.Errorf("fixtureId is required for api-sports")
+		}
+	}
+	if config.Type == SourceESPN {
+		if m.espnClient == nil {
+			return MatchSourceStatus{}, fmt.Errorf("espn is not configured")
+		}
+		if strings.TrimSpace(config.League) == "" || strings.TrimSpace(config.EspnEventID) == "" {
+			return MatchSourceStatus{}, fmt.Errorf("league and espnEventId are required for espn source")
 		}
 	}
 	sourceKey := strconv.Itoa(config.FixtureID)
@@ -255,19 +281,43 @@ func (m *Manager) Start(matchID string, config SourceConfig) (MatchSourceStatus,
 		m.mu.Unlock()
 		return m.Status(matchID), nil
 	}
+	sourceType := config.Type
 	runCtx, runCancel := context.WithCancel(m.ctx)
 	run := &sourceRun{
 		cancel: runCancel,
 		status: SourceStatus{
-			Type:      SourceAPISports,
+			Type:      sourceType,
 			State:     StateRunning,
 			FixtureID: config.FixtureID,
 			StartedAt: time.Now().UTC().Format(time.RFC3339Nano),
 		},
 	}
 	m.runs[matchID] = run
-	m.active[matchID] = SourceAPISports
+	m.active[matchID] = sourceType
 	m.mu.Unlock()
+
+	if config.Type == SourceESPN {
+		interval := m.config.EspnPollInterval
+		if interval <= 0 {
+			interval = 5 * time.Second // ESPN 无 SLA:生产默认不快于 5s
+		}
+		espnRunInstance := &espnRun{
+			manager:  m,
+			matchID:  matchID,
+			league:   config.League,
+			eventID:  config.EspnEventID,
+			interval: interval,
+			seen:     make(map[string]bool),
+		}
+		m.wg.Add(1)
+		run.wait.Add(1)
+		go func() {
+			defer m.wg.Done()
+			defer run.wait.Done()
+			espnRunInstance.loop(runCtx)
+		}()
+		return m.Status(matchID), nil
+	}
 
 	events := make(chan PollDelivery, 32)
 	reports := make(chan PollReport, 8)

@@ -315,9 +315,12 @@ func main() {
 	if cfg.APISportsAPIKey != "" {
 		sportsClient = datasource.NewClient(cfg.APISportsAPIKey).WithBaseURL(cfg.APISportsBaseURL)
 	}
+	// ESPN 快照源(auto-hosting 2.4):免费无 key,恒装配(健康状态显形,
+	// /sources/start 按需启用;非官方无 SLA,api-sports 为备用源)。
+	espnClient := datasource.NewEspnClient()
 	// 稳定窗自动确认(auto-hosting,ADR-0024):默认 30s,0=禁用。
 	autoConfirmWindow := time.Duration(cfg.AutoConfirmWindowSeconds) * time.Second
-	sourceManager := datasource.NewManager(context.Background(), matchStore, sportsClient, datasource.ManagerConfig{AutoConfirmWindow: autoConfirmWindow})
+	sourceManager := datasource.NewManager(context.Background(), matchStore, sportsClient, datasource.ManagerConfig{AutoConfirmWindow: autoConfirmWindow}).WithEspnClient(espnClient)
 	defer sourceManager.Close()
 	companionTools := companion.NewRepositoryMemoryTools(matchStore)
 	var traceReader companion.TraceReader = companionTools
