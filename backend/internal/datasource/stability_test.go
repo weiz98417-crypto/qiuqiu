@@ -19,7 +19,7 @@ func newStabilityManager(t *testing.T, matchID string, phases [][]Event) (*Manag
 	client := &gatedEventsClient{phases: phases}
 	// 窗口 30s 由 sweep 的显式 now 推进;goroutine 节拍器关掉(窗口>0 会起),
 	// 测试直接调 sweepStabilityConfirmations 控制时钟。
-	manager := NewManager(context.Background(), store, client, ManagerConfig{PollInterval: 5 * time.Millisecond, AutoConfirmWindow: 30 * time.Second})
+	manager := NewManager(context.Background(), store, client, ManagerConfig{PollInterval: 5 * time.Millisecond, AutoConfirmWindow: 50 * time.Millisecond})
 	t.Cleanup(manager.Close)
 	if _, err := manager.Start(matchID, SourceConfig{Type: SourceAPISports, FixtureID: 42, ImportHistory: true}); err != nil {
 		t.Fatalf("start: %v", err)
@@ -64,25 +64,31 @@ func TestStabilityWindowVetoesOnUpstreamDrift(t *testing.T) {
 	})
 	goal := waitForFact(t, store, "match-drift", "goal", 3*time.Second)
 
-	// t+0 首见;漂移在 t+1s 到达;窗 30s 自首见起算本应 t+31s 满——但漂移重置窗口。
-	base := time.Now()
-	manager.sweepStabilityConfirmations(base)
+	// 首见;漂移后窗口重置(序号制:标记序号落后于本场漂移序号即重置)。
+	manager.sweepStabilityConfirmations(time.Now())
 	client.advance()
 	driftDeadline := time.Now().Add(3 * time.Second)
 	for manager.stabilityDriftCount("match-drift") == 0 && time.Now().Before(driftDeadline) {
-		time.Sleep(10 * time.Millisecond)
+		time.Sleep(5 * time.Millisecond)
 	}
 	if manager.stabilityDriftCount("match-drift") == 0 {
 		t.Fatalf("drift not registered")
 	}
-	manager.sweepStabilityConfirmations(base.Add(35 * time.Second))
-	if got := factStatus(t, store, "match-drift", goal.FactID); got != matchstate.FactStatusProvisional {
-		t.Fatalf("post-drift status = %q, want provisional (drift must veto/reset)", got)
+
+	// 重置后:首 sweep 落重置(标记序号→本场最新漂移序号),再等窗满(50ms)
+	// 一次 sweep 确认——veto 失灵(未重置)的话这一步在 60ms 时早已确认过,
+	// 所以先用窗状态序号断言重置真的发生了。
+	manager.sweepStabilityConfirmations(time.Now())
+	if seq := manager.stabilityMarkDriftSeq("match-drift", goal.FactID); seq != 1 {
+		t.Fatalf("window mark driftSeq = %d, want 1 (reset to latest drift)", seq)
 	}
-	// 重置后窗满才确认。
-	manager.sweepStabilityConfirmations(time.Now().Add(31 * time.Second))
+	time.Sleep(60 * time.Millisecond)
+	manager.sweepStabilityConfirmations(time.Now())
 	if got := factStatus(t, store, "match-drift", goal.FactID); got != matchstate.FactStatusConfirmed {
-		t.Fatalf("post-reset-window status = %q, want confirmed", got)
+		t.Fatalf("post-reset status = %q, want confirmed", got)
+	}
+	if seq := manager.stabilityMarkDriftSeq("match-drift", goal.FactID); seq != -1 {
+		t.Fatalf("confirmed fact should have no window mark, seq=%d", seq)
 	}
 }
 

@@ -29,26 +29,31 @@ const autoConfirmOperatorID = "auto:stability"
 
 const stabilitySweepInterval = 5 * time.Second
 
+type stabilityMark struct {
+	at       time.Time
+	driftSeq int64
+}
+
 type stabilityWindowState struct {
 	mu        sync.Mutex
-	firstSeen map[string]time.Time
+	firstSeen map[string]stabilityMark
 }
 
 func newStabilityWindowState() *stabilityWindowState {
-	return &stabilityWindowState{firstSeen: make(map[string]time.Time)}
+	return &stabilityWindowState{firstSeen: make(map[string]stabilityMark)}
 }
 
-func (w *stabilityWindowState) firstSeenAt(key string) (time.Time, bool) {
+func (w *stabilityWindowState) markAt(key string) (stabilityMark, bool) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	at, ok := w.firstSeen[key]
-	return at, ok
+	mark, ok := w.firstSeen[key]
+	return mark, ok
 }
 
-func (w *stabilityWindowState) mark(key string, at time.Time) {
+func (w *stabilityWindowState) mark(key string, at time.Time, driftSeq int64) {
 	w.mu.Lock()
 	defer w.mu.Unlock()
-	w.firstSeen[key] = at
+	w.firstSeen[key] = stabilityMark{at: at, driftSeq: driftSeq}
 }
 
 func (w *stabilityWindowState) forget(key string) {
@@ -93,15 +98,13 @@ func (m *Manager) sweepStabilityConfirmations(now time.Time) {
 func (m *Manager) sweepMatchStability(matchID string, now time.Time) {
 	// 漂移否决(coarse):本场最近一次上游漂移晚于窗起点即重置——一次 diff
 	// 信号否决全场待确认窗,窗口重新积累。漂移罕见,粗粒度够用且安全。
-	var lastDrift time.Time
-	drifted := false
+	// 漂移否决(ADR-0024,序号制):本场漂移序号与窗口标记时记录的序号不一致
+	// 即重置窗口——无时钟比较,Windows 粒度下不失真。粗粒度:任一漂移重置全场。
+	var lastDriftSeq int64
 	m.mu.RLock()
 	run := m.runs[matchID]
-	if run != nil && run.status.LastDriftAt != "" {
-		if parsed, err := time.Parse(time.RFC3339Nano, run.status.LastDriftAt); err == nil {
-			lastDrift = parsed
-			drifted = true
-		}
+	if run != nil {
+		lastDriftSeq = run.driftSeq
 	}
 	m.mu.RUnlock()
 
@@ -129,19 +132,20 @@ func (m *Manager) sweepMatchStability(matchID string, now time.Time) {
 			continue
 		}
 		touched[key] = true
-		first, seen := m.stability.firstSeenAt(key)
+		mark, seen := m.stability.markAt(key)
 		if !seen {
-			m.stability.mark(key, now)
+			m.stability.mark(key, now, lastDriftSeq)
 			continue
 		}
-		if drifted && lastDrift.After(first) {
-			m.stability.mark(key, lastDrift)
+		if mark.driftSeq != lastDriftSeq {
+			// 窗口标记于上一次漂移之前:重置(漂移晚于标记=上游变过,不可信)
+			m.stability.mark(key, now, lastDriftSeq)
 			continue
 		}
 		if openConflicts[ev.FactID] {
 			continue
 		}
-		if now.Sub(first) < window {
+		if now.Sub(mark.at) < window {
 			continue
 		}
 		if _, _, err := m.store.ConfirmFact(matchID, ev.FactID, autoConfirmOperatorID); err != nil {
@@ -151,7 +155,7 @@ func (m *Manager) sweepMatchStability(matchID string, now time.Time) {
 		}
 		m.stability.forget(key)
 		log.Printf("stability confirm: match=%q fact=%q type=%q confirmed after %v",
-			matchID, ev.FactID, ev.EventType, now.Sub(first).Round(time.Second))
+			matchID, ev.FactID, ev.EventType, now.Sub(mark.at).Round(time.Second))
 	}
 	m.stability.forgetMatch(matchID, touched)
 }
@@ -195,4 +199,16 @@ func (m *Manager) runStabilitySweeper(ctx context.Context) {
 			m.sweepStabilityConfirmations(time.Now().UTC())
 		}
 	}
+}
+
+// stabilityMarkDriftSeq 是测试/观测助手:返回事实窗口标记时的漂移序号
+// (无标记返回 -1;已确认事实的窗标记会被 forget,返回 -1)。
+func (m *Manager) stabilityMarkDriftSeq(matchID, factID string) int64 {
+	m.stability.mu.Lock()
+	defer m.stability.mu.Unlock()
+	mark, ok := m.stability.firstSeen[stabilityWindowKey(matchID, factID)]
+	if !ok {
+		return -1
+	}
+	return mark.driftSeq
 }

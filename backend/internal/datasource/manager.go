@@ -122,6 +122,12 @@ type sourceRun struct {
 	status    SourceStatus
 	latencies []latencySample
 	wait      sync.WaitGroup
+	// lastDriftAtTime 保留漂移时间的单调钟形态(veto 比较用):wire 的
+	// LastDriftAt 字符串经 RFC3339 往返丢单调读数,Windows 时钟粒度下与窗
+	// 起点同刻度时 After() 会误判。
+	lastDriftAtTime time.Time
+	// driftSeq 是本场漂移的递增序号(stability 窗口否决的比较基准,无时钟)。
+	driftSeq int64
 }
 
 type latencySample struct {
@@ -556,7 +562,10 @@ func (m *Manager) recordSourceDrift(matchID string, kind PollKind, standardEvent
 	} else {
 		run.status.Drifts++
 	}
-	run.status.LastDriftAt = time.Now().UTC().Format(time.RFC3339Nano)
+	driftAt := time.Now()
+	run.lastDriftAtTime = driftAt
+	run.driftSeq++
+	run.status.LastDriftAt = driftAt.UTC().Format(time.RFC3339Nano)
 	run.status.LastDriftDetail = fmt.Sprintf("%s %d' %s %s", standardEvent.Type, standardEvent.Minute, standardEvent.Player.Name, standardEvent.Detail)
 }
 
