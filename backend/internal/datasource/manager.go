@@ -3,6 +3,7 @@ package datasource
 import (
 	"context"
 	"errors"
+	"log"
 	"fmt"
 	"sort"
 	"strconv"
@@ -77,6 +78,12 @@ type SourceStatus struct {
 	FreshnessThresholdMS int64       `json:"freshnessThresholdMs,omitempty"`
 	UserMayLead          bool        `json:"userMayLead"`
 	ExpectedDelay        string      `json:"expectedDelay,omitempty"`
+	// 上游漂移计数(auto-hosting 2.1):changed/retracted 投递不产事实,
+	// 只在此显形——运营台可见,稳定窗确认(ADR-0024)以此为否决信号。
+	Drifts          int    `json:"drifts,omitempty"`
+	Retractions     int    `json:"retractions,omitempty"`
+	LastDriftAt     string `json:"lastDriftAt,omitempty"`
+	LastDriftDetail string `json:"lastDriftDetail,omitempty"`
 }
 
 type MatchSourceStatus struct {
@@ -321,6 +328,13 @@ func (m *Manager) consumeAPISports(ctx context.Context, matchID string, fixtureI
 				delivery.Acknowledge(false)
 				continue
 			}
+			if delivery.Kind != PollEventKind {
+				// 上游漂移(auto-hosting 2.1):消失/内容变化不产事实——登记
+				// 计数与描述供稳定窗否决与运营关注,确认投递不阻塞 poller。
+				m.recordSourceDrift(matchID, delivery.Kind, standardEvent)
+				delivery.Acknowledge(true)
+				continue
+			}
 			matchEvent := apiSportsMatchEvent(matchID, fixtureID, standardEvent, m.store.Snapshot(matchID))
 			_, _, err := m.Ingest(ctx, matchID, matchEvent)
 			persisted := err == nil || errors.Is(err, matchstate.ErrDuplicate) || errors.Is(err, matchstate.ErrConflict)
@@ -444,6 +458,29 @@ func (m *Manager) updateSourceError(matchID string, err error) {
 	}
 }
 
+// recordSourceDrift 登记上游漂移(auto-hosting 2.1):正文只进日志,状态面
+// 只留计数与最近一条描述——与 duplex_event 同纪律。
+func (m *Manager) recordSourceDrift(matchID string, kind PollKind, standardEvent *event.StandardEvent) {
+	if standardEvent == nil {
+		return
+	}
+	log.Printf("datasource drift: match=%q kind=%q type=%q minute=%d player=%q detail=%q",
+		matchID, kind, standardEvent.Type, standardEvent.Minute, standardEvent.Player.Name, standardEvent.Detail)
+	m.mu.Lock()
+	defer m.mu.Unlock()
+	run := m.runs[matchID]
+	if run == nil {
+		return
+	}
+	if kind == PollRetractedKind {
+		run.status.Retractions++
+	} else {
+		run.status.Drifts++
+	}
+	run.status.LastDriftAt = time.Now().UTC().Format(time.RFC3339Nano)
+	run.status.LastDriftDetail = fmt.Sprintf("%s %d' %s %s", standardEvent.Type, standardEvent.Minute, standardEvent.Player.Name, standardEvent.Detail)
+}
+
 func apiSportsMatchEvent(matchID string, fixtureID int, source *event.StandardEvent, snapshot matchstate.Snapshot) matchstate.MatchEvent {
 	eventType := source.Type
 	switch eventType {
@@ -475,6 +512,34 @@ func apiSportsMatchEvent(matchID string, fixtureID int, source *event.StandardEv
 	if description == "" {
 		description = eventType
 	}
+	// VAR 结论类事件必须引用一条已确认事实(auto-hosting 2.1;matchstate
+	// validateEventRelations 硬约束):goal_cancelled 引用同队最近已确认进球,
+	// var_result 同理。找不到引用则降级 var_check 留运营——取消语境保留在
+	// 描述里,绝不产一条无引用的 correction(会被账本拒绝)。
+	revisionOf := ""
+	if eventType == "goal_cancelled" || eventType == "var_result" {
+		revisionOf = varReferenceFactID(snapshot, teamID)
+		if revisionOf == "" {
+			description = strings.TrimSpace("VAR 判定进球取消待复核 " + playerName)
+			eventType = "var_check"
+		} else if eventType == "goal_cancelled" {
+			// 账本校验要求取消事件的比分 = 当前比分扣掉被取消进球
+			// (validateAgainstSnapshot):确认后投影回放据此回退。
+			switch teamID {
+			case "home":
+				if score.Home > 0 {
+					score.Home--
+				}
+			case "away":
+				if score.Away > 0 {
+					score.Away--
+				}
+			}
+			description = fmt.Sprintf("VAR 判定:%s 的进球无效,比分待更正。", playerName)
+		} else {
+			description = fmt.Sprintf("VAR 确认:%s 的进球有效。", playerName)
+		}
+	}
 	matchEvent := matchstate.MatchEvent{
 		MatchID:         matchID,
 		Source:          string(SourceAPISports),
@@ -490,6 +555,7 @@ func apiSportsMatchEvent(matchID string, fixtureID int, source *event.StandardEv
 		Intensity:       3,
 		FactStatus:      matchstate.FactStatusProvisional,
 		Description:     description,
+		RevisionOf:      revisionOf,
 		Tags:            []string{"provider=api-sports", "fixture=" + strconv.Itoa(fixtureID)},
 		Visibility:      "public",
 		Status:          "active",
@@ -511,6 +577,38 @@ func apiSportsMatchEvent(matchID string, fixtureID int, source *event.StandardEv
 		matchEvent.ProactiveText = fmt.Sprintf("%s被红牌罚下。", playerName)
 	}
 	return matchEvent
+}
+
+// varReferenceFactID 在快照里为 VAR 结论类事件找可引用的已确认事实:同队
+// 最近一条已确认进球(goal_cancelled/var_result 同源)。已被取消过的进球
+// 不再引用(防重复取消被账本拒绝)。找不到返回空串——调用方降级 var_check。
+func varReferenceFactID(snapshot matchstate.Snapshot, teamID string) string {
+	for index := len(snapshot.RecentEvents) - 1; index >= 0; index-- {
+		candidate := snapshot.RecentEvents[index]
+		if candidate.EventType != "goal" || candidate.FactID == "" {
+			continue
+		}
+		if candidate.FactStatus != matchstate.FactStatusConfirmed && candidate.FactStatus != matchstate.FactStatusReconciled {
+			continue
+		}
+		if teamID != "" && candidate.TeamID != teamID {
+			continue
+		}
+		if goalAlreadyCancelled(snapshot, candidate.FactID) {
+			continue
+		}
+		return candidate.FactID
+	}
+	return ""
+}
+
+func goalAlreadyCancelled(snapshot matchstate.Snapshot, goalFactID string) bool {
+	for _, event := range snapshot.RecentEvents {
+		if event.EventType == "goal_cancelled" && (event.RevisionOf == goalFactID) {
+			return true
+		}
+	}
+	return false
 }
 
 func (m *Manager) Close() {

@@ -130,7 +130,9 @@ func TestNormalizeAPISportsEventTypes(t *testing.T) {
 		{typeName: "Card", detail: "Second Yellow card", want: "red_card"},
 		{typeName: "Card", detail: "Yellow Card", want: "yellow_card"},
 		{typeName: "subst", want: "substitution"},
-		{typeName: "Var", detail: "Goal cancelled", want: "var_check"},
+		// VAR 结果细分(auto-hosting 2.1):取消/确认结论分流,其余保持 var_check。
+		{typeName: "Var", detail: "Goal confirmed", want: "var_result"},
+		{typeName: "Var", detail: "Penalty confirmed", want: "var_check"},
 	}
 	for _, testCase := range cases {
 		if got := normalizeType(testCase.typeName, testCase.detail); got != testCase.want {

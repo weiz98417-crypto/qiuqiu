@@ -6,7 +6,8 @@ import "time"
 type StandardEvent struct {
 	MatchID   int64      `json:"match_id"` // fixture ID from api-sports
 	ID        int64      `json:"id"`
-	Type      string     `json:"type"` // goal|shot|yellow_card|red_card|penalty|foul|corner|offside|substitution|var_check|match_start|match_end
+	Type      string     `json:"type"` // goal|shot|yellow_card|red_card|penalty|foul|corner|offside|substitution|var_check|var_result|goal_cancelled|match_start|match_end
+	Detail    string     `json:"detail,omitempty"` // 上游事件细目(VAR 结论如 Goal cancelled 等,auto-hosting 2.1)
 	Team      string     `json:"team"` // "home"|"away"
 	Minute    int        `json:"minute"`
 	Player    PlayerInfo `json:"player"`
