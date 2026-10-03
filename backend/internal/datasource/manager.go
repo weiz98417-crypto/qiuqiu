@@ -135,6 +135,20 @@ func (m *Manager) WithEspnClient(client EspnClient) *Manager {
 	return m
 }
 
+// EspnMatchPreview 拉一份 ESPN summary 供托管编排填充比赛配置
+// (auto-hosting 2.6;不做缓存,一次编排一次拉取)。
+func (m *Manager) EspnMatchPreview(league, eventID string) (*EspnSummary, error) {
+	if m.espnClient == nil {
+		return nil, fmt.Errorf("espn is not configured")
+	}
+	return m.espnClient.GetSummary(league, eventID)
+}
+
+// EspnConfigured 报告 ESPN 源是否可用(运营台选项门控)。
+func (m *Manager) EspnConfigured() bool {
+	return m.espnClient != nil
+}
+
 func NewManager(parent context.Context, store matchstate.Repository, client EventsClient, config ManagerConfig) *Manager {
 	ctx, cancel := context.WithCancel(parent)
 	if config.PollInterval <= 0 {
@@ -189,7 +203,9 @@ func (m *Manager) Status(matchID string) MatchSourceStatus {
 	}
 	m.mu.RLock()
 	if run := m.runs[matchID]; run != nil {
-		status.Sources[SourceAPISports] = m.deriveSourceStatus(run.status, time.Now().UTC())
+		// 活源状态落自己的类型槽(多外源形态:按 run.Type 落,不再硬编码 api-sports)。
+		entry := m.deriveSourceStatus(run.status, time.Now().UTC())
+		status.Sources[entry.Type] = entry
 	}
 	m.mu.RUnlock()
 	return status

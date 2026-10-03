@@ -48,6 +48,9 @@ func (c *EspnClientHTTP) WithBaseURL(url string) *EspnClientHTTP {
 
 type EspnSummary struct {
 	Header struct {
+		League struct {
+			Name string `json:"name"`
+		} `json:"league"`
 		Competitions []struct {
 			Date        string           `json:"date"`
 			Status      EspnStatus       `json:"status"`

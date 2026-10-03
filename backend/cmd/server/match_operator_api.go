@@ -297,6 +297,8 @@ func matchRoutes(m matchAPI) []route {
 		{method: http.MethodGet, pattern: "/api/matches/{matchId}/sources", scope: auth.ScopeOperatorTraceRead, handler: m.handleSourcesStatus},
 		{method: http.MethodPost, pattern: "/api/matches/{matchId}/sources/start", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSourcesStart},
 		{method: http.MethodPost, pattern: "/api/matches/{matchId}/sources/stop", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSourcesStop},
+		// 一键托管(auto-hosting 2.6):ESPN summary 填充配置 + 开场 + 挂源。
+		{method: http.MethodPost, pattern: "/api/matches/{matchId}/host", scope: auth.ScopeOperatorMatchWrite, handler: m.handleHost},
 		{method: http.MethodPost, pattern: "/api/matches/{matchId}/takeover", scope: auth.ScopeOperatorMatchWrite, handler: m.handleTakeover},
 		{method: http.MethodGet, pattern: "/api/matches/{matchId}/automation", scope: auth.ScopeOperatorTraceRead, handler: m.handleGetAutomation},
 		{method: http.MethodPost, pattern: "/api/matches/{matchId}/automation", scope: auth.ScopeOperatorMatchWrite, handler: m.handleSetAutomation},
@@ -1120,4 +1122,90 @@ func handleVoiceSessionWithSignalIDOptions(ctx context.Context, agent *companion
 		}
 	}
 	return completeVoiceSessionWithOptions(ctx, agent, synthesizer, matchID, userID, now, signalID, result, voiceMeta, options)
+}
+
+// espnHostRequest 是一键托管(auto-hosting 2.6)请求体:ESPN 联赛 slug +
+// event ID;可选覆写阵容外的配置字段。
+type espnHostRequest struct {
+	League      string `json:"league"`
+	EspnEventID string `json:"espnEventId"`
+}
+
+// handleHost 一键托管此场:拉 ESPN summary 填充比赛配置(队伍/赛事/开球时间),
+// Reset+SetConfig 开场,挂 ESPN 快照源。编排单点:一次幂等写完成建场+开场+
+// 挂源;api-sports 二源可由运营随后 sources/start 另挂(key 配置时)。
+func (m matchAPI) handleHost(w http.ResponseWriter, r *http.Request) {
+	matchID := r.PathValue("matchId")
+	if m.sources == nil {
+		http.Error(w, "source manager unavailable", http.StatusServiceUnavailable)
+		return
+	}
+	if !m.sources.EspnConfigured() {
+		http.Error(w, "espn is not configured", http.StatusServiceUnavailable)
+		return
+	}
+	var request espnHostRequest
+	body, err := decodeOperatorJSON(w, r, &request)
+	if err != nil {
+		http.Error(w, "invalid json", http.StatusBadRequest)
+		return
+	}
+	request.League = strings.TrimSpace(request.League)
+	request.EspnEventID = strings.TrimSpace(request.EspnEventID)
+	if request.League == "" || request.EspnEventID == "" {
+		http.Error(w, "league and espnEventId are required", http.StatusBadRequest)
+		return
+	}
+	summary, err := m.sources.EspnMatchPreview(request.League, request.EspnEventID)
+	if err != nil {
+		http.Error(w, fmt.Sprintf("espn preview failed: %v", err), http.StatusBadGateway)
+		return
+	}
+	if len(summary.Header.Competitions) == 0 || len(summary.Header.Competitions[0].Competitors) < 2 {
+		http.Error(w, "espn summary has no competitors", http.StatusBadGateway)
+		return
+	}
+	competition := summary.Header.Competitions[0]
+	var homeTeam, awayTeam string
+	for _, competitor := range competition.Competitors {
+		switch competitor.HomeAway {
+		case "home":
+			homeTeam = competitor.Team.DisplayName
+		case "away":
+			awayTeam = competitor.Team.DisplayName
+		}
+	}
+	if homeTeam == "" || awayTeam == "" {
+		http.Error(w, "espn summary has no home/away teams", http.StatusBadGateway)
+		return
+	}
+	matchConfig := matchstate.MatchConfig{
+		MatchID:     matchID,
+		HomeTeam:    homeTeam,
+		AwayTeam:    awayTeam,
+		Competition: summary.Header.League.Name,
+		Kickoff:     competition.Date,
+	}
+	executeOperatorWrite(w, r, m.operatorWrites, matchID, "match.host", body, func(_ context.Context) (operatorwrite.Response, error) {
+		if err := m.store.Reset(matchID); err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		if _, _, err := m.store.SetConfig(matchID, matchConfig); err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		status, err := m.sources.Start(matchID, datasource.SourceConfig{
+			Type:        datasource.SourceESPN,
+			League:      request.League,
+			EspnEventID: request.EspnEventID,
+		})
+		if err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		return operatorwrite.JSONResponse(http.StatusOK, map[string]interface{}{
+			"ok":      true,
+			"matchId": matchID,
+			"config":  matchConfig,
+			"status":  status,
+		})
+	})
 }
