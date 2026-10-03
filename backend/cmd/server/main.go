@@ -15,9 +15,9 @@ import (
 	"sync"
 	"time"
 
+	"qiuqiu/internal/ambient"
 	"qiuqiu/internal/asr"
 	"qiuqiu/internal/auth"
-	"qiuqiu/internal/ambient"
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/config"
 	"qiuqiu/internal/conversation"
@@ -25,10 +25,8 @@ import (
 	"qiuqiu/internal/deliverykey"
 	"qiuqiu/internal/directordraft"
 	"qiuqiu/internal/embedding"
-	"qiuqiu/internal/knowledge"
-	"qiuqiu/internal/proactive"
-	"qiuqiu/internal/structured"
 	"qiuqiu/internal/interaction"
+	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/memory"
@@ -36,10 +34,12 @@ import (
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/privacy"
+	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/relationship"
-	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/router"
+	"qiuqiu/internal/structured"
 	"qiuqiu/internal/tts"
+	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/ws"
 
 	"github.com/gorilla/websocket"
@@ -315,7 +315,9 @@ func main() {
 	if cfg.APISportsAPIKey != "" {
 		sportsClient = datasource.NewClient(cfg.APISportsAPIKey).WithBaseURL(cfg.APISportsBaseURL)
 	}
-	sourceManager := datasource.NewManager(context.Background(), matchStore, sportsClient, datasource.ManagerConfig{})
+	// 稳定窗自动确认(auto-hosting,ADR-0024):默认 30s,0=禁用。
+	autoConfirmWindow := time.Duration(cfg.AutoConfirmWindowSeconds) * time.Second
+	sourceManager := datasource.NewManager(context.Background(), matchStore, sportsClient, datasource.ManagerConfig{AutoConfirmWindow: autoConfirmWindow})
 	defer sourceManager.Close()
 	companionTools := companion.NewRepositoryMemoryTools(matchStore)
 	var traceReader companion.TraceReader = companionTools
@@ -693,7 +695,7 @@ func main() {
 	mux.HandleFunc("/ws/match/", handleWatchConnection(watchDeps{
 		hub: hub, matchStore: matchStore, traceReader: traceReader, watchSessions: watchSessions,
 		agent: companionAgent, tts: ttsClient, asr: asrClient, cfg: cfg, memories: memoryQueue,
-		reminders: reminderStore,
+		reminders:        reminderStore,
 		submittedSignals: submittedUserSignals,
 		ambient:          ambientSidecar,
 		turnSidecar:      turnSidecar,
@@ -918,7 +920,6 @@ func operatorAuditEvents(events, publicEvents []matchstate.MatchEvent) []matchst
 	}
 	return events
 }
-
 
 func handleTranscribedVoiceSessionWithSignalIDOptions(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID, text, provider string, now time.Time, signalID string, options voiceSessionOptions) (voiceSessionResult, error) {
 	text = strings.TrimSpace(text)

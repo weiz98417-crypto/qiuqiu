@@ -12,38 +12,41 @@ import (
 	"time"
 
 	"qiuqiu/internal/ambient"
-	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/router"
+	"qiuqiu/internal/useraffect"
 )
 
 type Config struct {
-	Port                           string
-	Environment                    string
-	AppToken                       string
-	SecondaryAppToken              string
-	AuthMode                       string
-	SessionSigningKey              string
-	AllowedOrigins                 []string
-	DatabaseURL                    string
-	RedisAddr                      string
-	MiMoAPIKey                     string
-	MiMoBaseURL                    string
-	MiMoModel                      string
-	MiMoVoice                      string
-	CompanionRealizerTimeoutMS     int
-	RouterAPIKey                   string
-	RouterBaseURL                  string
-	RouterModel                    string
-	RouterTimeoutMS                int
-	APISportsAPIKey                string
-	APISportsBaseURL               string
+	Port                       string
+	Environment                string
+	AppToken                   string
+	SecondaryAppToken          string
+	AuthMode                   string
+	SessionSigningKey          string
+	AllowedOrigins             []string
+	DatabaseURL                string
+	RedisAddr                  string
+	MiMoAPIKey                 string
+	MiMoBaseURL                string
+	MiMoModel                  string
+	MiMoVoice                  string
+	CompanionRealizerTimeoutMS int
+	RouterAPIKey               string
+	RouterBaseURL              string
+	RouterModel                string
+	RouterTimeoutMS            int
+	APISportsAPIKey            string
+	APISportsBaseURL           string
+	// 自动托管稳定窗(auto-hosting,ADR-0024):provisional 事实自动确认前
+	// 需停留的秒数;0=禁用自动确认,默认 30。
+	AutoConfirmWindowSeconds int
 	// 语义记忆（openspec/changes/semantic-memory）：端点留空即整体停用
 	//（行为=现状 contains 单路）；本地 Ollama 形态见 deploy/.env.example。
-	EmbeddingBaseURL               string
-	EmbeddingModel                 string
+	EmbeddingBaseURL string
+	EmbeddingModel   string
 	// 召回时序衰减（memory-recall-fusion）：向量路 weight=cosine×exp(-age/τ)，
 	// 天数 ≤0 关闭。
-	RecallDecayDays                int
+	RecallDecayDays int
 	// 知识域（openspec/changes/knowledge-rag，ADR-0017）：策展条目目录，
 	// 留空即停用 knowledge_question 的实质回答。
 	KnowledgeDir                   string
@@ -53,8 +56,8 @@ type Config struct {
 	// 气氛旁路（openspec/changes/ambient-audio-observation）：SenseVoice AED
 	// sidecar 端点，留空即整体停用（旁路静默消失，主链路无感）；pr tier 指向
 	// cmd/ambient-fake 假 sidecar。
-	AmbientAEDURL                  string
-	AmbientAEDTimeoutMS            int
+	AmbientAEDURL       string
+	AmbientAEDTimeoutMS int
 	// 轮次检测 sidecar（openspec/changes/voice-turn-detection 决策 c）：LiveKit
 	// EOU 多语版本地推理服务（backend/cmd/turn-sidecar），端点留空即 model
 	// 插槽降级——turn_query 一律回 isComplete:null，客户端下探静默档。
@@ -63,8 +66,8 @@ type Config struct {
 	// 用户语音情绪旁路（openspec/changes/user-voice-affect 波1）：voice-input
 	// sidecar（SenseVoice）端点，留空即旁路整体停用；宪法线——情绪信号永不
 	// 进比赛事实账本，只落语音 trace 观测。
-	UserAffectURL          string
-	UserAffectTimeoutMS    int
+	UserAffectURL           string
+	UserAffectTimeoutMS     int
 	UserAffectMinConfidence float64
 	// 画像巩固（openspec/changes/portrait-maintenance 阶段二）：条目 ValidFrom
 	// 超过 PortraitDecayDays 天未被更新主张续期 → Reflection 尾部扫描软封口
@@ -73,10 +76,10 @@ type Config struct {
 	// 可遮蔽的 Memobase 合成槽（CSV，"topic/subTopic"）：判定器输出
 	// shadowSlots 时按此清单过滤，墓碑 overlay 让 ResolvePortrait 每次读取
 	// 都遮蔽合成条目（不怕 Memobase 重提取）。
-	PortraitShadowSlots []string
-	MemobaseURL                    string
-	MemobaseToken                  string
-	MemobaseExtractionTimeoutMS    int
+	PortraitShadowSlots         []string
+	MemobaseURL                 string
+	MemobaseToken               string
+	MemobaseExtractionTimeoutMS int
 	// ADR-0010: HS256 secret for the console human auth channel. Required
 	// once any operator password account exists (enforced at login).
 	JWTSecret string
@@ -125,6 +128,7 @@ func Load() *Config {
 		RouterTimeoutMS:                int(routerConfig.Timeout / time.Millisecond),
 		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
 		APISportsBaseURL:               getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
+		AutoConfirmWindowSeconds:       getEnvInt("QIUQIU_AUTOCONFIRM_WINDOW_SECONDS", 30),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
 		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),

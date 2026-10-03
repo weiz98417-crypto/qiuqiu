@@ -54,6 +54,9 @@ type sourceCursorStore interface {
 
 type ManagerConfig struct {
 	PollInterval time.Duration
+	// AutoConfirmWindow 是稳定窗(ADR-0024):>0 启用信任分级自动确认,
+	// <=0 禁用(生产建议 30s)。
+	AutoConfirmWindow time.Duration
 }
 
 type SourceConfig struct {
@@ -104,6 +107,7 @@ type Manager struct {
 	runs        map[string]*sourceRun
 	manualDelay map[string]string
 	wg          sync.WaitGroup
+	stability   *stabilityWindowState
 }
 
 type sourceRun struct {
@@ -123,7 +127,7 @@ func NewManager(parent context.Context, store matchstate.Repository, client Even
 	if config.PollInterval <= 0 {
 		config.PollInterval = 3 * time.Second
 	}
-	return &Manager{
+	manager := &Manager{
 		ctx:         ctx,
 		cancel:      cancel,
 		store:       store,
@@ -132,7 +136,16 @@ func NewManager(parent context.Context, store matchstate.Repository, client Even
 		active:      make(map[string]SourceType),
 		runs:        make(map[string]*sourceRun),
 		manualDelay: make(map[string]string),
+		stability:   newStabilityWindowState(),
 	}
+	if config.AutoConfirmWindow > 0 {
+		manager.wg.Add(1)
+		go func() {
+			defer manager.wg.Done()
+			manager.runStabilitySweeper(ctx)
+		}()
+	}
+	return manager
 }
 
 func (m *Manager) Status(matchID string) MatchSourceStatus {
