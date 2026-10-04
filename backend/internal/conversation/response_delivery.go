@@ -19,6 +19,9 @@ type ReplyDelivery struct {
 	EventID      string
 	DeliveryKey  string
 	Presentation relationship.PresentationPlan
+	// ReasonCodes 是回合的理由码(memory-surfacing 1.3):主动回合等场景供
+	// 客户端「为什么找我聊」入口;空 = 普通回合,客户端零变化。
+	ReasonCodes []string
 }
 
 type AudioDelivery struct {
@@ -205,6 +208,7 @@ func (service *ResponseDeliveryService) planResponseRound(request ResponseDelive
 		plan.reply = ReplyDelivery{
 			Text: request.Reply, TraceID: request.Trace.ID, Source: request.Source,
 			EventID: request.EventID, DeliveryKey: request.DeliveryKey, Presentation: request.Presentation,
+			ReasonCodes: decisionReasonCodes(request.Trace),
 		}
 		if request.AfterTextStatus != nil {
 			status := *request.AfterTextStatus
@@ -444,4 +448,13 @@ func (coordinator *FirstMeetingCoordinator) Handle(ctx context.Context, request 
 		Source: "first_meeting", DeliveryKey: response.Trace.ID, TTL: 30 * time.Second,
 		AfterTextStatus: &DeliveryStatus{Kind: "first_meeting", State: "delivered", TraceID: response.Trace.ID},
 	}, playback)
+}
+
+// decisionReasonCodes 提取回合的理由码(主动回合的 C2 引用码/policy codes):
+// 无 decision 或无 codes 返回 nil——wire 上 reason 字段缺席,老客户端零感知。
+func decisionReasonCodes(trace companion.Trace) []string {
+	if trace.RelationshipDecision == nil {
+		return nil
+	}
+	return trace.RelationshipDecision.ReasonCodes
 }

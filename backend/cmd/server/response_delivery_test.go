@@ -172,3 +172,81 @@ type responseSynthesizerForTest struct{}
 func (responseSynthesizerForTest) SynthesizeResponse(context.Context, string, relationship.PresentationPlan, []relationship.CommunicationAct) (conversation.SynthesizedAudio, error) {
 	return conversation.SynthesizedAudio{Data: []byte("audio"), MIME: "audio/mpeg"}, nil
 }
+
+// memory-surfacing 1.3:reason 字段契约——主动回合(带理由码)的 wire 出
+// reason 对象;普通回合(无 decision)reason 缺席,客户端零变化。
+func TestReplyReasonWireContract(t *testing.T) {
+	if got := replyReasonWire(nil); got != nil {
+		t.Fatalf("nil codes = %v, want nil (absent on wire)", got)
+	}
+	if got := replyReasonWire([]string{}); got != nil {
+		t.Fatalf("empty codes = %v, want nil", got)
+	}
+	reason := replyReasonWire([]string{"reminder_due", "proactive_citation:reminder:rem-1"})
+	if reason == nil {
+		t.Fatal("proactive codes must produce a reason object")
+	}
+	if citation, _ := reason["citation"].(string); citation != "reminder:rem-1" {
+		t.Fatalf("citation = %v, want reminder:rem-1", reason["citation"])
+	}
+	codes, _ := reason["codes"].([]string)
+	if len(codes) != 2 {
+		t.Fatalf("codes = %v, want both", reason["codes"])
+	}
+}
+
+func TestWebsocketReplyCarriesReasonForProactiveTurn(t *testing.T) {
+	upgrader := websocket.Upgrader{CheckOrigin: func(*http.Request) bool { return true }}
+	serverDone := make(chan error, 1)
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		connection, err := upgrader.Upgrade(w, r, nil)
+		if err != nil {
+			serverDone <- err
+			return
+		}
+		defer connection.Close()
+		writer := &wsWriter{conn: connection}
+		tracker := newReplyDeliveryTracker()
+		service := conversation.NewResponseDeliveryService(
+			websocketResponseSink{writer: writer},
+			responseSynthesizerForTest{},
+			tracker,
+			nil,
+		)
+		request := conversation.ResponseDeliveryRequest{
+			Reply: "你订的开球提醒,比赛要开始了。",
+			Trace: companion.Trace{ID: "trace-reason", UserID: "user-reason", MatchID: "match-reason",
+				RelationshipDecision: &relationship.Decision{ReasonCodes: []string{"proactive_citation:reminder:rem-9"}}},
+			Source: "reminder", DeliveryKey: "reminder:rem-9", TTL: time.Minute,
+		}
+		_, err = service.Deliver(context.Background(), request, nil)
+		serverDone <- err
+	}))
+	defer server.Close()
+
+	url := "ws" + strings.TrimPrefix(server.URL, "http")
+	connection, _, err := websocket.DefaultDialer.Dial(url, nil)
+	if err != nil {
+		t.Fatalf("dial: %v", err)
+	}
+	defer connection.Close()
+	_, payload, err := connection.ReadMessage()
+	if err != nil {
+		t.Fatalf("read: %v", err)
+	}
+	var reply map[string]interface{}
+	if err := json.Unmarshal(payload, &reply); err != nil {
+		t.Fatalf("decode: %v", err)
+	}
+	data, _ := reply["data"].(map[string]interface{})
+	reason, ok := data["reason"].(map[string]interface{})
+	if !ok {
+		t.Fatalf("reason absent on proactive reply: %v", data)
+	}
+	if citation, _ := reason["citation"].(string); citation != "reminder:rem-9" {
+		t.Fatalf("citation = %v", reason["citation"])
+	}
+	if err := <-serverDone; err != nil {
+		t.Fatalf("server delivery: %v", err)
+	}
+}

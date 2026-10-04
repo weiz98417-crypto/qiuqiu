@@ -2,6 +2,7 @@ package main
 
 import (
 	"context"
+	"strings"
 
 	"qiuqiu/internal/companion"
 	"qiuqiu/internal/conversation"
@@ -9,20 +10,40 @@ import (
 	"qiuqiu/internal/relationship"
 )
 
+// replyReasonWire 把理由码折成客户端「为什么找我聊」的 reason 对象
+// (memory-surfacing 1.3):codes 空 = 普通回合返回 nil(wire 缺席)。
+func replyReasonWire(codes []string) map[string]interface{} {
+	if len(codes) == 0 {
+		return nil
+	}
+	citation := ""
+	for _, code := range codes {
+		if value, ok := strings.CutPrefix(code, "proactive_citation:"); ok {
+			citation = value
+			break
+		}
+	}
+	return map[string]interface{}{"codes": codes, "citation": citation}
+}
+
 type websocketResponseSink struct{ writer *wsWriter }
 
 func (sink websocketResponseSink) DeliverReply(_ context.Context, delivery conversation.ReplyDelivery) error {
+	data := qiuqiuReplyData(
+		delivery.Text,
+		delivery.TraceID,
+		delivery.Source,
+		delivery.EventID,
+		delivery.DeliveryKey,
+		delivery.Presentation,
+	)
+	if reason := replyReasonWire(delivery.ReasonCodes); reason != nil {
+		data["reason"] = reason
+	}
 	return sink.writer.SendJSON(map[string]interface{}{
 		"type":  "event",
 		"event": "qiuqiu_reply",
-		"data": qiuqiuReplyData(
-			delivery.Text,
-			delivery.TraceID,
-			delivery.Source,
-			delivery.EventID,
-			delivery.DeliveryKey,
-			delivery.Presentation,
-		),
+		"data":  data,
 	})
 }
 
