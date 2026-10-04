@@ -213,7 +213,7 @@ func normalizeTasteSubject(subject string) string {
 
 func explicitOpenThreadTopic(text string) (string, bool) {
 	text = strings.TrimSpace(text)
-	for _, marker := range []string{"下场接着聊", "下次接着聊", "回头再说", "下半场再聊", "赛后再聊"} {
+	for _, marker := range OpenThreadMarkers {
 		position := strings.Index(text, marker)
 		if position < 0 {
 			continue

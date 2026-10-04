@@ -722,7 +722,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		trace.Reason = ReasonRelationshipChosenSilence
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "silence"}})
 	} else if allowRealize && decision != nil && (shouldRealizeUserTurn(intent, *decision) || (intent == IntentUnknown && routerChatReply != "")) {
-		reply = reliableFallbackForDecision(req.Text, intent, reply, *decision)
+		reply = a.reliableFallbackForDecision(ctx, req, intent, reply, *decision)
 		// Design decision 4: when the router already suggested a natural
 		// reply for a chat-class turn, it is realized directly through the
 		// guard validation — no second LLM call. Otherwise the normal
@@ -950,38 +950,6 @@ func (a *Agent) recordObservation(ctx context.Context, req AgentBoundaryRequest,
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallObservationRecord, Args: map[string]string{"status": string(recorded.Status), "observationId": recorded.ID}})
 }
 
-func reliableFallbackForDecision(input string, intent Intent, original string, decision relationship.Decision) string {
-	if hasCommunicationAct(decision.Actions, relationship.ActRecall) {
-		if topic := recalledOpenThreadTopic(decision.Memories); topic != "" {
-			return "上次说到" + topic + "，接着聊。"
-		}
-	}
-	if hasCommunicationAct(decision.Actions, relationship.ActRepair) {
-		switch decision.Relationship.RepairCategory {
-		case "over_analysis":
-			return "行，收住。刚才确实说多了。"
-		case "repetition":
-			return "对，这句我又说顺嘴了。收掉。"
-		case "banter_boundary":
-			return "行，这个不拿你开玩笑了。"
-		default:
-			return "行，刚才那下没接好。我收住。"
-		}
-	}
-	if hasCommunicationAct(decision.Actions, relationship.ActAsk) {
-		return "这点我记住。你更吃哪一点？"
-	}
-	if intent == IntentEmotionReaction {
-		return emotionReactionReply(input)
-	}
-	if intent == IntentPersonalShare {
-		return personalShareReply(input)
-	}
-	if intent == IntentSmalltalk {
-		return smalltalkFallbackReply(input)
-	}
-	return original
-}
 
 func smalltalkFallbackReply(input string) string {
 	switch {
@@ -1119,17 +1087,71 @@ func shouldRealizeUserTurn(intent Intent, decision relationship.Decision) bool {
 	return intent == IntentSmalltalk || intent == IntentEmotionReaction || intent == IntentPersonalShare
 }
 
-func recalledOpenThreadTopic(memories []relationship.RelationshipMemory) string {
-	for _, memory := range memories {
-		if memory.Kind != relationship.MemoryKindOpenThread {
+// recalledOpenThreadTopic 从权威账本(memory.Thread)取同用户最新开放的
+// 话头话题(memory-surfacing 1.1:ActRecall 与召回补答消费同一实体);账本
+// 缺席或无开放话题时回退 relationship 条目(存量引用面)。
+func (a *Agent) recalledOpenThreadTopic(ctx context.Context, userID string, memories []relationship.RelationshipMemory) string {
+	if store := a.threadStore(); store != nil && strings.TrimSpace(userID) != "" {
+		lookupCtx, cancel := context.WithTimeout(ctx, memoryObserveTimeout)
+		defer cancel()
+		if threads, err := store.OpenThreads(lookupCtx, userID); err == nil {
+			for index := len(threads) - 1; index >= 0; index-- {
+				thread := threads[index]
+				if thread.State != "open" {
+					continue
+				}
+				if thread.Kind != memory.ThreadPromise && thread.Kind != memory.ThreadUnansweredQuestion {
+					continue
+				}
+				if topic := strings.TrimSpace(thread.Content); topic != "" {
+					return topic
+				}
+			}
+		}
+	}
+	for _, threadMemory := range memories {
+		if threadMemory.Kind != relationship.MemoryKindOpenThread {
 			continue
 		}
 		var payload relationship.OpenThreadMemoryPayload
-		if json.Unmarshal(memory.Payload, &payload) == nil && strings.TrimSpace(payload.Topic) != "" {
+		if json.Unmarshal(threadMemory.Payload, &payload) == nil && strings.TrimSpace(payload.Topic) != "" {
 			return strings.TrimSpace(payload.Topic)
 		}
 	}
 	return ""
+}
+
+func (a *Agent) reliableFallbackForDecision(ctx context.Context, req AgentBoundaryRequest, intent Intent, original string, decision relationship.Decision) string {
+	if hasCommunicationAct(decision.Actions, relationship.ActRecall) {
+		if topic := a.recalledOpenThreadTopic(ctx, req.UserID, decision.Memories); topic != "" {
+			return "上次说到" + topic + "，接着聊。"
+		}
+	}
+	if hasCommunicationAct(decision.Actions, relationship.ActRepair) {
+		switch decision.Relationship.RepairCategory {
+		case "over_analysis":
+			return "行，收住。刚才确实说多了。"
+		case "repetition":
+			return "对，这句我又说顺嘴了。收掉。"
+		case "banter_boundary":
+			return "行，这个不拿你开玩笑了。"
+		default:
+			return "行，刚才那下没接好。我收住。"
+		}
+	}
+	if hasCommunicationAct(decision.Actions, relationship.ActAsk) {
+		return "这点我记住。你更吃哪一点？"
+	}
+	if intent == IntentEmotionReaction {
+		return emotionReactionReply(req.Text)
+	}
+	if intent == IntentPersonalShare {
+		return personalShareReply(req.Text)
+	}
+	if intent == IntentSmalltalk {
+		return smalltalkFallbackReply(req.Text)
+	}
+	return original
 }
 
 func relationshipMemoryIDsUsedByReply(reply string, decision relationship.Decision) []string {

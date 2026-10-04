@@ -368,7 +368,15 @@ type ProcedureMemoryPayload struct {
 
 type OpenThreadMemoryPayload struct {
 	Topic string `json:"topic"`
+	// ThreadID 是 memory.Thread 账本的引用(memory-surfacing 1.1:Open Thread
+	// 唯一权威账本 = memory.Thread,本条目自 1.1 起只持引用不再自记内容)。
+	ThreadID string `json:"threadId,omitempty"`
 }
+
+// OpenThreadMarkers 是未完话题检测词表的单一源(memory-surfacing 1.1):
+// memory.PromiseMarkers 追加本表、explicitOpenThreadTopic 按本表检测——
+// 加一个话头短语只改这里,两处消费同步生效。
+var OpenThreadMarkers = []string{"下场接着聊", "下次接着聊", "回头再说", "下半场再聊", "赛后再聊"}
 
 type SharedMomentMemoryPayload struct {
 	EventID    string `json:"eventId"`

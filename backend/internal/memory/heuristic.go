@@ -38,9 +38,12 @@ import (
 const MinExtractionImportance = 0.35
 
 // PromiseMarkers and EmotionMarkers are the user-signal phrase lists shared
-// by the importance heuristic and the turn-pipeline moment writers.
+// by the importance heuristic and the turn-pipeline moment writers. The
+// promise list is the single Open Thread marker source (memory-surfacing 1.1):
+// relationship's explicitOpenThreadTopic aliases it, so a phrase added here
+// gates both the Thread ledger and the ActRecall view.
 var (
-	PromiseMarkers = []string{"待会儿告诉你", "待会儿", "回头告诉你", "回头聊", "答应", "下次告诉你", "等会儿告诉你"}
+	PromiseMarkers = append([]string{"待会儿告诉你", "待会儿", "回头告诉你", "回头聊", "答应", "下次告诉你", "等会儿告诉你"}, relationship.OpenThreadMarkers...)
 	EmotionMarkers = []string{"绝了", "气死", "破防", "泪目", "太离谱", "卧槽", "真爽", "难受", "心疼"}
 )
 
