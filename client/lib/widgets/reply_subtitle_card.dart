@@ -8,11 +8,16 @@ class ReplySubtitleCard extends StatefulWidget {
   final String secondaryText;
   final double maxHeight;
 
+  /// 主动回合理由(memory-surfacing 1.6):非空时在字幕顶部展示
+  /// 「为什么找我聊」行——球球主动开口的因果可感。普通回合 null。
+  final String? reasonText;
+
   const ReplySubtitleCard({
     super.key,
     required this.primaryText,
     required this.secondaryText,
     required this.maxHeight,
+    this.reasonText,
   });
 
   @override
@@ -115,6 +120,35 @@ class _ReplySubtitleCardState extends State<ReplySubtitleCard> {
                   mainAxisSize: MainAxisSize.min,
                   crossAxisAlignment: CrossAxisAlignment.start,
                   children: [
+                    if ((widget.reasonText ?? '').trim().isNotEmpty) ...[
+                      Padding(
+                        padding: const EdgeInsets.only(bottom: AppSpacing.xs),
+                        child: Row(
+                          mainAxisSize: MainAxisSize.min,
+                          children: [
+                            Icon(
+                              Icons.auto_awesome_rounded,
+                              size: 13,
+                              color: AppColors.orange.withValues(alpha: 0.85),
+                            ),
+                            const SizedBox(width: 4),
+                            Flexible(
+                              child: Text(
+                                (widget.reasonText ?? '').trim(),
+                                softWrap: true,
+                                style: Theme.of(context)
+                                    .textTheme
+                                    .bodySmall
+                                    ?.copyWith(
+                                      color: AppColors.ink.withValues(alpha: 0.65),
+                                      height: 1.35,
+                                    ),
+                              ),
+                            ),
+                          ],
+                        ),
+                      ),
+                    ],
                     Text(
                       primaryText,
                       softWrap: true,

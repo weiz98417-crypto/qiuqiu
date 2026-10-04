@@ -8,6 +8,11 @@ class ConversationDock extends StatelessWidget {
   final bool continuousEnabled;
   final String userLine;
   final String? notice;
+  // 未完话题条(memory-surfacing 1.7):label=引导语,content=话题原文;
+  // onTap 把话题文本作为下一句话发出(走既有发送路径)。null=隐藏。
+  final String? openThreadLabel;
+  final String? openThreadContent;
+  final VoidCallback? onContinueThread;
   final bool textMode;
   final TextEditingController textController;
   final VoidCallback onToggleContinuous;
@@ -25,6 +30,9 @@ class ConversationDock extends StatelessWidget {
     required this.continuousEnabled,
     required this.userLine,
     required this.notice,
+    this.openThreadLabel,
+    this.openThreadContent,
+    this.onContinueThread,
     required this.textMode,
     required this.textController,
     required this.onToggleContinuous,
@@ -110,6 +118,38 @@ class ConversationDock extends StatelessWidget {
                 ),
               ],
             ),
+            if (openThreadContent != null && onContinueThread != null) ...[
+              const SizedBox(height: AppSpacing.xs),
+              // 未完话题条(memory-surfacing 1.7):点一下即把话头续上。
+              InkWell(
+                onTap: onContinueThread,
+                borderRadius: BorderRadius.circular(8),
+                child: Padding(
+                  padding: const EdgeInsets.symmetric(vertical: 2),
+                  child: Row(
+                    children: [
+                      Icon(
+                        Icons.chat_bubble_outline_rounded,
+                        size: 13,
+                        color: AppColors.skyBlue,
+                      ),
+                      const SizedBox(width: 4),
+                      Expanded(
+                        child: Text(
+                          '${openThreadLabel ?? "没聊完"}：$openThreadContent · 点一下接着聊',
+                          maxLines: 1,
+                          overflow: TextOverflow.ellipsis,
+                          style: Theme.of(context)
+                              .textTheme
+                              .bodySmall
+                              ?.copyWith(color: AppColors.skyBlue),
+                        ),
+                      ),
+                    ],
+                  ),
+                ),
+              ),
+            ],
             if (notice != null) ...[
               const SizedBox(height: AppSpacing.xs),
               Text(

@@ -50,6 +50,9 @@ class MatchSessionState {
   final String expression;
   final String? motion;
   final CompanionPresentation? activePresentation;
+  // 主动回合理由(memory-surfacing 1.6):非空 = 本条回复是球球主动开口,
+  // 客户端展示「为什么找我聊」入口。普通回合 null。
+  final String? replyReason;
   final int pendingAudioCount;
   final List<AudioInputViewData> audioInputDevices;
   final String selectedAudioInputId;
@@ -77,6 +80,7 @@ class MatchSessionState {
     this.expression = 'idle',
     this.motion = 'idle',
     this.activePresentation,
+    this.replyReason,
     this.pendingAudioCount = 0,
     this.audioInputDevices = const [
       AudioInputViewData(id: '', label: '系统默认麦克风'),
@@ -113,6 +117,8 @@ class MatchSessionState {
     bool clearMotion = false,
     CompanionPresentation? activePresentation,
     bool clearPresentation = false,
+    String? replyReason,
+    bool clearReplyReason = false,
     int? pendingAudioCount,
     List<AudioInputViewData>? audioInputDevices,
     String? selectedAudioInputId,
@@ -144,6 +150,7 @@ class MatchSessionState {
       activePresentation: clearPresentation
           ? null
           : (activePresentation ?? this.activePresentation),
+      replyReason: clearReplyReason ? null : (replyReason ?? this.replyReason),
       pendingAudioCount: pendingAudioCount ?? this.pendingAudioCount,
       audioInputDevices: audioInputDevices ?? this.audioInputDevices,
       selectedAudioInputId: selectedAudioInputId ?? this.selectedAudioInputId,
@@ -802,6 +809,7 @@ class MatchSessionController extends ChangeNotifier {
       phase: MatchSessionPhase.userSpeaking,
       userText: text.trim(),
       clearNotice: true,
+      clearReplyReason: true,
     ));
     return _state;
   }
@@ -1034,6 +1042,7 @@ class MatchSessionController extends ChangeNotifier {
     String? deliveryKey,
     String? traceId,
     CompanionPresentation? presentation,
+    String? reason,
   }) {
     if (source == 'match_reaction' &&
         !_seenReactions.remember(deliveryKey ?? eventId)) {
@@ -1063,6 +1072,7 @@ class MatchSessionController extends ChangeNotifier {
       subtitleFallback: false,
       replyText: text,
       replyDetail: detail,
+      replyReason: reason,
       phase: isFirstMeeting
           ? MatchSessionPhase.welcoming
           : MatchSessionPhase.understanding,
@@ -1156,6 +1166,15 @@ class MatchSessionController extends ChangeNotifier {
       return;
     }
     _commands.add(PlayAudioCommand(audioBytes, metadata));
+    // 微反应字幕微标注(memory-surfacing 1.8):backchannel 帧播放时在字幕区
+    // 弱化展示短语,播放结束(handlePlayback 终态)由 notice 机制自然让位。
+    final backchannelText = metadata.backchannelText?.trim() ?? '';
+    if (backchannelText.isNotEmpty) {
+      _publish(_state.copyWith(
+        notice: '（小声）$backchannelText',
+        clearReplyReason: true,
+      ));
+    }
     _publish(_state.copyWith(pendingAudioCount: _pendingAudio.length));
   }
 
@@ -1511,6 +1530,10 @@ class PendingAudio {
   final int? byteLength;
   final bool skip;
 
+  /// 微反应短语(memory-surfacing 1.8):backchannel 帧携带,播放时作字幕
+  /// 微标注;不进对话流。
+  final String? backchannelText;
+
   const PendingAudio({
     required this.mime,
     this.traceId,
@@ -1519,6 +1542,7 @@ class PendingAudio {
     this.sentenceIndex,
     this.byteLength,
     this.skip = false,
+    this.backchannelText,
   });
 
   PendingAudio copyWith({bool? skip}) => PendingAudio(
@@ -1529,6 +1553,7 @@ class PendingAudio {
         sentenceIndex: sentenceIndex,
         byteLength: byteLength,
         skip: skip ?? this.skip,
+        backchannelText: backchannelText,
       );
 }
 

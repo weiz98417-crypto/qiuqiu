@@ -18,6 +18,8 @@ import '../services/match_session_controller.dart';
 import '../services/match_view_data.dart';
 import '../services/match_overview_service.dart';
 import '../services/portrait_service.dart';
+import '../services/reply_reason.dart';
+import '../services/threads_service.dart';
 import '../services/streaming_transcription.dart';
 import '../services/turn_detector.dart';
 import '../services/wake_engine.dart';
@@ -133,6 +135,7 @@ class _MatchScreenState extends State<MatchScreen> {
   String? get _notice => _sessionController.state.notice;
 
   String get _qiuqiuLine => _sessionController.state.replyText;
+  String? get _replyReason => _sessionController.state.replyReason;
   String get _qiuqiuDetail => _sessionController.state.replyDetail;
   String get _userLine => _sessionController.state.userText;
   bool get _forceSubtitleFallback => _sessionController.state.subtitleFallback;
@@ -324,7 +327,9 @@ class _MatchScreenState extends State<MatchScreen> {
       if (!mounted) return;
       setState(() {
         _userId = session.userId;
+        _pendingAccessToken = session.accessToken;
       });
+      unawaited(_loadOpenThreads());
       _socket.connect(_socketUrl(), token: session.accessToken);
     } on SessionException catch (error) {
       if (error.statusCode != 409) {
@@ -515,6 +520,7 @@ class _MatchScreenState extends State<MatchScreen> {
               deliveryKey: message['deliveryKey']?.toString(),
               sentenceIndex: _integer(message['sentenceIndex']),
               byteLength: _integer(message['byteLength']),
+              backchannelText: message['text']?.toString(),
             ),
             source: message['source']?.toString());
         break;
@@ -565,6 +571,10 @@ class _MatchScreenState extends State<MatchScreen> {
         return;
       }
       final parts = splitReplyForDisplay(trimmed);
+      // 主动回合理由(memory-surfacing 1.6):服务端 reason.codes → 用户话术。
+      final reasonLine = replyReasonLine(
+        (data?['reason'] as Map<String, dynamic>?)?['codes'] as List<dynamic>?,
+      );
       _sessionController.receiveReply(
         text: parts.$1,
         detail: parts.$2,
@@ -573,6 +583,7 @@ class _MatchScreenState extends State<MatchScreen> {
         deliveryKey: data?['deliveryKey']?.toString(),
         traceId: traceId,
         presentation: presentation,
+        reason: reasonLine,
       );
       _runSessionCommands();
       return;
@@ -1106,6 +1117,52 @@ class _MatchScreenState extends State<MatchScreen> {
     _socket.send({'type': 'set_talkativeness', 'talkativeness': tier});
   }
 
+  // 未完话题条(memory-surfacing 1.7):入座后拉一次;点击即把话题文本
+  // 作为下一句话发出(走既有 user_speech 路径),失败静默隐藏。
+  OpenThreadsService? _openThreadsService;
+  String _pendingAccessToken = '';
+  List<OpenThreadEntry> _openThreads = const [];
+  bool _openThreadsLoaded = false;
+
+  Future<void> _loadOpenThreads() async {
+    if (_openThreadsLoaded || _deviceId.isEmpty) return;
+    _openThreadsLoaded = true;
+    try {
+      final token = _pendingAccessToken;
+      final service =
+          _openThreadsService ??= OpenThreadsService();
+      final threads = await service.fetch(
+        baseUrl: normalizeAPIBaseURL(_socketUrl()),
+        accessToken: token,
+      );
+      if (!mounted) return;
+      setState(() => _openThreads = threads);
+    } catch (_) {
+      // 拉不到就隐藏话题条——不是错误面。
+    }
+  }
+
+  void _continueOpenThread(OpenThreadEntry thread) {
+    final text = thread.content.trim();
+    if (text.isEmpty) return;
+    final sent = _socket.send({
+      'type': 'user_speech',
+      'userId': _userId,
+      'signalId': _nextSignalId(),
+      'text': text,
+      'mode': 'text',
+      'audio': '',
+      'talkativeness': _profile.talkativeness,
+    });
+    _sessionController.textSubmitted(text, sent: sent);
+    _runSessionCommands();
+    if (mounted) {
+      setState(() => _openThreads = _openThreads
+          .where((candidate) => candidate.id != thread.id)
+          .toList(growable: false));
+    }
+  }
+
   /// 嘴型退化上报（快修 P1）：限频后走 lipsync_event 落服务端日志/观测，
   /// 断线时静默丢（下一集比赛重触发）。
   void _reportLipSyncDegraded(String reason) {
@@ -1317,6 +1374,7 @@ class _MatchScreenState extends State<MatchScreen> {
                           playbackFallback: _forceSubtitleFallback,
                         ),
                         qiuqiuLine: _qiuqiuLine,
+                        replyReason: _replyReason,
                         qiuqiuDetail: _qiuqiuDetail,
                         userLine: _userLine,
                         notice: _notice,
@@ -1327,6 +1385,9 @@ class _MatchScreenState extends State<MatchScreen> {
                         onChooseAudioInput: _chooseAudioInput,
                         onOpenSettings: _openSettings,
                         onLipSyncDegraded: _reportLipSyncDegraded,
+                        openThreadLabel: _openThreads.isEmpty ? null : _openThreads.first.displayLabel,
+                        openThreadContent: _openThreads.isEmpty ? null : _openThreads.first.content,
+                        onContinueThread: _openThreads.isEmpty ? null : () => _continueOpenThread(_openThreads.first),
                         onLeave: _leaveMatch,
                         onSwitchMatch: _switchMatch,
                         onReturnToCatalog: () => _leaveMatch(confirm: false),
@@ -1383,6 +1444,10 @@ class _LiveMatchExperience extends StatelessWidget {
   final String qiuqiuDetail;
   final String userLine;
   final String? notice;
+  // 未完话题条(memory-surfacing 1.7):_MatchScreenState 拉取后传入。
+  final String? openThreadLabel;
+  final String? openThreadContent;
+  final VoidCallback? onContinueThread;
   final bool textMode;
   final TextEditingController textController;
   final VoidCallback onToggleContinuous;
@@ -1393,6 +1458,7 @@ class _LiveMatchExperience extends StatelessWidget {
   final VoidCallback onSwitchMatch;
   final VoidCallback onReturnToCatalog;
   final VoidCallback onReconnect;
+  final String? replyReason;
   final void Function(String reason)? onLipSyncDegraded;
   final VoidCallback onOpenText;
   final VoidCallback onCloseText;
@@ -1413,9 +1479,13 @@ class _LiveMatchExperience extends StatelessWidget {
     required this.continuousEnabled,
     required this.subtitlesEnabled,
     required this.qiuqiuLine,
+    this.replyReason,
     required this.qiuqiuDetail,
     required this.userLine,
     required this.notice,
+    this.openThreadLabel,
+    this.openThreadContent,
+    this.onContinueThread,
     required this.textMode,
     required this.textController,
     required this.onToggleContinuous,
@@ -1466,6 +1536,7 @@ class _LiveMatchExperience extends StatelessWidget {
                             socketStatus: socketStatus,
                             subtitlesEnabled: subtitlesEnabled,
                             qiuqiuLine: qiuqiuLine,
+                            replyReason: replyReason,
                             qiuqiuDetail: qiuqiuDetail,
                             onLeave: onLeave,
                             onSwitchMatch: onSwitchMatch,
@@ -1480,6 +1551,9 @@ class _LiveMatchExperience extends StatelessWidget {
                           continuousEnabled: continuousEnabled,
                           userLine: userLine,
                           notice: notice,
+                          openThreadLabel: openThreadLabel,
+                          openThreadContent: openThreadContent,
+                          onContinueThread: onContinueThread,
                           textMode: textMode,
                           textController: textController,
                           onToggleContinuous: onToggleContinuous,
@@ -1603,6 +1677,7 @@ class _CharacterStage extends StatelessWidget {
   final SocketStatus socketStatus;
   final bool subtitlesEnabled;
   final String qiuqiuLine;
+  final String? replyReason;
   final String qiuqiuDetail;
   final VoidCallback onLeave;
   final VoidCallback onSwitchMatch;
@@ -1628,6 +1703,7 @@ class _CharacterStage extends StatelessWidget {
     required this.onOpenSettings,
     required this.onReconnect,
     this.onLipSyncDegraded,
+    this.replyReason,
   });
 
   @override
@@ -1708,6 +1784,7 @@ class _CharacterStage extends StatelessWidget {
                   primaryText: qiuqiuLine,
                   secondaryText: qiuqiuDetail,
                   maxHeight: subtitleMaxHeight,
+                  reasonText: replyReason,
                 ),
               ),
           ],

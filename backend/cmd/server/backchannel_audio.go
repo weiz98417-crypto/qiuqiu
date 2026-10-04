@@ -52,5 +52,8 @@ func deliverBackchannelAudio(ctx context.Context, synthesizer speechSynthesizer,
 		"byteLength":  len(result.AudioData),
 		"deliveryKey": deliverykey.ForBackchannel(eventID),
 		"source":      "backchannel",
+		// 短语只作字幕微标注(memory-surfacing 1.8):纯展示,不进对话流,
+		// 无 traceId/eventId——不落回合送达台账(ADR-0016 纪律)。
+		"text": verdict.Phrase,
 	}, result.AudioData)
 }
