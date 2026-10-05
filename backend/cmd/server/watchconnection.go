@@ -34,6 +34,7 @@ import (
 	"qiuqiu/internal/observation"
 	"qiuqiu/internal/proactive"
 	"qiuqiu/internal/relationship"
+	"qiuqiu/internal/teamalign"
 	"qiuqiu/internal/ws"
 
 	"github.com/gorilla/websocket"
@@ -663,17 +664,24 @@ func (c *watchConnection) pumpMatchEvents() {
 				}
 				policy := c.deps.matchStore.Config(c.matchID).Automation
 				critical := proactiveUrgency(ev.EventType) == conversation.UrgencyCritical
+				// B2 赛点分类（policy-bits）：点球判罚/红牌/决胜时段一球差
+				// ——队列抬档与 quiet 放行的依据，引用码随之固定为 pivotal。
+				pivotal := conversation.IsPivotalMatchEvent(ev)
 				now := time.Now()
 				tier, _ := c.userTalkativeness.Load().(string)
 				// C2 gate: the whitelist and the director cooldown stay
 				// as preconditions; the turn additionally needs a
 				// citation — an open thread when one exists, otherwise
-				// the event itself as the shared moment.
+				// the event itself as the shared moment. 赛点事件的引用码
+				// 固定为 pivotal——抬档理由就是赛点本身（B2）。
 				citation := c.openThreadCitation(userID)
 				if citation == "" {
 					citation = conversation.EventCitation(ev.ID)
 				}
-				allowed := c.proactiveGate.Allow(policy, ev.EventType, citation, tier, critical, now)
+				if pivotal {
+					citation = conversation.CitationPivotal
+				}
+				allowed := c.proactiveGate.Allow(policy, ev.EventType, citation, tier, critical, pivotal, now)
 				if hasEventTag(ev, "proactive=quiet") {
 					allowed = false
 				} else if hasEventTag(ev, "proactive=manual") {
@@ -689,6 +697,7 @@ func (c *watchConnection) pumpMatchEvents() {
 					Snapshot:              snapshot,
 					OutputAllowed:         allowed,
 					Critical:              critical,
+					Pivotal:               pivotal,
 					UserSpeaking:          c.userSpeaking.Load() || c.userTurnActive.Load(),
 					NormalCooldownSeconds: policy.CooldownSeconds,
 					Talkativeness:         tier,
@@ -713,11 +722,17 @@ func (c *watchConnection) pumpMatchEvents() {
 					continue
 				}
 				urgency, ttl := proactiveSchedule(response.Decision, ev.EventType)
+				if pivotal && urgency != conversation.UrgencyNormal {
+					// B2 赛点抬档：队列插到普通关键事件之前；policy 明示降
+					// 级（normal，如让路用户）时不夺回——抬档是加成不是支配。
+					urgency = conversation.UrgencyPivotal
+				}
 				c.scheduler.SubmitProactive(eventKey, urgency, ttl, func(replyCtx context.Context, playback conversation.Playback) {
 					_, err := c.responseDelivery.Deliver(replyCtx, conversation.ResponseDeliveryRequest{
 						Reply: response.Reply, Trace: response.Trace, Presentation: response.Presentation,
 						Source: "match_reaction", EventID: ev.ID, DeliveryKey: eventKey,
-						Critical: urgency == conversation.UrgencyCritical, TTL: ttl,
+						// >=：赛点档（UrgencyPivotal）与关键档同级投射 critical 投递。
+						Critical: urgency >= conversation.UrgencyCritical, TTL: ttl,
 					}, playback)
 					if err != nil && !errors.Is(err, context.Canceled) {
 						log.Printf("match response delivery error: %v", err)
@@ -748,6 +763,10 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 	c.userTurnActive.Store(true)
 	c.scheduler.SubmitUser(func(replyCtx context.Context, playback conversation.Playback) {
 		defer c.userTurnActive.Store(false)
+		// C2 useraffect 偏置载荷（policy-bits 4.5）：开关关/信号缺席/过期
+		// 即 nil——nil 时 policy 行为与现状逐字节一致。取用点在话轮协程内，
+		// 画像回源不挡提交主路。
+		userAffect := c.userAffectBiasPayload(userID)
 		result, err := handleVoiceTurnWithFactRefresh(
 			func() matchstate.Snapshot { return c.deps.matchStore.PublicSnapshot(c.matchID) },
 			func(turnText, turnAudio, factRefresh string) (voiceSessionResult, error) {
@@ -762,10 +781,10 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 						asrProvider,
 						time.Now(),
 						signalID,
-						voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides},
+						voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides, UserAffect: userAffect},
 					)
 				}
-				return handleVoiceSessionWithSignalIDOptions(replyCtx, c.deps.agent, c.deps.asr, nil, c.matchID, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides})
+				return handleVoiceSessionWithSignalIDOptions(replyCtx, c.deps.agent, c.deps.asr, nil, c.matchID, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides, UserAffect: userAffect})
 			},
 			func(observationID string) bool {
 				if err := c.deps.agent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {
@@ -890,6 +909,67 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 			}
 		}
 	})
+}
+
+// userAffectBiasWindow 是偏置载荷的新鲜窗：上一话轮的叹气/低落允许渗到
+// 这一话轮（旁路分类与话轮主路异步竞速，结论常在话轮间隙落地）；窗外的
+// 情绪不再代表「现在」。非 config——窗口是行为参数，开关才是 config。
+const userAffectBiasWindow = 2 * time.Minute
+
+// userAffectBiasPayload 装配 C2 useraffect 偏置载荷（policy-bits 4.5）：
+// 开关关/旁路停用/信号缺席/过期/标签不低落一律返回 nil——nil 时 policy
+// 行为与现状逐字节一致。TeamBehind 在此回源（画像+快照），只偏置不支配
+// 的裁决在 relationship policy 单点。
+func (c *watchConnection) userAffectBiasPayload(userID string) *relationship.UserAffectBias {
+	if c.deps.cfg == nil || !c.deps.cfg.UserAffectPolicyBias || c.userAffectRelay == nil {
+		return nil
+	}
+	signal, at, ok := c.userAffectRelay.Latest()
+	if !ok || time.Since(at) > userAffectBiasWindow {
+		return nil
+	}
+	if !relationship.UserAffectDejected(signal.Label) {
+		return nil
+	}
+	return &relationship.UserAffectBias{
+		Label:      signal.Label,
+		Confidence: signal.Confidence,
+		TeamBehind: c.favoriteTeamBehind(userID),
+	}
+}
+
+// favoriteTeamBehind 判定用户支持的球队当前是否落后：画像缺支持队或读败
+// 时返回 false（不偏置——情绪未必与球有关）。teamalign 对齐队名，快照
+// 比分定落后侧；平局不算落后。
+func (c *watchConnection) favoriteTeamBehind(userID string) bool {
+	if c.deps.memories == nil {
+		return false
+	}
+	ctx, cancel := context.WithTimeout(c.connectionCtx, 2*time.Second)
+	defer cancel()
+	portrait, err := c.deps.memories.Portrait(ctx, userID)
+	if err != nil {
+		return false
+	}
+	favorite := ""
+	for _, entry := range portrait.Entries {
+		if entry.SubTopic == "favorite_team" {
+			favorite = strings.TrimSpace(entry.Content)
+			break
+		}
+	}
+	if favorite == "" {
+		return false
+	}
+	snapshot := c.deps.matchStore.PublicSnapshot(c.matchID)
+	switch {
+	case teamalign.Aligns(snapshot.HomeTeam, favorite):
+		return snapshot.Score.Away > snapshot.Score.Home
+	case teamalign.Aligns(snapshot.AwayTeam, favorite):
+		return snapshot.Score.Home > snapshot.Score.Away
+	default:
+		return false
+	}
 }
 
 // readMessages is the inbound 17-case read loop: identity binding, session

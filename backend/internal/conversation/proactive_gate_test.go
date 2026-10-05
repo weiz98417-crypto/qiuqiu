@@ -17,24 +17,24 @@ func TestProactiveGateOnlyAppliesAutomationEventSwitch(t *testing.T) {
 	}
 	citation := EventCitation("event-1")
 
-	if !gate.Allow(policy, "shot", citation, "normal", false, now) {
+	if !gate.Allow(policy, "shot", citation, "normal", false, false, now) {
 		t.Fatal("first enabled normal event should be allowed")
 	}
-	if !gate.Allow(policy, "shot", citation, "normal", false, now.Add(5*time.Second)) {
+	if !gate.Allow(policy, "shot", citation, "normal", false, false, now.Add(5*time.Second)) {
 		t.Fatal("director, not automation gate, should own proactive cooldown")
 	}
-	if !gate.Allow(policy, "goal", citation, "normal", true, now.Add(6*time.Second)) {
+	if !gate.Allow(policy, "goal", citation, "normal", true, false, now.Add(6*time.Second)) {
 		t.Fatal("critical event should bypass cooldown")
 	}
-	if !gate.Allow(policy, "shot", citation, "normal", false, now.Add(12*time.Second)) {
+	if !gate.Allow(policy, "shot", citation, "normal", false, false, now.Add(12*time.Second)) {
 		t.Fatal("critical event must not mutate a second cooldown")
 	}
-	if gate.Allow(policy, "save", citation, "normal", false, now.Add(30*time.Second)) {
+	if gate.Allow(policy, "save", citation, "normal", false, false, now.Add(30*time.Second)) {
 		t.Fatal("disabled event type should be suppressed")
 	}
 
 	policy.Mode = matchstate.AutomationModePaused
-	if gate.Allow(policy, "goal", citation, "normal", true, now.Add(time.Minute)) {
+	if gate.Allow(policy, "goal", citation, "normal", true, false, now.Add(time.Minute)) {
 		t.Fatal("paused policy should suppress critical events")
 	}
 }
@@ -48,16 +48,16 @@ func TestProactiveGateRequiresCitation(t *testing.T) {
 		CooldownSeconds: 10,
 	}
 
-	if gate.Allow(policy, "goal", "", "normal", true, now) {
+	if gate.Allow(policy, "goal", "", "normal", true, false, now) {
 		t.Fatal("no citation must mean no proactive turn, even for critical whitelisted events")
 	}
-	if gate.Allow(policy, "shot", "   ", "normal", false, now) {
+	if gate.Allow(policy, "shot", "   ", "normal", false, false, now) {
 		t.Fatal("blank citation must mean no proactive turn")
 	}
-	if !gate.Allow(policy, "shot", ThreadCitation("123"), "normal", false, now) {
+	if !gate.Allow(policy, "shot", ThreadCitation("123"), "normal", false, false, now) {
 		t.Fatal("an open-thread citation should allow the proactive turn")
 	}
-	if !gate.Allow(policy, "goal", EventCitation("event-9"), "normal", true, now) {
+	if !gate.Allow(policy, "goal", EventCitation("event-9"), "normal", true, false, now) {
 		t.Fatal("a shared-moment citation should allow the proactive turn")
 	}
 }
@@ -72,16 +72,16 @@ func TestProactiveGateQuietTierOnlyRestricts(t *testing.T) {
 	}
 	citation := EventCitation("event-1")
 
-	if gate.Allow(policy, "shot", citation, "quiet", false, now) {
+	if gate.Allow(policy, "shot", citation, "quiet", false, false, now) {
 		t.Fatal("quiet tier must suppress non-critical proactive turns")
 	}
-	if !gate.Allow(policy, "goal", citation, "quiet", true, now) {
+	if !gate.Allow(policy, "goal", citation, "quiet", true, false, now) {
 		t.Fatal("quiet tier must keep critical match events allowed (already policy-allowed)")
 	}
-	if !gate.Allow(policy, "shot", citation, "", false, now) {
+	if !gate.Allow(policy, "shot", citation, "", false, false, now) {
 		t.Fatal("missing tier must degrade to current (normal) behavior")
 	}
-	if gate.Allow(policy, "shot", "", "quiet", true, now) {
+	if gate.Allow(policy, "shot", "", "quiet", true, false, now) {
 		t.Fatal("quiet must not bypass the citation requirement")
 	}
 }
@@ -97,7 +97,7 @@ func TestManualProactiveLineDoesNotMutateAutomaticPolicy(t *testing.T) {
 		EventTypes:      []string{"shot"},
 		CooldownSeconds: 10,
 	}
-	if !gate.Allow(policy, "shot", EventCitation("event-1"), "normal", false, now.Add(5*time.Second)) {
+	if !gate.Allow(policy, "shot", EventCitation("event-1"), "normal", false, false, now.Add(5*time.Second)) {
 		t.Fatal("manual line must not create a cooldown outside the director")
 	}
 }

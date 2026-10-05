@@ -958,6 +958,9 @@ type voiceSessionOptions struct {
 	Talkativeness       string
 	// Settings 是用户显式设置的粘性覆盖（settings-in-policy，ADR-0018）。
 	Settings *relationship.PreferenceOverrides
+	// UserAffect 是用户语音情绪偏置载荷（policy-bits C2）：nil = 开关关/
+	// 信号缺席，policy 行为与现状逐字节一致。
+	UserAffect *relationship.UserAffectBias
 }
 
 func completeVoiceSession(ctx context.Context, agent *companion.Agent, synthesizer speechSynthesizer, matchID, userID string, now time.Time, signalID string, result voiceSessionResult, voiceMeta *companion.VoiceTraceMetadata) (voiceSessionResult, error) {
@@ -979,6 +982,7 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 		Text:                result.Text,
 		Timezone:            strings.TrimSpace(options.Timezone),
 		Talkativeness:       options.Talkativeness,
+		UserAffect:          options.UserAffect,
 		ProgressiveSchedule: options.ProgressiveSchedule,
 		Now:                 now,
 		Voice:               nonEmptyVoiceMeta(voiceMeta),

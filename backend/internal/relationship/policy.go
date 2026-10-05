@@ -218,6 +218,13 @@ func selectTurnActs(state *StateBundle, signal Signal, now time.Time) ([]Communi
 		return []CommunicationAct{ActReact}, []string{"user_emotion_reaction"}
 	}
 	if isTacticalQuestion(text) {
+		// C2 useraffect 偏置（policy-bits 4.5，仿 applyMemoryBias 先例）：
+		// 叹气/低落 × 支持队落后时，战术问答（解说型）改道安慰型——只偏
+		// 置不支配：改道只发生在本出口，其余判定路径原样；信号缺席时
+		// applyUserAffectBias 恒不命中，行为与现状逐字节一致。
+		if codes := applyUserAffectBias(signal); len(codes) > 0 {
+			return []CommunicationAct{ActReact}, codes
+		}
 		return []CommunicationAct{ActAnalyze}, []string{"explicit_analysis_request"}
 	}
 	if hasCue(cues, CueBanterAllowed) && stageAtLeast(state.Relationship.Stage, StageFamiliar) {
@@ -450,6 +457,12 @@ func contentPolicyFor(signal Signal, actions []CommunicationAct, relationshipSta
 		Addressing:         relationshipState.Preferences.PreferredName,
 		RecentPhraseHashes: append(append([]uint64(nil), matchState.RecentPhraseHashes...), signal.Grounding.RecentPhraseHashes...),
 	}
+	// B5 场景矩阵（policy-bits 4.3）：比赛事件的内容预算走事件场景×话痨
+	// 档矩阵单源（进球短句快报/中场畅聊/quiet 现状）；未命中场景落默认
+	// 单元格 = 上面的现状初值，用户话轮（signal.Match 为 nil）不经矩阵。
+	if signal.Match != nil {
+		policy.MaxSentences, policy.MaxCharacters = ScenarioContentFor(signal.Match.EventType, signal.Match.Talkativeness)
+	}
 	if hasAction(actions, ActRepair) {
 		policy.MaxCharacters = 60
 		policy.AnalysisDepth = "none"
@@ -480,6 +493,13 @@ func contentPolicyFor(signal Signal, actions []CommunicationAct, relationshipSta
 		} else if stageAtLeast(relationshipState.Stage, StageFamiliar) {
 			policy.ProfanityLevel = "mild_non_directed"
 		}
+	}
+	// B2 quiet 档赛点裁决（policy-bits 4.2 默认值，真机验证后定稿）：赛点
+	// 放行但单句短播——在场≠打扰与赛点稀缺性的平衡。clamp 放最后，对上
+	// 述一切预算调整保持权威。
+	if signal.Match != nil && signal.Match.Pivotal && IsQuiet(signal.Match.Talkativeness) {
+		policy.MaxSentences = 1
+		policy.MaxCharacters = 40
 	}
 	return policy
 }

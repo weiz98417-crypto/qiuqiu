@@ -45,6 +45,9 @@ type UserSignal struct {
 	// Settings 是用户显式设置的粘性覆盖（ADR-0018）：设置 > cue 推断 >
 	// talkativeness 推导；空槽位 = 未设置（行为=现状）。
 	Settings *PreferenceOverrides `json:"settings,omitempty"`
+	// Affect 是用户语音情绪偏置载荷（policy-bits C2）：开关默认关、信号
+	// 缺席即 nil，nil 时 policy 行为与现状逐字节一致（user_affect_policy.go）。
+	Affect *UserAffectBias `json:"affect,omitempty"`
 }
 
 // PreferenceOverrides 是设置面的三个可调槽位中已接线的两个（banter 槽位
@@ -90,10 +93,14 @@ type MatchSignal struct {
 	UserSpeaking          bool   `json:"userSpeaking"`
 	NormalCooldownSeconds int    `json:"normalCooldownSeconds,omitempty"`
 	Talkativeness         string `json:"talkativeness,omitempty"`
-	Description           string `json:"description,omitempty"`
-	TeamName              string `json:"teamName,omitempty"`
-	PlayerName            string `json:"playerName,omitempty"`
-	RevisionOf            string `json:"revisionOf,omitempty"`
+	// Pivotal 是赛点权重（policy-bits B2）：点球判罚/红牌/决胜时段的一球
+	// 差。quiet 档对赛点放行但单句短播（contentPolicyFor），由调用方按
+	// matchstate 事件分类（conversation.IsPivotalMatchEvent）随事件携带。
+	Pivotal      bool   `json:"pivotal,omitempty"`
+	Description  string `json:"description,omitempty"`
+	TeamName     string `json:"teamName,omitempty"`
+	PlayerName   string `json:"playerName,omitempty"`
+	RevisionOf   string `json:"revisionOf,omitempty"`
 }
 
 type DeliverySignal struct {

@@ -14,6 +14,7 @@ package main
 
 import (
 	"context"
+	"log"
 	"sync"
 	"sync/atomic"
 	"time"
@@ -54,8 +55,15 @@ type useraffectRelay struct {
 	minConfidence float64
 	// dropped 静默丢弃计数（sidecar 失败/置信门未过/在途饱和），atomic 与
 	// ambient_relay 同族同口径。
-	dropped  atomic.Int64
-	inFlight chan struct{}
+	dropped atomic.Int64
+	// accepted 过门结论计数（policy-bits C2 4.4 观测先行）：一周窗内看信号
+	// 非零分布再开偏置，观测不低估、不暴露给比赛事实面。
+	accepted atomic.Int64
+	// latest 是最近一条过门结论与其到达时刻（偏置装配取用，mu 保护）。
+	latest     useraffect.Signal
+	latestAt   time.Time
+	hasLatest  bool
+	inFlight   chan struct{}
 
 	mu sync.Mutex
 	// signals 与 waiters 二选一地 keyed by signalID：signal 先到则暂存等
@@ -92,6 +100,29 @@ func (r *useraffectRelay) Dropped() int64 {
 	return r.dropped.Load()
 }
 
+// Accepted 返回过置信门的结论计数（policy-bits 4.4 观测面：一周窗内分布
+// 非零才开偏置）。
+func (r *useraffectRelay) Accepted() int64 {
+	if r == nil {
+		return 0
+	}
+	return r.accepted.Load()
+}
+
+// Latest 返回最近一条过门结论及其到达时刻；一条都没有时 ok=false。偏置
+// 装配方自行裁决新鲜窗与标签集，relay 只如实交出最近结论。
+func (r *useraffectRelay) Latest() (signal useraffect.Signal, at time.Time, ok bool) {
+	if r == nil {
+		return useraffect.Signal{}, time.Time{}, false
+	}
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !r.hasLatest {
+		return useraffect.Signal{}, time.Time{}, false
+	}
+	return r.latest, r.latestAt, true
+}
+
 func (r *useraffectRelay) countDropped() {
 	r.dropped.Add(1)
 }
@@ -123,7 +154,14 @@ func (r *useraffectRelay) classify(userID, signalID string, pcm []byte) {
 		r.countDropped()
 		return
 	}
+	// 4.4 观测先行：过门结论计数 + 结构化日志一行（分布观测面 = 本计数、
+	// 语音 trace 的 Voice.UserAffect 与本行日志，均不触比赛事实面）。
+	r.accepted.Add(1)
+	log.Printf("user affect signal: user=%q label=%q confidence=%.2f dropped=%d", userID, signal.Label, signal.Confidence, r.Dropped())
 	r.mu.Lock()
+	r.latest = signal
+	r.latestAt = time.Now()
+	r.hasLatest = true
 	if len(r.signals) >= useraffectRelayTableCapacity {
 		// 整表重置丢的是暂存结论：按丢弃条数计入 dropped（观测不低估）。
 		r.dropped.Add(int64(len(r.signals)))

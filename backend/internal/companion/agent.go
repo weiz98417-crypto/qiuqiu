@@ -609,6 +609,7 @@ func (a *Agent) handleMessage(ctx context.Context, req MessageRequest) (Response
 		Timezone:            req.Timezone,
 		Talkativeness:       req.Talkativeness,
 		Settings:            req.Settings,
+		UserAffect:          req.UserAffect,
 		ProgressiveSchedule: req.ProgressiveSchedule,
 		Now:                 req.Now,
 		Voice:               req.Voice,
@@ -1126,7 +1127,7 @@ func (a *Agent) applyDecision(ctx context.Context, req AgentBoundaryRequest, int
 		OccurredAt:   trace.CreatedAt,
 		ReceivedAt:   time.Now().UTC(),
 		FactRevision: strings.Join(trace.RetrievedEvent, ","),
-		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness, Cues: userCues, Settings: req.Settings},
+		User:         &relationship.UserSignal{Text: req.Text, Talkativeness: req.Talkativeness, Cues: userCues, Settings: req.Settings, Affect: req.UserAffect},
 		Grounding: relationship.GroundedContent{
 			Intent:             string(intent),
 			ReliableText:       reply,
@@ -1187,6 +1188,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 		req.Event,
 		req.OutputAllowed,
 		req.Critical,
+		req.Pivotal,
 		req.UserSpeaking,
 		req.NormalCooldownSeconds,
 		req.Talkativeness,
@@ -1284,7 +1286,7 @@ func (a *Agent) handleMatchEvent(ctx context.Context, req MatchEventRequest) (Pr
 	}, nil
 }
 
-func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchstate.MatchEvent, outputAllowed, critical, userSpeaking bool, normalCooldownSeconds int, talkativeness string, now time.Time) (relationship.Decision, error) {
+func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchstate.MatchEvent, outputAllowed, critical, pivotal, userSpeaking bool, normalCooldownSeconds int, talkativeness string, now time.Time) (relationship.Decision, error) {
 	if a == nil || a.director == nil {
 		return relationship.Decision{}, nil
 	}
@@ -1309,6 +1311,7 @@ func (a *Agent) observeMatchEvent(ctx context.Context, userID string, ev matchst
 			Confirmed:             ev.Confirmed,
 			OutputAllowed:         outputAllowed,
 			Critical:              critical,
+			Pivotal:               pivotal,
 			UserSpeaking:          userSpeaking,
 			NormalCooldownSeconds: normalCooldownSeconds,
 			Talkativeness:         talkativeness,

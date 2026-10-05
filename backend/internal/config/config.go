@@ -71,6 +71,9 @@ type Config struct {
 	UserAffectURL           string
 	UserAffectTimeoutMS     int
 	UserAffectMinConfidence float64
+	// useraffect 偏置开关（policy-bits C2）：观测先行（4.4），信号非零分布
+	// 确认后开；关 = 偏置载荷不上话轮，行为与现状逐字节一致。
+	UserAffectPolicyBias bool
 	// 画像巩固（openspec/changes/portrait-maintenance 阶段二）：条目 ValidFrom
 	// 超过 PortraitDecayDays 天未被更新主张续期 → Reflection 尾部扫描软封口
 	// （valid_to=now，永不物理删）；<=0 关闭衰减。
@@ -143,6 +146,10 @@ func Load() *Config {
 		UserAffectURL:                  strings.TrimSpace(getEnv("QIUQIU_USER_AFFECT_URL", "")),
 		UserAffectTimeoutMS:            getEnvInt("QIUQIU_USER_AFFECT_TIMEOUT_MS", 2000),
 		UserAffectMinConfidence:        getEnvFloat("QIUQIU_USER_AFFECT_MIN_CONFIDENCE", 0.55),
+		// useraffect 偏置开关（policy-bits C2 4.5，默认关）：观测先行——
+		// 信号分布非零确认后再开。关 = 偏置载荷不上话轮，policy 行为与
+		// 现状逐字节一致。
+		UserAffectPolicyBias:           getEnvBool("QIUQIU_USER_AFFECT_POLICY_BIAS", false),
 		PortraitDecayDays:              getEnvInt("PORTRAIT_DECAY_DAYS", 90),
 		PortraitShadowSlots:            splitCSV(getEnv("PORTRAIT_SHADOW_SLOTS", "basic_info/favorite_team,basic_info/favorite_player")),
 		MemobaseURL:                    getEnv("MEMOBASE_URL", "http://localhost:8019"),

@@ -21,6 +21,9 @@ type AgentBoundaryRequest struct {
 	Timezone            string                            `json:"timezone,omitempty"`
 	Talkativeness       string                            `json:"talkativeness,omitempty"`
 	Settings            *relationship.PreferenceOverrides `json:"settings,omitempty"`
+	// UserAffect 是用户语音情绪偏置载荷（policy-bits C2）：nil = 开关关/
+	// 信号缺席，policy 行为与现状逐字节一致。
+	UserAffect          *relationship.UserAffectBias      `json:"userAffect,omitempty"`
 	ProgressiveSchedule bool                              `json:"progressiveSchedule,omitempty"`
 	Now                 time.Time                         `json:"now"`
 	Voice               *VoiceTraceMetadata               `json:"voice,omitempty"`

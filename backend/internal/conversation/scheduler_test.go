@@ -137,6 +137,42 @@ func TestDuplicateProactiveTurnIsIgnored(t *testing.T) {
 	}
 }
 
+// B2 优先级阶梯（policy-bits 4.1）：赛点档插到已排队的普通关键事件之前
+// ——「这球可能定胜负」的提醒不排在寻常进球后面。
+func TestPivotalProactiveTurnJumpsAheadOfCritical(t *testing.T) {
+	scheduler := NewScheduler(context.Background(), Config{})
+	t.Cleanup(scheduler.Close)
+
+	releaseUser := make(chan struct{})
+	userStarted := make(chan struct{})
+	criticalStarted := make(chan struct{})
+	pivotalStarted := make(chan struct{})
+	scheduler.SubmitUser(func(context.Context, Playback) {
+		close(userStarted)
+		<-releaseUser
+	})
+	waitForSignal(t, userStarted, "user turn to start")
+
+	scheduler.SubmitProactive("goal-1", UrgencyCritical, time.Minute, func(context.Context, Playback) {
+		close(criticalStarted)
+	})
+	releasePivotal := make(chan struct{})
+	scheduler.SubmitProactive("penalty-1", UrgencyPivotal, time.Minute, func(context.Context, Playback) {
+		close(pivotalStarted)
+		<-releasePivotal
+	})
+	close(releaseUser)
+	waitForSignal(t, pivotalStarted, "pivotal proactive turn to start")
+
+	select {
+	case <-criticalStarted:
+		t.Fatal("critical turn ran before the queued pivotal turn")
+	case <-time.After(50 * time.Millisecond):
+	}
+	close(releasePivotal)
+	waitForSignal(t, criticalStarted, "critical proactive turn to run after pivotal")
+}
+
 func TestExpiredProactiveTurnIsDropped(t *testing.T) {
 	scheduler := NewScheduler(context.Background(), Config{})
 	t.Cleanup(scheduler.Close)

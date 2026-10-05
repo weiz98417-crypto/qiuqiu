@@ -11,6 +11,10 @@ type Urgency int
 const (
 	UrgencyNormal Urgency = iota
 	UrgencyCritical
+	// UrgencyPivotal 是赛点档（policy-bits B2）：点球判罚/红牌/决胜时段的
+	// 一球差在 proactive 队列里插到普通关键事件之前——「这球可能定胜负」
+	// 的提醒就是「AI 陪你看」区别于聊天机器人的本体功能。
+	UrgencyPivotal
 )
 
 type Config struct {

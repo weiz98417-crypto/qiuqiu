@@ -64,7 +64,10 @@ type MessageRequest struct {
 	Timezone            string
 	Talkativeness       string
 	// Settings 是用户显式设置的粘性覆盖（settings-in-policy，ADR-0018）。
-	Settings            *relationship.PreferenceOverrides
+	Settings *relationship.PreferenceOverrides
+	// UserAffect 是用户语音情绪偏置载荷（policy-bits C2）：开关默认关、
+	// 信号缺席/过期即 nil，nil 时 policy 行为与现状逐字节一致。
+	UserAffect          *relationship.UserAffectBias
 	ProgressiveSchedule bool
 	Now                 time.Time
 	Voice               *VoiceTraceMetadata
@@ -153,6 +156,10 @@ type MatchEventRequest struct {
 	Snapshot              matchstate.Snapshot
 	OutputAllowed         bool
 	Critical              bool
+	// Pivotal 是赛点权重（policy-bits B2，conversation.IsPivotalMatchEvent
+	// 的结论）：随 MatchSignal 下行，quiet 档赛点单句短播的预算门在
+	// relationship contentPolicyFor。
+	Pivotal               bool
 	UserSpeaking          bool
 	NormalCooldownSeconds int
 	Talkativeness         string
