@@ -990,35 +990,20 @@ func smalltalkFallbackReply(input string) string {
 }
 
 func personalShareReply(input string) string {
-	switch {
-	case containsAny(input, "打进", "踢进", "进球", "赢了", "赢啦", "拿下", "成功", "做到了"):
-		return "可以啊，这下够你得意一阵了。"
-	case containsAny(input, "累", "困", "难受", "烦", "输了", "不舒服"):
-		return "听着就不太顺，先缓口气。"
-	case containsAny(input, "开心", "高兴", "爽", "兴奋"):
-		return "听出来了，你这会儿心情是真不错。"
-	case containsAny(input, "喜欢", "支持", "更看好"):
-		return "行，这个立场我记住了。"
-	default:
-		return "这话我听进去了。"
+	if reply := firstRuleReply(input, personalShareRules); reply != "" {
+		return reply
 	}
+	return "这话我听进去了。"
 }
 
 func emotionReactionReply(input string) string {
-	switch {
-	case isDisbeliefReaction(input):
+	if isDisbeliefReaction(input) {
 		return "真的假的？你是说刚刚那一下吗？"
-	case containsAny(input, "紧张", "悬", "绷"):
-		return "这一下是真绷着。先看这波。"
-	case containsAny(input, "好球", "精彩", "厉害", "太棒", "神了", "绝了"):
-		return "这一下有点东西。"
-	case containsAny(input, "漂亮", "舒服"):
-		return "嗯，这一下真漂亮。"
-	case containsAny(input, "牛", "太激动", "上头"):
-		return "这下确实顶。"
-	default:
-		return "嗯，这一下有感觉。"
 	}
+	if reply := firstRuleReply(input, emotionReactionRules); reply != "" {
+		return reply
+	}
+	return "嗯，这一下有感觉。"
 }
 
 func isGroundedMatchReaction(input string) bool {
@@ -1026,16 +1011,11 @@ func isGroundedMatchReaction(input string) bool {
 	if !containsMatchReactionCue(lower) {
 		return false
 	}
-	return containsMatchFactLanguage(lower) || containsAny(lower,
-		"这球", "这个球", "这一球", "那球", "那个球", "那一球", "这一下", "那一下", "这脚", "那脚", "这一脚", "那一脚",
-	)
+	return containsMatchFactLanguage(lower) || containsAnyWord(lower, matchReactionReferenceWords)
 }
 
 func containsMatchReactionCue(input string) bool {
-	return containsAny(strings.ToLower(strings.TrimSpace(input)),
-		"漂亮", "舒服", "精彩", "好球", "牛", "厉害", "关键",
-		"太棒", "神了", "绝了", "可惜", "离谱",
-	)
+	return containsAnyWord(input, matchReactionCueWords)
 }
 
 func answerDeicticMatchReaction(text string, events []matchstate.MatchEvent) (string, FactClaim, []string) {
@@ -1074,7 +1054,7 @@ func isReferencableMatchEvent(eventType string) bool {
 }
 
 func isDisbeliefReaction(input string) bool {
-	return containsAny(input, "真的假的", "真的吗", "认真的吗", "不会吧", "不是吧", "开玩笑吧")
+	return containsAnyWord(input, beliefDoubtWords)
 }
 
 func shouldRealizeUserTurn(intent Intent, decision relationship.Decision) bool {
@@ -1556,8 +1536,6 @@ func shortLabel(value string, limit int) string {
 	return string(runes)
 }
 
-var insistenceAdverbs = []string{"明明", "真的", "确实", "千真万确", "就是"}
-
 func (a *Agent) realizeReply(ctx context.Context, req AgentBoundaryRequest, intent Intent, reliable string, anchors []string, decision relationship.Decision, trace *Trace) string {
 	if a.realizer == nil {
 		return reliable
@@ -1758,38 +1736,7 @@ func validateRealizedText(text, allowedSource string, decision relationship.Deci
 			return fmt.Errorf("realized reply repeated a recent phrase")
 		}
 	}
-	for _, forbidden := range []string{
-		"无论如何我都会陪着你",
-		"永远陪着你",
-		"一直等你",
-		"你是我唯一",
-		"只有我懂你",
-		"不要离开我",
-		"终于来了",
-		"怎么才来",
-		"离不开你",
-		"属于我",
-		"我最懂你",
-		"宝贝",
-		"亲爱的",
-		"老公",
-		"老婆",
-		"主人",
-		"我能理解你的感受",
-		"如果你愿意的话",
-		"需要我帮你",
-		"你的感受很重要",
-		"根据已确认的比赛信息",
-		"作为一个AI",
-		"作为 AI",
-		"导播台",
-		"后台",
-		"Trace",
-		"历史记录",
-		"内部记录",
-		"关系记忆",
-		"记忆库",
-	} {
+	for _, forbidden := range forbiddenRealizedPhrases {
 		if strings.Contains(text, forbidden) {
 			return fmt.Errorf("realized reply contains forbidden language")
 		}
@@ -1916,8 +1863,6 @@ func participantNames(participants []matchstate.Participant, role string) []stri
 	}
 	return names
 }
-
-var knownPlayerNames = []string{"佩德里", "法比安", "亚马尔", "穆西亚拉", "莫拉塔", "哈弗茨", "菲尔克鲁格", "萨拉赫", "努涅斯", "Pedri", "Musiala", "Salah", "Nunez", "Núñez"}
 
 func inferPlayer(text string) string {
 	for _, name := range knownPlayerNames {
