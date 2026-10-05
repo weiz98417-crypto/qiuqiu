@@ -33,6 +33,22 @@ func TestScenarioContentForPinnedCells(t *testing.T) {
 	}
 }
 
+// B2 双门同开同关（review 修正）：quiet×赛点在 selectTurnActs 不被压成
+// silence——gate 层放行了，policy 层压掉就是两门不一致；预算由
+// contentPolicyFor 的单句 clamp 收口。
+func TestQuietPivotalMatchEventNotSilenced(t *testing.T) {
+	now := time.Date(2026, 7, 15, 20, 0, 0, 0, time.UTC)
+	director := NewDirector(NewMemoryRepository())
+	signal := Signal{
+		ID: "s-quiet-pivotal", Kind: SignalMatchEvent, UserID: "user", MatchID: "match-quiet-pivotal", OccurredAt: now,
+		Match: &MatchSignal{EventID: "e1", EventType: "penalty_awarded", OutputAllowed: true, Pivotal: true, Talkativeness: "quiet"},
+	}
+	decision := applyScenario(t, director, signal)
+	if hasAction(decision.Speech.Actions, ActSilence) {
+		t.Fatalf("quiet pivotal silenced: %v — policy gate must mirror the proactive gate", decision.Speech.Actions)
+	}
+}
+
 // contentPolicyFor 经矩阵取预算：中场畅聊落到 plan、进球快报钉住 2 句、
 // 用户话轮（signal.Match 为 nil）不经矩阵。
 func TestContentPolicyForConsumesScenarioMatrix(t *testing.T) {

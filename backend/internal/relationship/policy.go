@@ -99,8 +99,11 @@ func selectTurnActs(state *StateBundle, signal Signal, now time.Time) ([]Communi
 		}
 		// Quiet tier is L0-safe: it only restricts, never enables — a quiet
 		// user gets no proactive turn except critical match events, which
-		// policy already allowed before the tier existed.
-		if IsQuiet(signal.Match.Talkativeness) && !signal.Match.Critical {
+		// policy already allowed before the tier existed — or pivotal
+		// moments (policy-bits B2：gate 层放行赛点，本层同步放行并交给
+		// contentPolicyFor 的单句短播预算；两门必须同开同关，否则未来出现
+		// 非 critical 赛点类型时 gate 放行、本层却静默)。
+		if IsQuiet(signal.Match.Talkativeness) && !signal.Match.Critical && !signal.Match.Pivotal {
 			return []CommunicationAct{ActSilence}, []string{"talkativeness_quiet_limits_initiative"}
 		}
 		cooldown := 90 * time.Second

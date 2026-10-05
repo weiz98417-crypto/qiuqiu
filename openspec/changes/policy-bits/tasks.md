@@ -17,6 +17,16 @@
 
 - **存量 bug**:WS 语音路径的 Settings(ADR-0018 粘性覆盖)在 completeVoiceSessionWithOptions 处被静默丢弃——readPreferenceOverrides 每回合读了、voiceSessionOptions 带了,却从未转发进 MessageRequest,用户显式设置在主力路径从未生效。已补转发 + 流转断言测试(voice_options_forwarding_test.go)。
 
+## 双轴审查留尾(code-review 2026-10-06,均已裁定)
+
+- **状态型赛点缩小(声明过)**:spec「领先一球进入最后 15 分钟」是状态,实现只判事件时点(75'+ 的一球差进球)——60' 1-0 保持到终场全程不触发赛点。事件驱动架构下状态型赛点需要 clock-tick beat,登记为增量候选,不在本 change。
+- **quiet 双门已对齐(review 修正)**:gate 与 relationship 的 quiet 门同开同关(均看 Critical+Pivotal),消除「未来非 critical 赛点类型 gate 放行、policy 层静默」的层间不一致。
+- **五层手工转发(Shotgun Surgery)**:Settings/UserAffect 经 voiceSessionOptions→completeVoiceSessionWithOptions→MessageRequest→AgentBoundaryRequest→UserSignal 五层穿线,Settings 静默丢失即其症状(已修+流转测试);链本身的结构性收敛(单 rides-along 结构)留尾。
+- **favorite_team 字面量四处 + 画像提取重复**:config.go/memory_signals.go/watchconnection.go 各自提 favorite_team,watchconnection.favoriteTeamBehind 与 companion.memorySignals 形状重复——收 memory 包常量+助手,留尾。
+- **Allow 7 参(Data Clumps)**:critical/pivotal/talkativeness 结伴,可捆 flags 结构;gate 测试刚全量适配,重构收益边际,留尾。
+- **双置信门常数**:relay 落 trace 门(config UserAffectMinConfidence)与 policy 偏置门(UserAffectBiasMinConfidence=0.55)同值双源,注释各自声明管各自门;与「reason 码双端硬编码单源化」同类留尾。
+- **观测面补强(review 修正)**:分布日志不打用户标识(情绪标签比 id 敏感,一周分布观测不需要 id),打 label/confidence/accepted/dropped;Accepted 计数进 console/health 面留尾。
+
 ## Sequencing
 
 波2,与 agent-internals 并行(交叉点:4.1/4.5 接 policy 阶梯,若 agent-internals 3.3 管线命名化已落则接命名阶段,soft 依赖)。C2 观测先行(4.4)与 4.5 串行(一周窗),其余并行。B2 依赖 auto-hosting 的真实赛点数据做真机裁决(4.2)——若波1B 未 soak 完,4.2 用注入事件先裁决、真实数据复验。**本轮 4.2 已用注入事件按默认值实施,真机复验待用户侧托管比赛。**

@@ -770,6 +770,7 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 		result, err := handleVoiceTurnWithFactRefresh(
 			func() matchstate.Snapshot { return c.deps.matchStore.PublicSnapshot(c.matchID) },
 			func(turnText, turnAudio, factRefresh string) (voiceSessionResult, error) {
+				options := voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides, UserAffect: userAffect}
 				if strings.TrimSpace(asrProvider) != "" {
 					return handleTranscribedVoiceSessionWithSignalIDOptions(
 						replyCtx,
@@ -781,10 +782,10 @@ func (c *watchConnection) submitUserTurn(userID, text, audioB64, signalID, asrPr
 						asrProvider,
 						time.Now(),
 						signalID,
-						voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides, UserAffect: userAffect},
+						options,
 					)
 				}
-				return handleVoiceSessionWithSignalIDOptions(replyCtx, c.deps.agent, c.deps.asr, nil, c.matchID, userID, turnText, turnAudio, time.Now(), signalID, voiceSessionOptions{ProgressiveSchedule: true, Timezone: timezone, FactRefresh: factRefresh, Talkativeness: tier, Settings: overrides, UserAffect: userAffect})
+				return handleVoiceSessionWithSignalIDOptions(replyCtx, c.deps.agent, c.deps.asr, nil, c.matchID, userID, turnText, turnAudio, time.Now(), signalID, options)
 			},
 			func(observationID string) bool {
 				if err := c.deps.agent.SuppressObservationFollowUp(replyCtx, observationID, time.Now().UTC()); err != nil {

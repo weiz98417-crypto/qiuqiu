@@ -141,7 +141,7 @@ func (r *useraffectRelay) Forward(userID, signalID string, pcm []byte) {
 	go r.classify(userID, signalID, append([]byte(nil), pcm...))
 }
 
-func (r *useraffectRelay) classify(userID, signalID string, pcm []byte) {
+func (r *useraffectRelay) classify(_, signalID string, pcm []byte) {
 	defer func() { <-r.inFlight }()
 	ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
 	defer cancel()
@@ -154,10 +154,11 @@ func (r *useraffectRelay) classify(userID, signalID string, pcm []byte) {
 		r.countDropped()
 		return
 	}
-	// 4.4 观测先行：过门结论计数 + 结构化日志一行（分布观测面 = 本计数、
-	// 语音 trace 的 Voice.UserAffect 与本行日志，均不触比赛事实面）。
+	// 4.4 观测先行：过门结论计数 + 分布日志一行（不打用户标识——情绪标
+	// 签比 id 更敏感，观测一周分布只需要 label/confidence 与两个计数面；
+	// trace 的 Voice.UserAffect 仍是逐话轮明细面）。均不触比赛事实面。
 	r.accepted.Add(1)
-	log.Printf("user affect signal: user=%q label=%q confidence=%.2f dropped=%d", userID, signal.Label, signal.Confidence, r.Dropped())
+	log.Printf("user affect signal: label=%q confidence=%.2f accepted=%d dropped=%d", signal.Label, signal.Confidence, r.Accepted(), r.Dropped())
 	r.mu.Lock()
 	r.latest = signal
 	r.latestAt = time.Now()
