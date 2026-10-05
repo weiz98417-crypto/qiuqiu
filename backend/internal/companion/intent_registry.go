@@ -81,7 +81,7 @@ type userTurnHandler func(a *Agent, t *userTurn) (intentHandling, error)
 
 // routerIntentAliases：router 侧存在、但不作为用户回合意图直达的原始枚举。
 // match_reaction 是主动回合专属（HandleMatchEvent），路由命中时落情绪路径
-//（locked decision 4）。
+// （locked decision 4）。
 var routerIntentAliases = map[string]Intent{
 	"match_reaction": IntentEmotionReaction,
 }
@@ -217,6 +217,21 @@ var intentRegistry = IntentRegistry{
 			Handle:           (*Agent).handleUnknownTurn,
 		},
 	},
+}
+
+func init() {
+	// 注册表注入(agent-internals 3.6):router 的意图定义行由注册表在装配期
+	// 注入——消灭「注册表持逐字镜像 + router 硬编码行」的双份中文文案。加
+	// 意图 = 本文件一条 spec,router prompt/enum 由注册表生成(ADR-0009 字节
+	// 锁由注入产物的字节级等价测试锁住)。unknown 行由渲染端固定追加,不入注。
+	lines := make([]string, 0, len(intentRegistry.specs))
+	for _, spec := range intentRegistry.specs {
+		if spec.RouterIntent == "" || spec.RouterIntent == "unknown" {
+			continue
+		}
+		lines = append(lines, spec.RouterPromptLine)
+	}
+	router.DefineIntentVocabulary(lines)
 }
 
 // IntentRegistry 聚合分类管道与意图规格，提供查表与漂移校验。
