@@ -114,7 +114,7 @@ func TestAutoConfirmableEventTypesTable(t *testing.T) {
 			t.Fatalf("%s should be auto-confirmable", eventType)
 		}
 	}
-	denied := []string{"var_check", "var_result", "goal_cancelled", "score_correction", "penalty", "penalty_awarded", "fulltime", "shot"}
+	denied := []string{"var_check", "var_result", "goal_cancelled", "score_correction", "penalty", "penalty_awarded", "shot"}
 	for _, eventType := range denied {
 		if autoConfirmableEventTypes[eventType] {
 			t.Fatalf("%s must stay operator-only", eventType)

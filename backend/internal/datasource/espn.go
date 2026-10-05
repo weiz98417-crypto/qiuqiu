@@ -236,19 +236,17 @@ func (r *espnRun) ingest(summary *EspnSummary) bool {
 	}
 	// 生命周期迁移:pre→in = kickoff,period 1→2 = halftime,completed = fulltime。
 	if r.lastState == "pre" && state.Type.State == "in" {
-		if !r.emitStatusEvent("kickoff", state, ledgerScore) {
-			return false
-		}
+		r.emitStatusEvent("kickoff", state, ledgerScore)
 	}
 	if r.lastPeriod == 1 && state.Period >= 2 {
-		if !r.emitStatusEvent("halftime", state, ledgerScore) {
-			return false
-		}
+		r.emitStatusEvent("halftime", state, ledgerScore)
 	}
 	if !r.lastCompleted && state.Type.Completed {
-		if !r.emitStatusEvent("fulltime", state, ledgerScore) {
-			return false
-		}
+		r.emitStatusEvent("fulltime", state, ledgerScore)
+		// 终场即收源(auto-hosting 2.6 design D5):不留悬挂轮询;Stop 会
+		// 停掉本 goroutine(ctx 取消),下一轮循环自然退出。
+		go r.manager.Stop(r.matchID)
+		return true
 	}
 	r.lastState = state.Type.State
 	r.lastPeriod = state.Period
@@ -263,9 +261,7 @@ func (r *espnRun) ingest(summary *EspnSummary) bool {
 		if matchEvent == nil {
 			continue
 		}
-		if !r.deliver(matchEvent) {
-			return false
-		}
+		r.deliver(matchEvent)
 		r.seen[keyEvent.ID] = true
 		r.manager.mu.Lock()
 		if run := r.manager.runs[r.matchID]; run != nil {
@@ -278,23 +274,21 @@ func (r *espnRun) ingest(summary *EspnSummary) bool {
 	return true
 }
 
-// deliver 落账一条事件;ErrDuplicate/ErrConflict(跨源仲裁)同为已消化。
-// 失败只记日志与源状态——本轮 seen 未标记,下轮快照 diff 自然重试。
-func (r *espnRun) deliver(matchEvent *matchstate.MatchEvent) bool {
+// deliver 落账一条事件;ErrDuplicate/ErrConflict(跨源仲裁)同为已消化,
+// 失败只记日志与源状态——seen 标记由调用方在成功后补,下轮快照 diff 重试。
+func (r *espnRun) deliver(matchEvent *matchstate.MatchEvent) {
 	_, _, err := r.manager.Ingest(r.manager.ctx, r.matchID, *matchEvent)
 	persisted := err == nil || errors.Is(err, matchstate.ErrDuplicate) || errors.Is(err, matchstate.ErrConflict)
 	if !persisted {
 		log.Printf("espn ingest: match=%q event=%q: %v", r.matchID, matchEvent.ProviderEventID, err)
 		r.manager.updateSourceError(r.matchID, err)
 	}
-	return true
 }
 
 // emitStatusEvent 落一条生命周期事件(ProviderEventID 稳定:espn:status:<code>;
 // clock 取 ESPN 状态时钟,账本要求 clock 必填)。
-func (r *espnRun) emitStatusEvent(eventType string, state EspnStatus, ledgerScore matchstate.Score) bool {
+func (r *espnRun) emitStatusEvent(eventType string, state EspnStatus, ledgerScore matchstate.Score) {
 	providerEventID := "espn:status:" + eventType
-	score := ledgerScore
 	clock := strings.TrimSpace(state.DisplayClock)
 	if clock == "" {
 		switch eventType {
@@ -306,22 +300,21 @@ func (r *espnRun) emitStatusEvent(eventType string, state EspnStatus, ledgerScor
 			clock = "90:00"
 		}
 	}
-	matchEvent := matchstate.MatchEvent{
+	r.deliver(&matchstate.MatchEvent{
 		MatchID:         r.matchID,
 		Source:          string(SourceESPN),
 		ProviderName:    "espn",
 		ProviderEventID: providerEventID,
 		EventType:       eventType,
 		Clock:           clock,
-		Score:           score,
+		Score:           ledgerScore,
 		Intensity:       3,
 		FactStatus:      matchstate.FactStatusProvisional,
 		Description:     espnStatusDescription(eventType),
 		Tags:            []string{"provider=espn", "fixture=" + r.eventID},
 		Visibility:      "public",
 		Status:          "active",
-	}
-	return r.deliver(&matchEvent)
+	})
 }
 
 func espnStatusDescription(eventType string) string {
@@ -335,26 +328,6 @@ func espnStatusDescription(eventType string) string {
 	default:
 		return eventType
 	}
-}
-
-func espnScore(summary *EspnSummary) matchstate.Score {
-	var score matchstate.Score
-	if len(summary.Header.Competitions) == 0 {
-		return score
-	}
-	for _, competitor := range summary.Header.Competitions[0].Competitors {
-		value, err := strconv.Atoi(competitor.Score)
-		if err != nil {
-			continue
-		}
-		switch competitor.HomeAway {
-		case "home":
-			score.Home = value
-		case "away":
-			score.Away = value
-		}
-	}
-	return score
 }
 
 // espnMatchEvent 把一条 ESPN keyEvent 映射成 provisional 账本事件。

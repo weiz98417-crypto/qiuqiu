@@ -7,6 +7,7 @@ package main
 // (内容本身就是用户自己说的话)。
 
 import (
+	"log"
 	"net/http"
 	"strings"
 	"time"
@@ -53,7 +54,9 @@ func handleThreadsAPI(manager *auth.Manager, cfg *config.Config, memories *memor
 		}
 		threads, err := memories.Threads(r.Context(), claims.Subject)
 		if err != nil {
-			// 账本缺席/降级 = 空列表,不是错误——客户端话题条静默隐藏。
+			// 账本缺席/降级 = 空列表,不是错误——客户端话题条静默隐藏;
+			// 照「错误只记日志」纪律落一条(非 panic 路径)。
+			log.Printf("threads api: list threads for %q: %v", claims.Subject, err)
 			writeThreads(w, nil)
 			return
 		}

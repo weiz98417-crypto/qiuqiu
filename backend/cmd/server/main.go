@@ -618,6 +618,10 @@ func main() {
 	// C3 球球懂我: the user-facing portrait page (read/edit/forget) on the
 	// privacy API's transport (session bearer auth, account-scoped).
 	mux.HandleFunc("/api/me/portrait", handlePortraitAPI(sessionManager, cfg, memoryQueue))
+	// 未完话题条(memory-surfacing 1.7)+共同瞬间页(1.4/1.5):用户侧只读面。
+	mux.HandleFunc("/api/me/threads", handleThreadsAPI(sessionManager, cfg, memoryQueue))
+	mux.HandleFunc("/api/me/moments", handleMomentsAPI(sessionManager, cfg, memoryQueue))
+	mux.HandleFunc("/api/me/moments/{momentId}", handleMomentsAPI(sessionManager, cfg, memoryQueue))
 	mux.HandleFunc("/api/matches/catalog", handleMatchCatalog(matchStore, cfg))
 	mux.HandleFunc("/api/matches/", handleMatchAPIWithOperatorAuth(matchStore, traceReader, demoResetter, cfg, llmClient, sourceManager, directorDrafts, interactionLedger, authz, operatorWrites))
 	// ADR-0008 operations console API: the three-tier IA data surface

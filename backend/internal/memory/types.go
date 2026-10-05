@@ -40,6 +40,9 @@ const (
 // moment to the match it was observed under (reflection-attribution: post-match
 // reflection labels the audit with the match the user actually watched).
 type Moment struct {
+	// ID 是向量路存储行的主键(memory-surfacing 1.4/1.5:共同瞬间页的忘掉
+	// 语义按它物理删除);contains 路/旧构造不填,仅列举面消费。
+	ID             string
 	UserID         string
 	Kind           MomentKind
 	Content        string

@@ -23,6 +23,7 @@ var autoConfirmableEventTypes = map[string]bool{
 	"substitution": true,
 	"kickoff":      true,
 	"halftime":     true,
+	"fulltime":     true,
 }
 
 const autoConfirmOperatorID = "auto:stability"
@@ -96,8 +97,6 @@ func (m *Manager) sweepStabilityConfirmations(now time.Time) {
 }
 
 func (m *Manager) sweepMatchStability(matchID string, now time.Time) {
-	// 漂移否决(coarse):本场最近一次上游漂移晚于窗起点即重置——一次 diff
-	// 信号否决全场待确认窗,窗口重新积累。漂移罕见,粗粒度够用且安全。
 	// 漂移否决(ADR-0024,序号制):本场漂移序号与窗口标记时记录的序号不一致
 	// 即重置窗口——无时钟比较,Windows 粒度下不失真。粗粒度:任一漂移重置全场。
 	var lastDriftSeq int64

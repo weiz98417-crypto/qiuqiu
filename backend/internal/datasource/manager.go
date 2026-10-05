@@ -414,9 +414,19 @@ func (m *Manager) consumeAPISports(ctx context.Context, matchID string, fixtureI
 				continue
 			}
 			if delivery.Kind != PollEventKind {
-				// 上游漂移(auto-hosting 2.1):消失/内容变化不产事实——登记
-				// 计数与描述供稳定窗否决与运营关注,确认投递不阻塞 poller。
+				// 上游漂移(auto-hosting 2.1):登记计数与描述供稳定窗否决与
+				// 运营关注,确认投递不阻塞 poller。
 				m.recordSourceDrift(matchID, delivery.Kind, standardEvent)
+				// 撤回待裁决标记(评审修复):撤回不再是纯静默——产一条
+				// provisional metadata 事实(var_check 类,信任表永远留运营),
+				// 运营据此裁决原事实(revoke/保留);driftSeq 重置已 hold 住
+				// 自动确认,标记给出裁决的入口。
+				if delivery.Kind == PollRetractedKind {
+					marker := retractionMarkerEvent(matchID, standardEvent)
+					if _, _, err := m.Ingest(ctx, matchID, marker); err != nil {
+						log.Printf("retraction marker ingest: match=%q: %v", matchID, err)
+					}
+				}
 				delivery.Acknowledge(true)
 				continue
 			}
@@ -702,4 +712,31 @@ func goalAlreadyCancelled(snapshot matchstate.Snapshot, goalFactID string) bool 
 func (m *Manager) Close() {
 	m.cancel()
 	m.wg.Wait()
+}
+
+// retractionMarkerEvent 把上游撤回转成一条待运营裁决的 metadata 事实
+// (评审修复:auto-hosting 2.1 的撤回语义——「登记待裁决」而非纯静默):
+// var_check 类事件在信任表永远留运营,描述指向被撤回事件,ProviderEventID
+// 带 retracted: 前缀保证同一撤回不重复落账。
+func retractionMarkerEvent(matchID string, retracted *event.StandardEvent) matchstate.MatchEvent {
+	if retracted == nil {
+		return matchstate.MatchEvent{}
+	}
+	description := fmt.Sprintf("上游撤回事件:%s %d' %s(%s)。请核对比赛记录。",
+		retracted.Type, retracted.Minute, retracted.Player.Name, strings.TrimSpace(retracted.Detail))
+	return matchstate.MatchEvent{
+		MatchID:         matchID,
+		Source:          string(SourceAPISports),
+		ProviderName:    "api-sports",
+		ProviderEventID: fmt.Sprintf("retracted:%s:%d", retracted.Type, retracted.ID),
+		Period:          "first_half",
+		Clock:           fmt.Sprintf("%02d:00", retracted.Minute),
+		EventType:       "var_check",
+		PlayerName:      retracted.Player.Name,
+		Intensity:       1,
+		FactStatus:      matchstate.FactStatusProvisional,
+		Description:     description,
+		Visibility:      "internal",
+		Status:          "active",
+	}
 }

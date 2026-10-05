@@ -1,15 +1,18 @@
 import 'package:flutter/material.dart';
 
+import '../services/moments_service.dart';
 import '../services/portrait_service.dart';
 import '../theme/app_theme.dart';
 
 /// 球球懂我 — the user-facing portrait page (C3). Lists the real stored
 /// portrait entries, edits text inline, and deletes with confirmation; the
 /// backend applies deletes as tombstones so the very next turn forgets.
+/// 共同瞬间段(memory-surfacing 1.4/1.5)同页展示 Moment 投影,忘掉=物理删除。
 class PortraitScreen extends StatefulWidget {
   final PortraitService service;
+  final SharedMomentsService? moments;
 
-  const PortraitScreen({super.key, required this.service});
+  const PortraitScreen({super.key, required this.service, this.moments});
 
   @override
   State<PortraitScreen> createState() => _PortraitScreenState();
@@ -21,11 +24,16 @@ class _PortraitScreenState extends State<PortraitScreen> {
   bool _loading = true;
   bool _busy = false;
   String? _notice;
+  Future<List<SharedMomentEntry>>? _momentsFuture;
+  final Set<String> _openMoments = {};
 
   @override
   void initState() {
     super.initState();
     _load();
+    if (widget.moments != null) {
+      _momentsFuture = widget.moments!.fetch();
+    }
   }
 
   Future<void> _load() async {
@@ -123,6 +131,50 @@ class _PortraitScreenState extends State<PortraitScreen> {
           subTopic: entry.subTopic,
           entryId: entry.id,
         ));
+  }
+
+  /// 忘掉一条共同瞬间(memory-surfacing 1.5):物理删除,列表即时移除;
+  /// 失败走 notice。
+  Future<void> _forgetMoment(SharedMomentEntry moment) async {
+    final moments = widget.moments;
+    if (moments == null) return;
+    final confirmed = await showDialog<bool>(
+      context: context,
+      builder: (dialogContext) => AlertDialog(
+        backgroundColor: AppColors.terrace,
+        title: const Text('让球球忘掉这个瞬间吗？'),
+        content: const Text('这条共同瞬间会被删除，球球之后不会再提起。'),
+        actions: [
+          TextButton(
+            onPressed: () => Navigator.pop(dialogContext, false),
+            child: const Text('再想想'),
+          ),
+          FilledButton(
+            style: FilledButton.styleFrom(
+              backgroundColor: AppColors.red,
+            ),
+            onPressed: () => Navigator.pop(dialogContext, true),
+            child: const Text('忘掉'),
+          ),
+        ],
+      ),
+    );
+    if (confirmed != true) return;
+    setState(() => _busy = true);
+    try {
+      await moments.forget(momentId: moment.id);
+      if (!mounted) return;
+      setState(() {
+        _openMoments.remove(moment.id);
+        _busy = false;
+      });
+    } catch (_) {
+      if (!mounted) return;
+      setState(() {
+        _notice = '操作没有成功，稍后再试试';
+        _busy = false;
+      });
+    }
   }
 
   Future<void> _forgetAll() async {
@@ -226,8 +278,7 @@ class _PortraitScreenState extends State<PortraitScreen> {
             children: [
               Icon(Icons.sports_soccer, size: 48, color: AppColors.muted),
               const SizedBox(height: AppSpacing.md),
-              Text('球球还在慢慢了解你',
-                  style: Theme.of(context).textTheme.titleLarge),
+              Text('球球还在慢慢了解你', style: Theme.of(context).textTheme.titleLarge),
               const SizedBox(height: AppSpacing.xs),
               Text(
                 '一起看几场球，球球会记住你的喜好；这里也会一点点丰富起来。',
@@ -299,6 +350,36 @@ class _PortraitScreenState extends State<PortraitScreen> {
               ),
             const SizedBox(height: AppSpacing.md),
           ],
+          // 共同瞬间(memory-surfacing 1.4/1.5):球球和你们一起经历的比赛
+          // 瞬间投影,可见可删(物理删除)。拉取失败静默隐藏——不是错误面。
+          FutureBuilder<List<SharedMomentEntry>>(
+            future: _momentsFuture,
+            builder: (context, snapshot) {
+              final moments = snapshot.data;
+              if (moments == null || moments.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              final visible = moments
+                  .where((moment) => !_openMoments.contains(moment.id))
+                  .toList(growable: false);
+              if (visible.isEmpty) {
+                return const SizedBox.shrink();
+              }
+              return Column(
+                crossAxisAlignment: CrossAxisAlignment.start,
+                children: [
+                  _SectionHeader(label: '共同瞬间'),
+                  const SizedBox(height: AppSpacing.xs),
+                  for (final moment in visible)
+                    _MomentTile(
+                      moment: moment,
+                      busy: _busy,
+                      onForget: () => _forgetMoment(moment),
+                    ),
+                ],
+              );
+            },
+          ),
         ],
       ),
     );
@@ -387,7 +468,8 @@ class _PortraitTile extends StatelessWidget {
                   ],
                 ),
                 const SizedBox(height: AppSpacing.xxs),
-                Text(entry.content, style: Theme.of(context).textTheme.bodyLarge),
+                Text(entry.content,
+                    style: Theme.of(context).textTheme.bodyLarge),
                 if (updatedAt != null) ...[
                   const SizedBox(height: AppSpacing.xxs),
                   Text(
@@ -410,6 +492,69 @@ class _PortraitTile extends StatelessWidget {
             tooltip: '让球球忘掉',
             onPressed: busy ? null : onForget,
             icon: const Icon(Icons.delete_outline),
+          ),
+        ],
+      ),
+    );
+  }
+}
+
+/// 共同瞬间瓦片(memory-surfacing 1.5):引导语+内容+忘掉按钮;与画像瓦片
+/// 同视觉语言(无编辑——瞬间是经历不是设置)。
+class _MomentTile extends StatelessWidget {
+  final SharedMomentEntry moment;
+  final bool busy;
+  final VoidCallback onForget;
+
+  const _MomentTile({
+    required this.moment,
+    required this.busy,
+    required this.onForget,
+  });
+
+  @override
+  Widget build(BuildContext context) {
+    return Container(
+      margin: const EdgeInsets.only(bottom: AppSpacing.xs),
+      padding: const EdgeInsets.symmetric(
+        horizontal: AppSpacing.md,
+        vertical: AppSpacing.sm,
+      ),
+      decoration: BoxDecoration(
+        color: AppColors.terrace.withValues(alpha: 0.6),
+        borderRadius: BorderRadius.circular(10),
+      ),
+      child: Row(
+        crossAxisAlignment: CrossAxisAlignment.start,
+        children: [
+          Expanded(
+            child: Column(
+              crossAxisAlignment: CrossAxisAlignment.start,
+              children: [
+                Text(
+                  moment.displayLabel,
+                  style: Theme.of(context).textTheme.labelMedium?.copyWith(
+                        color: AppColors.muted,
+                      ),
+                ),
+                const SizedBox(height: 2),
+                Text(
+                  moment.content,
+                  softWrap: true,
+                  style: Theme.of(context).textTheme.bodyLarge?.copyWith(
+                        color: AppColors.ink,
+                        height: 1.45,
+                      ),
+                ),
+              ],
+            ),
+          ),
+          IconButton(
+            tooltip: '忘掉',
+            onPressed: busy ? null : onForget,
+            icon: const Icon(Icons.auto_delete_outlined),
+            iconSize: 20,
+            color: AppColors.muted,
           ),
         ],
       ),

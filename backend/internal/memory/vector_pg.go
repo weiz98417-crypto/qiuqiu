@@ -258,3 +258,64 @@ func cosine(a, b []float32) float64 {
 	}
 	return dot / (math.Sqrt(normA) * math.Sqrt(normB))
 }
+
+// MomentLister 是共同瞬间页(memory-surfacing 1.4/1.5)的窄接缝:按用户
+// 倒序列举已嵌瞬间——与 ThreadStore 同模式的能力断言接口,向量路缺位时
+// 上层降级空列表。忘掉语义挂 tombstone overlay(画像页同款),本接口只出
+// 活行。
+type MomentLister interface {
+	ListMoments(ctx context.Context, userID string, limit, offset int) ([]Moment, error)
+	// ForgetMoment 物理删除一条瞬间(隐私生命周期:用户要求忘掉的内容
+	// 不留存——区别于画像的 tombstone 留痕)。
+	ForgetMoment(ctx context.Context, userID, momentID string) error
+}
+
+// ListMoments 按发生时间倒序列举(新瞬间在前),分页语义 offset/limit。
+func (s *PostgresVectorStore) ListMoments(ctx context.Context, userID string, limit, offset int) ([]Moment, error) {
+	if s == nil || s.pool == nil {
+		return nil, fmt.Errorf("vector store unavailable")
+	}
+	if limit <= 0 {
+		limit = 20
+	}
+	if offset < 0 {
+		offset = 0
+	}
+	rows, err := s.pool.Query(ctx, `
+SELECT id, kind, content, importance, occurred_at FROM embedding_moments
+WHERE user_id = $1
+ORDER BY occurred_at DESC, id DESC
+LIMIT $2 OFFSET $3`, userID, limit, offset)
+	if err != nil {
+		return nil, fmt.Errorf("vector store list: %w", err)
+	}
+	defer rows.Close()
+	moments := make([]Moment, 0, limit)
+	for rows.Next() {
+		var moment Moment
+		var kind, momentID string
+		if err := rows.Scan(&momentID, &kind, &moment.Content, &moment.Importance, &moment.OccurredAt); err != nil {
+			return nil, fmt.Errorf("vector store list scan: %w", err)
+		}
+		moment.ID = momentID
+		moment.UserID = userID
+		moment.Kind = MomentKind(kind)
+		moments = append(moments, moment)
+	}
+	return moments, rows.Err()
+}
+
+// ForgetMoment 物理删除指定瞬间(带 user_id 校验,防跨账号删除)。
+func (s *PostgresVectorStore) ForgetMoment(ctx context.Context, userID, momentID string) error {
+	if s == nil || s.pool == nil {
+		return fmt.Errorf("vector store unavailable")
+	}
+	tag, err := s.pool.Exec(ctx, `DELETE FROM embedding_moments WHERE user_id = $1 AND id = $2`, userID, momentID)
+	if err != nil {
+		return fmt.Errorf("vector store forget: %w", err)
+	}
+	if tag.RowsAffected() == 0 {
+		return ErrNotFound
+	}
+	return nil
+}

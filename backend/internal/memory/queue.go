@@ -1304,3 +1304,27 @@ var (
 	_ ThreadStore = (*Queue)(nil)
 	_ ThreadStore = (*Fake)(nil)
 )
+
+// ListMoments 把共同瞬间页(memory-surfacing 1.4/1.5)的列举请求转发给
+// 向量路的 MomentLister 能力;缺位(无向量库/接口未实现)降级空列表——
+// 页面静默隐藏,与 Threads 的降级纪律一致。
+func (q *Queue) ListMoments(ctx context.Context, userID string, limit, offset int) ([]Moment, error) {
+	if q == nil {
+		return nil, ErrNotSupported
+	}
+	if lister, ok := q.vectorStore.(MomentLister); ok {
+		return lister.ListMoments(ctx, userID, limit, offset)
+	}
+	return nil, ErrNotSupported
+}
+
+// ForgetMoment 物理删除一条共同瞬间(用户侧「忘掉」),转发同上。
+func (q *Queue) ForgetMoment(ctx context.Context, userID, momentID string) error {
+	if q == nil {
+		return ErrNotSupported
+	}
+	if lister, ok := q.vectorStore.(MomentLister); ok {
+		return lister.ForgetMoment(ctx, userID, momentID)
+	}
+	return ErrNotSupported
+}

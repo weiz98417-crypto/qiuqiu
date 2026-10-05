@@ -16,6 +16,7 @@ import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
 import '../services/match_session_controller.dart';
 import '../services/match_view_data.dart';
+import '../services/moments_service.dart';
 import '../services/match_overview_service.dart';
 import '../services/portrait_service.dart';
 import '../services/reply_reason.dart';
@@ -1211,6 +1212,11 @@ class _MatchScreenState extends State<MatchScreen> {
       MaterialPageRoute(
         builder: (_) => PortraitScreen(
           service: PortraitService(
+            baseUrl: normalizeAPIBaseURL(_socketUrl()),
+            sessions: _sessions,
+            deviceId: _deviceId,
+          ),
+          moments: SharedMomentsService(
             baseUrl: normalizeAPIBaseURL(_socketUrl()),
             sessions: _sessions,
             deviceId: _deviceId,
