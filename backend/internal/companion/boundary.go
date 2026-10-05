@@ -283,7 +283,7 @@ func userAgentToolSchemas() []ToolSchema {
 // classifyAndRoute 是话轮管线的分类与路由阶段(agent-internals 3.3):关键词
 // 分类 → LLM 路由(keyword-miss 单次)→ 置信门降级 → 路由建议采纳资格。
 // 从 HandleBoundaryRequest 抽出的命名阶段,行为与内联时期逐字节一致。
-func (a *Agent) classifyAndRoute(ctx context.Context, req AgentBoundaryRequest) (Intent, string, *router.Result, bool, string) {
+func (a *Agent) classifyAndRoute(ctx context.Context, req AgentBoundaryRequest) (Intent, Trace, *router.Result, bool, string) {
 	intent := Classify(req.Text)
 	requestTraceID := traceID(req.Now)
 	if signalID := strings.TrimSpace(req.SignalID); signalID != "" && len(signalID) <= 256 {
@@ -335,7 +335,7 @@ func (a *Agent) classifyAndRoute(ctx context.Context, req AgentBoundaryRequest) 
 	if routed != nil && routerReplyEligibleIntent(intent) {
 		routerChatReply = strings.TrimSpace(routed.Reply)
 	}
-	return intent, requestTraceID, routed, routedCasual, routerChatReply
+	return intent, trace, routed, routedCasual, routerChatReply
 }
 
 // newUserTurnTrace 构造用户回合的初始 trace(管线第二阶段的命名化)。

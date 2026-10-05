@@ -623,13 +623,12 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	start := time.Now()
 	// 管线命名阶段(agent-internals 3.3):classify→handle→policy→realize→
 	// guard→落账,各阶段函数可单测;HandleBoundaryRequest 只做阶段编排。
-	intent, requestTraceID, routed, routedCasual, routerChatReply := a.classifyAndRoute(ctx, req)
-	trace := a.newUserTurnTrace(req, intent, requestTraceID)
+	intent, trace, routed, routedCasual, routerChatReply := a.classifyAndRoute(ctx, req)
 
 	handling, err := intentRegistry.handle(a, intent, &userTurn{
 		ctx:            ctx,
 		req:            req,
-		requestTraceID: requestTraceID,
+		requestTraceID: trace.ID,
 		trace:          &trace,
 	})
 	if err != nil {
