@@ -524,7 +524,7 @@ func main() {
 			log.Fatalf("postgres memory threads: %v", err)
 		}
 		defer memoryThreads.Close()
-		queueOptions := []memory.QueueOption{memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads), memory.WithPortraitOverlays(memoryRecords)}
+		queueOptions := []memory.QueueOption{memory.WithReflections(memoryRecords), memory.WithThreads(memoryThreads), memory.WithPortraitOverlays(memoryRecords), memory.WithCitationStore(memoryRecords)}
 		// 画像冲突操作集（portrait-maintenance 阶段一）：Reflection 把新主
 		// 张并入权威层前先经 structured seam 判定 ADD/UPDATE/DELETE/NOOP。
 		// 未配判定模型（CI/evals）即盲 ADD——冲突知识集中在操作集一处，是

@@ -103,6 +103,9 @@ type Queue struct {
 	backlog     BacklogStore
 	threads     ThreadStore
 	portraits   PortraitOverlayStore
+	// citationStore 是反思引用序列的持久化面(agent-internals 3.5):有 PG
+	// 时写穿+消费走库(重启审计链不断),nil 退回内存 map(现状行为)。
+	citationStore CitationStore
 
 	// 向量召回路（openspec/changes/semantic-memory）：双路之一，任何故障
 	// 弃权即现状行为。
@@ -125,7 +128,10 @@ type Queue struct {
 	claims     map[string][]PortraitClaim
 	claimOrder []string
 
-	items        chan enqueueItem
+	items chan enqueueItem
+	// vectorSlots 是向量嵌身的并发上限(agent-internals 3.5b):事件风暴下
+	// 裸 goroutine 无界,超限即弃权(contains 路覆盖)。
+	vectorSlots  chan struct{}
 	dropped      atomic.Int64
 	backlogBatch int
 
@@ -176,6 +182,22 @@ func WithRecallDecay(days float64) QueueOption {
 }
 
 // WithReflections attaches the reflection audit sink.
+// CitationStore 是待反思引用序列的持久化接缝(PostgresRecords 实现);
+// 与 ThreadStore 同模式的能力断言,缺位退回内存。
+type CitationStore interface {
+	AppendCitation(ctx context.Context, userID string, sequence int64) error
+	TakeCitations(ctx context.Context, userID string) ([]int64, error)
+}
+
+// WithCitationStore 挂引用序列持久化;nil 忽略。
+func WithCitationStore(store CitationStore) QueueOption {
+	return func(q *Queue) {
+		if store != nil {
+			q.citationStore = store
+		}
+	}
+}
+
 func WithReflections(sink ReflectionSink) QueueOption {
 	return func(q *Queue) {
 		if sink != nil {
@@ -374,7 +396,16 @@ func (q *Queue) observeVector(moment Moment) {
 	if q.vectorStore == nil || q.embedder == nil {
 		return
 	}
+	// 并发上限(agent-internals 3.5b):裸 goroutine 在事件风暴下无界——
+	// 信号量收口,超限时刻的向量路弃权(contains 路仍覆盖,降级矩阵语义)。
+	select {
+	case q.vectorSlots <- struct{}{}:
+	default:
+		log.Printf("memory: vector path saturated, dropping moment for user %q (contains path still covers it)", moment.UserID)
+		return
+	}
 	go func() {
+		defer func() { <-q.vectorSlots }()
 		for attempt := 0; attempt < 2; attempt++ {
 			embedCtx, cancel := context.WithTimeout(context.Background(), vectorEmbedTimeout)
 			vector, err := q.embedder.Embed(embedCtx, moment.Content)
@@ -1123,6 +1154,16 @@ func (q *Queue) forgetCitationUser(userID string) {
 }
 
 func (q *Queue) trackCitation(userID string, sequence int64) {
+	// 持久化面(agent-internals 3.5):有 CitationStore 时写穿 PG——内存 map
+	// 仅作 store 缺席时的兜底与 store 故障时的重试余量。
+	if q.citationStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		if err := q.citationStore.AppendCitation(ctx, userID, sequence); err != nil {
+			log.Printf("memory: append citation for %q seq %d: %v", userID, sequence, err)
+		}
+		return
+	}
 	q.pendingMu.Lock()
 	defer q.pendingMu.Unlock()
 	if _, tracked := q.citations[userID]; !tracked {
@@ -1143,6 +1184,16 @@ func (q *Queue) trackCitation(userID string, sequence int64) {
 }
 
 func (q *Queue) takeCitations(userID string) []int64 {
+	// 持久化面(agent-internals 3.5):消费走 PG;故障降级内存兜底。
+	if q.citationStore != nil {
+		ctx, cancel := context.WithTimeout(context.Background(), 3*time.Second)
+		defer cancel()
+		cited, err := q.citationStore.TakeCitations(ctx, userID)
+		if err == nil {
+			return cited
+		}
+		log.Printf("memory: take citations for %q: %v (falling back to memory)", userID, err)
+	}
 	q.pendingMu.Lock()
 	defer q.pendingMu.Unlock()
 	cited := q.citations[userID]
@@ -1328,3 +1379,7 @@ func (q *Queue) ForgetMoment(ctx context.Context, userID, momentID string) error
 	}
 	return ErrNotSupported
 }
+
+// vectorConcurrencyLimit 是向量嵌身 goroutine 的并发上限(3.5b):事件风暴
+// 下裸 goroutine 无界;超限即弃权,contains 路仍覆盖(降级矩阵语义)。
+const vectorConcurrencyLimit = 8
