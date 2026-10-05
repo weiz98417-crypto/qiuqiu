@@ -982,6 +982,7 @@ func completeVoiceSessionWithOptions(ctx context.Context, agent *companion.Agent
 		Text:                result.Text,
 		Timezone:            strings.TrimSpace(options.Timezone),
 		Talkativeness:       options.Talkativeness,
+		Settings:            options.Settings,
 		UserAffect:          options.UserAffect,
 		ProgressiveSchedule: options.ProgressiveSchedule,
 		Now:                 now,
