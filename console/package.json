@@ -10,7 +10,7 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "antd": "^6.0.0",
+    "antd": "^6.6.5",
     "react": "^19.0.0",
     "react-dom": "^19.0.0",
     "react-router-dom": "^7.0.0"
