@@ -5,7 +5,7 @@ go 1.25.0
 require (
 	github.com/gorilla/websocket v1.5.3
 	github.com/invopop/jsonschema v0.12.0
-	github.com/jackc/pgx/v5 v5.7.1
+	github.com/jackc/pgx/v5 v5.11.0
 	github.com/joho/godotenv v1.5.1
 	github.com/modelcontextprotocol/go-sdk v1.8.0
 	golang.org/x/crypto v0.27.0
@@ -29,6 +29,6 @@ require (
 	golang.org/x/oauth2 v0.35.0 // indirect
 	golang.org/x/sync v0.20.0 // indirect
 	golang.org/x/sys v0.41.0 // indirect
-	golang.org/x/text v0.18.0 // indirect
+	golang.org/x/text v0.29.0 // indirect
 	golang.org/x/time v0.15.0 // indirect
 )
