@@ -37,6 +37,8 @@ type Config struct {
 	RouterTimeoutMS            int
 	APISportsAPIKey            string
 	APISportsBaseURL           string
+	// 知识检索向量路余弦阈值(agent-internals A3):默认 0.55。
+	KnowledgeCosThreshold float64
 	// 自动托管稳定窗(auto-hosting,ADR-0024):provisional 事实自动确认前
 	// 需停留的秒数;0=禁用自动确认,默认 30。
 	AutoConfirmWindowSeconds int
@@ -104,31 +106,33 @@ func Load() *Config {
 	// keeps the layer disabled entirely — CI/evals behaviour is unchanged).
 	routerConfig := router.NewConfig(os.Getenv)
 	return &Config{
-		Port:                           getEnv("PORT", "8080"),
-		Environment:                    environment,
-		AppToken:                       strings.TrimSpace(os.Getenv("APP_TOKEN")),
-		SecondaryAppToken:              strings.TrimSpace(os.Getenv("APP_TOKEN_SECONDARY")),
-		AuthMode:                       authMode,
-		SessionSigningKey:              sessionSigningKey,
-		AllowedOrigins:                 splitCSV(os.Getenv("ALLOWED_ORIGINS")),
-		DatabaseURL:                    getEnv("DATABASE_URL", ""),
-		RedisAddr:                      getEnv("REDIS_ADDR", "localhost:6379"),
-		MiMoAPIKey:                     getEnv("MIMO_API_KEY", ""),
-		MiMoBaseURL:                    getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
-		MiMoModel:                      getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
-		EmbeddingBaseURL:               strings.TrimSpace(getEnv("EMBEDDING_BASE_URL", "")),
-		EmbeddingModel:                 getEnv("EMBEDDING_MODEL", "bge-m3"),
-		RecallDecayDays:                getEnvInt("RECALL_DECAY_DAYS", 14),
-		KnowledgeDir:                   strings.TrimSpace(getEnv("KNOWLEDGE_DIR", "")),
-		MiMoVoice:                      getEnv("MIMO_VOICE", "冰糖"),
-		CompanionRealizerTimeoutMS:     getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
-		RouterAPIKey:                   routerConfig.APIKey,
-		RouterBaseURL:                  routerConfig.BaseURL,
-		RouterModel:                    routerConfig.Model,
-		RouterTimeoutMS:                int(routerConfig.Timeout / time.Millisecond),
-		APISportsAPIKey:                strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
-		APISportsBaseURL:               getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
-		AutoConfirmWindowSeconds:       getEnvInt("QIUQIU_AUTOCONFIRM_WINDOW_SECONDS", 30),
+		Port:                       getEnv("PORT", "8080"),
+		Environment:                environment,
+		AppToken:                   strings.TrimSpace(os.Getenv("APP_TOKEN")),
+		SecondaryAppToken:          strings.TrimSpace(os.Getenv("APP_TOKEN_SECONDARY")),
+		AuthMode:                   authMode,
+		SessionSigningKey:          sessionSigningKey,
+		AllowedOrigins:             splitCSV(os.Getenv("ALLOWED_ORIGINS")),
+		DatabaseURL:                getEnv("DATABASE_URL", ""),
+		RedisAddr:                  getEnv("REDIS_ADDR", "localhost:6379"),
+		MiMoAPIKey:                 getEnv("MIMO_API_KEY", ""),
+		MiMoBaseURL:                getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
+		MiMoModel:                  getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		EmbeddingBaseURL:           strings.TrimSpace(getEnv("EMBEDDING_BASE_URL", "")),
+		EmbeddingModel:             getEnv("EMBEDDING_MODEL", "bge-m3"),
+		RecallDecayDays:            getEnvInt("RECALL_DECAY_DAYS", 14),
+		KnowledgeDir:               strings.TrimSpace(getEnv("KNOWLEDGE_DIR", "")),
+		MiMoVoice:                  getEnv("MIMO_VOICE", "冰糖"),
+		CompanionRealizerTimeoutMS: getEnvInt("COMPANION_REALIZER_TIMEOUT_MS", 5000),
+		RouterAPIKey:               routerConfig.APIKey,
+		RouterBaseURL:              routerConfig.BaseURL,
+		RouterModel:                routerConfig.Model,
+		RouterTimeoutMS:            int(routerConfig.Timeout / time.Millisecond),
+		APISportsAPIKey:            strings.TrimSpace(os.Getenv("APISPORTS_API_KEY")),
+		APISportsBaseURL:           getEnv("APISPORTS_BASE_URL", "https://v3.football.api-sports.io"),
+		AutoConfirmWindowSeconds:   getEnvInt("QIUQIU_AUTOCONFIRM_WINDOW_SECONDS", 30),
+		// 知识检索向量路余弦阈值(agent-internals A3):默认 0.55。
+		KnowledgeCosThreshold:          getEnvFloat("QIUQIU_KNOWLEDGE_COS_THRESHOLD", 0.55),
 		PrivacyRetentionDays:           getEnvInt("PRIVACY_RETENTION_DAYS", 30),
 		PendingObservationCoordination: getEnvBool("PENDING_OBSERVATION_COORDINATION", true),
 		FactLedgerPublicReads:          getEnvBool("FACT_LEDGER_PUBLIC_READS", true),

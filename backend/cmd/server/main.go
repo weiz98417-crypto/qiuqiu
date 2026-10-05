@@ -399,6 +399,8 @@ func main() {
 		if err != nil {
 			log.Fatalf("knowledge library: %v", err)
 		}
+		// 向量路余弦阈值 config 化(agent-internals A3)。
+		library.SetCosThreshold(cfg.KnowledgeCosThreshold)
 		knowledgeLibrary, knowledgeStore = library, store
 	}
 	// 订阅簿（openspec/changes/season-subscription）：有库走 Postgres

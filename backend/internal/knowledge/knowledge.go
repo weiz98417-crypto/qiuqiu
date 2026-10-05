@@ -51,6 +51,10 @@ type Library struct {
 	mu         sync.Mutex
 	topicVecs  map[int][]float32 // 惰性嵌条目主题（topics 以空格相连）
 	triggerIdx map[string][]int  // 事件类型 → 条目下标（confidence 降序）
+
+	// cosThresholdOverride 是向量路余弦阈值的 config 覆盖(agent-internals
+	// A3:阈值 config 化);nil = 默认 defaultCosThreshold。
+	cosThresholdOverride *float64
 }
 
 // Load 递归读取目录下全部 *.yaml 条目（子目录如 rules/、players/ 仅作
@@ -224,8 +228,12 @@ func (l *Library) Size() int {
 	return len(l.snapshot())
 }
 
-// Search 返回最匹配的条目：关键词路（双向 contains，命中数计分）优先，
-// 向量路补换说法（余弦 ≥ 0.55）；confidence 低于阈值视同无命中。nil 库安全。
+// Search 返回最匹配的条目(agent-internals A3:双路评分融合)。关键词路与
+// 向量路并行计分后融合——条目总分 = max(关键词分, 余弦分)取最高;并列时
+// 声明序优先。关键词分 = Topics 命中数/条目 Topics 数(双向 contains,避免
+// 多 topic 条目天然占优)+ Answer/Quote 命中 0.5(检索面扩展)。余弦 ≥
+// cosThreshold(默认 0.55,config 可调)才计分。confidence < MinConfidence
+// 视同无命中。nil 库安全。
 func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 	if l == nil {
 		return Entry{}, false
@@ -239,53 +247,66 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 		return Entry{}, false
 	}
 
-	best := -1
-	bestScore := 0
+	// 关键词路:Topics 双向 contains 每命中计 1,归一到条目 Topics 数;
+	// Answer/Quote 正文命中加 0.5(检索面扩展)。
+	keywordScore := make([]float64, len(entries))
 	for i, entry := range entries {
-		score := 0
+		score := 0.0
+		topicCount := 0
 		for _, topic := range entry.Topics {
 			topic = strings.ToLower(strings.TrimSpace(topic))
 			if topic == "" {
 				continue
 			}
+			topicCount++
 			if strings.Contains(normalized, topic) || strings.Contains(topic, normalized) {
 				score++
 			}
 		}
-		if score > bestScore {
-			bestScore = score
+		if topicCount == 0 {
+			topicCount = 1
+		}
+		if body := strings.ToLower(entry.Answer + " " + entry.Quote); strings.Contains(body, normalized) {
+			score += 0.5
+		}
+		keywordScore[i] = score / float64(topicCount)
+	}
+
+	// 向量路:query 嵌入对 topic 向量余弦,过阈值才计分;嵌入失败该路弃权。
+	vectorScore := make([]float64, len(entries))
+	if l.embedder != nil {
+		queryCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
+		defer cancel()
+		if queryVector, err := l.embedder.Embed(queryCtx, normalized); err == nil {
+			for i, entry := range entries {
+				vector, ok := l.topicVector(i, entry)
+				if !ok {
+					continue
+				}
+				if cos := cosine(queryVector, vector); cos >= l.cosThreshold() {
+					vectorScore[i] = cos
+				}
+			}
+		}
+	}
+
+	// 融合:双路取最高(任一路强信号即入选);全零 = 无命中。
+	best := -1
+	bestTotal := 0.0
+	for i := range entries {
+		total := keywordScore[i]
+		if vectorScore[i] > total {
+			total = vectorScore[i]
+		}
+		if total > bestTotal {
+			bestTotal = total
 			best = i
 		}
 	}
-	if best >= 0 && bestScore > 0 {
-		return l.guard(entries[best])
-	}
-
-	if l.embedder == nil {
+	if best < 0 {
 		return Entry{}, false
 	}
-	queryCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
-	defer cancel()
-	queryVector, err := l.embedder.Embed(queryCtx, normalized)
-	if err != nil {
-		return Entry{}, false
-	}
-	bestVec := -1
-	bestCos := 0.0
-	for i, entry := range entries {
-		vector, ok := l.topicVector(i, entry)
-		if !ok {
-			continue
-		}
-		if cos := cosine(queryVector, vector); cos > bestCos {
-			bestCos = cos
-			bestVec = i
-		}
-	}
-	if bestVec >= 0 && bestCos >= 0.55 {
-		return l.guard(entries[bestVec])
-	}
-	return Entry{}, false
+	return l.guard(entries[best])
 }
 
 // guard 应用确信度阈值：低确信条目视同不知道。
@@ -369,4 +390,27 @@ func Open(ctx context.Context, dir, databaseURL string, embedder Embedder, logf 
 		return nil, nil, err
 	}
 	return library, store, nil
+}
+
+// defaultCosThreshold 是向量路融合的默认余弦阈值(与硬编码时代一致)。
+const defaultCosThreshold = 0.55
+
+// SetCosThreshold 覆盖向量路余弦阈值(A3:阈值 config 化,main 从 env 装配);
+// nil 恢复默认。运行时只影响下一次 Search。
+func (l *Library) SetCosThreshold(threshold float64) {
+	if l == nil {
+		return
+	}
+	l.cosThresholdOverride = &threshold
+}
+
+// cosThreshold 返回向量路余弦阈值(config 覆盖优先,默认 defaultCosThreshold)。
+func (l *Library) cosThreshold() float64 {
+	if l == nil {
+		return defaultCosThreshold
+	}
+	if l.cosThresholdOverride != nil {
+		return *l.cosThresholdOverride
+	}
+	return defaultCosThreshold
 }
