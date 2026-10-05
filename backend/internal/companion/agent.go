@@ -621,68 +621,10 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 	// 一次 Memobase+pgvector);后台 beat 不经此入口,行为不变。
 	ctx = withTurnMemoryCache(ctx)
 	start := time.Now()
-	intent := Classify(req.Text)
-	requestTraceID := traceID(req.Now)
-	if signalID := strings.TrimSpace(req.SignalID); signalID != "" && len(signalID) <= 256 {
-		traceSignalID := signalID
-		if refresh := strings.TrimSpace(req.FactRefresh); refresh != "" {
-			traceSignalID += "\x00fact-refresh:" + refresh
-		}
-		requestTraceID = stableTraceID(req.UserID, req.MatchID, traceSignalID)
-	}
-	trace := Trace{
-		ID:        requestTraceID,
-		MatchID:   req.MatchID,
-		UserID:    req.UserID,
-		Input:     req.Text,
-		Intent:    intent,
-		Voice:     sanitizeVoiceMetadata(req.Voice),
-		CreatedAt: req.Now,
-	}
-	if trace.CreatedAt.IsZero() {
-		trace.CreatedAt = time.Now()
-	}
-	if intent == IntentSchedule {
-		scheduleIntent := ClassifyScheduleIntent(req.Text)
-		trace.Schedule = &scheduleIntent
-	}
-
-	// ADR-0009: a keyword-miss turn goes to the LLM router once (single
-	// attempt, client-enforced 6s timeout). Any routing failure leaves the
-	// turn exactly where it was — the legacy keyword-miss path is also the
-	// degradation path (locked decision 6).
-	routed := a.routeKeywordMiss(ctx, req, intent, &trace)
-	routedCasual := false
-	if routed != nil {
-		switch mapped := routedTurnIntent(routed.Intent); {
-		case mapped == IntentUnknown:
-			routedCasual = true
-		case confidenceGatedIntent(mapped) && routed.Confidence < routerConfidenceThreshold:
-			// Locked decision 5: below 0.7 a fact-class route is not trusted
-			// with the deterministic fact path; the turn degrades to the C1
-			// casual realization with the evidence preserved in the funnel.
-			// A low-confidence control command is never acted on at all.
-			if mapped == IntentControlCommand {
-				routed = nil
-			} else {
-				routedCasual = true
-			}
-		default:
-			intent = mapped
-			if intent == IntentSchedule && trace.Schedule == nil {
-				scheduleIntent := ClassifyScheduleIntent(req.Text)
-				trace.Schedule = &scheduleIntent
-			}
-		}
-		trace.Intent = intent
-	}
-	// Design decision 4: the router's reply suggestion is only consumed for
-	// the chat-class intents (and the degraded-casual unknown); deterministic
-	// fact paths own their wording and ignore it.
-	routerChatReply := ""
-	if routed != nil && routerReplyEligibleIntent(intent) {
-		routerChatReply = strings.TrimSpace(routed.Reply)
-	}
+	// 管线命名阶段(agent-internals 3.3):classify→handle→policy→realize→
+	// guard→落账,各阶段函数可单测;HandleBoundaryRequest 只做阶段编排。
+	intent, requestTraceID, routed, routedCasual, routerChatReply := a.classifyAndRoute(ctx, req)
+	trace := a.newUserTurnTrace(req, intent, requestTraceID)
 
 	handling, err := intentRegistry.handle(a, intent, &userTurn{
 		ctx:            ctx,

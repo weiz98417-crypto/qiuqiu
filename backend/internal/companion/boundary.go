@@ -1,7 +1,11 @@
 package companion
 
 import (
+	"context"
+	"strings"
 	"time"
+
+	"qiuqiu/internal/router"
 
 	"qiuqiu/internal/relationship"
 )
@@ -274,4 +278,79 @@ func userAgentToolSchemas() []ToolSchema {
 			Output:            map[string]string{"ok": "bool"},
 		},
 	}
+}
+
+// classifyAndRoute 是话轮管线的分类与路由阶段(agent-internals 3.3):关键词
+// 分类 → LLM 路由(keyword-miss 单次)→ 置信门降级 → 路由建议采纳资格。
+// 从 HandleBoundaryRequest 抽出的命名阶段,行为与内联时期逐字节一致。
+func (a *Agent) classifyAndRoute(ctx context.Context, req AgentBoundaryRequest) (Intent, string, *router.Result, bool, string) {
+	intent := Classify(req.Text)
+	requestTraceID := traceID(req.Now)
+	if signalID := strings.TrimSpace(req.SignalID); signalID != "" && len(signalID) <= 256 {
+		traceSignalID := signalID
+		if refresh := strings.TrimSpace(req.FactRefresh); refresh != "" {
+			traceSignalID += "\x00fact-refresh:" + refresh
+		}
+		requestTraceID = stableTraceID(req.UserID, req.MatchID, traceSignalID)
+	}
+	trace := a.newUserTurnTrace(req, intent, requestTraceID)
+	if intent == IntentSchedule {
+		scheduleIntent := ClassifyScheduleIntent(req.Text)
+		trace.Schedule = &scheduleIntent
+	}
+
+	// ADR-0009: a keyword-miss turn goes to the LLM router once (single
+	// attempt, client-enforced 6s timeout). Any routing failure leaves the
+	// turn exactly where it was — the legacy keyword-miss path is also the
+	// degradation path (locked decision 6).
+	routed := a.routeKeywordMiss(ctx, req, intent, &trace)
+	routedCasual := false
+	if routed != nil {
+		switch mapped := routedTurnIntent(routed.Intent); {
+		case mapped == IntentUnknown:
+			routedCasual = true
+		case confidenceGatedIntent(mapped) && routed.Confidence < routerConfidenceThreshold:
+			// Locked decision 5: below 0.7 a fact-class route is not trusted
+			// with the deterministic fact path; the turn degrades to the C1
+			// casual realization with the evidence preserved in the funnel.
+			// A low-confidence control command is never acted on at all.
+			if mapped == IntentControlCommand {
+				routed = nil
+			} else {
+				routedCasual = true
+			}
+		default:
+			intent = mapped
+			if intent == IntentSchedule && trace.Schedule == nil {
+				scheduleIntent := ClassifyScheduleIntent(req.Text)
+				trace.Schedule = &scheduleIntent
+			}
+		}
+		trace.Intent = intent
+	}
+	// Design decision 4: the router's reply suggestion is only consumed for
+	// the chat-class intents (and the degraded-casual unknown); deterministic
+	// fact paths own their wording and ignore it.
+	routerChatReply := ""
+	if routed != nil && routerReplyEligibleIntent(intent) {
+		routerChatReply = strings.TrimSpace(routed.Reply)
+	}
+	return intent, requestTraceID, routed, routedCasual, routerChatReply
+}
+
+// newUserTurnTrace 构造用户回合的初始 trace(管线第二阶段的命名化)。
+func (a *Agent) newUserTurnTrace(req AgentBoundaryRequest, intent Intent, requestTraceID string) Trace {
+	trace := Trace{
+		ID:        requestTraceID,
+		MatchID:   req.MatchID,
+		UserID:    req.UserID,
+		Input:     req.Text,
+		Intent:    intent,
+		Voice:     sanitizeVoiceMetadata(req.Voice),
+		CreatedAt: req.Now,
+	}
+	if trace.CreatedAt.IsZero() {
+		trace.CreatedAt = time.Now()
+	}
+	return trace
 }
