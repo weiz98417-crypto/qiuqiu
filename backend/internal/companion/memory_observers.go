@@ -58,6 +58,11 @@ func (a *Agent) recallMemoryBlock(ctx context.Context, userID, focus string, tra
 	if a == nil || a.memories == nil {
 		return ""
 	}
+	// 回合经济(agent-internals 3.1):同回合同焦点命中回合缓存,省一次
+	// Memobase HTTP+pgvector(约 300ms 预算);后台 beat 无缓存 context 行为不变。
+	if block, hit := cachedRecall(ctx, userID, focus); hit {
+		return block
+	}
 	recallCtx, cancel := context.WithTimeout(ctx, memoryRecallTimeout)
 	defer cancel()
 	recalls := a.memories.Recall(recallCtx, memory.Query{UserID: userID, Focus: focus, Limit: memoryRecallLimit})
@@ -66,7 +71,9 @@ func (a *Agent) recallMemoryBlock(ctx context.Context, userID, focus string, tra
 			"userId": userID, "limit": strconv.Itoa(memoryRecallLimit), "recalled": strconv.Itoa(len(recalls)),
 		}})
 	}
-	return memory.RenderRecallBlock(recalls)
+	block := memory.RenderRecallBlock(recalls)
+	storeRecall(ctx, userID, focus, block)
+	return block
 }
 
 // portraitMemoryBlock fetches the synthesized user model (ADR-0006 Portrait)
@@ -77,6 +84,10 @@ func (a *Agent) recallMemoryBlock(ctx context.Context, userID, focus string, tra
 func (a *Agent) portraitMemoryBlock(ctx context.Context, userID string, trace *Trace) string {
 	if a == nil || a.memories == nil {
 		return ""
+	}
+	// 回合经济(agent-internals 3.1):同回合命中回合缓存(agent-internals 3.1)。
+	if block, hit := cachedPortrait(ctx, userID); hit {
+		return block
 	}
 	portraitCtx, cancel := context.WithTimeout(ctx, memoryPortraitTimeout)
 	defer cancel()
@@ -93,6 +104,7 @@ func (a *Agent) portraitMemoryBlock(ctx context.Context, userID string, trace *T
 	if err != nil {
 		return ""
 	}
+	storePortrait(ctx, userID, portrait.Block)
 	return portrait.Block
 }
 

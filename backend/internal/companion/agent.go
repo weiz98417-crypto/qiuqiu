@@ -616,6 +616,10 @@ func (a *Agent) handleMessage(ctx context.Context, req MessageRequest) (Response
 }
 
 func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequest) (Response, error) {
+	// 回合经济(agent-internals 3.1):用户回合挂 per-turn 记忆缓存——
+	// fact 补充语织写与 realize 共享同一份 recall/portrait(每回合至多
+	// 一次 Memobase+pgvector);后台 beat 不经此入口,行为不变。
+	ctx = withTurnMemoryCache(ctx)
 	start := time.Now()
 	intent := Classify(req.Text)
 	requestTraceID := traceID(req.Now)
@@ -704,8 +708,9 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 
 	// 记忆进措辞层：事实应答补充语——recall 材料非空时补一句记忆衔接，
 	// 失败/拒绝即整句丢弃，事实本体措辞不变（design decision 4）。
-	reply = a.appendFactMemoryCallback(ctx, req, intent, reply, requiredAnchors, &trace)
-
+	// 回合经济（agent-internals 3.1）：织写移到 policy 决策之后——chosen_silence
+	// 回合不再发起注定被丢弃的 LLM+Recall（约 1.1s 预算）；非沉默回合与
+	// realize 同批（决策后消费，与 evals「措辞不变」断言兼容）。
 	recentPhraseHashes := a.recentPhraseHashes(ctx, req.MatchID, req.UserID, allowRealize, &trace)
 	if err := a.tools.WriteTrace(ctx, trace); err != nil {
 		return Response{}, err
@@ -722,6 +727,7 @@ func (a *Agent) HandleBoundaryRequest(ctx context.Context, req AgentBoundaryRequ
 		trace.Reason = ReasonRelationshipChosenSilence
 		trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallResponseEmitCompanionReply, Args: map[string]string{"mode": "silence"}})
 	} else if allowRealize && decision != nil && (shouldRealizeUserTurn(intent, *decision) || (intent == IntentUnknown && routerChatReply != "")) {
+		reply = a.appendFactMemoryCallback(ctx, req, intent, reply, requiredAnchors, &trace)
 		reply = a.reliableFallbackForDecision(ctx, req, intent, reply, *decision)
 		// Design decision 4: when the router already suggested a natural
 		// reply for a chat-class turn, it is realized directly through the
@@ -949,7 +955,6 @@ func (a *Agent) recordObservation(ctx context.Context, req AgentBoundaryRequest,
 	trace.Observation = &recorded
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallObservationRecord, Args: map[string]string{"status": string(recorded.Status), "observationId": recorded.ID}})
 }
-
 
 func smalltalkFallbackReply(input string) string {
 	switch {
