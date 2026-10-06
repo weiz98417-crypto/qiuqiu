@@ -19,6 +19,12 @@ export interface KnowledgeEntry {
   dueReview: boolean;
   triggers?: string[];
   quote?: string;
+  // 检索后处理参数学五字段（knowledge-worldinfo）：默认值=现状行为。
+  priority: number;
+  inclusionGroup: string;
+  stickyTurns: number;
+  cooldownTurns: number;
+  probability: number;
   createdBy: string;
   createdAt: string;
   updatedAt: string;
@@ -39,14 +45,20 @@ export interface KnowledgeQuery {
   pageSize?: number;
 }
 
-// PUT 请求体：与 ADR-0017 字段一致。triggers/quote 属判罚事件附句策展，
-// 表单不编辑（后端保存时保留存量织写锚）。
+// PUT 请求体：与 ADR-0017 字段一致 + 后处理参数学五字段
+// （knowledge-worldinfo）。triggers/quote 属判罚事件附句策展，表单不编辑
+// （后端保存时保留存量织写锚）。
 export interface KnowledgeUpdate {
   topics: string[];
   answer: string;
   source: string;
   confidence: number;
   effectiveAt: string;
+  priority: number;
+  inclusionGroup: string;
+  stickyTurns: number;
+  cooldownTurns: number;
+  probability: number;
 }
 
 // POST（新建条目）请求体：id 由策展人命名（slug），其余字段与更新一致；
@@ -92,10 +104,23 @@ export const knowledgeStatusColors: Record<KnowledgeStatus, string> = {
 };
 
 // 表单校验口径（与后端 preparePut 同一约束的前端镜像）：confidence ∈
-// [0,1]；topics 至少一个关键词。
+// [0,1]；topics 至少一个关键词；probability ∈ [0,1]（0=必中，后端归一
+// 为 1）；sticky/cooldown 非负整数。
 export function validateKnowledgeConfidence(value: number | null): string | undefined {
   if (value === null || Number.isNaN(value)) return '请填写确信度';
   if (value < 0 || value > 1) return '确信度必须在 0 到 1 之间';
+  return undefined;
+}
+
+export function validateKnowledgeProbability(value: number | null): string | undefined {
+  if (value === null || Number.isNaN(value)) return '请填写触发概率';
+  if (value < 0 || value > 1) return '触发概率必须在 0 到 1 之间';
+  return undefined;
+}
+
+export function validateKnowledgeTurns(value: number | null): string | undefined {
+  if (value === null || Number.isNaN(value)) return '请填写轮数';
+  if (!Number.isInteger(value) || value < 0) return '轮数必须是非负整数';
   return undefined;
 }
 

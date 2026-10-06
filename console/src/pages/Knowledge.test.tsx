@@ -3,7 +3,7 @@ import { fireEvent, render, screen, waitFor, cleanup } from '@testing-library/re
 import '@testing-library/jest-dom/vitest';
 import { App as AntApp } from 'antd';
 import Knowledge from './Knowledge';
-import { validateKnowledgeConfidence } from '../api/knowledge';
+import { validateKnowledgeConfidence, validateKnowledgeProbability, validateKnowledgeTurns } from '../api/knowledge';
 import type { KnowledgeEntry, KnowledgeList } from '../api/knowledge';
 
 // 知识策展台组件测试（knowledge-curation-console 7.3）：列表渲染（生效状态
@@ -58,6 +58,11 @@ function entry(overrides: Partial<KnowledgeEntry>): KnowledgeEntry {
     effectiveAt: '2026-07-01T00:00:00Z',
     status: 'active',
     dueReview: false,
+    priority: 0,
+    inclusionGroup: '',
+    stickyTurns: 0,
+    cooldownTurns: 0,
+    probability: 1,
     createdBy: 'seed',
     createdAt: '2026-09-30T08:00:00Z',
     updatedAt: '2026-09-30T08:00:00Z',
@@ -180,7 +185,20 @@ describe('Knowledge 策展台', () => {
     expect(validateKnowledgeConfidence(1)).toBeUndefined();
   });
 
-  it('保存即生效：有效提交按契约形状 PUT（日期格式化 + 答案去空白）并刷新', async () => {
+  it('参数学校验口径（knowledge-worldinfo）：概率越界拒绝、0 合法；轮数负数与非整数拒绝', () => {
+    expect(validateKnowledgeProbability(null)).toBe('请填写触发概率');
+    expect(validateKnowledgeProbability(-0.1)).toBe('触发概率必须在 0 到 1 之间');
+    expect(validateKnowledgeProbability(1.5)).toBe('触发概率必须在 0 到 1 之间');
+    expect(validateKnowledgeProbability(0)).toBeUndefined();
+    expect(validateKnowledgeProbability(0.3)).toBeUndefined();
+    expect(validateKnowledgeTurns(null)).toBe('请填写轮数');
+    expect(validateKnowledgeTurns(-1)).toBe('轮数必须是非负整数');
+    expect(validateKnowledgeTurns(1.5)).toBe('轮数必须是非负整数');
+    expect(validateKnowledgeTurns(0)).toBeUndefined();
+    expect(validateKnowledgeTurns(3)).toBeUndefined();
+  });
+
+  it('保存即生效：有效提交按契约形状 PUT（日期格式化 + 答案去空白 + 参数学默认值）并刷新', async () => {
     knowledgeApiMocks.list.mockResolvedValue(listPayload([entry({})]));
     renderPage();
     await waitFor(() => expect(screen.getByText('rule-offside')).toBeInTheDocument());
@@ -198,10 +216,50 @@ describe('Knowledge 策展台', () => {
         effectiveAt: '2026-07-01',
         topics: ['越位', 'offside'],
         source: 'IFAB Law 11',
+        // 参数学五字段随保存透传（未改过=默认值，现状行为）。
+        priority: 0,
+        inclusionGroup: '',
+        stickyTurns: 0,
+        cooldownTurns: 0,
+        probability: 1,
       }),
     );
     // 保存成功后列表重取（保存即生效回显）。
     await waitFor(() => expect(knowledgeApiMocks.list).toHaveBeenCalledTimes(2));
+  });
+
+  it('参数学五字段：编辑预填服务端值、保存按原样透传（knowledge-worldinfo）', async () => {
+    knowledgeApiMocks.list.mockResolvedValue(
+      listPayload([entry({ priority: 7, inclusionGroup: '规则组', stickyTurns: 2, cooldownTurns: 5, probability: 0.35 })]),
+    );
+    renderPage();
+    await waitFor(() => expect(screen.getByText('rule-offside')).toBeInTheDocument());
+    fireEvent.click(screen.getByText('编辑'));
+    // 预填断言：抽屉里按 label 找到四个数字输入与一个文本输入的现值。
+    await waitFor(() => {
+      const spinbuttons = document.body.querySelectorAll('input[role="spinbutton"]');
+      expect(spinbuttons.length).toBeGreaterThanOrEqual(5);
+      expect((spinbuttons[0] as HTMLInputElement).value).toBe('0.95'); // 确信度
+      expect((spinbuttons[1] as HTMLInputElement).value).toBe('7'); // priority
+      expect((spinbuttons[2] as HTMLInputElement).value).toBe('2'); // sticky
+      expect((spinbuttons[3] as HTMLInputElement).value).toBe('5'); // cooldown
+      expect((spinbuttons[4] as HTMLInputElement).value).toBe('0.35'); // probability
+    });
+    const groupInput = document.body.querySelector('input[placeholder="如：越位规则组"]') as HTMLInputElement;
+    expect(groupInput.value).toBe('规则组');
+    // 保存：参数学五字段原样进 PUT payload。
+    fireEvent.click(screen.getByRole('button', { name: '保存并生效' }));
+    await waitFor(() => expect(knowledgeApiMocks.update).toHaveBeenCalled());
+    expect(knowledgeApiMocks.update).toHaveBeenCalledWith(
+      'rule-offside',
+      expect.objectContaining({
+        priority: 7,
+        inclusionGroup: '规则组',
+        stickyTurns: 2,
+        cooldownTurns: 5,
+        probability: 0.35,
+      }),
+    );
   });
 
   it('auditor 只读：无保存按钮，抽屉出只读警示', async () => {
@@ -267,6 +325,12 @@ describe('Knowledge 策展台', () => {
         source: 'IFAB Law 7',
         confidence: 0.9,
         effectiveAt: '2026-08-01',
+        // 新建态参数学默认值=现状行为（表单 initialValues）。
+        priority: 0,
+        inclusionGroup: '',
+        stickyTurns: 0,
+        cooldownTurns: 0,
+        probability: 1,
       }),
     );
     // 新建成功后列表重取。

@@ -5,6 +5,7 @@ import {
   Button,
   Card,
   DatePicker,
+  Divider,
   Drawer,
   Form,
   Input,
@@ -27,6 +28,8 @@ import {
   knowledgeStatusLabels,
   validateKnowledgeConfidence,
   validateKnowledgeId,
+  validateKnowledgeProbability,
+  validateKnowledgeTurns,
 } from '../api/knowledge';
 import type { KnowledgeEntry, KnowledgeList, KnowledgeStatus, KnowledgeUpdate } from '../api/knowledge';
 
@@ -38,6 +41,7 @@ const { Paragraph, Text } = Typography;
 // 保存即生效（后端 executeOperatorWrite + 审计），无草稿流（qiuqiu 运营
 // 一两人，直接保存 + 审计即足够，见 proposal Non-goals）。
 // 新建条目走同一抽屉（id 字段仅新建态出现），同 id 已存在由后端 409。
+// 检索后处理参数学五字段（knowledge-worldinfo）随表单策展：默认值=现状行为。
 
 interface KnowledgeFormValues {
   id?: string;
@@ -46,7 +50,22 @@ interface KnowledgeFormValues {
   source?: string;
   confidence: number;
   effectiveAt: Dayjs;
+  priority?: number;
+  inclusionGroup?: string;
+  stickyTurns?: number;
+  cooldownTurns?: number;
+  probability?: number;
 }
+
+// 新建态默认值=现状行为（后端归一口径的镜像：priority 0 / 组空 / 轮 0 /
+// p 1=必中）。
+const knowledgeParamDefaults = {
+  priority: 0,
+  inclusionGroup: '',
+  stickyTurns: 0,
+  cooldownTurns: 0,
+  probability: 1,
+};
 
 export default function Knowledge() {
   const { message: messageApi } = AntApp.useApp();
@@ -86,6 +105,11 @@ export default function Knowledge() {
         source: entry.source,
         confidence: entry.confidence,
         effectiveAt: dayjs(entry.effectiveAt),
+        priority: entry.priority ?? knowledgeParamDefaults.priority,
+        inclusionGroup: entry.inclusionGroup ?? knowledgeParamDefaults.inclusionGroup,
+        stickyTurns: entry.stickyTurns ?? knowledgeParamDefaults.stickyTurns,
+        cooldownTurns: entry.cooldownTurns ?? knowledgeParamDefaults.cooldownTurns,
+        probability: entry.probability ?? knowledgeParamDefaults.probability,
       });
     },
     [form],
@@ -113,6 +137,11 @@ export default function Knowledge() {
           source: (values.source ?? '').trim(),
           confidence: values.confidence,
           effectiveAt: values.effectiveAt.format('YYYY-MM-DD'),
+          priority: values.priority ?? knowledgeParamDefaults.priority,
+          inclusionGroup: (values.inclusionGroup ?? '').trim(),
+          stickyTurns: values.stickyTurns ?? knowledgeParamDefaults.stickyTurns,
+          cooldownTurns: values.cooldownTurns ?? knowledgeParamDefaults.cooldownTurns,
+          probability: values.probability ?? knowledgeParamDefaults.probability,
         };
         if (creating) {
           const id = (values.id ?? '').trim();
@@ -329,6 +358,7 @@ export default function Knowledge() {
             <Form<KnowledgeFormValues>
               form={form}
               layout="vertical"
+              initialValues={knowledgeParamDefaults}
               onFinish={(values) => void saveEntry(values)}
             >
               {creating ? (
@@ -394,6 +424,68 @@ export default function Knowledge() {
                 rules={[{ required: true, message: '请选择生效日期' }]}
               >
                 <DatePicker style={{ width: 200 }} format="YYYY-MM-DD" />
+              </Form.Item>
+              <Divider plain style={{ fontSize: 12 }}>
+                检索后处理参数（默认值=现状行为，可不填）
+              </Divider>
+              <Form.Item
+                name="priority"
+                label="预算优先级（priority）"
+                extra="越大越先占答案预算；默认 0 不参与重排"
+                rules={[
+                  { validator: (_rule, value: number | null) => {
+                      const problem = value === null || Number.isNaN(value) ? '请填写预算优先级' : undefined;
+                      return problem ? Promise.reject(new Error(problem)) : Promise.resolve();
+                    } },
+                ]}
+              >
+                <InputNumber style={{ width: 160 }} placeholder="0" />
+              </Form.Item>
+              <Form.Item
+                name="inclusionGroup"
+                label="互斥组（inclusion_group）"
+                extra="同组多条命中只出一条（优先级高者胜）；留空不互斥"
+              >
+                <Input placeholder="如：越位规则组" maxLength={64} />
+              </Form.Item>
+              <Form.Item
+                name="stickyTurns"
+                label="连续保位轮数（sticky_turns）"
+                extra="命中后 N 轮内存活即提到最前（连续话题优先）；0=不开"
+                rules={[
+                  { validator: (_rule, value: number | null) => {
+                      const problem = validateKnowledgeTurns(value);
+                      return problem ? Promise.reject(new Error(problem)) : Promise.resolve();
+                    } },
+                ]}
+              >
+                <InputNumber min={0} step={1} style={{ width: 160 }} placeholder="0" />
+              </Form.Item>
+              <Form.Item
+                name="cooldownTurns"
+                label="冷却轮数（cooldown_turns）"
+                extra="命中后 N 轮内不再出（冷却中换次优或如实说不知道）；0=不冷却"
+                rules={[
+                  { validator: (_rule, value: number | null) => {
+                      const problem = validateKnowledgeTurns(value);
+                      return problem ? Promise.reject(new Error(problem)) : Promise.resolve();
+                    } },
+                ]}
+              >
+                <InputNumber min={0} step={1} style={{ width: 160 }} placeholder="0" />
+              </Form.Item>
+              <Form.Item
+                name="probability"
+                label="触发概率（probability）"
+                extra="1=必中；低概率做偶发彩蛋。0 或留空视同必中，禁用条目请下架"
+                rules={[
+                  { validator: (_rule, value: number | null) => {
+                      const problem = validateKnowledgeProbability(value ?? knowledgeParamDefaults.probability);
+                      return problem ? Promise.reject(new Error(problem)) : Promise.resolve();
+                    } },
+                ]}
+              >
+                <InputNumber min={0} max={1} step={0.05} style={{ width: 160 }} placeholder="1" />
               </Form.Item>
             </Form>
           </>
