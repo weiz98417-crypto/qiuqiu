@@ -122,6 +122,9 @@ type Queue struct {
 	// 关闭，由 main.go 按 config 注入。
 	portraitDecayDays int
 	maintainer        *PortraitMaintainer
+	// writebackReviewer 是写回 dry-run 审查（memory-scoring 8.3）：nil =
+	// 直落（现状）。
+	writebackReviewer PortraitWritebackReviewer
 
 	// 待合并主张账本：与 citations 同款有界纪律（best-effort 反思提示，
 	// 绝不是正确性数据）。
@@ -139,6 +142,12 @@ type Queue struct {
 	citations       map[string][]int64
 	citationOrder   []string
 	recentMatchEnds map[string]time.Time
+	// pendingImportance 是「自上次 Reflection beat 以来新增 moment 的
+	// importance 累计」（memory-scoring 8.2）：idle 节奏内只反映「有新
+	// 料」的用户，低活跃用户由 main 侧 fallback 轮兜底。有界纪律与
+	// citations 同款（满员逐出最旧）。
+	pendingImportance        map[string]float64
+	pendingImportanceInOrder []string
 	// userMatches 是反思归因（reflection-attribution）：每个用户最近互动
 	// 过的比赛，插入序、最新的在尾部。只服务 post_match 审计标签，是
 	// best-effort 提示而非正确性数据，与 citations 同样的有界纪律。
@@ -248,6 +257,16 @@ func WithPortraitDecay(days int) QueueOption {
 	}
 }
 
+// WithWritebackReviewer attaches the writeback dry-run reviewer
+// (memory-scoring 8.3); nil = 写回直落（现状）。
+func WithWritebackReviewer(reviewer PortraitWritebackReviewer) QueueOption {
+	return func(q *Queue) {
+		if reviewer != nil {
+			q.writebackReviewer = reviewer
+		}
+	}
+}
+
 // WithVectorRecall 启用 pgvector 召回路（openspec/changes/semantic-memory）：
 // Observe 异步嵌 Moment，Recall 与 contains 路双路合并。store 或 embedder
 // 为 nil 即不启用（行为=现状）。
@@ -277,15 +296,16 @@ const (
 // without Postgres): observations still flow but decisions are only logged.
 func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options ...QueueOption) *Queue {
 	queue := &Queue{
-		adapter:         adapter,
-		audit:           audit,
-		backlog:         backlog,
-		items:           make(chan enqueueItem, queueCapacity),
-		backlogBatch:    20,
-		citations:       make(map[string][]int64),
-		recentMatchEnds: make(map[string]time.Time),
-		userMatches:     make(map[string][]string),
-		claims:          make(map[string][]PortraitClaim),
+		adapter:           adapter,
+		audit:             audit,
+		backlog:           backlog,
+		items:             make(chan enqueueItem, queueCapacity),
+		backlogBatch:      20,
+		citations:         make(map[string][]int64),
+		recentMatchEnds:   make(map[string]time.Time),
+		userMatches:       make(map[string][]string),
+		claims:            make(map[string][]PortraitClaim),
+		pendingImportance: make(map[string]float64),
 	}
 	for _, option := range options {
 		if option != nil {
@@ -297,7 +317,7 @@ func NewQueue(adapter *Memobase, audit AuditSink, backlog BacklogStore, options 
 	// 把操作判定送进与提取判定同一条 recordAudit 路径（账本 + console
 	// health tail 一起进）。
 	if queue.portraits != nil {
-		queue.maintainer = NewPortraitMaintainer(queue.portraits, queue.portraitOps, queue.portraitAuditSink())
+		queue.maintainer = NewPortraitMaintainer(queue.portraits, queue.portraitOps, queue.portraitAuditSink(), queue.writebackReviewer)
 	}
 	return queue
 }
@@ -353,6 +373,10 @@ func (q *Queue) Observe(_ context.Context, moment Moment) error {
 	}
 	if matchID := strings.TrimSpace(moment.MatchID); !empty && matchID != "" {
 		q.rememberUserMatch(moment.UserID, matchID)
+	}
+	if !empty {
+		// 8.2 重要性累计：idle 反思触发阈值的新料账（ReflectNow 取出清零）。
+		q.recordPendingImportance(moment.UserID, moment.Importance)
 	}
 	if !empty && moment.Importance >= MinExtractionImportance {
 		q.observeVector(moment)
@@ -450,6 +474,8 @@ func (q *Queue) Recall(ctx context.Context, query Query) []Recall {
 	if limit <= 0 {
 		limit = defaultRecallLimit
 	}
+	// 8.1 两腿同代：衰减窗口对齐下发（向量腿 applyRecencyDecay 同源配置）。
+	query.DecayDays = int(q.recallDecayDays)
 	var adapterPath []Recall
 	if adapterConfigured {
 		adapterPath = q.adapter.Recall(ctx, query)
@@ -980,6 +1006,10 @@ func (q *Queue) ReflectNow(ctx context.Context, userID, matchID, trigger string)
 	if q == nil || !q.adapter.Configured() {
 		return Portrait{}, ErrUnavailable
 	}
+	// 8.2：本 beat 消费掉重要性累计（取出即清）——账上的料已进本 beat 的
+	// flush/consolidate；beat 失败不回账（下一轮 beat 照常跑，累计从零
+	// 重新计，触发节奏不受影响）。
+	_ = q.takePendingImportance(userID)
 	cited := q.takeCitations(userID)
 	status := "refreshed"
 	detail := ""
@@ -1054,6 +1084,49 @@ func (q *Queue) TakeMatchEnds() []string {
 	}
 	q.recentMatchEnds = make(map[string]time.Time)
 	return ended
+}
+
+// ReflectImportanceThreshold 是 idle 反思的重要性累计门槛（memory-scoring
+// 8.2）：两三条有价值 moment 即达标（0.5 级 ×3）。低于门槛的用户在常规
+// idle 轮不再白跑（零新洞察的反思），main 侧 fallback 轮兜底低活跃用户。
+const ReflectImportanceThreshold = 1.5
+
+// recordPendingImportance 累计一个用户自上次 beat 以来的新料重要度；表满
+// 逐出最旧（与 citations 同款有界纪律）。
+func (q *Queue) recordPendingImportance(userID string, importance float64) {
+	if importance <= 0 {
+		return
+	}
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	if _, tracked := q.pendingImportance[userID]; !tracked {
+		q.pendingImportanceInOrder = append(q.pendingImportanceInOrder, userID)
+		for len(q.pendingImportanceInOrder) > maxCitationUsers {
+			oldest := q.pendingImportanceInOrder[0]
+			q.pendingImportanceInOrder = q.pendingImportanceInOrder[1:]
+			delete(q.pendingImportance, oldest)
+		}
+	}
+	q.pendingImportance[userID] += importance
+}
+
+// takePendingImportance 取出并清零一个用户的累计（beat 消费）。
+func (q *Queue) takePendingImportance(userID string) float64 {
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	pending := q.pendingImportance[userID]
+	delete(q.pendingImportance, userID)
+	return pending
+}
+
+// PendingImportance 返回一个用户当前的新料重要度累计（idle 触发判定用）。
+func (q *Queue) PendingImportance(userID string) float64 {
+	if q == nil {
+		return 0
+	}
+	q.pendingMu.Lock()
+	defer q.pendingMu.Unlock()
+	return q.pendingImportance[userID]
 }
 
 // rememberUserMatch records one match the user interacted under, most recent

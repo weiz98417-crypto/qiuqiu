@@ -38,7 +38,7 @@ func (a *noopAudit) RecordExtraction(_ context.Context, entry ExtractionAudit) e
 func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
-	maintainer := NewPortraitMaintainer(store, nil, nil)
+	maintainer := NewPortraitMaintainer(store, nil, nil, nil)
 
 	// ADD：新槽位主张开新条目（valid_from 生效、valid_to 全域）。
 	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
@@ -54,7 +54,7 @@ func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 
 	// UPDATE：同槽新值取代旧值——旧条目 valid_to 封口、新条目生效。
 	decider := scriptedDecider{decision: OpDecision{Op: PortraitOpUpdate, TargetID: 1, Reason: "换主队"}}
-	updater := NewPortraitMaintainer(store, decider, nil)
+	updater := NewPortraitMaintainer(store, decider, nil, nil)
 	if _, err := updater.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); err != nil {
 		t.Fatalf("UPDATE consolidate: %v", err)
 	}
@@ -73,7 +73,7 @@ func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 	// DELETE：主张明示条目作废——封口 + 开放墓碑两行，墓碑遮蔽同槽、
 	// 永不物理删。
 	decider = scriptedDecider{decision: OpDecision{Op: PortraitOpDelete, TargetID: 2, Reason: "不再成立"}}
-	deleter := NewPortraitMaintainer(store, decider, nil)
+	deleter := NewPortraitMaintainer(store, decider, nil, nil)
 	if _, err := deleter.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我没有主队了。"}); err != nil {
 		t.Fatalf("DELETE consolidate: %v", err)
 	}
@@ -91,7 +91,7 @@ func TestPortraitMaintainerAppliesFourOps(t *testing.T) {
 
 	// NOOP：重复主张不写。
 	decider = scriptedDecider{decision: OpDecision{Op: PortraitOpNoop, Reason: "重复"}}
-	nooper := NewPortraitMaintainer(store, decider, nil)
+	nooper := NewPortraitMaintainer(store, decider, nil, nil)
 	if _, err := nooper.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "重复的话。"}); err != nil {
 		t.Fatalf("NOOP consolidate: %v", err)
 	}
@@ -120,7 +120,7 @@ func TestPortraitMaintainerUpdateIntoOccupiedSlotKeepsOpenSlotIndex(t *testing.T
 
 	// 判定器跨槽误判：UPDATE 指向 reply_style 行（同 topic 现存条目，
 	// validateDecision 放行），而新主张落回 user_stated 槽——该槽已有开放行。
-	misjudging := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpUpdate, TargetID: 2, Reason: "误指另一槽位行"}}, nil)
+	misjudging := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpUpdate, TargetID: 2, Reason: "误指另一槽位行"}}, nil, nil)
 	if _, err := misjudging.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); !errors.Is(err, ErrSlotOccupied) {
 		t.Fatalf("UPDATE into an occupied slot = %v, want ErrSlotOccupied (migration 052 parity)", err)
 	}
@@ -144,7 +144,7 @@ func TestPortraitMaintainerBlindAddWithoutDecider(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
 	audit := &noopAudit{}
-	maintainer := NewPortraitMaintainer(store, nil, audit)
+	maintainer := NewPortraitMaintainer(store, nil, audit, nil)
 	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
 		t.Fatalf("blind ADD consolidate: %v", err)
 	}
@@ -169,11 +169,11 @@ func TestPortraitMaintainerRejectsMisjudgedAdd(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
 	audit := &noopAudit{}
-	seeder := NewPortraitMaintainer(store, nil, audit)
+	seeder := NewPortraitMaintainer(store, nil, audit, nil)
 	if _, err := seeder.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持的球队是巴萨。"}); err != nil {
 		t.Fatalf("seed ADD: %v", err)
 	}
-	misjudging := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, Reason: "误判"}}, audit)
+	misjudging := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, Reason: "误判"}}, audit, nil)
 	if _, err := misjudging.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持的球队是皇马。"}); !errors.Is(err, ErrSlotOccupied) {
 		t.Fatalf("misjudged ADD = %v, want ErrSlotOccupied", err)
 	}
@@ -236,13 +236,13 @@ func TestPortraitOpUpdateShadowsSynthesizedSlot(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
 	audit := &noopAudit{}
-	if _, err := NewPortraitMaintainer(store, nil, audit).Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持巴萨。"}); err != nil {
+	if _, err := NewPortraitMaintainer(store, nil, audit, nil).Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我最支持巴萨。"}); err != nil {
 		t.Fatalf("seed blind ADD: %v", err)
 	}
 	maintainer := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{
 		Op: PortraitOpUpdate, TargetID: 1, Reason: "换主队",
 		ShadowSlots: []PortraitSlotRef{{Topic: "basic_info", SubTopic: "favorite_team"}},
-	}}, audit)
+	}}, audit, nil)
 	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "我现在最支持皇马。"}); err != nil {
 		t.Fatalf("consolidate with shadow: %v", err)
 	}
@@ -332,23 +332,23 @@ func TestPortraitMaintainerSkipsInvalidDecisions(t *testing.T) {
 	ctx := context.Background()
 	store := NewMemoryPortraitOverlays()
 	audit := &noopAudit{}
-	seeder := NewPortraitMaintainer(store, nil, audit)
+	seeder := NewPortraitMaintainer(store, nil, audit, nil)
 	if _, err := seeder.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "种子主张。"}); err != nil {
 		t.Fatalf("seed: %v", err)
 	}
 
 	// UPDATE 指向不存在的条目（幻觉 TargetID）必须整体跳过，不落库。
-	hallucinating := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpUpdate, TargetID: 99, Reason: "幻觉"}}, audit)
+	hallucinating := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpUpdate, TargetID: 99, Reason: "幻觉"}}, audit, nil)
 	if _, err := hallucinating.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "新主张。"}); err == nil {
 		t.Fatal("UPDATE with a hallucinated target must error")
 	}
 	// ADD 不该带 target。
-	mistargeted := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, TargetID: 1, Reason: "画蛇添足"}}, audit)
+	mistargeted := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, TargetID: 1, Reason: "画蛇添足"}}, audit, nil)
 	if _, err := mistargeted.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "新主张二。"}); err == nil {
 		t.Fatal("ADD carrying a targetId must error")
 	}
 	// 未知动作同样拒收。
-	unknown := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: "MERGE", Reason: "不存在"}}, audit)
+	unknown := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: "MERGE", Reason: "不存在"}}, audit, nil)
 	if _, err := unknown.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "新主张三。"}); err == nil {
 		t.Fatal("unknown op must error")
 	}
@@ -382,7 +382,7 @@ func (h *hiddenStore) Check(context.Context, string) error {
 func TestPortraitMaintainerHonorsPrivacyGate(t *testing.T) {
 	ctx := context.Background()
 	store := &hiddenStore{MemoryPortraitOverlays: *NewMemoryPortraitOverlays()}
-	maintainer := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, Reason: "不顾纪律"}}, nil)
+	maintainer := NewPortraitMaintainer(store, scriptedDecider{decision: OpDecision{Op: PortraitOpAdd, Reason: "不顾纪律"}}, nil, nil)
 	if _, err := maintainer.Consolidate(ctx, "user-1", PortraitClaim{Topic: "preferences", SubTopic: "user_stated", Content: "偷偷写。"}); !errors.Is(err, privacy.ErrDataDeleted) {
 		t.Fatalf("consolidate under a privacy tombstone = %v, want ErrDataDeleted", err)
 	}
@@ -497,7 +497,7 @@ func TestLLMPortraitOpsJudgesViaStructuredSeam(t *testing.T) {
 	store.mu.Lock()
 	store.rows["user-1"][0].ID = 7
 	store.mu.Unlock()
-	maintainer := NewPortraitMaintainer(store, decider, nil)
+	maintainer := NewPortraitMaintainer(store, decider, nil, nil)
 	if _, err := maintainer.Consolidate(context.Background(), "user-1", claim); err != nil {
 		t.Fatalf("consolidate with the structured decider: %v", err)
 	}

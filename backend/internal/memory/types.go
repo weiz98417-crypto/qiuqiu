@@ -53,11 +53,14 @@ type Moment struct {
 }
 
 // Query selects memories for context assembly. Focus is the raw user text or
-// current topic used for relevance scoring.
+// current topic used for relevance scoring. DecayDays 是时序衰减窗口（天）：
+// adapter 腿与向量腿同用（exp(-age/τ) 对齐，memory-scoring 8.1 两腿同代）；
+// <=0 关闭衰减（recency 因子恒 1）。
 type Query struct {
-	UserID string
-	Focus  string
-	Limit  int
+	UserID    string
+	Focus     string
+	Limit     int
+	DecayDays int
 }
 
 // Recall is one retrieved memory. Source carries provenance (e.g.

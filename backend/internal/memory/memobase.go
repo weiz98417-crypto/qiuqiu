@@ -42,6 +42,8 @@ import (
 	"sync"
 	"sync/atomic"
 	"time"
+
+	"math"
 )
 
 const memobaseAPIVersion = "api/v1"
@@ -168,14 +170,15 @@ func (m *Memobase) Recall(ctx context.Context, query Query) []Recall {
 		}
 		scored = append(scored, Recall{
 			Content:    content,
-			Importance: recallScore(query.Focus, entry),
+			Importance: entryImportance(entry),
 			OccurredAt: entry.updatedAt(),
 			Source:     profileSource(entry),
+			Score:      recallWeight(query.Focus, entry, query.DecayDays),
 		})
 	}
 	sort.SliceStable(scored, func(left, right int) bool {
-		if scored[left].Importance != scored[right].Importance {
-			return scored[left].Importance > scored[right].Importance
+		if scored[left].Score != scored[right].Score {
+			return scored[left].Score > scored[right].Score
 		}
 		return scored[left].OccurredAt.After(scored[right].OccurredAt)
 	})
@@ -437,26 +440,55 @@ func profileSource(entry profileEntry) string {
 	return "memobase://profile/" + entry.Attributes.Topic + "/" + entry.Attributes.SubTopic
 }
 
-// recallScore blends relevance (focus match) with a fixed importance and a
-// recency bonus; deterministic so recall blocks are reproducible in evals.
-func recallScore(focus string, entry profileEntry) float64 {
-	score := 0.5
+// entryImportance 是 profile 条目的类目重要度近似（memory-scoring 8.1）：
+// Memobase 合成条目不带 per-entry importance（ADR-0006：合成不重写 moment
+// 分），按类目查表近似 enqueue 启发式的精神——稳定口味（favorite_*）最高，
+// 观赛事件类居中，基础信息再次，其余兜底。确定性查表，排序可复现。
+func entryImportance(entry profileEntry) float64 {
+	topic := strings.ToLower(strings.TrimSpace(entry.Attributes.Topic))
+	subTopic := strings.ToLower(strings.TrimSpace(entry.Attributes.SubTopic))
+	switch {
+	case subTopic == "favorite_team" || subTopic == "favorite_player":
+		return 0.75
+	case strings.Contains(topic, "event") || strings.Contains(topic, "match"):
+		return 0.60
+	case topic == "basic_info" || strings.Contains(topic, "preference") || strings.Contains(topic, "habit"):
+		return 0.55
+	default:
+		return 0.45
+	}
+}
+
+// recallWeight 是 adapter 腿的三因子打分（memory-scoring 8.1：两腿同代）：
+//
+//	weight = relevance × importance × recency
+//
+// relevance（contains 命中语义：focus 空 = 1.0，纯 importance×recency 排；
+// 命中 = 1.0；未命中 = 0.35——完全不相关不至沉底，条目仍按类目参与排序）；
+// importance（类目查表 entryImportance）；recency（exp(-age/τ)，τ 与向量
+// 腿同源 Query.DecayDays，<=0 恒 1）。向量腿 weight = cosine ×
+// exp(-age/τ)——两腿自此同为「相关性×时序」代际，融合配额语义不变。
+func recallWeight(focus string, entry profileEntry, decayDays int) float64 {
+	relevance := 1.0
 	focus = strings.TrimSpace(focus)
 	if focus != "" {
 		if strings.Contains(focus, entry.Attributes.Topic) ||
 			strings.Contains(focus, entry.Attributes.SubTopic) ||
 			strings.Contains(entry.Content, focus) {
-			score += 0.3
+			relevance = 1.0
+		} else {
+			relevance = 0.35
 		}
 	}
-	age := time.Since(entry.updatedAt())
-	switch {
-	case age >= 0 && age <= 24*time.Hour:
-		score += 0.2
-	case age > 24*time.Hour && age <= 7*24*time.Hour:
-		score += 0.1
+	recency := 1.0
+	if decayDays > 0 {
+		age := time.Since(entry.updatedAt())
+		if age > 0 {
+			tau := time.Duration(decayDays) * 24 * time.Hour
+			recency = math.Exp(-float64(age) / float64(tau))
+		}
 	}
-	return clamp01(score)
+	return relevance * entryImportance(entry) * recency
 }
 
 type memobaseResponse struct {

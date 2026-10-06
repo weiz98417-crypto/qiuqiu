@@ -5,6 +5,7 @@ import (
 	"fmt"
 	"hash/fnv"
 	"log"
+	"regexp"
 	"strings"
 	"time"
 
@@ -74,28 +75,32 @@ type PortraitMaintainer struct {
 	store   PortraitOverlayStore
 	decider PortraitOpDecider
 	audit   AuditSink
+	// reviewer 是写回 dry-run 审查（memory-scoring 8.3）：nil = 写回直落
+	// （现状行为，success criteria 的缺席测试）。
+	reviewer PortraitWritebackReviewer
 }
 
-// NewPortraitMaintainer wires the maintainer; decider/audit may be nil
-// (盲 ADD / 只落日志).
-func NewPortraitMaintainer(store PortraitOverlayStore, decider PortraitOpDecider, audit AuditSink) *PortraitMaintainer {
-	return &PortraitMaintainer{store: store, decider: decider, audit: audit}
+// NewPortraitMaintainer wires the maintainer; decider/audit/reviewer may be
+// nil (盲 ADD / 只落日志 / 写回直落=现状).
+func NewPortraitMaintainer(store PortraitOverlayStore, decider PortraitOpDecider, audit AuditSink, reviewer PortraitWritebackReviewer) *PortraitMaintainer {
+	return &PortraitMaintainer{store: store, decider: decider, audit: audit, reviewer: reviewer}
 }
 
 // 审计 reason codes：操作集的每个判定都进 memory_extraction_audit（ADR-0006
 // fact-first culture 在画像侧的延伸）。
 const (
-	ReasonPortraitOpApplied  = "portrait_op_applied"
-	ReasonPortraitOpNoop     = "portrait_op_noop"
-	ReasonPortraitOpSkipped  = "portrait_op_skipped"
+	ReasonPortraitOpApplied     = "portrait_op_applied"
+	ReasonPortraitOpNoop        = "portrait_op_noop"
+	ReasonPortraitOpSkipped     = "portrait_op_skipped"
 	ReasonPortraitShadowApplied = "portrait_shadow_applied"
 	ReasonPortraitShadowSkipped = "portrait_shadow_skipped"
 )
 
 // Consolidate merges one claim into the authoritative layer:
-// privacy 前置 → 取同 topic 现存有效条目 → 判定（无判定器=盲 ADD）→ 校验
-// TargetID → 确定性落地 → 审计。判定或落地失败审计后原样上抛，绝不半写
-// （UPDATE 的封口+新行在 store 侧单事务内）。
+// privacy 前置 → 写回 dry-run 审查（8.3，reviewer 缺席=直落）→ 取同 topic
+// 现存有效条目 → 判定（无判定器=盲 ADD）→ 校验 TargetID → 确定性落地 →
+// 审计。判定或落地失败审计后原样上抛，绝不半写（UPDATE 的封口+新行在
+// store 侧单事务内）。
 func (m *PortraitMaintainer) Consolidate(ctx context.Context, userID string, claim PortraitClaim) (OpDecision, error) {
 	if m == nil || m.store == nil {
 		return OpDecision{}, ErrUnavailable
@@ -108,6 +113,33 @@ func (m *PortraitMaintainer) Consolidate(ctx context.Context, userID string, cla
 	// 删除用户（已完成或进行中）的画像一律拒写。
 	if err := m.store.Check(ctx, userID); err != nil {
 		return OpDecision{}, err
+	}
+	// 确定性红线硬门（memory-scoring 8.3 审查修正）：比分形态是「比赛事
+	// 实进画像」最典型的越权（ADR-0006：合成/画像产物永不断言 Match
+	// Facts）——零 LLM 成本先拦，不依赖 reviewer 在场。三段式数字（3-4-3
+	// 阵型）豁免。
+	if reason := claimScoreRedline(claim.Content); reason != "" {
+		decision := OpDecision{Op: PortraitOpNoop, Reason: "writeback_rejected: " + reason}
+		m.recordAudit(ctx, userID, claim, decision, ReasonPortraitOpNoop)
+		return decision, nil
+	}
+	// 写回 dry-run（memory-scoring 8.3）：一次轻量 LLM 自查（与画像矛盾/
+	// 噪声闲聊/越权记比赛事实），不过审记审计跳过——一次额外调用换画像
+	// 质量（Letta sleep-time compute / MIRIX Auto-Dream 同模式）。评审缺
+	// 席=直落（现状，缺席测试）；审查失败也直落（reviewer 是质量闸不是
+	// 可用性闸，故障不阻断画像维护；比分红线已由上方硬门确定性兜住）。
+	if m.reviewer != nil {
+		existing, entriesErr := m.validTopicEntries(ctx, userID, claim.Topic)
+		if entriesErr == nil {
+			reviewCtx, reviewCancel := context.WithTimeout(ctx, 10*time.Second)
+			verdict, reviewErr := m.reviewer.ReviewWriteback(reviewCtx, userID, claim, existing)
+			reviewCancel()
+			if reviewErr == nil && !verdict.OK {
+				decision := OpDecision{Op: PortraitOpNoop, Reason: "writeback_rejected: " + verdict.Reason}
+				m.recordAudit(ctx, userID, claim, decision, ReasonPortraitOpNoop)
+				return decision, nil
+			}
+		}
 	}
 	decision := OpDecision{Op: PortraitOpAdd, Reason: "无判定器，按现状盲 ADD"}
 	if m.decider != nil {
@@ -335,3 +367,81 @@ func (d *LLMPortraitOps) DecidePortraitOp(ctx context.Context, claim PortraitCla
 }
 
 var _ PortraitOpDecider = (*LLMPortraitOps)(nil)
+
+// PortraitWritebackReviewer 是写回 dry-run 审查（memory-scoring 8.3）：
+// claim 落权威层前的一次自查——与画像矛盾、噪声闲聊碎片、越权记比赛
+// 事实（宪法红线：比赛事实永不进画像）。ok=false 时 claim 记审计跳过。
+// 评审是质量闸不是可用性闸：缺席或故障都直落（现状行为）。
+type PortraitWritebackReviewer interface {
+	ReviewWriteback(ctx context.Context, userID string, claim PortraitClaim, existing []PortraitOverlay) (WritebackVerdict, error)
+}
+
+// WritebackVerdict 是审查结论：ok=false 时 reason 必须给出中文依据（进
+// 审计链可查）。
+type WritebackVerdict struct {
+	OK     bool   `json:"ok" jsonschema_description:"true=可落库，false=拒绝"`
+	Reason string `json:"reason" jsonschema_description:"一句话中文依据；拒绝时说明命中哪类问题"`
+}
+
+const writebackReviewToolName = "review_portrait_writeback"
+
+const writebackReviewSystemPrompt = `你是陪看足球助手"球球"的画像写回审查器。给你一条即将写入用户长期画像的主张和同一画像主题下的现存条目，你只输出审查结论，不回答、不闲聊。
+审查三类问题（任一命中即 ok=false）：
+1. 矛盾：主张与现存条目直接打架（且不是「用户改主意」式的更新——更新由判定器另行处理，你只拦真矛盾）。
+2. 噪声：闲聊碎片、一次性玩笑、不含可长期保存的信息。
+3. 越权红线：主张是比赛事实（比分、进球、红牌、VAR 判罚等赛况陈述）——比赛事实永不进用户画像，这是宪法级红线。
+均不命中（正常的长期偏好、口味、习惯、个人信息）则 ok=true，reason 用一句话中文说明。`
+
+// LLMWritebackReviewer is the production reviewer via the structured seam
+// (与 LLMPortraitOps 同形：LLM 只判结论，写库全在确定性层)。
+type LLMWritebackReviewer struct {
+	client *structured.Client
+}
+
+func NewLLMWritebackReviewer(client *structured.Client) *LLMWritebackReviewer {
+	return &LLMWritebackReviewer{client: client}
+}
+
+// ReviewWriteback forces the single-tool extraction; transport/contract 失败
+// 原样上抛——调用方（maintainer）对失败直落，审查故障不阻断画像维护。
+func (r *LLMWritebackReviewer) ReviewWriteback(ctx context.Context, userID string, claim PortraitClaim, existing []PortraitOverlay) (WritebackVerdict, error) {
+	if r == nil || r.client == nil {
+		return WritebackVerdict{}, ErrNotSupported
+	}
+	var entries strings.Builder
+	for _, overlay := range existing {
+		fmt.Fprintf(&entries, "- %s：%s\n", overlay.SubTopic, overlay.Content)
+	}
+	userContent := fmt.Sprintf("画像主题：%s\n槽位：%s\n现存条目：\n%s新主张：%s",
+		claim.Topic, claim.SubTopic, entries.String(), claim.Content)
+	return structured.Extract[WritebackVerdict](ctx, r.client, structured.CallOptions{
+		SystemPrompt:    writebackReviewSystemPrompt,
+		UserContent:     userContent,
+		ToolName:        writebackReviewToolName,
+		ToolDescription: "审查一条画像写回主张能否落库",
+		Temperature:     0.1,
+		MaxTokens:       120,
+	})
+}
+
+var _ PortraitWritebackReviewer = (*LLMWritebackReviewer)(nil)
+
+// matchScorePattern 是比分形态（1-0 / 2 比 1；冒号形态与时间戳（02:30）
+// 局部不可分，留 LLM reviewer 提示层管——硬门只收低误杀形态。两位数内——足球比分
+// 不会上双位数比双位数的常见形态之外仍按词边界约束）。
+var matchScorePattern = regexp.MustCompile(`\d{1,2}\s*[-:：比]\s*\d{1,2}`)
+
+// claimScoreRedline 是写回的确定性红线硬门：比分形态的主张零 LLM 成本
+// 先拦（ADR-0006：画像产物永不断言 Match Facts）。三段式数字（3-4-3 阵
+// 型、02:30 时间戳类）豁免——match 后紧随又一段分隔数字的不算比分。
+// 返回空串 = 未命中红线。
+func claimScoreRedline(content string) string {
+	for _, loc := range matchScorePattern.FindAllStringIndex(content, -1) {
+		rest := content[loc[1]:]
+		if strings.HasPrefix(rest, "-") || strings.HasPrefix(rest, "－") || strings.HasPrefix(rest, ":") || strings.HasPrefix(rest, "：") {
+			continue
+		}
+		return "比分属比赛事实，永不进画像"
+	}
+	return ""
+}

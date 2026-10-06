@@ -151,8 +151,14 @@ func TestMemobaseRecallRendersProvenanceAndSkipsEmptyEntries(t *testing.T) {
 	if recall.Source != "memobase://profile/basic_info/favorite_team" {
 		t.Fatalf("source = %q, want memobase profile provenance", recall.Source)
 	}
-	if !almostEqual(recall.Importance, 0.8) {
-		t.Fatalf("importance = %v, want 0.8 (0.5 base + 0.3 focus match)", recall.Importance)
+	// 8.1 三因子：Importance 归正为类目重要度（favorite_team=0.75）；排序
+	// 分落 Score（relevance 1.0 × importance 0.75 × recency，DecayDays 未
+	// 传 = 衰减关、recency 恒 1）。
+	if !almostEqual(recall.Importance, 0.75) {
+		t.Fatalf("importance = %v, want 0.75 (favorite_team category)", recall.Importance)
+	}
+	if !almostEqual(recall.Score, 0.75) {
+		t.Fatalf("score = %v, want 0.75 (relevance 1.0 × importance 0.75 × recency 1.0)", recall.Score)
 	}
 	if recall.OccurredAt.IsZero() {
 		t.Fatal("recalled memory should carry the profile updated_at timestamp")

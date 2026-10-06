@@ -535,7 +535,11 @@ func main() {
 		// 未配判定模型（CI/evals）即盲 ADD——冲突知识集中在操作集一处，是
 		// 加深而不是旁路。
 		if cfg.MiMoAPIKey != "" {
-			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel), shadowSlotsFromConfig(cfg))))
+			structuredClient := structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)
+			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structuredClient, shadowSlotsFromConfig(cfg))))
+			// 写回 dry-run 审查（memory-scoring 8.3）：与判定器同一 seam，
+			// 无 key 环境（CI/evals）缺席=直落（现状）。
+			queueOptions = append(queueOptions, memory.WithWritebackReviewer(memory.NewLLMWritebackReviewer(structuredClient)))
 		}
 		queueOptions = append(queueOptions, memory.WithPortraitDecay(cfg.PortraitDecayDays))
 		queueOptions = append(queueOptions, vectorOptions...)
@@ -548,7 +552,11 @@ func main() {
 		// 永远为空（2026-09-29 演示轮实证）。
 		queueOptions := append([]memory.QueueOption{memory.WithPortraitOverlays(memory.NewMemoryPortraitOverlays()), memory.WithThreads(memory.NewFake())}, vectorOptions...)
 		if cfg.MiMoAPIKey != "" {
-			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel), shadowSlotsFromConfig(cfg))))
+			structuredClient := structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)
+			queueOptions = append(queueOptions, memory.WithPortraitOps(memory.NewLLMPortraitOpDecider(structuredClient, shadowSlotsFromConfig(cfg))))
+			// 写回 dry-run 审查（memory-scoring 8.3）：与判定器同一 seam，
+			// 无 key 环境（CI/evals）缺席=直落（现状）。
+			queueOptions = append(queueOptions, memory.WithWritebackReviewer(memory.NewLLMWritebackReviewer(structuredClient)))
 		}
 		queueOptions = append(queueOptions, memory.WithPortraitDecay(cfg.PortraitDecayDays))
 		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, queueOptions...)
@@ -892,6 +900,12 @@ func runObservationExpiry(ctx context.Context, coordinator observation.Coordinat
 // previous beat. The same ticker expires stale open threads (C2): expired is
 // distinct from addressed, and every expiry is written to the audit table by
 // the thread store. Failures are logged; reflection never touches replies.
+// reflectFallbackRounds 是 idle 反思的低活跃兜底周期（memory-scoring 8.2）：
+// 每 N 个 idle 轮强制全量反映一次——重要性门槛拦掉零新洞察的白跑，但不让
+// 低活跃用户的画像维护彻底停摆（spec：定时兜底保留）。15min idle 间隔 ×5
+// = 至多 75 分钟一次兜底。
+const reflectFallbackRounds = 5
+
 func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInterval time.Duration) {
 	if memoryQueue == nil {
 		return
@@ -921,6 +935,7 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 	expireThreads()
 	ticker := time.NewTicker(2 * time.Minute)
 	defer ticker.Stop()
+	idleRounds := 0
 	for {
 		select {
 		case <-ctx.Done():
@@ -945,7 +960,16 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 				continue
 			}
 			lastIdle = time.Now()
+			idleRounds++
 			for _, userID := range users {
+				// 8.2 重要性阈值：常规 idle 轮只反映「有新料」的用户（自上
+				// 次 beat 的新增 importance 累计过门槛）——零新洞察的反思
+				// 不再白跑；每 fallbackRounds 轮强制全量一轮，低活跃用户的
+				// 定时兜底保留（spec：定时兜底保留）。post_match 不受此门。
+				hasNewMaterial := memoryQueue.PendingImportance(userID) >= memory.ReflectImportanceThreshold
+				if !hasNewMaterial && idleRounds%reflectFallbackRounds != 0 {
+					continue
+				}
 				reflect(userID, "", "idle")
 			}
 		}

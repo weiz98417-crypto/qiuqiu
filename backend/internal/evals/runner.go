@@ -545,7 +545,7 @@ func applyPortraitClaim(result *CaseResult, overlays *memory.MemoryPortraitOverl
 		result.addFailure("setup", err.Error())
 		return
 	}
-	maintainer := memory.NewPortraitMaintainer(overlays, scriptedPortraitOps{decision: decision}, nil)
+	maintainer := memory.NewPortraitMaintainer(overlays, scriptedPortraitOps{decision: decision}, nil, nil)
 	if _, err := maintainer.Consolidate(context.Background(), userID, memory.PortraitClaim{
 		Topic:    step.Topic,
 		SubTopic: step.SubTopic,
