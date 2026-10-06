@@ -1,0 +1,248 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>smart-turn 标注台(T2)</title>
+<!--
+  smart-turn v3.2 评测集标注台(docs/evals/turn-collection-harness.md T2)。
+  纯静态页,file:// 直接打开,零依赖。
+  流程:选 raw/ 里的 wav(多选)→ 逐条听(空格播放/暂停)→ 点击波形位置
+  设「说完点」→ 选类别 → 下一条;随时「导出 labels.jsonl」(进度存在
+  localStorage,关页不丢)。
+  质量门:全标完抽 10% 复标,复标说完点差 ≤250ms 一致率 ≥90% 再进对比。
+-->
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 900px; margin: 24px auto; padding: 0 16px; }
+  #wave { width: 100%; height: 160px; border: 1px solid #999; cursor: crosshair; touch-action: none; }
+  .row { margin: 10px 0; }
+  .meta { color: #666; font-size: 13px; }
+  button, select { font-size: 15px; padding: 6px 14px; margin-right: 8px; }
+  #status { min-height: 24px; color: #1a73e8; }
+  .progress { color: #666; }
+  kbd { background: #eee; padding: 1px 6px; border-radius: 4px; }
+</style>
+</head>
+<body>
+<h2>smart-turn 标注台</h2>
+<p>选中 <code>turn_dataset/raw/</code> 的 wav(可多选)。听音,在波形上<b>点击</b>标「说完点」(竖线),选类别,<kbd>空格</kbd> 播放/暂停。逐条「完成」,最后导出 labels.jsonl。</p>
+<div class="row"><input type="file" id="files" accept=".wav,audio/wav,audio/x-wav" multiple></div>
+<div class="meta" id="file-meta">未加载</div>
+<canvas id="wave" width="860" height="160"></canvas>
+<div class="row">
+  <button id="play-btn" disabled>▶ 播放(空格)</button>
+  <button id="rewind-btn" disabled>回到 0</button>
+  类别:
+  <select id="category" disabled>
+    <option value="excited">激动语速</option>
+    <option value="calm">平静闲聊</option>
+    <option value="hesitant">犹豫停顿</option>
+  </select>
+  <button id="done-btn" disabled>完成本条 →</button>
+  <button id="export-btn">导出 labels.jsonl</button>
+  <button id="clear-btn">清空本地进度</button>
+</div>
+<div id="status"></div>
+<div class="progress" id="progress"></div>
+
+<script>
+// 标注状态:localStorage 键 = 文件名,值 = JSON 标注行(关页不丢)。
+const $ = (id) => document.getElementById(id);
+const LS_KEY = 'turn_annotation_labels';
+const canvas = $('wave');
+const ctx2d = canvas.getContext('2d');
+
+let files = [];
+let current = -1;
+let audioBuffer = null;      // decodeAudioData 产物(设备采样率原样)
+let markers = {};            // filename -> {speechEndMs, category}
+let playSource = null;
+let playStartCtxTime = 0;
+let playOffset = 0;
+let playing = false;
+let viewStart = 0;           // 波形视图起点秒(整条渲染,不做缩放)
+
+function loadStore() {
+  try { markers = JSON.parse(localStorage.getItem(LS_KEY) || '{}'); } catch { markers = {}; }
+}
+function saveStore() { localStorage.setItem(LS_KEY, JSON.stringify(markers)); }
+function labeledCount() { return Object.keys(markers).length; }
+
+function updateProgress() {
+  $('progress').textContent = files.length
+    ? `已标注 ${labeledCount()}/${files.length}(当前 ${current + 1}/${files.length})`
+    : '未加载';
+}
+
+function drawWave() {
+  const width = canvas.width, height = canvas.height;
+  ctx2d.clearRect(0, 0, width, height);
+  if (!audioBuffer) return;
+  const data = audioBuffer.getChannelData(0);
+  const duration = audioBuffer.duration;
+  const samplesPerPixel = Math.floor(data.length / width);
+  ctx2d.strokeStyle = '#1a73e8';
+  ctx2d.beginPath();
+  for (let x = 0; x < width; x++) {
+    let min = 1, max = -1;
+    for (let i = 0; i < samplesPerPixel; i++) {
+      const value = data[x * samplesPerPixel + i] || 0;
+      if (value < min) min = value;
+      if (value > max) max = value;
+    }
+    const yMin = (1 - max) * height / 2, yMax = (1 - min) * height / 2;
+    ctx2d.moveTo(x, yMin);
+    ctx2d.lineTo(x, yMax);
+  }
+  ctx2d.stroke();
+  // 时间刻度
+  ctx2d.fillStyle = '#999';
+  for (let t = 0; t <= duration; t += 1) {
+    const x = (t / duration) * width;
+    ctx2d.fillRect(x, 0, 1, 4);
+    if (t % 2 === 0) ctx2d.fillText(t + 's', x + 2, 12);
+  }
+  // 说完点竖线
+  const marker = markers[currentFile()];
+  if (marker) {
+    const x = (marker.speechEndMs / 1000 / duration) * width;
+    ctx2d.strokeStyle = '#d93025';
+    ctx2d.beginPath();
+    ctx2d.moveTo(x, 0);
+    ctx2d.lineTo(x, height);
+    ctx2d.stroke();
+    ctx2d.fillStyle = '#d93025';
+    ctx2d.fillText('说完 ' + marker.speechEndMs + 'ms', Math.min(x + 4, width - 90), 24);
+  }
+  // 播放头
+  if (playing && audioBuffer) {
+    const elapsed = playOffset + (audioContext.currentTime - playStartCtxTime);
+    const x = Math.min(elapsed / duration, 1) * width;
+    ctx2d.fillStyle = '#188038';
+    ctx2d.fillRect(x, 0, 2, height);
+  }
+}
+
+function currentFile() { return files[current] ? files[current].name : ''; }
+
+async function loadCurrent() {
+  audioBuffer = null;
+  drawWave();
+  if (current < 0 || current >= files.length) { $('file-meta').textContent = '未加载'; return; }
+  const file = files[current];
+  $('file-meta').textContent = `${file.name}(${(file.size / 1024).toFixed(0)} KB)`;
+  const bytes = await file.arrayBuffer();
+  audioBuffer = await audioContext.decodeAudioData(bytes);
+  if (!markers[file.name]) {
+    markers[file.name] = { speechEndMs: 0, category: $('category').value };
+  }
+  $('category').value = markers[file.name].category;
+  updateProgress();
+  drawWave();
+}
+
+let audioContext = null;
+function ensureContext() {
+  if (!audioContext) audioContext = new (window.AudioContext || window.webkitAudioContext)();
+  return audioContext;
+}
+
+function togglePlay() {
+  if (!audioBuffer) return;
+  const context = ensureContext();
+  if (playing) {
+    playSource.stop();
+    playing = false;
+    $('play-btn').textContent = '▶ 播放(空格)';
+    return;
+  }
+  playSource = context.createBufferSource();
+  playSource.buffer = audioBuffer;
+  playSource.connect(context.destination);
+  playStartCtxTime = context.currentTime;
+  playOffset = 0;
+  playSource.start(0);
+  playing = true;
+  $('play-btn').textContent = '⏸ 暂停(空格)';
+  requestAnimationFrame(tickPlayhead);
+}
+
+function tickPlayhead() {
+  if (playing) { drawWave(); requestAnimationFrame(tickPlayhead); }
+}
+
+canvas.addEventListener('click', (event) => {
+  if (!audioBuffer) return;
+  const rect = canvas.getBoundingClientRect();
+  const ratio = (event.clientX - rect.left) / rect.width;
+  const ms = Math.round(ratio * audioBuffer.duration * 1000);
+  markers[currentFile()].speechEndMs = ms;
+  saveStore();
+  drawWave();
+});
+
+$('category').addEventListener('change', (event) => {
+  if (currentFile() && markers[currentFile()]) {
+    markers[currentFile()].category = event.target.value;
+    saveStore();
+  }
+});
+
+$('files').addEventListener('change', (event) => {
+  files = Array.from(event.target.files).filter((f) => f.name.toLowerCase().endsWith('.wav'));
+  files.sort((a, b) => a.name.localeCompare(b.name));
+  current = files.length ? 0 : -1;
+  ensureContext();
+  loadCurrent();
+});
+
+$('play-btn').addEventListener('click', togglePlay);
+$('rewind-btn').addEventListener('click', () => { if (playing) togglePlay(); playOffset = 0; });
+$('done-btn').addEventListener('click', () => {
+  if (!markers[currentFile()] || !markers[currentFile()].speechEndMs) {
+    $('status').textContent = '先在波形上点击标出说完点';
+    return;
+  }
+  saveStore();
+  if (current < files.length - 1) { current += 1; loadCurrent(); }
+  else { $('status').textContent = '全部过完——检查后导出 labels.jsonl'; updateProgress(); }
+});
+
+$('export-btn').addEventListener('click', () => {
+  const lines = Object.entries(markers).map(([file, marker]) => JSON.stringify({
+    file,
+    speechEndMs: marker.speechEndMs,
+    category: marker.category,
+    annotator: '',
+    annotatedAt: new Date().toISOString(),
+    revised: false,
+  }));
+  const blob = new Blob([lines.join('\n') + '\n'], { type: 'application/jsonl' });
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = 'labels.jsonl';
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+  $('status').textContent = `导出 ${lines.length} 条标注`;
+});
+
+$('clear-btn').addEventListener('click', () => {
+  if (!confirm('清空本地标注进度?导出过的 jsonl 不受影响。')) return;
+  localStorage.removeItem(LS_KEY);
+  markers = {};
+  updateProgress();
+  drawWave();
+});
+
+document.addEventListener('keydown', (event) => {
+  if (event.code === 'Space') {
+    event.preventDefault();
+    if (!$('play-btn').disabled) togglePlay();
+  }
+});
+
+loadStore();
+updateProgress();
+</script>
+</body>
+</html>

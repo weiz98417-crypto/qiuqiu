@@ -1,0 +1,239 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>smart-turn 采集台(T1)</title>
+<!--
+  smart-turn v3.2 评测集采集台(docs/evals/turn-collection-harness.md T1)。
+  纯静态页,file:// 直接打开,零依赖。
+  流程:选场景 → 提示语卡片流 → 对麦克风念 → 停止即自动下载
+  turn_{场景}_{序号}.wav + turn_{场景}_{序号}.json(元数据)。
+  采样率按设备原样保存;16kHz 统一转码在 T3 前处理做(spec 坑用例纪律)。
+  完成后把下载的 wav+json 放进 turn_dataset/raw/ 即可交给 T2 标注。
+-->
+<style>
+  body { font-family: system-ui, sans-serif; max-width: 720px; margin: 24px auto; padding: 0 16px; }
+  .card { border: 1px solid #ccc; border-radius: 8px; padding: 20px; margin: 12px 0; }
+  .prompt { font-size: 22px; line-height: 1.6; }
+  .meta { color: #666; font-size: 13px; margin-top: 8px; }
+  button { font-size: 16px; padding: 8px 18px; margin-right: 8px; cursor: pointer; }
+  #rec-btn.recording { background: #d93025; color: white; }
+  .scene-btns { margin: 12px 0; }
+  .scene-btns button.active { background: #1a73e8; color: white; }
+  #status { min-height: 24px; color: #1a73e8; }
+  .progress { color: #666; }
+</style>
+</head>
+<body>
+<h2>smart-turn 采集台</h2>
+<p>对着麦克风把提示语念出来,像真看球一样说话(激动场景就喊出来)。停止后自动下载 wav + 元数据,全部放进 <code>turn_dataset/raw/</code>。</p>
+
+<div class="scene-btns" id="scene-btns"></div>
+<div class="card">
+  <div class="prompt" id="prompt-text">选择上方场景开始</div>
+  <div class="meta" id="prompt-meta"></div>
+</div>
+<button id="rec-btn">● 开始录音</button>
+<button id="next-btn" disabled>下一条 →</button>
+<button id="skip-btn" disabled>跳过</button>
+<div id="status"></div>
+<div class="progress" id="progress"></div>
+
+<script>
+// 提示语台本:三场景(excited=激动语速/calm=平静闲聊/hesitant=犹豫停顿)。
+// 每条一句真实观赛台词;念的时候自然发挥,犹豫场景故意断断续续/改口。
+const PROMPTS = {
+  excited: [
+    "进了进了进了！这球绝对进了！", "绝杀！这绝对是绝杀！", "点球！肯定是点球！",
+    "好球！这脚远射太漂亮了！", "扑出来了！这扑救简直离谱！", "反超了！反超了！",
+    "这裁判怎么回事啊！这都不吹！", "快传快传！前面没人了！", "完了完了，这球要丢！",
+    "帽子戏法！帽子戏法！", "哇这倒钩，我人傻了！", "就是现在，射门啊！",
+    "手球了吧？这肯定手球了！", "这下稳了，这分差追不回来了。", "天呐，这世界波！",
+    "别倒脚了往前传啊！", "换人换人，赶紧换人！", "这体力还跑得动吗？",
+    "最后一分钟了，顶住！", "单刀了单刀了！", "打门！哎呀打飞了！",
+    "这配合行啊，行云流水！", "又丢了！中场怎么老丢球！", "这体能教练得背锅。",
+    "角球角球，好机会！", "门将开挂了吧这场上！", "VAR！这下要 VAR 了！",
+    "看完这场我血压直接拉满。", "进了也越位了？我不服！", "这脚直塞看得我头皮发麻。",
+    "红色牌！这动作必须红牌！", "这防守跟纸糊的一样。", "快点开球别磨蹭了！",
+    "三比零了兄弟们！", "受伤了受伤了，快上来队医！", "这任意球位置太好了。",
+    "守住了！最后真守住了！", "加时了加时了，今晚别想睡了。", "点球大战，心脏受不了。",
+    "这小将谁啊，踢得也太好了吧！", "传中啊！底下俩人等着呢！", "哎呀这单刀被扑了！",
+    "补时五分钟，还有戏！", "这越位陷阱造得漂亮。", "球衣都拽破了都没拦住！",
+    "这过人，穿裆了！穿裆了！", "二比一，悬念又回来了！", "下半场看这场怎么调整。",
+    "这战术换人立竿见影啊。", "门柱！就差那么一点！", "这解围差点乌龙！",
+    "看台上都疯了这气氛。", "这节奏太快了跟不上。", "连过三人，直接打门！",
+    "这反击打了个人仰马翻。", "最后一防，千万别失误！", "这球进了能吹一辈子。",
+    "换我上我都进了这球！", "可惜了这脚世界波被扑了。", "锁死这比分，稳稳的幸福。",
+    "这体能下去，冲击力全没了。", "看完这场，值了！"
+  ],
+  calm: [
+    "上半场双方踢得都比较谨慎。", "这队的中场控制力确实不错。", "你觉得下半场会换人吗？",
+    "现在控球率大概六四开。", "这两个边后卫助攻很积极。", "今天这个首发阵型是四三三。",
+    "这裁判的判罚尺度还算宽松。", "客场作战能拿一分也能接受。", "这门将的出击时机把握得很好。",
+    "双方教练都在场边一直站着。", "这场地草皮维护得挺好。", "近期状态来说主队更稳一些。",
+    "这个赛季他们引援力度不小。", "定位球一直是他们的强项。", "这轮比赛过后就进争冠集团了。",
+    "解说员刚才分析得挺到位。", "历史交锋纪录主队占优。", "这队青训出来的小孩真不错。",
+    "保级队的求生欲从来不用怀疑。", "下半场节奏估计会快起来。", "角球战术他们是练过的。",
+    "这位主帅的换人时机的确大胆。", "联赛还剩十轮，悬念还大。", "欧冠席位就差两分。",
+    "看台今天坐得挺满。", "这脚转移球视野真开阔。", "阵型压得比较靠上，身后有风险。",
+    "双方中场拼抢很激烈。", "这位球员是新援，第一场首发。", "队长在指挥队友落位。",
+    "裁判在看 VAR，等一会儿。", "这队的老将经验值钱了。", "两队打法风格差异挺大。",
+    "这场平局对谁都算体面。", "下半场刚开始就进球了。", "这脚长传直接找到了支点。",
+    "今天风向对长传有点影响。", "替补席上坐着俩速度型。" ,
+    "这个位置的任意球很有威胁。", "球队最近三场不败。", "双方都换了两个人了。",
+    "这比赛看完正好赶上吃饭。", "青训造血能力是他们的招牌。", "这防守阵型站得很紧凑。",
+    "转播镜头一直给到教练席。", "这赛季射手榜竞争很激烈。", "比赛节奏现在慢下来了。",
+    "这脚回传有点冒险。", "他这个位置的传球成功率高。", "下一轮直接对话就是生死战。"
+  ],
+  hesitant: [
+    "这个球……怎么说呢，我觉得吧……应该算进。",
+    "嗯……这个阵型我不太确定，可能是四五一？还是……四四二。",
+    "刚才那球，那个……慢镜头里好像……先碰到了手？",
+    "我觉得这个换人……嗯……有点看不懂，也可能是……有什么后手吧。",
+    "这脚传球挺好，就是……接应的人……少了点。",
+    "要我说的话……这个防线……得再往回收一收。",
+    "呃……比分现在是……一比零还是二比零来着？",
+    "这个球员……叫什么来着……就是上上个赛季……转会过来的那个。",
+    "按理说……这个位置应该……呃，应该是越位了吧。",
+    "下半场……如果我是教练的话……可能……会考虑换个人上去冲一冲。",
+    "这个……VAR 要是不介入的话……这球就算进了。",
+    "我看啊……这比赛……最后十五分钟……才是关键。",
+    "说实话……这个判罚……我也拿不准。",
+    "他们这战术……嗯……上半场还行，下半场……就不好说了。",
+    "这脚远射……力量是够……就是……角度正了点。",
+    "要是……我是说要是我……这球传给边路……可能更好。",
+    "嗯……这支球队……怎么说呢……防守其实……还行，就是进攻……差口气。",
+    "我记得……好像……去年这个时候……他们排名更高的。",
+    "这个守门员……反应是快……就是……出击时机……老差点意思。",
+    "等会儿……你看这个回放……他是不是……先碰到了门将？"
+  ],
+};
+
+// 采样与元数据
+let currentScene = 'excited';
+let currentIdx = 0;
+let recorder = null;
+let chunks = [];
+let recStart = 0;
+const done = { excited: [], calm: [], hesitant: [] };
+
+const $ = (id) => document.getElementById(id);
+const SCENE_LABELS = { excited: '激动语速(≥60)', calm: '平静闲聊(≥80)', hesitant: '犹豫停顿(≥60)' };
+
+function renderSceneButtons() {
+  const wrap = $('scene-btns');
+  for (const key of Object.keys(PROMPTS)) {
+    const btn = document.createElement('button');
+    btn.textContent = SCENE_LABELS[key];
+    btn.dataset.scene = key;
+    btn.className = key === currentScene ? 'active' : '';
+    btn.addEventListener('click', () => {
+      currentScene = key;
+      currentIdx = 0;
+      renderSceneButtons();
+      renderPrompt();
+    });
+    wrap.appendChild(btn);
+  }
+}
+
+// 每个场景的提示语循环轮转(下一条顺延,保证覆盖度)
+function renderPrompt() {
+  const list = PROMPTS[currentScene];
+  currentIdx = currentIdx % list.length;
+  $('prompt-text').textContent = list[currentIdx];
+  $('prompt-meta').textContent = `场景=${currentScene} · 第 ${currentIdx + 1}/${list.length} 条 · 已录 ${done[currentScene].length} 条`;
+  updateProgress();
+}
+
+function updateProgress() {
+  const total = Object.values(done).reduce((sum, arr) => sum + arr.length, 0);
+  $('progress').textContent =
+    `总计已录 ${total}/200 — 激动 ${done.excited.length}/60 · 平静 ${done.calm.length}/80 · 犹豫 ${done.hesitant.length}/60`;
+}
+
+async function ensureMic() {
+  if (recorder) return;
+  const stream = await navigator.mediaDevices.getUserMedia({ audio: true });
+  // WAV 输出:MediaRecorder 原生不支持 audio/wav 的浏览器(Chrome 支持),
+  // 不支持的浏览器会落到默认 webm——T3 前处理只认 wav,此处显式校验。
+  const mime = MediaRecorder.isTypeSupported('audio/wav') ? 'audio/wav' : '';
+  recorder = mime ? new MediaRecorder(stream, { mimeType: mime }) : new MediaRecorder(stream);
+  recorder.ondataavailable = (event) => { if (event.data.size > 0) chunks.push(event.data); };
+  recorder.onstop = saveRecording;
+}
+
+async function startRecording() {
+  try { await ensureMic(); } catch (error) {
+    $('status').textContent = '麦克风不可用：' + error.message;
+    return;
+  }
+  if (recorder.state === 'recording') return;
+  chunks = [];
+  recStart = Date.now();
+  recorder.start();
+  $('rec-btn').textContent = '■ 停止录音';
+  $('rec-btn').classList.add('recording');
+  $('status').textContent = '录音中……念完点停止';
+}
+
+function pad(n, width) { return String(n).padStart(width, '0'); }
+
+function saveRecording() {
+  $('rec-btn').textContent = '● 开始录音';
+  $('rec-btn').classList.remove('recording');
+  const type = chunks[0]?.type || 'audio/wav';
+  if (!type.includes('wav')) {
+    $('status').textContent = `注意：浏览器输出 ${type} 而非 wav——请换 Chrome 或检查设置(评测只吃 wav)。本条已照常下载,转码后可用,但推荐 wav。`;
+  }
+  const seq = pad(done[currentScene].length + 1, 3);
+  const base = `turn_${currentScene}_${seq}`;
+  const blob = new Blob(chunks, { type });
+  download(blob, base + '.wav');
+  const meta = {
+    file: base + '.wav',
+    scene: currentScene,
+    promptId: currentScene + '-' + pad(currentIdx + 1, 3),
+    prompt: PROMPTS[currentScene][currentIdx],
+    durationMs: Date.now() - recStart,
+    mime: type,
+    recordedAt: new Date().toISOString(),
+  };
+  download(new Blob([JSON.stringify(meta, null, 2)], { type: 'application/json' }), base + '.json');
+  done[currentScene].push(base);
+  $('status').textContent = `已保存 ${base}(放进 turn_dataset/raw/ 交给标注台)`;
+  $('next-btn').disabled = false;
+  $('skip-btn').disabled = false;
+  updateProgress();
+}
+
+function download(blob, filename) {
+  const url = URL.createObjectURL(blob);
+  const link = document.createElement('a');
+  link.href = url;
+  link.download = filename;
+  link.click();
+  setTimeout(() => URL.revokeObjectURL(url), 2000);
+}
+
+function nextPrompt() {
+  currentIdx += 1;
+  renderPrompt();
+  $('status').textContent = '';
+  $('next-btn').disabled = true;
+  $('skip-btn').disabled = true;
+}
+
+$('rec-btn').addEventListener('click', () => {
+  if (recorder && recorder.state === 'recording') recorder.stop();
+  else startRecording();
+});
+$('next-btn').addEventListener('click', nextPrompt);
+$('skip-btn').addEventListener('click', () => { currentIdx += 1; renderPrompt(); });
+
+renderSceneButtons();
+renderPrompt();
+updateProgress();
+</script>
+</body>
+</html>
