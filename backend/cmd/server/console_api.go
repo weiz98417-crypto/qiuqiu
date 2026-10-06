@@ -15,6 +15,7 @@ import (
 	"encoding/hex"
 	"encoding/json"
 	"errors"
+	"fmt"
 	"log"
 	"math"
 	"net/http"
@@ -35,6 +36,8 @@ import (
 	"qiuqiu/internal/operatorauth"
 	"qiuqiu/internal/operatorwrite"
 	"qiuqiu/internal/relationship"
+	"qiuqiu/internal/tts"
+	"qiuqiu/internal/ttssupply"
 )
 
 // Scope mapping for console routes (ADR-0008): reads → TraceRead, writes →
@@ -66,6 +69,12 @@ type consoleAPI struct {
 	// clientHealth 是客户端语音健康遥测账本（快修 P1 观测面）；nil 时端点
 	// 返回空快照——无遥测不报错，面板显示零。
 	clientHealth *observation.ClientHealthLedger
+	// 语音供给三态（tts-supply-switch）：supply 运行中即时生效；localProbe
+	// 是本地腿健康门控（nil=本地腿未配置，选项置灰）；supplySettings 持久
+	// 化（nil 等价内存态——重启回 cloud）。
+	supply         *tts.SupplySwitch
+	localProbe     *tts.LocalProbe
+	supplySettings ttssupply.Store
 	// ADR-0010 human channel: the HS256 signing secret (QIUQIU_JWT_SECRET).
 	jwtSecret string
 }
@@ -159,6 +168,10 @@ func consoleRoutes(deps consoleAPI) []route {
 		// 运营观测页运行时配置（operations-metrics-stack）：grafanaUrl 空 =
 		// 前端渲染部署指引占位。
 		{method: http.MethodGet, pattern: "/api/console/config", scope: traceReadScope, handler: deps.handleConsoleConfig},
+		// 语音供给三态（tts-supply-switch）：读=状态+健康门控快照；写=幂等
+		// 写+审计+即时生效（写入校验本地腿健康门控，MatchSettings 同款纪律）。
+		{method: http.MethodGet, pattern: "/api/console/tts-supply", scope: traceReadScope, handler: deps.handleGetTTSSupply},
+		{method: http.MethodPatch, pattern: "/api/console/tts-supply", scope: matchWriteScope, handler: deps.handlePatchTTSSupply},
 		{method: http.MethodGet, pattern: "/api/console/operators", scope: matchWriteScope, handler: deps.handleListOperators},
 		{method: http.MethodPost, pattern: "/api/console/operators", scope: matchWriteScope, handler: deps.handleCreateOperator},
 		{method: http.MethodGet, pattern: "/api/console/whoami", handler: deps.handleWhoami},
@@ -238,7 +251,7 @@ func (deps consoleAPI) appendAudit(operator auth.Claims, intent, object string) 
 	if err := deps.operators.AppendAudit(auditCtx, operatorName(operator), intent, object); err != nil {
 		log.Printf("console: append %s audit for %q: %v", intent, operatorName(operator), err)
 	}
-}// handleDeleteOperator revokes an operator (row deletion, immediate).
+} // handleDeleteOperator revokes an operator (row deletion, immediate).
 func (deps consoleAPI) handleDeleteOperator(w http.ResponseWriter, r *http.Request) {
 	claims, ok := operatorClaims(deps.authz, w, r)
 	if !ok {
@@ -810,4 +823,77 @@ func consoleThreadRow(thread memory.Thread) consoleThread {
 		LedgerSequence: thread.LedgerSequence,
 		CreatedAt:      createdAt,
 	}
+}
+
+// ttsSupplyState 是运营台「语音供给」卡的状态面（tts-supply-switch）：
+// 当前三态、本地腿健康门控快照与回退计数。
+type ttsSupplyState struct {
+	Mode            string                 `json:"mode"`
+	Local           tts.LocalProbeSnapshot `json:"local"`
+	LocalSelectable bool                   `json:"localSelectable"`
+	LocalFailures   int64                  `json:"localFailures"`
+	CloudFallbacks  int64                  `json:"cloudFallbacks"`
+}
+
+// handleGetTTSSupply 读当前三态与本地腿健康（门控未过=选项置灰+原因）。
+func (deps consoleAPI) handleGetTTSSupply(w http.ResponseWriter, r *http.Request) {
+	if deps.supply == nil {
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tts supply switch is not wired"})
+		return
+	}
+	writeJSON(w, http.StatusOK, ttsSupplyState{
+		Mode:            deps.supply.Mode(),
+		Local:           deps.localProbe.Snapshot(),
+		LocalSelectable: deps.localProbe.Available(),
+		LocalFailures:   deps.supply.LocalFailures(),
+		CloudFallbacks:  deps.supply.CloudFallbacks(),
+	})
+}
+
+// handlePatchTTSSupply 切换三态：幂等写（Idempotency-Key）+ 写入校验
+// （mode 原值；local/local_first 需健康门通过——409 带原因）+ 持久化 +
+// 运行中即时生效 + 审计落账。
+func (deps consoleAPI) handlePatchTTSSupply(w http.ResponseWriter, r *http.Request) {
+	if deps.supply == nil {
+		http.Error(w, "tts supply switch is not wired", http.StatusNotImplemented)
+		return
+	}
+	claims, ok := operatorClaims(deps.authz, w, r)
+	if !ok {
+		return
+	}
+	body, err := decodeOperatorJSON(w, r, &struct {
+		Mode string `json:"mode"`
+	}{})
+	if err != nil {
+		http.Error(w, err.Error(), http.StatusBadRequest)
+		return
+	}
+	executeOperatorWrite(w, r, deps.writes, "console", "tts_supply.update", body, func(ctx context.Context) (operatorwrite.Response, error) {
+		var request struct {
+			Mode string `json:"mode"`
+		}
+		if err := json.Unmarshal(body, &request); err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, err)
+		}
+		mode := strings.TrimSpace(request.Mode)
+		if !tts.ValidSupplyMode(mode) {
+			return operatorwrite.Response{}, operatorError(http.StatusBadRequest, errors.New("mode must be one of cloud/local/local_first"))
+		}
+		if mode != tts.SupplyModeCloud && !deps.localProbe.Available() {
+			return operatorwrite.Response{}, operatorError(http.StatusConflict, fmt.Errorf("local engine is not healthy: %s", deps.localProbe.Snapshot().Reason))
+		}
+		if err := deps.supplySettings.Save(ctx, mode, operatorName(claims)); err != nil {
+			return operatorwrite.Response{}, operatorError(http.StatusInternalServerError, err)
+		}
+		deps.supply.SetMode(mode)
+		deps.appendAudit(claims, "tts_supply.update", mode)
+		return operatorwrite.JSONResponse(http.StatusOK, ttsSupplyState{
+			Mode:            deps.supply.Mode(),
+			Local:           deps.localProbe.Snapshot(),
+			LocalSelectable: deps.localProbe.Available(),
+			LocalFailures:   deps.supply.LocalFailures(),
+			CloudFallbacks:  deps.supply.CloudFallbacks(),
+		})
+	})
 }

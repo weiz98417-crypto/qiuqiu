@@ -30,6 +30,13 @@ type Config struct {
 	MiMoBaseURL                string
 	MiMoModel                  string
 	MiMoVoice                  string
+	// 本地 TTS 腿（tts-supply-switch）：端点留空即本地腿整体不存在
+	// （健康探测/三态本地选项随之消失，云 API 现役）。端点形态=OpenAI
+	// 兼容 /v1/audio/speech（自托管 Fun-CosyVoice3，见 docs/deploy/local-tts.md）。
+	TTSLocalURL           string
+	TTSLocalModel         string
+	TTSLocalVoice         string
+	TTSLocalProbeSeconds  int
 	CompanionRealizerTimeoutMS int
 	RouterAPIKey               string
 	RouterBaseURL              string
@@ -121,6 +128,10 @@ func Load() *Config {
 		MiMoAPIKey:                 getEnv("MIMO_API_KEY", ""),
 		MiMoBaseURL:                getEnv("MIMO_BASE_URL", "https://api.xiaomimimo.com/v1"),
 		MiMoModel:                  getEnv("MIMO_MODEL", "mimo-v2.5-pro"),
+		TTSLocalURL:                strings.TrimSpace(getEnv("QIUQIU_TTS_LOCAL_URL", "")),
+		TTSLocalModel:              strings.TrimSpace(getEnv("QIUQIU_TTS_LOCAL_MODEL", "")),
+		TTSLocalVoice:              strings.TrimSpace(getEnv("QIUQIU_TTS_LOCAL_VOICE", "")),
+		TTSLocalProbeSeconds:       getEnvInt("QIUQIU_TTS_LOCAL_PROBE_SECONDS", 30),
 		EmbeddingBaseURL:           strings.TrimSpace(getEnv("EMBEDDING_BASE_URL", "")),
 		EmbeddingModel:             getEnv("EMBEDDING_MODEL", "bge-m3"),
 		RecallDecayDays:            getEnvInt("RECALL_DECAY_DAYS", 14),

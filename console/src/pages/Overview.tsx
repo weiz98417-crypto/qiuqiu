@@ -9,6 +9,7 @@ import type { ClientHealthEvent } from '../api/clientHealth';
 import { fmtDateTime, fmtTime } from '../api/format';
 import { useAsync } from '../api/useAsync';
 import ConsolePageShell from '../components/ConsolePageShell';
+import TtsSupplyCard from '../components/TtsSupplyCard';
 
 const MATCH_STATE_LABELS: Record<string, { label: string; color: string }> = {
   live: { label: '直播中', color: 'processing' },
@@ -281,6 +282,12 @@ export default function Overview() {
                 />
               </Col>
             </Row>
+          </Card>
+        </Col>
+        {/* 九格 · 语音供给（tts-supply-switch）：三态切换+本地腿健康门控 */}
+        <Col span={12}>
+          <Card data-cell="tts-supply" title="语音供给" style={cellBorder({ height: '100%' })}>
+            <TtsSupplyCard />
           </Card>
         </Col>
       </Row>

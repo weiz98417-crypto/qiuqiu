@@ -39,6 +39,7 @@ import (
 	"qiuqiu/internal/router"
 	"qiuqiu/internal/structured"
 	"qiuqiu/internal/tts"
+	"qiuqiu/internal/ttssupply"
 	"qiuqiu/internal/useraffect"
 	"qiuqiu/internal/ws"
 
@@ -187,7 +188,11 @@ func main() {
 
 	// AI clients
 	llmClient := newTextLLMClient(cfg)
-	ttsClient := configuredSpeechSynthesizer(cfg)
+	// 语音供给三态装配（tts-supply-switch）：云腿照旧现役，本地腿按
+	// QIUQIU_TTS_LOCAL_URL 可选配置+健康探测；初始态从 ops_settings 恢复
+	// （无库部署=内存态，重启回 cloud 默认）。
+	ttsClient, ttsLocalProbe, ttsSupplySettings := configuredTTSSupply(cfg)
+	defer ttsLocalProbe.Close()
 	asrClient := asr.NewClient(cfg.MiMoAPIKey).WithBaseURL(cfg.MiMoBaseURL).WithModel("mimo-v2.5-asr")
 	directorDrafts := directordraft.NewService(asrClient, directordraft.NewLLMExtractor(structured.NewClient(cfg.MiMoBaseURL, cfg.MiMoAPIKey, cfg.MiMoModel)))
 	// 用户轮次信号去重器（server-residual-polish 1.3：原包级 global，改为
@@ -629,19 +634,22 @@ func main() {
 	// ADR-0008 operations console API: the three-tier IA data surface
 	// (overview → match → user) behind operator auth + scopes.
 	mux.HandleFunc("/api/console/", handleConsoleAPI(consoleAPI{
-		cfg:           cfg,
-		authz:         authz,
-		matches:       matchStore,
-		traces:        traceReader,
-		ledger:        interactionLedger,
-		sessions:      watchSessions,
-		memories:      memoryQueue,
-		operators:     operatorStore,
-		preferences:   memoryPreferenceStore,
-		writes:        operatorWrites,
-		interruptions: sharedInterruptions,
-		clientHealth:  clientHealthLedger,
-		jwtSecret:     cfg.JWTSecret,
+		cfg:            cfg,
+		authz:          authz,
+		matches:        matchStore,
+		traces:         traceReader,
+		ledger:         interactionLedger,
+		sessions:       watchSessions,
+		memories:       memoryQueue,
+		operators:      operatorStore,
+		preferences:    memoryPreferenceStore,
+		writes:         operatorWrites,
+		interruptions:  sharedInterruptions,
+		clientHealth:   clientHealthLedger,
+		supply:         ttsClient,
+		localProbe:     ttsLocalProbe,
+		supplySettings: ttsSupplySettings,
+		jwtSecret:      cfg.JWTSecret,
 	}))
 	// 知识策展面（knowledge-curation-console）：/api/console/knowledge 子树，
 	// ServeMux 最长前缀优先、独立路由表，不动 console 既有注册表。
@@ -747,6 +755,47 @@ func configuredSpeechSynthesizer(cfg *config.Config) speechSynthesizer {
 		return tts.NewMockClient([]byte("qiuqiu-runtime-eval-audio"))
 	}
 	return nil
+}
+
+// configuredTTSSupply 装配语音供给三态开关（tts-supply-switch）：云腿
+// 照旧（configuredSpeechSynthesizer），本地腿按 QIUQIU_TTS_LOCAL_URL 可
+// 选配置并起健康探测循环；初始三态从持久层恢复。默认态（cloud）下每条
+// 调用路径原样透传云腿——云 API 行为与开关引入前一致。
+func configuredTTSSupply(cfg *config.Config) (*tts.SupplySwitch, *tts.LocalProbe, ttssupply.Store) {
+	cloud := configuredSpeechSynthesizer(cfg)
+	var local *tts.LocalClient
+	if cfg != nil && strings.TrimSpace(cfg.TTSLocalURL) != "" {
+		local = tts.NewLocalClient(cfg.TTSLocalURL)
+		local = local.WithModel(cfg.TTSLocalModel).WithVoice(cfg.TTSLocalVoice)
+	}
+	supply := tts.NewSupplySwitch(cloud, local)
+	probeInterval := tts.DefaultProbeInterval
+	if cfg != nil && cfg.TTSLocalProbeSeconds > 0 {
+		probeInterval = time.Duration(cfg.TTSLocalProbeSeconds) * time.Second
+	}
+	probe := tts.NewLocalProbe(local, probeInterval, 0)
+	probe.Start()
+
+	var settings ttssupply.Store = ttssupply.NewMemoryStore()
+	if cfg != nil && strings.TrimSpace(cfg.DatabaseURL) != "" {
+		ctx, cancel := context.WithTimeout(context.Background(), 5*time.Second)
+		postgresSettings, err := ttssupply.OpenPostgresStore(ctx, cfg.DatabaseURL)
+		cancel()
+		if err != nil {
+			log.Printf("tts supply settings: postgres store unavailable (%v), falling back to memory", err)
+		} else {
+			settings = postgresSettings
+		}
+	}
+	loadCtx, loadCancel := context.WithTimeout(context.Background(), 3*time.Second)
+	initialMode, loadErr := settings.Load(loadCtx)
+	loadCancel()
+	if loadErr != nil {
+		log.Printf("tts supply settings: load failed (%v), keeping cloud default", loadErr)
+	} else {
+		supply.SetMode(initialMode)
+	}
+	return supply, probe, settings
 }
 
 func observationFollowUpsForUser(responses []companion.ObservationResponse, userID string, now time.Time) []companion.ObservationResponse {
