@@ -16,6 +16,7 @@ import '../services/recorder_stub.dart';
 import '../services/session_service.dart';
 import '../services/match_session_controller.dart';
 import '../services/match_view_data.dart';
+import '../services/journal_service.dart';
 import '../services/moments_service.dart';
 import '../services/match_overview_service.dart';
 import '../services/portrait_service.dart';
@@ -34,6 +35,7 @@ import '../widgets/reply_subtitle_card.dart';
 import 'match_dock.dart';
 import '../widgets/connection_mark.dart';
 import 'match_lobby.dart';
+import 'journal_screen.dart';
 import 'portrait_screen.dart';
 import 'reply_display.dart';
 import 'settings_screen.dart';
@@ -1206,6 +1208,22 @@ class _MatchScreenState extends State<MatchScreen> {
   /// 球球懂我 (C3): the portrait page talks to /api/me/portrait over the same
   /// session the match transport uses, so it works with or without a live
   /// match connection.
+  /// 球友手记（teammate-journal）：阅读面（手记列表+赛季记忆册），与
+  /// 球球懂我同一条 session（/api/me/journal），无比赛连接也可用。
+  Future<void> _openJournal() async {
+    await Navigator.push(
+      context,
+      MaterialPageRoute(
+        builder: (_) => JournalScreen(
+          service: JournalService(
+            baseUrl: normalizeAPIBaseURL(_socketUrl()),
+            sessions: _sessions,
+            deviceId: _deviceId,
+          ),
+        ),
+      ),
+    );
+  }
   Future<void> _openPortrait() async {
     await Navigator.push(
       context,
@@ -1221,6 +1239,7 @@ class _MatchScreenState extends State<MatchScreen> {
             sessions: _sessions,
             deviceId: _deviceId,
           ),
+          onOpenJournal: _deviceId.isEmpty ? null : _openJournal,
         ),
       ),
     );

@@ -26,6 +26,7 @@ import (
 	"qiuqiu/internal/directordraft"
 	"qiuqiu/internal/embedding"
 	"qiuqiu/internal/interaction"
+	"qiuqiu/internal/journal"
 	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/llm"
 	"qiuqiu/internal/matchstate"
@@ -561,9 +562,31 @@ func main() {
 		queueOptions = append(queueOptions, memory.WithPortraitDecay(cfg.PortraitDecayDays))
 		memoryQueue = memory.NewQueue(memobaseAdapter, nil, nil, queueOptions...)
 	}
+	// 球友手记（teammate-journal）：store 按库选（无库=内存态），织写按
+	// key 选（无 key=确定性底稿，手记面永远有内容且零编造）。
+	var journalStore journal.Store
+	var journalMoments journal.MomentSource
+	var journalService *journalService
+	if cfg.DatabaseURL != "" {
+		journalPostgres, journalErr := journal.OpenPostgresStore(context.Background(), cfg.DatabaseURL)
+		if journalErr != nil {
+			log.Printf("journal store: postgres unavailable (%v), falling back to memory", journalErr)
+		} else {
+			journalStore = journalPostgres
+			defer journalPostgres.Close()
+		}
+	}
+	var journalTextGenerator journal.TextGenerator
+	if llmClient != nil {
+		journalTextGenerator = journal.NewLLMGenerator(llmClient)
+	}
+	journalService = newJournalService(matchStore, memoryQueue, journalStore, journalTextGenerator)
+	journalStore = journalService.store
+	journalMoments = journalService.moments
+
 	companionAgent.WithMemories(memoryQueue)
 	go memoryQueue.Run(memoryCtx)
-	go runReflectionBeat(memoryCtx, memoryQueue, 15*time.Minute)
+	go runReflectionBeat(memoryCtx, memoryQueue, 15*time.Minute, journalService.afterPostMatch)
 	if llmClient != nil {
 		companionAgent.WithRealizer(companion.NewLLMReplyRealizer(llmClient), cfg.CompanionRealizerTimeout())
 	}
@@ -637,6 +660,11 @@ func main() {
 	mux.HandleFunc("/api/me/threads", handleThreadsAPI(sessionManager, cfg, memoryQueue))
 	mux.HandleFunc("/api/me/moments", handleMomentsAPI(sessionManager, cfg, memoryQueue))
 	mux.HandleFunc("/api/me/moments/{momentId}", handleMomentsAPI(sessionManager, cfg, memoryQueue))
+	// 球友手记+赛季记忆册（teammate-journal）：阅读面（列表/点赞/可删/成册）。
+	mux.HandleFunc("/api/me/journal", handleJournalAPI(sessionManager, cfg, journalStore, journalMoments))
+	mux.HandleFunc("/api/me/journal/{entryId}", handleJournalAPI(sessionManager, cfg, journalStore, journalMoments))
+	mux.HandleFunc("/api/me/journal/{entryId}/like", handleJournalAPI(sessionManager, cfg, journalStore, journalMoments))
+	mux.HandleFunc("/api/me/journal/album", handleJournalAPI(sessionManager, cfg, journalStore, journalMoments))
 	mux.HandleFunc("/api/matches/catalog", handleMatchCatalog(matchStore, cfg))
 	mux.HandleFunc("/api/matches/", handleMatchAPIWithOperatorAuth(matchStore, traceReader, demoResetter, cfg, llmClient, sourceManager, directorDrafts, interactionLedger, authz, operatorWrites))
 	// ADR-0008 operations console API: the three-tier IA data surface
@@ -906,7 +934,7 @@ func runObservationExpiry(ctx context.Context, coordinator observation.Coordinat
 // = 至多 75 分钟一次兜底。
 const reflectFallbackRounds = 5
 
-func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInterval time.Duration) {
+func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInterval time.Duration, afterPostMatch func(ctx context.Context, userID, matchID string)) {
 	if memoryQueue == nil {
 		return
 	}
@@ -930,6 +958,11 @@ func runReflectionBeat(ctx context.Context, memoryQueue *memory.Queue, idleInter
 		defer cancel()
 		if _, err := memoryQueue.ReflectNow(reflectCtx, userID, matchID, trigger); err != nil && !errors.Is(err, context.Canceled) {
 			log.Printf("memory reflection (%s) error for user %q: %v", trigger, userID, err)
+		}
+		// 球友手记挂点（teammate-journal 10.1）：reflection 冲洗后账本终场
+		// 事实就绪，手记生成尽力而为（失败只记日志）。
+		if trigger == "post_match" && afterPostMatch != nil {
+			afterPostMatch(reflectCtx, userID, matchID)
 		}
 	}
 	expireThreads()

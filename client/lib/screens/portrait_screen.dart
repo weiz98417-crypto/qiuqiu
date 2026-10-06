@@ -11,8 +11,16 @@ import '../theme/app_theme.dart';
 class PortraitScreen extends StatefulWidget {
   final PortraitService service;
   final SharedMomentsService? moments;
+  // 球友手记入口（teammate-journal）：由宿主注入（JournalScreen 的
+  // service 依赖与宿主同源）；null = 入口隐藏（老调用方零波及）。
+  final VoidCallback? onOpenJournal;
 
-  const PortraitScreen({super.key, required this.service, this.moments});
+  const PortraitScreen({
+    super.key,
+    required this.service,
+    this.moments,
+    this.onOpenJournal,
+  });
 
   @override
   State<PortraitScreen> createState() => _PortraitScreenState();
@@ -350,6 +358,17 @@ class _PortraitScreenState extends State<PortraitScreen> {
               ),
             const SizedBox(height: AppSpacing.md),
           ],
+          // 球友手记入口（teammate-journal）：宿主注入回调时展示（阅读面：
+          // 每场一篇手记+赛季记忆册）。
+          if (widget.onOpenJournal != null)
+            Padding(
+              padding: const EdgeInsets.only(bottom: AppSpacing.md),
+              child: OutlinedButton.icon(
+                onPressed: widget.onOpenJournal,
+                icon: const Icon(Icons.menu_book),
+                label: const Text('球友手记 · 赛季记忆册'),
+              ),
+            ),
           // 共同瞬间(memory-surfacing 1.4/1.5):球球和你们一起经历的比赛
           // 瞬间投影,可见可删(物理删除)。拉取失败静默隐藏——不是错误面。
           FutureBuilder<List<SharedMomentEntry>>(
