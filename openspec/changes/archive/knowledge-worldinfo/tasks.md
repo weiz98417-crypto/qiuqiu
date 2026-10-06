@@ -1,0 +1,10 @@
+# Tasks: 知识域 World Info 参数学
+
+- [x] 11.0 门判:**门开（2026-10-07 重判通过）**——knowledge-retrieval 已落 ✓ 且条目库门槛上调 **100 条**(anysearch 调研锚点:elfsight「约 20 主题×100 FAQ 上限」/itwrites 500 企业基准「20-30 核心起步分层扩容」/IFAB Laws 17 章骨架;200 登记二期扩容目标不设门——避免逼出凑数条目)。**已扩至 121 条**(rules 100+players 21:规则细化 17 章×3+术语 30+赛制 12+常识 7)且全量解析导入实测通过(gate 121≥100)（原 36 条:21 players+15 rules;本轮起草 16 条真实高频观赛知识[角球/界外球/任意球/球门球/补时/加时/点球大战/门线技术/门将规则/累积停赛/有利原则/帽子戏法/高位逼抢/零封/反击/金靴金球/世界波/开球]入库,顺手清理存量死文件 rule-offside.yaml/rule-penalty.yaml——与 judgment-* 变体同 id 的重复文件,PutIfAbsent 幂等早已掩盖）。**常驻门卫**:gate_test.go（TestKnowledgeDirCountsOverGate,对 KNOWLEDGE_DIR 根生产同路径递归导入,跌破 50 即红——删条目悄悄破门会当场暴露）。knowledge-retrieval 落地 ✓、条目库 52 ≥ 50 ✓——**两门全过,本 change 解挂,11.1-11.3 可实施**。
+- [x] 11.1 schema 扩展:priority/inclusionGroup/stickyTurns/cooldownTurns/probability(默认值=现状行为)+ migration。**已落(cd15799)**:migration 057 五列全带默认值(0/''/0/0/1,存量 121 条零感知);Entry 结构+归一口径 `normalizeWorldInfoParams`(p≤0→1 未策展=必中、负 sticky/cooldown 拒绝、组名去空白)在策展写入(preparePut)与 YAML 直读(parseEntryFile)两条入口同口径;策展 API view/PUT/POST 五字段透传;store 契约测试扩五字段回环与校验,API 测试锁透传回显。
+- [x] 11.2 检索后处理管道:预算裁剪→互斥消歧→生命周期→概率(全确定性);evals:四机制各一族+默认值字节级一致。**已落(866e9f5+0aebeef)**:管道纯函数 `knowledge.Select`(状态进状态出;fnv64a(seed×turn×entryID) 万分位骰);SearchTopN 多候选面与 Search 共用评分核心(稳定排序并列声明序,与历史「严格大于取首」逐字节一致);消费口 handleKnowledgeQuestion 改走管道,默认值下首元素=Search 冠军(TestSelectDefaultsMatchSearchByteForByte 字节级等价锁),确信度门仍在消费口;红线守住(knowledge 包零 matchstate 依赖)。**生命周期状态归属裁决**:companion 层每用户有界 FIFO map(256,与 knowledgeTriggerStates 同纪律),Library 全局永不感知用户——跨用户不串味,管道保持纯函数可测。语义细则:sticky=固定窗口从真触发轮起算不因持续命中续期(ST 式)+存活提队首+免掷骰+预算豁免全局化(双轴审查修正 0aebeef);cooldown=命中后 N 轮剔除;互斥组内取最高(priority→得分→声明序)。**设计注记**:BudgetBytes 运行时默认 0=不限——预算数值 spec 未定义且策展台表单仅要求五字段;priority 重排在预算不限时即已生效(组内取最高/首元素选择都吃它),预算裁剪作为策展深水区留待真实需求出现再接数值。evals:四机制各族+等价锁+SearchTopN 形状锁+companion 冷却端到端/每用户隔离锁。
+- [x] 11.3 策展台表单扩展 + 测试。**已落(fb89928)**:表单五字段(新建态默认值=现状行为 0/空/0/0/1=必中,编辑态预填+保存透传),校验口径前端镜像(概率 [0,1]、轮数非负整数);vitest 12 例全绿(五字段预填+透传/新建默认值契约/校验器纯函数),console 全套 25/25 绿+tsc 干净。
+
+## Sequencing
+
+波3 尾,门内再评估(见 11.0)。
