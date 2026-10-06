@@ -139,56 +139,63 @@ func (s *SupplySwitch) Synthesize(ctx context.Context, text string, opts VoiceOp
 	}
 }
 
+// SynthesizeStream 是 Synthesizer 接口的流式位：channel 版由 Detailed
+// 投影生成——三态回退/计数语义只在 Detailed 一处收敛，本地腿 channel
+// 路径「goroutine 内吞错」的形态缺口不再暴露给调用方（LocalClient 的
+// channel 版保留仅为满足接口，运行中失败=空 channel，无错误通道）。
 func (s *SupplySwitch) SynthesizeStream(ctx context.Context, text string, opts VoiceOpts) (<-chan []byte, error) {
 	if s == nil || s.cloudLeg() == nil {
 		return nil, ErrNotConfigured
 	}
-	switch s.Mode() {
-	case SupplyModeLocal:
-		ch, err := s.local.SynthesizeStream(ctx, text, opts)
-		if err != nil {
-			s.localFailures.Add(1)
-			return nil, err
-		}
-		return ch, nil
-	case SupplyModeLocalFirst:
-		if s.local.Configured() {
-			ch, err := s.local.SynthesizeStream(ctx, text, opts)
-			if err == nil {
-				return ch, nil
+	ch := make(chan []byte, 4)
+	go func() {
+		defer close(ch)
+		_ = s.SynthesizeStreamDetailed(ctx, text, opts, func(chunk StreamChunk) error {
+			select {
+			case ch <- chunk.Data:
+				return nil
+			case <-ctx.Done():
+				return ctx.Err()
 			}
-			s.localFailures.Add(1)
-		}
-		// 态 c：本地失败（或未配置）自动回云，句子不断流。
-		s.cloudFallbacks.Add(1)
-		return s.cloudLeg().SynthesizeStream(ctx, text, opts)
-	default:
-		return s.cloudLeg().SynthesizeStream(ctx, text, opts)
-	}
+		})
+	}()
+	return ch, nil
 }
 
 // SynthesizeStreamDetailed 实现 StreamingSynthesizer：按态转发。态 c 的
-// 回退发生在「本地腿根本无法开始」的起点性失败上——一旦本地分片开始
-// 回调，不中途换腿（换源音频拼接会重复/断裂），如实上抛。
+// 回退只发生在「本地分片尚未开始回调」的失败上——一旦开始下发，不中途
+// 换腿（换源音频拼接会重复/断裂），onChunk 报错或本地腿已回调后的错误
+// 如实上抛、不记失败不回云（回退不变量显式追踪，不靠 adapter 惯例）。
 func (s *SupplySwitch) SynthesizeStreamDetailed(ctx context.Context, text string, opts VoiceOpts, onChunk func(StreamChunk) error) error {
 	if s == nil || s.cloudLeg() == nil {
 		return ErrNotConfigured
 	}
+	delivered := false
+	gated := func(chunk StreamChunk) error {
+		// 「已下发」= 分片交到 onChunk 手里——哪怕它随即报错中止，也不可
+		// 回云重投（换源拼接会重复内容），错误如实上抛。
+		if len(chunk.Data) > 0 {
+			delivered = true
+		}
+		return onChunk(chunk)
+	}
 	switch s.Mode() {
 	case SupplyModeLocal:
-		if err := s.local.SynthesizeStreamDetailed(ctx, text, opts, onChunk); err != nil {
-			s.localFailures.Add(1)
+		if err := s.local.SynthesizeStreamDetailed(ctx, text, opts, gated); err != nil {
+			if !delivered && ctx.Err() == nil {
+				s.localFailures.Add(1)
+			}
 			return err
 		}
 		return nil
 	case SupplyModeLocalFirst:
 		if s.local.Configured() {
-			err := s.local.SynthesizeStreamDetailed(ctx, text, opts, onChunk)
+			err := s.local.SynthesizeStreamDetailed(ctx, text, opts, gated)
 			if err == nil {
 				return nil
 			}
-			if ctx.Err() != nil {
-				return err // 调用方取消：不回云
+			if delivered || ctx.Err() != nil {
+				return err // 分片已下发或调用方取消：不换腿、不回云
 			}
 			s.localFailures.Add(1)
 			s.cloudFallbacks.Add(1)

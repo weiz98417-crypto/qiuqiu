@@ -774,6 +774,16 @@ func configuredTTSSupply(cfg *config.Config) (*tts.SupplySwitch, *tts.LocalProbe
 		probeInterval = time.Duration(cfg.TTSLocalProbeSeconds) * time.Second
 	}
 	probe := tts.NewLocalProbe(local, probeInterval, 0)
+	// 态 b「保持并告警」的告警面（spec：运行中翻转主动可见）：健康翻转
+	// 落结构化日志一行——观测惯例与 relay/ambient 同族，Grafana 告警面
+	// 可按此日志键接线。
+	probe.OnStateChange(func(available bool, reason string) {
+		if !available {
+			log.Printf("tts supply: local engine unavailable: %s", reason)
+			return
+		}
+		log.Printf("tts supply: local engine healthy")
+	})
 	probe.Start()
 
 	var settings ttssupply.Store = ttssupply.NewMemoryStore()

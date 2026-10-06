@@ -855,7 +855,7 @@ func (deps consoleAPI) handleGetTTSSupply(w http.ResponseWriter, r *http.Request
 // 运行中即时生效 + 审计落账。
 func (deps consoleAPI) handlePatchTTSSupply(w http.ResponseWriter, r *http.Request) {
 	if deps.supply == nil {
-		http.Error(w, "tts supply switch is not wired", http.StatusNotImplemented)
+		writeJSON(w, http.StatusNotImplemented, map[string]string{"error": "tts supply switch is not wired"})
 		return
 	}
 	claims, ok := operatorClaims(deps.authz, w, r)

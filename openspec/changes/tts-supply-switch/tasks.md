@@ -7,6 +7,12 @@
 - [x] 7.4 部署文档:docs/deploy/local-tts.md(CosyVoice3 docker 起法/显存要求/env 清单/切换 walkthrough/instructions 情感映射表/30 分钟验收清单)。
 - [x] 7.5 门禁:go 全量 33 包绿 + console vitest 23 绿 + console 构建绿;默认态(云)字节级回归=supply_test.go TestSupplySwitchCloudDefaultPassthrough(双路径透传+零计数)+ configuredTTSSupply 不配 URL 时 local=nil 全透传。
 
+## 双轴审查留尾(code-review 2026-10-06,均已裁定)
+
+- **已修(review 修正 commit)**:① SupplySwitch 流式 channel 版改为 Detailed 投影——消掉本地腿 channel 路径「goroutine 内吞错」形态缺口(态 b/c 语义一处收敛);② Detailed 回退不变量显式追踪——分片交到 onChunk 手里即「已下发」,此后错误如实上抛、不换腿不回云不重投(补测试钉住);③ 态 b「保持并告警」接线——健康翻转落结构化日志(tts supply: local engine unavailable);④ GET/PATCH 501 响应形状统一、概览九格双边框消除。
+- **留尾**:概览语音供给卡无轮询(健康行会陈旧,后续加 30s 轮询或 ops 推送);「云路径字节级一致」的证据是替身级 stub 双跑,真机 walkthrough(部署文档验收清单)时以真实 Miimo 补证;SupplySwitch 的非流式 Synthesize 路径无 ctx.Err() 取消特判(HTTP 层 ctx 取消自然失败,无实害的不对称);NewSupplySwitch 双腿皆 nil 时 cloudLeg nil→ErrNotConfigured(未配置部署的最后防线,未单测)。
+- **tasks 10.0 核查措辞修正**(Spec 轴指出):「client/lib 零命中」欠准——moments_service.dart 是共同瞬间 API 客户端(memory-surfacing 1.4/1.5),非分享面;**「分享卡片渲染面」不存在**的结论不变。
+
 ## 前置核查与门判记录(2026-10-06,同轮波3)
 
 - **tts-provider-seam(7.0)**:已全实施,见上。

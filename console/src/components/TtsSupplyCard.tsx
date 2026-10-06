@@ -10,6 +10,7 @@ const { Text } = Typography;
 // 语音供给卡（tts-supply-switch 7.3）：三态切换 + 本地腿健康门控快照 +
 // 回退计数。供给是部署级事实（全局单值），健康门未过的本地选项置灰并
 // 显示原因——门控在服务端 PATCH 也拦（409），前端置灰只是体验层。
+// 卡自带标题与边框（运营概览九格惯例：一格一张 Card，不嵌套）。
 export default function TtsSupplyCard() {
   const { data, loading, error, reload } = useAsync<TtsSupplyState>(() => ttsSupplyApi.get(), []);
   const [draft, setDraft] = useState<string | null>(null);
@@ -38,7 +39,7 @@ export default function TtsSupplyCard() {
   const local = data?.local;
 
   return (
-    <Card>
+    <Card data-cell="tts-supply" title="语音供给" style={{ border: '1px solid #253142', height: '100%' }}>
       {error ? <Alert type="error" showIcon message="语音供给状态加载失败" description={error} /> : null}
       <Space direction="vertical" size="small" style={{ width: '100%' }}>
         <Radio.Group

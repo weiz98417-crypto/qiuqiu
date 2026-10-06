@@ -284,11 +284,9 @@ export default function Overview() {
             </Row>
           </Card>
         </Col>
-        {/* 九格 · 语音供给（tts-supply-switch）：三态切换+本地腿健康门控 */}
+        {/* 九格 · 语音供给（tts-supply-switch）：三态切换+本地腿健康门控（卡自带标题） */}
         <Col span={12}>
-          <Card data-cell="tts-supply" title="语音供给" style={cellBorder({ height: '100%' })}>
-            <TtsSupplyCard />
-          </Card>
+          <TtsSupplyCard />
         </Col>
       </Row>
     </ConsolePageShell>

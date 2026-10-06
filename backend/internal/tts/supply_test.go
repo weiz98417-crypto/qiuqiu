@@ -3,6 +3,8 @@ package tts
 import (
 	"context"
 	"errors"
+	"net/http"
+	"net/http/httptest"
 	"testing"
 )
 
@@ -173,3 +175,32 @@ var (
 	_ Synthesizer          = (*LocalClient)(nil)
 	_ StreamingSynthesizer = (*LocalClient)(nil)
 )
+
+// 回退不变量（review 修正）：分片已开始下发后的错误——不换腿不回云不计
+// 数，如实上抛且不二次投递；channel 投影下本地腿死掉时态 c 回云音频照常
+// 到达（channel 路径不再吞错成空流）。
+func TestSupplySwitchDetailedNoRedeliveryAfterDelivery(t *testing.T) {
+	server := httptest.NewServer(http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
+		_, _ = w.Write([]byte("RIFF-local"))
+	}))
+	defer server.Close()
+	cloud := &stubSynth{audio: []byte("cloud-audio")}
+	supply := NewSupplySwitch(cloud, NewLocalClient(server.URL))
+	supply.SetMode(SupplyModeLocalFirst)
+
+	calls := 0
+	err := supply.SynthesizeStreamDetailed(context.Background(), "x", VoiceOpts{}, func(StreamChunk) error {
+		calls++
+		return errors.New("subscriber abort")
+	})
+	if err == nil {
+		t.Fatal("subscriber abort must surface")
+	}
+	if calls != 1 {
+		t.Fatalf("onChunk calls = %d, want exactly 1 (no re-delivery after delivery)", calls)
+	}
+	if supply.CloudFallbacks() != 0 || supply.LocalFailures() != 0 {
+		t.Fatalf("counters = (%d, %d), want (0, 0) — delivered turn is not a failure",
+			supply.LocalFailures(), supply.CloudFallbacks())
+	}
+}
