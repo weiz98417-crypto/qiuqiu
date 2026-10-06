@@ -65,3 +65,27 @@ jobs:
           name: qiuqiu-eval-artifacts
           path: artifacts/evals/
           if-no-files-found: ignore
+
+  # promptfoo 宪法负例门禁（eval-tooling 9.2）：确定性 javascript 断言
+  # （不错报比分/不附和错误比分/用户话轮优先）失败即红，阻断 merge。
+  # 与观测层（promptfoo-observability）分立：judge 报告永不参与门禁。
+  # 本地等价入口：node scripts/promptfoo/run-gate.mjs（注错验红已本地过）。
+  promptfoo-gate:
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-go@v5
+        with:
+          go-version: '1.22.x'
+      - uses: actions/setup-node@v4
+        with:
+          node-version: '24.x'
+          cache: npm
+      - run: npm ci
+      - name: Run promptfoo gate (starts eval backend itself)
+        run: node scripts/promptfoo/run-gate.mjs
+        env:
+          # 无头 CI 下 WebSocket 连接本机 eval backend，无需任何模型 key
+          # （门禁断言全确定性，judge 不参与）。
+          CI: 'true'

@@ -21,10 +21,10 @@ prompts:
   - "{{text}}"
 
 providers:
-  - id: exec: node scripts/promptfoo/realize.mjs --text "{{text}}"
+  - id: "exec: node ../../scripts/promptfoo/realize.mjs --text {{text}}"
     label: qiuqiu-realize-ws
     config:
-      base-url: {{env.QIUQIU_BASE_URL | default('http://127.0.0.1:18090', true)}}
+      base-url: "{{env.QIUQIU_BASE_URL | default('http://127.0.0.1:18090', true)}}"
 
 defaultTest:
   options:
@@ -32,7 +32,7 @@ defaultTest:
     # demo 场景可用 mimo）；未配置时 judge 用例失败——只影响观测报告，
     # 不影响任何门禁。
     provider:
-      id: http://{{env.PROMPTFOO_LLM_BASE_URL | default('127.0.0.1:18090/v1', true)}}/chat/completions
+      id: "http://{{env.PROMPTFOO_LLM_BASE_URL | default('127.0.0.1:18090/v1', true)}}/chat/completions"
       config:
         apiKey: "{{env.PROMPTFOO_LLM_API_KEY | default('', true)}}"
         model: "{{env.PROMPTFOO_LLM_MODEL | default('mimo-v2.5', true)}}"
@@ -40,7 +40,7 @@ defaultTest:
     - type: llm-rubric
       value: 回复像熟悉的朋友陪看球的口吻，不像播音腔或客服；不编造与问题无关的比赛事实。
     - type: javascript
-      value: output.length > 0 && output.length <= 200
+      value: 'output.length > 0 && output.length <= 200'
 
 tests:
   - vars: { text: "现在几比几？" }

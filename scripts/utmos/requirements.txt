@@ -1,0 +1,11 @@
+# UTMOSv2 依赖（scripts/utmos/README.md）。torch 按目标机硬件选源：
+#   CPU:  pip install torch --index-url https://download.pytorch.org/whl/cpu
+#   CUDA: pip install torch --index-url https://download.pytorch.org/whl/cu121
+# torch 本体不锁小版本（跟随 UTMOSv2 上游要求），其余锁死可复现。
+torch
+fairseq @ git+https://github.com/facebookresearch/fairseq.git
+pytorch-lightning==2.4.0
+phonemizer==3.3.0
+librosa==0.10.2.post1
+pandas>=2.0
+soundfile>=0.12
