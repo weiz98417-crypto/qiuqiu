@@ -37,14 +37,19 @@ func (s *PostgresStore) Close() {
 	}
 }
 
-const entryColumns = `id, topics, answer, source, confidence, effective_at, triggers, quote, created_by, created_at, updated_at`
+const entryColumns = `id, topics, answer, source, confidence, effective_at, triggers, quote,
+	priority, inclusion_group, sticky_turns, cooldown_turns, probability,
+	created_by, created_at, updated_at`
 
 func scanRecord(row pgx.Row) (Record, error) {
 	var record Record
 	var topicsJSON, triggersJSON []byte
 	err := row.Scan(
 		&record.ID, &topicsJSON, &record.Answer, &record.Source, &record.Confidence,
-		&record.EffectiveAt, &triggersJSON, &record.Quote, &record.CreatedBy,
+		&record.EffectiveAt, &triggersJSON, &record.Quote,
+		&record.Priority, &record.InclusionGroup, &record.StickyTurns, &record.CooldownTurns,
+		&record.Probability,
+		&record.CreatedBy,
 		&record.CreatedAt, &record.UpdatedAt,
 	)
 	if err != nil {
@@ -109,7 +114,7 @@ func (s *PostgresStore) Put(ctx context.Context, entry Entry, operator string) (
 	}
 	record, err := scanRecord(s.pool.QueryRow(ctx, `
 		INSERT INTO knowledge_entries (`+entryColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now())
 		ON CONFLICT (id) DO UPDATE SET
 			topics = EXCLUDED.topics,
 			answer = EXCLUDED.answer,
@@ -118,10 +123,18 @@ func (s *PostgresStore) Put(ctx context.Context, entry Entry, operator string) (
 			effective_at = EXCLUDED.effective_at,
 			triggers = EXCLUDED.triggers,
 			quote = EXCLUDED.quote,
+			priority = EXCLUDED.priority,
+			inclusion_group = EXCLUDED.inclusion_group,
+			sticky_turns = EXCLUDED.sticky_turns,
+			cooldown_turns = EXCLUDED.cooldown_turns,
+			probability = EXCLUDED.probability,
 			updated_at = now()
 		RETURNING `+entryColumns+`
 	`, entry.ID, topicsJSON, entry.Answer, entry.Source, entry.Confidence,
-		entry.EffectiveAt, triggersJSON, entry.Quote, strings.TrimSpace(operator)))
+		entry.EffectiveAt, triggersJSON, entry.Quote,
+		entry.Priority, entry.InclusionGroup, entry.StickyTurns, entry.CooldownTurns,
+		entry.Probability,
+		strings.TrimSpace(operator)))
 	if err != nil {
 		return Record{}, err
 	}
@@ -148,10 +161,13 @@ func (s *PostgresStore) PutIfAbsent(ctx context.Context, entry Entry, operator s
 	}
 	tags, err := s.pool.Exec(ctx, `
 		INSERT INTO knowledge_entries (`+entryColumns+`)
-		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, now(), now())
+		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now())
 		ON CONFLICT (id) DO NOTHING
 	`, entry.ID, topicsJSON, entry.Answer, entry.Source, entry.Confidence,
-		entry.EffectiveAt, triggersJSON, entry.Quote, strings.TrimSpace(operator))
+		entry.EffectiveAt, triggersJSON, entry.Quote,
+		entry.Priority, entry.InclusionGroup, entry.StickyTurns, entry.CooldownTurns,
+		entry.Probability,
+		strings.TrimSpace(operator))
 	if err != nil {
 		return false, err
 	}

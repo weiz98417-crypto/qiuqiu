@@ -66,12 +66,22 @@ func exerciseStoreParity(t *testing.T, store Store) {
 	}
 	edited := testEntry("rule-a", "越位", "复查后的新答案原文。", effective)
 	edited.Confidence = 0.95
+	// 后处理参数学五字段（knowledge-worldinfo）随 Put 整条换新，回环保真。
+	edited.Priority = 3
+	edited.InclusionGroup = " 规则组 "
+	edited.StickyTurns = 2
+	edited.CooldownTurns = 4
+	edited.Probability = 0.5
 	updated, err := store.Put(ctx, edited, "小阅")
 	if err != nil {
 		t.Fatalf("put existing: %v", err)
 	}
 	if updated.Answer != "复查后的新答案原文。" || updated.Confidence != 0.95 {
 		t.Fatalf("updated = %+v, want edited content", updated)
+	}
+	if updated.Priority != 3 || updated.InclusionGroup != "规则组" || updated.StickyTurns != 2 ||
+		updated.CooldownTurns != 4 || updated.Probability != 0.5 {
+		t.Fatalf("worldinfo params = %+v, want field-faithful roundtrip (group trimmed)", updated)
 	}
 	if updated.CreatedBy != "阿琴" {
 		t.Fatalf("created_by = %q, want first-creator preserved on update", updated.CreatedBy)
@@ -92,7 +102,8 @@ func exerciseStoreParity(t *testing.T, store Store) {
 		t.Fatalf("list = %+v, want id-sorted [rule-a rule-b]", records)
 	}
 
-	// 校验口径：带 triggers 必带 quote、confidence 越界、必填缺失。
+	// 校验口径：带 triggers 必带 quote、confidence 越界、必填缺失、
+	// 参数学负值/越界（knowledge-worldinfo）。
 	invalid := []Entry{
 		{ID: "bad-triggers", Topics: []string{"var"}, Answer: "答案", Confidence: 0.9,
 			EffectiveAt: effective, Triggers: []string{"var_check"}},
@@ -100,6 +111,9 @@ func exerciseStoreParity(t *testing.T, store Store) {
 		{ID: "bad-topics", Answer: "答案", Confidence: 0.9, EffectiveAt: effective},
 		{ID: "", Topics: []string{"越位"}, Answer: "答案", Confidence: 0.9, EffectiveAt: effective},
 		{ID: "bad-effective", Topics: []string{"越位"}, Answer: "答案", Confidence: 0.9},
+		{ID: "bad-sticky", Topics: []string{"越位"}, Answer: "答案", Confidence: 0.9, EffectiveAt: effective, StickyTurns: -1},
+		{ID: "bad-cooldown", Topics: []string{"越位"}, Answer: "答案", Confidence: 0.9, EffectiveAt: effective, CooldownTurns: -2},
+		{ID: "bad-probability", Topics: []string{"越位"}, Answer: "答案", Confidence: 0.9, EffectiveAt: effective, Probability: 1.5},
 	}
 	for _, entry := range invalid {
 		if _, err := store.Put(ctx, entry, "阿琴"); err == nil {
@@ -189,5 +203,35 @@ func TestDueReviewAndEntryStatus(t *testing.T) {
 	}
 	if got := EntryStatus(now, now.Add(time.Second)); got != "pending" {
 		t.Fatalf("future entry status = %q, want pending", got)
+	}
+}
+
+// TestWorldInfoParamsNormalize 锁参数学五字段的归一口径（knowledge-worldinfo）：
+// probability ≤0 视同未策展归一为 1（存量 YAML 零值=现状行为），>1 拒绝；
+// 策展写入（preparePut）与 YAML 直读（parseEntryFile）两条入口同口径。
+func TestWorldInfoParamsNormalize(t *testing.T) {
+	effective := time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC)
+	entry, err := preparePut(Entry{ID: "rule-p0", Topics: []string{"越位"}, Answer: "答案。",
+		Confidence: 0.9, EffectiveAt: effective, InclusionGroup: " 组 ", Priority: -7})
+	if err != nil {
+		t.Fatalf("preparePut: %v", err)
+	}
+	if entry.Probability != 1 {
+		t.Fatalf("probability = %v, want normalized 1 (zero means uncurated = always)", entry.Probability)
+	}
+	if entry.InclusionGroup != "组" {
+		t.Fatalf("inclusion_group = %q, want trimmed", entry.InclusionGroup)
+	}
+	if entry.Priority != -7 {
+		t.Fatalf("priority = %d, want passthrough (any int legal)", entry.Priority)
+	}
+
+	raw := []byte("id: rule-yaml\ntopics: [\"越位\"]\nanswer: \"答案。\"\nconfidence: 0.9\neffective_at: 2026-07-01\n")
+	parsed, err := parseEntryFile("rule-yaml.yaml", raw)
+	if err != nil {
+		t.Fatalf("parseEntryFile: %v", err)
+	}
+	if parsed.Probability != 1 {
+		t.Fatalf("yaml probability = %v, want normalized 1 (defaults = current behavior)", parsed.Probability)
 	}
 }

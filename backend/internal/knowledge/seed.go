@@ -16,7 +16,8 @@ import (
 )
 
 // parseEntryFile 是 Load 与 SeedDir 共用的单文件解析口径（字段校验与
-// Load 逐字一致：id/topics/answer 必填、triggers 必带 quote）。
+// Load 逐字一致：id/topics/answer 必填、triggers 必带 quote）；后处理参数
+// 学五字段与策展写入同口径归一化（knowledge-worldinfo：p≤0→1 等）。
 func parseEntryFile(path string, raw []byte) (Entry, error) {
 	var entry Entry
 	if err := yaml.Unmarshal(raw, &entry); err != nil {
@@ -27,6 +28,10 @@ func parseEntryFile(path string, raw []byte) (Entry, error) {
 	}
 	if len(entry.Triggers) > 0 && strings.TrimSpace(entry.Quote) == "" {
 		return Entry{}, fmt.Errorf("knowledge entry %s has triggers but no quote (weave anchor required)", path)
+	}
+	entry, err := normalizeWorldInfoParams(entry)
+	if err != nil {
+		return Entry{}, fmt.Errorf("knowledge entry %s: %w", path, err)
 	}
 	return entry, nil
 }

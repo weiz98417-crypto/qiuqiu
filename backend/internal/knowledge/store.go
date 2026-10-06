@@ -68,6 +68,32 @@ func preparePut(entry Entry) (Entry, error) {
 		return Entry{}, errors.New("knowledge entry effective_at is required")
 	}
 	entry.EffectiveAt = entry.EffectiveAt.UTC()
+	entry, err := normalizeWorldInfoParams(entry)
+	if err != nil {
+		return Entry{}, err
+	}
+	return entry, nil
+}
+
+// normalizeWorldInfoParams 归一化并校验检索后处理参数学五字段
+// （knowledge-worldinfo）：inclusion_group 去空白；sticky/cooldown 非负；
+// probability ∈ (0,1]，≤0 视同未策展归一为 1（必中——存量 YAML/DB 零值
+// 即现状行为，禁用条目请下架而非 p=0）。Load（YAML 直读）与 preparePut
+// （策展写入）共用，两条入口的字段口径永远一致。
+func normalizeWorldInfoParams(entry Entry) (Entry, error) {
+	entry.InclusionGroup = strings.TrimSpace(entry.InclusionGroup)
+	if entry.StickyTurns < 0 {
+		return Entry{}, errors.New("knowledge entry sticky_turns must be >= 0")
+	}
+	if entry.CooldownTurns < 0 {
+		return Entry{}, errors.New("knowledge entry cooldown_turns must be >= 0")
+	}
+	if entry.Probability <= 0 {
+		entry.Probability = 1
+	}
+	if entry.Probability > 1 {
+		return Entry{}, errors.New("knowledge entry probability must be within (0,1]")
+	}
 	return entry, nil
 }
 

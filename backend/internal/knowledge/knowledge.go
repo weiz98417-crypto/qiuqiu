@@ -36,6 +36,19 @@ type Entry struct {
 	// Quote 是织写锚：策展短引文，realizer 织写时必须引号原样携带（运行
 	// 时 contains 守卫），失败降级确定性附句。带 triggers 的条目必填。
 	Quote string `yaml:"quote" json:"quote,omitempty"`
+
+	// 以下五字段是检索后处理参数学（knowledge-worldinfo，只抄 SillyTavern
+	// World Info 算法思想，Go 自写）：默认值=现状行为（管道是可选层）。
+	// Priority 预算裁剪序（越大越先占预算，默认 0=不参与重排）；
+	// InclusionGroup 互斥组（同组多条命中只活一个，默认空=不互斥）；
+	// StickyTurns/CooldownTurns 生命周期状态机（命中后保位/冷却 N 轮，
+	// 默认 0=无状态）；Probability 触发概率 ∈(0,1]（默认 1=必中；0 在
+	// 归一化时视同 1——「禁用条目」请下架而非 p=0）。
+	Priority       int     `yaml:"priority" json:"priority,omitempty"`
+	InclusionGroup string  `yaml:"inclusion_group" json:"inclusionGroup,omitempty"`
+	StickyTurns    int     `yaml:"sticky_turns" json:"stickyTurns,omitempty"`
+	CooldownTurns  int     `yaml:"cooldown_turns" json:"cooldownTurns,omitempty"`
+	Probability    float64 `yaml:"probability" json:"probability,omitempty"`
 }
 
 type Library struct {

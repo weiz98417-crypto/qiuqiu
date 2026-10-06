@@ -37,21 +37,27 @@ type knowledgeAPI struct {
 }
 
 // knowledgeEntryView 是运营台消费的条目投影：ADR-0017 字段 + 生效窗口二态
-// （active/pending）+ 转会窗复查标记（effective_at 早于最近一次窗闭）。
+// （active/pending）+ 转会窗复查标记（effective_at 早于最近一次窗闭）+
+// 检索后处理参数学五字段（knowledge-worldinfo，表单随附）。
 type knowledgeEntryView struct {
-	ID          string   `json:"id"`
-	Topics      []string `json:"topics"`
-	Answer      string   `json:"answer"`
-	Source      string   `json:"source"`
-	Confidence  float64  `json:"confidence"`
-	EffectiveAt string   `json:"effectiveAt"`
-	Status      string   `json:"status"`
-	DueReview   bool     `json:"dueReview"`
-	Triggers    []string `json:"triggers,omitempty"`
-	Quote       string   `json:"quote,omitempty"`
-	CreatedBy   string   `json:"createdBy"`
-	CreatedAt   string   `json:"createdAt"`
-	UpdatedAt   string   `json:"updatedAt"`
+	ID             string   `json:"id"`
+	Topics         []string `json:"topics"`
+	Answer         string   `json:"answer"`
+	Source         string   `json:"source"`
+	Confidence     float64  `json:"confidence"`
+	EffectiveAt    string   `json:"effectiveAt"`
+	Status         string   `json:"status"`
+	DueReview      bool     `json:"dueReview"`
+	Triggers       []string `json:"triggers,omitempty"`
+	Quote          string   `json:"quote,omitempty"`
+	Priority       int      `json:"priority"`
+	InclusionGroup string   `json:"inclusionGroup"`
+	StickyTurns    int      `json:"stickyTurns"`
+	CooldownTurns  int      `json:"cooldownTurns"`
+	Probability    float64  `json:"probability"`
+	CreatedBy      string   `json:"createdBy"`
+	CreatedAt      string   `json:"createdAt"`
+	UpdatedAt      string   `json:"updatedAt"`
 }
 
 func handleKnowledgeAPI(deps knowledgeAPI) http.HandlerFunc {
@@ -81,19 +87,24 @@ func knowledgeEntryViewModel(now time.Time, record knowledge.Record) knowledgeEn
 		return t.UTC().Format(time.RFC3339)
 	}
 	return knowledgeEntryView{
-		ID:          record.ID,
-		Topics:      record.Topics,
-		Answer:      record.Answer,
-		Source:      record.Source,
-		Confidence:  record.Confidence,
-		EffectiveAt: format(record.EffectiveAt),
-		Status:      knowledge.EntryStatus(now, record.EffectiveAt),
-		DueReview:   knowledge.DueReview(now, record.EffectiveAt),
-		Triggers:    record.Triggers,
-		Quote:       record.Quote,
-		CreatedBy:   record.CreatedBy,
-		CreatedAt:   format(record.CreatedAt),
-		UpdatedAt:   format(record.UpdatedAt),
+		ID:             record.ID,
+		Topics:         record.Topics,
+		Answer:         record.Answer,
+		Source:         record.Source,
+		Confidence:     record.Confidence,
+		EffectiveAt:    format(record.EffectiveAt),
+		Status:         knowledge.EntryStatus(now, record.EffectiveAt),
+		DueReview:      knowledge.DueReview(now, record.EffectiveAt),
+		Triggers:       record.Triggers,
+		Quote:          record.Quote,
+		Priority:       record.Priority,
+		InclusionGroup: record.InclusionGroup,
+		StickyTurns:    record.StickyTurns,
+		CooldownTurns:  record.CooldownTurns,
+		Probability:    record.Probability,
+		CreatedBy:      record.CreatedBy,
+		CreatedAt:      format(record.CreatedAt),
+		UpdatedAt:      format(record.UpdatedAt),
 	}
 }
 
@@ -195,14 +206,20 @@ func (deps knowledgeAPI) handleGet(w http.ResponseWriter, r *http.Request) {
 }
 
 // knowledgeUpdateRequest 是 PUT 请求体：与 ADR-0017 字段一致（topics/
-// answer/source/confidence/effective_at）；triggers/quote 属事件附句策展，
-// 编辑面暂不开放（保留 DB 值不被覆盖——见 handlePut 的存量合并）。
+// answer/source/confidence/effective_at）+ 后处理参数学五字段
+// （knowledge-worldinfo）；triggers/quote 属事件附句策展，编辑面暂不开放
+// （保留 DB 值不被覆盖——见 handlePut 的存量合并）。
 type knowledgeUpdateRequest struct {
-	Topics      []string `json:"topics"`
-	Answer      string   `json:"answer"`
-	Source      string   `json:"source"`
-	Confidence  float64  `json:"confidence"`
-	EffectiveAt string   `json:"effectiveAt"`
+	Topics         []string `json:"topics"`
+	Answer         string   `json:"answer"`
+	Source         string   `json:"source"`
+	Confidence     float64  `json:"confidence"`
+	EffectiveAt    string   `json:"effectiveAt"`
+	Priority       int      `json:"priority"`
+	InclusionGroup string   `json:"inclusionGroup"`
+	StickyTurns    int      `json:"stickyTurns"`
+	CooldownTurns  int      `json:"cooldownTurns"`
+	Probability    float64  `json:"probability"`
 }
 
 // knowledgeCreateRequest 是 POST（新建条目）请求体：id 由策展人命名
@@ -269,14 +286,19 @@ func (deps knowledgeAPI) handlePut(w http.ResponseWriter, r *http.Request) {
 		triggers, quote = existing.Triggers, existing.Quote
 	}
 	entry := knowledge.Entry{
-		ID:          entryID,
-		Topics:      request.Topics,
-		Answer:      request.Answer,
-		Source:      request.Source,
-		Confidence:  request.Confidence,
-		EffectiveAt: effectiveAt,
-		Triggers:    triggers,
-		Quote:       quote,
+		ID:             entryID,
+		Topics:         request.Topics,
+		Answer:         request.Answer,
+		Source:         request.Source,
+		Confidence:     request.Confidence,
+		EffectiveAt:    effectiveAt,
+		Triggers:       triggers,
+		Quote:          quote,
+		Priority:       request.Priority,
+		InclusionGroup: request.InclusionGroup,
+		StickyTurns:    request.StickyTurns,
+		CooldownTurns:  request.CooldownTurns,
+		Probability:    request.Probability,
 	}
 	executeOperatorWrite(w, r, deps.writes, "knowledge", "knowledge.update", body, func(ctx context.Context) (operatorwrite.Response, error) {
 		record, err := deps.library.Put(ctx, entry, operatorName(claims))
@@ -319,12 +341,17 @@ func (deps knowledgeAPI) handlePost(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	entry := knowledge.Entry{
-		ID:          entryID,
-		Topics:      request.Topics,
-		Answer:      request.Answer,
-		Source:      request.Source,
-		Confidence:  request.Confidence,
-		EffectiveAt: effectiveAt,
+		ID:             entryID,
+		Topics:         request.Topics,
+		Answer:         request.Answer,
+		Source:         request.Source,
+		Confidence:     request.Confidence,
+		EffectiveAt:    effectiveAt,
+		Priority:       request.Priority,
+		InclusionGroup: request.InclusionGroup,
+		StickyTurns:    request.StickyTurns,
+		CooldownTurns:  request.CooldownTurns,
+		Probability:    request.Probability,
 	}
 	executeOperatorWrite(w, r, deps.writes, "knowledge", "knowledge.create", body, func(ctx context.Context) (operatorwrite.Response, error) {
 		record, inserted, err := deps.library.PutIfAbsent(ctx, entry, operatorName(claims))

@@ -125,7 +125,7 @@ func TestKnowledgeAPIPutEffectiveAndAudited(t *testing.T) {
 	h.seedEntry(t, "rule-offside", "越位", "越位答案原文。", time.Date(2026, 7, 1, 0, 0, 0, 0, time.UTC))
 
 	recorder := doKnowledgeRequest(t, h.handler, http.MethodPut, "/api/console/knowledge/rule-offside", consoleDirectorToken,
-		`{"topics":["越位","offside"],"answer":"策展台改写后的越位解释。","source":"IFAB Law 11","confidence":0.95,"effectiveAt":"2026-07-01"}`)
+		`{"topics":["越位","offside"],"answer":"策展台改写后的越位解释。","source":"IFAB Law 11","confidence":0.95,"effectiveAt":"2026-07-01","priority":2,"inclusionGroup":"规则组","stickyTurns":3,"cooldownTurns":5,"probability":0.7}`)
 	if recorder.Code != http.StatusOK {
 		t.Fatalf("put = %d body=%s, want 200", recorder.Code, recorder.Body.String())
 	}
@@ -135,6 +135,11 @@ func TestKnowledgeAPIPutEffectiveAndAudited(t *testing.T) {
 	decodeConsoleJSON(t, recorder, &payload)
 	if payload.Entry.Answer != "策展台改写后的越位解释。" || payload.Entry.CreatedBy != "seed" {
 		t.Fatalf("entry = %+v, want edited answer with first-creator preserved", payload.Entry)
+	}
+	// 参数学五字段透传（knowledge-worldinfo）：表单保存 → 视图回显。
+	if payload.Entry.Priority != 2 || payload.Entry.InclusionGroup != "规则组" ||
+		payload.Entry.StickyTurns != 3 || payload.Entry.CooldownTurns != 5 || payload.Entry.Probability != 0.7 {
+		t.Fatalf("worldinfo view = %+v, want passthrough echo", payload.Entry)
 	}
 
 	// 列表可见新答案（生效中）。
