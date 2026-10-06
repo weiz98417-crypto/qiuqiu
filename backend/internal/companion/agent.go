@@ -39,11 +39,12 @@ type Agent struct {
 	subscriptions              proactive.SubscriptionStore
 	knowledge                  *knowledge.Library
 	triggerStates              *knowledgeTriggerStates
+	lifecycleStates            *knowledgeLifecycleStates
 	comfortSent                *goalComfortOnce
 }
 
 func NewAgent(tools MemoryTools) *Agent {
-	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger(), triggerStates: newKnowledgeTriggerStates(), comfortSent: newGoalComfortOnce()}
+	return &Agent{tools: tools, realizeTimeout: 800 * time.Millisecond, interactions: interaction.NewMemoryLedger(), triggerStates: newKnowledgeTriggerStates(), lifecycleStates: newKnowledgeLifecycleStates(), comfortSent: newGoalComfortOnce()}
 }
 
 // WithMemories attaches the ADR-0006 memory seam (async observations, recall,

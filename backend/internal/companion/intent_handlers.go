@@ -12,6 +12,7 @@ import (
 	"strings"
 	"time"
 
+	"qiuqiu/internal/knowledge"
 	"qiuqiu/internal/matchstate"
 	"qiuqiu/internal/proactive"
 )
@@ -361,6 +362,10 @@ func (a *Agent) handleReminderRequest(t *userTurn) (intentHandling, error) {
 
 // handleKnowledgeQuestion 落 ADR-0017 的知识域：策展条目检索命中即逐字
 // 回答（确定性拼装，realizer 不碰），无命中如实说不知道——绝不生成知识。
+// 检索后处理管道（knowledge-worldinfo）：SearchTopN 候选 → Select 四段
+// （预算裁剪→互斥消歧→生命周期→概率掷骰）；全默认条目下存活者首元素与
+// Search 冠军逐字节一致（管道是可选层）。确信度门在消费口对最终入选者
+// 执行，与 Search 原状一致。
 func (a *Agent) handleKnowledgeQuestion(t *userTurn) (intentHandling, error) {
 	h := newIntentHandling()
 	ctx, req, trace := t.ctx, t.req, t.trace
@@ -370,11 +375,17 @@ func (a *Agent) handleKnowledgeQuestion(t *userTurn) (intentHandling, error) {
 		h.reply = "知识库还没接上，这块我先不敢乱说。"
 		return h, nil
 	}
-	entry, ok := a.knowledge.Search(ctx, req.Text)
-	if !ok {
+	state := a.lifecycleStates.state(req.UserID)
+	state.Advance()
+	candidates := a.knowledge.SearchTopN(ctx, req.Text, knowledgeCandidateDepth)
+	kept := knowledge.Select(candidates, state, knowledge.SelectOptions{
+		Seed: knowledgeLifecycleSeed(req.UserID),
+	})
+	if len(kept) == 0 || kept[0].Entry.Confidence < knowledge.MinConfidence {
 		h.reply = "这个我还真不敢乱说，等我把功课补上再答你。"
 		return h, nil
 	}
+	entry := kept[0].Entry
 	trace.ToolCalls = append(trace.ToolCalls, ToolCall{Name: ToolCallKnowledgeAnswer, Args: map[string]string{
 		"entryId":    entry.ID,
 		"confidence": strconv.FormatFloat(entry.Confidence, 'f', 2, 64),
@@ -510,7 +521,7 @@ func (a *Agent) handleSubscriptionManage(t *userTurn) (intentHandling, error) {
 }
 
 // extractFixtureTeam 从 14 天赛程窗口的参赛队里找用户文本提到的队名
-//（字符对齐：文本里出现队名 ≥2 个不同字符即候选，取最多者；预备队/
+// （字符对齐：文本里出现队名 ≥2 个不同字符即候选，取最多者；预备队/
 // 青年队/女足排除）。搜索读不到时降级今日赛程。
 func (a *Agent) extractFixtureTeam(ctx context.Context, text string, req AgentBoundaryRequest) (string, bool) {
 	if a.scheduleReader == nil {
@@ -553,7 +564,7 @@ func (a *Agent) extractFixtureTeam(ctx context.Context, text string, req AgentBo
 }
 
 // mentionsRunes 统计队名（别名展开后）里有多少个不同字符出现在文本中
-//——"皇马"对"以后皇马都叫我"得 2。
+// ——"皇马"对"以后皇马都叫我"得 2。
 func mentionsRunes(text, team string) int {
 	seen := map[rune]bool{}
 	count := 0

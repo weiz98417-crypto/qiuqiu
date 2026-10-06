@@ -247,21 +247,72 @@ func (l *Library) Size() int {
 // 多 topic 条目天然占优)+ Answer/Quote 命中 0.5(检索面扩展)。余弦 ≥
 // cosThreshold(默认 0.55,config 可调)才计分。confidence < MinConfidence
 // 视同无命中。nil 库安全。
+//
+// 语义=SearchTopN(n=1) 的首元素加确信度门——两入口共用同一评分核心
+// （scoreCandidates），并列消歧与融合口径永远一致。
 func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 	if l == nil {
 		return Entry{}, false
 	}
+	top := l.SearchTopN(ctx, query, 1)
+	if len(top) == 0 {
+		return Entry{}, false
+	}
+	return l.guard(top[0].Entry)
+}
+
+// SearchTopN 返回按融合分降序的前 n 个候选（并列保持声明序；零分不入），
+// 不做确信度门——门由消费口执行（Search 对冠军执行，管道消费者对最终
+// 入选者执行）。后处理参数学（pipeline.Select）以本方法为候选源。
+func (l *Library) SearchTopN(ctx context.Context, query string, n int) []Scored {
+	if l == nil || n <= 0 {
+		return nil
+	}
 	entries := l.snapshot()
 	if len(entries) == 0 {
-		return Entry{}, false
+		return nil
 	}
 	normalized := strings.ToLower(strings.TrimSpace(query))
 	if normalized == "" {
-		return Entry{}, false
+		return nil
 	}
 
-	// 关键词路:Topics 双向 contains 每命中计 1,归一到条目 Topics 数;
-	// Answer/Quote 正文命中加 0.5(检索面扩展)。
+	keywordScore, vectorScore := l.scoreCandidates(ctx, entries, normalized)
+
+	// 融合:双路取最高(任一路强信号即入选);全零 = 无命中。稳定排序
+	// 保持声明序——与 Search 历史的「严格大于取首」并列消歧逐字节一致。
+	type scoredIndex struct {
+		score Scored
+		index int
+	}
+	ranked := make([]scoredIndex, 0, len(entries))
+	for i := range entries {
+		total := keywordScore[i]
+		if vectorScore[i] > total {
+			total = vectorScore[i]
+		}
+		if total > 0 {
+			ranked = append(ranked, scoredIndex{score: Scored{Entry: entries[i], Score: total}, index: i})
+		}
+	}
+	sort.SliceStable(ranked, func(a, b int) bool {
+		return ranked[a].score.Score > ranked[b].score.Score
+	})
+	if len(ranked) > n {
+		ranked = ranked[:n]
+	}
+	scored := make([]Scored, 0, len(ranked))
+	for _, item := range ranked {
+		scored = append(scored, item.score)
+	}
+	return scored
+}
+
+// scoreCandidates 是关键词路+向量路的评分核心（SearchTopN 专用）：
+// 关键词路 Topics 双向 contains 每命中计 1 归一到条目 Topics 数，
+// Answer/Quote 正文命中加 0.5（检索面扩展）；向量路 query 嵌入对 topic
+// 向量余弦，过阈值才计分，嵌入失败该路弃权。
+func (l *Library) scoreCandidates(ctx context.Context, entries []Entry, normalized string) ([]float64, []float64) {
 	keywordScore := make([]float64, len(entries))
 	for i, entry := range entries {
 		score := 0.0
@@ -285,7 +336,6 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 		keywordScore[i] = score / float64(topicCount)
 	}
 
-	// 向量路:query 嵌入对 topic 向量余弦,过阈值才计分;嵌入失败该路弃权。
 	vectorScore := make([]float64, len(entries))
 	if l.embedder != nil {
 		queryCtx, cancel := context.WithTimeout(ctx, 200*time.Millisecond)
@@ -302,24 +352,7 @@ func (l *Library) Search(ctx context.Context, query string) (Entry, bool) {
 			}
 		}
 	}
-
-	// 融合:双路取最高(任一路强信号即入选);全零 = 无命中。
-	best := -1
-	bestTotal := 0.0
-	for i := range entries {
-		total := keywordScore[i]
-		if vectorScore[i] > total {
-			total = vectorScore[i]
-		}
-		if total > bestTotal {
-			bestTotal = total
-			best = i
-		}
-	}
-	if best < 0 {
-		return Entry{}, false
-	}
-	return l.guard(entries[best])
+	return keywordScore, vectorScore
 }
 
 // guard 应用确信度阈值：低确信条目视同不知道。
