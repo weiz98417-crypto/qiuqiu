@@ -1,0 +1,6 @@
+id: rule-jersey
+topics: ["球衣", "为什么换球衣", "门将不同色", "撞衫"]
+answer: "两队撞衫就得换一方（客场备第二套球衣），门将必须穿与双方球员和裁判都不同色的衣服——不然你分不清谁是谁。球衣背后号码是硬性要求，内衣颜色也要与球衣主色一致。"
+source: "IFAB Laws of the Game, Law 4"
+confidence: 0.9
+effective_at: 2026-07-01

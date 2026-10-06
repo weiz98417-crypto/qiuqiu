@@ -1,0 +1,6 @@
+id: faq-aggregate
+topics: ["总比分", "两回合", "客场进球", "aggregate"]
+answer: "欧战淘汰赛传统打主客场两回合，两场进球加总定胜负——『客场进球规则』（客场进球算双倍）2021 年已废除，现在两回合打平就直接加时点球。看两回合比赛，先算总比分再看主客场。"
+source: "UEFA competition regulations"
+confidence: 0.9
+effective_at: 2026-07-01

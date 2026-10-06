@@ -1,0 +1,6 @@
+id: rule-field
+topics: ["球场尺寸", "场地多大", "球场多大", "pitch size"]
+answer: "标准球场长约 105 米、宽约 68 米，国际比赛允许在长 100-110、宽 64-75 米之间浮动。所以不同球场看着大小不一不是错觉——尺寸本就是范围值，主场优势里也有这一项。"
+source: "IFAB Laws of the Game, Law 1"
+confidence: 0.9
+effective_at: 2026-07-01

@@ -1,0 +1,6 @@
+id: rule-direct-red
+topics: ["直接红牌", "两黄变一红", "严重犯规"]
+answer: "直接红牌的三类典型：严重暴力犯规、恶意踩踏或肘击、破坏明显进球机会（单刀拉倒也算）。两黄累积同样变红。领红 immediate 离场且球队少一人打完，没有替补补位。"
+source: "IFAB Laws of the Game, Law 12"
+confidence: 0.9
+effective_at: 2026-07-01

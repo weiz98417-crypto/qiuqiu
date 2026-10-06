@@ -1,0 +1,6 @@
+id: rule-referee-team
+topics: ["裁判组", "边裁", "第四官员", "VAR 裁判"]
+answer: "一场比赛的裁判组：主裁全场执法、两名助理裁判（边裁）管边线和越位、第四官员管换人牌和补时牌，VAR 房间里还有视频裁判组。所有判罚的最终决定权都在主裁手上，VAR 只是提醒。"
+source: "IFAB Laws of the Game, Law 5-6"
+confidence: 0.9
+effective_at: 2026-07-01

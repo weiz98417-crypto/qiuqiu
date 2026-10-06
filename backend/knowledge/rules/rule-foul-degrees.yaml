@@ -1,0 +1,6 @@
+id: rule-foul-degrees
+topics: ["犯规轻重", "鲁莽犯规", "为什么这个不给牌"]
+answer: "裁判手册把犯规分三档：不小心（只给任意球）、鲁莽（加黄牌）、使用过分力量（直接红牌）。同一动作落哪一档看力度、部位和有没有冲人去——这就是为什么看似一样的铲球有人只吃哨有人直接下场。"
+source: "IFAB Laws of the Game, Law 12"
+confidence: 0.85
+effective_at: 2026-07-01

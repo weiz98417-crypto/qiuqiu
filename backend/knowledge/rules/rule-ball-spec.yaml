@@ -1,0 +1,6 @@
+id: rule-ball-spec
+topics: ["比赛用球", "几号球", "足球规格", "ball size"]
+answer: "职业比赛用 5 号球，圆周 68-70 厘米，开球时气压大约 0.6-1.1 个大气压。比赛里球破了或变形，得经裁判同意才能换，换球要从中断处坠球恢复。"
+source: "IFAB Laws of the Game, Law 2"
+confidence: 0.9
+effective_at: 2026-07-01

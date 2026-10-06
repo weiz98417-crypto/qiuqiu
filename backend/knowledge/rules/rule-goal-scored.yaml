@@ -1,0 +1,6 @@
+id: rule-goal-scored
+topics: ["怎么算进球", "进球有效", "整体过线", "用手进球"]
+answer: "进球的标准是球的整体（不是压线！是全部投影）越过门线。规则明文：用手臂（到手肩）把球打进去不算，哪怕随后弹进也不算——所以『上帝之手』才能成为世界杯悬案。"
+source: "IFAB Laws of the Game, Law 10"
+confidence: 0.95
+effective_at: 2026-07-01

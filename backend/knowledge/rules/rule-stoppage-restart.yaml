@@ -1,0 +1,6 @@
+id: rule-stoppage-restart
+topics: ["恢复方式", "怎么重新开球", "restart"]
+answer: "足球的每种中断都对应一种恢复：出界=界外球/角球/球门球，犯规=任意球或点球，进球后=中圈开球，无犯规中断=坠球。看懂『这球为什么这么开』，你就看懂了半部规则手册。"
+source: "IFAB Laws of the Game, Laws 8-17"
+confidence: 0.9
+effective_at: 2026-07-01

@@ -1,0 +1,6 @@
+id: format-uefa-coefficient
+topics: ["欧战积分", "欧战名额", "coefficient"]
+answer: "欧战名额不是拍的，按各国联赛的『欧战积分』分配——近五年本国球队在欧战的胜负换算积分，积分高就多几个欧冠/欧联席位。所以『为联赛而战』的另一层意思是：全联赛一起攒积分。"
+source: "UEFA coefficient regulations"
+confidence: 0.85
+effective_at: 2026-07-01

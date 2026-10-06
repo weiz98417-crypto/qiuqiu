@@ -1,0 +1,6 @@
+id: rule-players-count
+topics: ["几个替补", "大名单", "上场人数", "换几个人"]
+answer: "每队上场 11 人（其中必须有门将），现代主流联赛大名单 9-12 名替补、最多换 5 人（分三次窗口用，中场休息不占）。人数不足 7 人比赛直接作废。"
+source: "IFAB Laws of the Game, Law 3"
+confidence: 0.9
+effective_at: 2026-07-01

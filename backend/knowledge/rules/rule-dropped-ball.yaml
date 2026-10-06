@@ -1,0 +1,6 @@
+id: rule-dropped-ball
+topics: ["坠球", "争议坠球", "比赛中断恢复"]
+answer: "有人受伤或场外因素中断比赛，恢复方式是裁判坠球：在 interruption 时球所在位置垂直下落，落地即可争抢。按惯例会坠还给刚才控球的一方——所以你常看到球员主动把球踢还给对手。"
+source: "IFAB Laws of the Game, Law 9"
+confidence: 0.85
+effective_at: 2026-07-01

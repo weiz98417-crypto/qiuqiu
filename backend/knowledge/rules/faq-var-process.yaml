@@ -1,0 +1,6 @@
+id: faq-var-process
+topics: ["VAR 流程", "看回放", "裁判看屏幕", "var check"]
+answer: "VAR 只在四类事上介入：进球、点球、直接红牌、认错人。流程是视频裁判『check』→ 认为可能漏判误判就建议主裁『on-field review』（屏幕回看）→ 最终决定权始终在主裁。所以你看到的主裁看屏幕，才是改判的正式动作。"
+source: "IFAB VAR Protocol"
+confidence: 0.9
+effective_at: 2026-07-01

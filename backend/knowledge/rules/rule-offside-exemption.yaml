@@ -1,0 +1,6 @@
+id: rule-offside-exemption
+topics: ["越位豁免", "半场越位", "平行不算越位", "门线越位"]
+answer: "三种情况不算越位：人还在本方半场（越位只看对方半场）、与倒数第二名防守者平齐、球是直接从界外球或球门球来的。所以回撤到中线以后接球，永远不会越位。"
+source: "IFAB Laws of the Game, Law 11"
+confidence: 0.9
+effective_at: 2026-07-01

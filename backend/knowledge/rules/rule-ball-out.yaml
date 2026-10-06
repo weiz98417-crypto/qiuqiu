@@ -1,0 +1,6 @@
+id: rule-ball-out
+topics: ["出界判定", "球出界了吗", "整体出界"]
+answer: "出界的判定和进球一样严：球的整体投影越过边线或底线才算出，压着线滚是活球。这就是为什么边裁追着底线跑——差半颗球，角球和球门球就是两种命运。"
+source: "IFAB Laws of the Game, Law 9"
+confidence: 0.95
+effective_at: 2026-07-01
