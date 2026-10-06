@@ -1,0 +1,6 @@
+id: rule-keeper
+topics: ["门将规则", "守门员规则", "门将六秒", "回传球"]
+answer: "门将只在自家禁区里能用手：持球超六秒算犯规（判间接任意球，实际很少吹）；队友故意用脚回传，门将不能直接上手接，否则一样送对方禁区内间接任意球。出了禁区门将就是普通球员。"
+source: "IFAB Laws of the Game, Law 12"
+confidence: 0.9
+effective_at: 2026-07-01

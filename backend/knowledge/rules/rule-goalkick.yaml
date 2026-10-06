@@ -1,0 +1,6 @@
+id: rule-goalkick
+topics: ["球门球", "门球", "goal kick"]
+answer: "进攻方把球碰出底线就是球门球：球放在小禁区线上由门将或队友开出，必须在禁区内开出后才能再触球。现在很多队不追求大脚，门将从后面短传组织进攻。"
+source: "IFAB Laws of the Game, Law 16"
+confidence: 0.95
+effective_at: 2026-07-01

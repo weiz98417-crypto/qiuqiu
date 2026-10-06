@@ -1,0 +1,6 @@
+id: rule-freekick
+topics: ["任意球", "直接任意球", "间接任意球", "free kick"]
+answer: "任意球分两种：直接任意球能一脚射门得分（多为铲人、拉扯这类犯规），间接任意球得碰第二个人才能进（多为门将持球超时这类技术犯规）。裁判手臂平举是间接的信号。"
+source: "IFAB Laws of the Game, Law 13"
+confidence: 0.95
+effective_at: 2026-07-01

@@ -1,0 +1,6 @@
+id: rule-goal-line-tech
+topics: ["门线技术", "门线悬案", "goal line technology", "球进没进"]
+answer: "现在主流联赛和大赛都装了门线技术：球整体越过门线一厘米，裁判手腕上的手表就会震动亮『GOAL』，一秒内给结论。没装门线技术的比赛才靠 VAR 慢镜回看。"
+source: "FIFA Goal Line Technology standard"
+confidence: 0.9
+effective_at: 2026-07-01

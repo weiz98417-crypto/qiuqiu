@@ -1,0 +1,6 @@
+id: rule-kickoff
+topics: ["开球", "中圈开球", "谁先开球", "kickoff"]
+answer: "开场和下半场开始都在中圈开球：开球前所有人在本方半场，开球队员一脚碰到球就算比赛开始——所以别惊讶开球直接回传，那是稳节奏的老套路。掷硬币赢的一方选边或选开球权。"
+source: "IFAB Laws of the Game, Law 8"
+confidence: 0.95
+effective_at: 2026-07-01

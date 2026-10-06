@@ -1,0 +1,6 @@
+id: rule-penalty-shootout
+topics: ["点球大战", "点球决胜", "penalty shootout"]
+answer: "点球大战双方各踢五轮，进球多的赢；五轮没分出胜负就一轮一轮单挑，一轮定生死。门将扑点时必须至少一只脚站在门线上，这也是 VAR 常查的细节。"
+source: "IFAB Laws of the Game, Law 10"
+confidence: 0.95
+effective_at: 2026-07-01
