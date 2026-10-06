@@ -1,6 +1,6 @@
 # Tasks: smart-turn v3.2 换代评测
 
-- [ ] 6.1 中文评测集:采集(auto-hosting 流量+补录)≥200 样本,人工标注说完点,三类覆盖(激动/平静/犹豫停顿);harness 对齐 client/tool/turn_detection_eval.dart。
+- [ ] 6.1 中文评测集:采集(auto-hosting 流量+补录)≥200 样本,人工标注说完点,三类覆盖(激动≥60/平静≥80/犹豫≥60);harness 对齐 client/tool/turn_detection_eval.dart。**工具链方案已立**(docs/evals/turn-collection-harness.md:T1 采集页/T2 标注页/T3 对比脚本+验收标准),落地=下一轮 implement;用户侧成本≈录音 1 小时+标注 1 小时。
 - [ ] 6.2 离线对比:现役 396MB vs v3.2 int8(16kHz PCM 坑用例);报告落 docs/evals;判据:准确率≥现役且抢话误判≤现役。
 - [ ] 6.3 线上影子:v3.2 并行 sidecar 双答、现役裁决,两周;ClientHealthLedger/duplex_event 对比记录。
 - [ ] 6.4a 过门切换:onnxruntime-go 内嵌(或薄 sidecar)替换 + 裁 396MB;pr tier + 真机抢话回归。
