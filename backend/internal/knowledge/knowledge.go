@@ -39,11 +39,11 @@ type Entry struct {
 
 	// 以下五字段是检索后处理参数学（knowledge-worldinfo，只抄 SillyTavern
 	// World Info 算法思想，Go 自写）：默认值=现状行为（管道是可选层）。
-	// Priority 预算裁剪序（越大越先占预算，默认 0=不参与重排）；
-	// InclusionGroup 互斥组（同组多条命中只活一个，默认空=不互斥）；
-	// StickyTurns/CooldownTurns 生命周期状态机（命中后保位/冷却 N 轮，
-	// 默认 0=无状态）；Probability 触发概率 ∈(0,1]（默认 1=必中；0 在
-	// 归一化时视同 1——「禁用条目」请下架而非 p=0）。
+	// Priority 预算裁剪序（越大越先占预算；全体同优先级时保持候选序，条目
+	// 间有差值即按序重排）；InclusionGroup 互斥组（同组多条命中只活一个，
+	// 默认空=不互斥）；StickyTurns/CooldownTurns 生命周期状态机（命中后
+	// 保位/冷却 N 轮，默认 0=无状态）；Probability 触发概率 ∈(0,1]（默认
+	// 1=必中；0 在归一化时视同 1——「禁用条目」请下架而非 p=0）。
 	Priority       int     `yaml:"priority" json:"priority,omitempty"`
 	InclusionGroup string  `yaml:"inclusion_group" json:"inclusionGroup,omitempty"`
 	StickyTurns    int     `yaml:"sticky_turns" json:"stickyTurns,omitempty"`
@@ -281,31 +281,23 @@ func (l *Library) SearchTopN(ctx context.Context, query string, n int) []Scored 
 
 	// 融合:双路取最高(任一路强信号即入选);全零 = 无命中。稳定排序
 	// 保持声明序——与 Search 历史的「严格大于取首」并列消歧逐字节一致。
-	type scoredIndex struct {
-		score Scored
-		index int
-	}
-	ranked := make([]scoredIndex, 0, len(entries))
+	ranked := make([]Scored, 0, len(entries))
 	for i := range entries {
 		total := keywordScore[i]
 		if vectorScore[i] > total {
 			total = vectorScore[i]
 		}
 		if total > 0 {
-			ranked = append(ranked, scoredIndex{score: Scored{Entry: entries[i], Score: total}, index: i})
+			ranked = append(ranked, Scored{Entry: entries[i], Score: total})
 		}
 	}
 	sort.SliceStable(ranked, func(a, b int) bool {
-		return ranked[a].score.Score > ranked[b].score.Score
+		return ranked[a].Score > ranked[b].Score
 	})
 	if len(ranked) > n {
 		ranked = ranked[:n]
 	}
-	scored := make([]Scored, 0, len(ranked))
-	for _, item := range ranked {
-		scored = append(scored, item.score)
-	}
-	return scored
+	return ranked
 }
 
 // scoreCandidates 是关键词路+向量路的评分核心（SearchTopN 专用）：

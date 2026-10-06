@@ -63,13 +63,13 @@ func TestSelectBudgetClipsByPriorityOrder(t *testing.T) {
 	}
 	// 答案 10 个汉字 = 30 字节（len 按字节）：预算 65 → top+mid 装下（60），
 	// low 溢出即停。
-	kept := Select(candidates, NewLifecycle(), SelectOptions{BudgetChars: 65})
+	kept := Select(candidates, NewLifecycle(), SelectOptions{BudgetBytes: 65})
 	if !equalIDs(ids(kept), "top", "mid") {
 		t.Fatalf("budget survivors = %v, want [top mid] (priority order, exhausted stop)", ids(kept))
 	}
 	// 全默认（priority 同 0）：候选序前两名存活。
 	plain := []Scored{candidate("a", "第一"), candidate("b", "第二"), candidate("c", "第三")}
-	kept = Select(plain, NewLifecycle(), SelectOptions{BudgetChars: 12})
+	kept = Select(plain, NewLifecycle(), SelectOptions{BudgetBytes: 12})
 	if !equalIDs(ids(kept), "a", "b") {
 		t.Fatalf("default priority survivors = %v, want [a b] (candidate order)", ids(kept))
 	}
@@ -87,9 +87,24 @@ func TestSelectBudgetStickyExempt(t *testing.T) {
 	}
 	// fat 9 字节装满预算 9；sticky 3 字节本会溢出被停，豁免保位——
 	// 且 sticky 活跃者按语义提到队首。
-	kept := Select(candidates, lc, SelectOptions{BudgetChars: 9})
+	kept := Select(candidates, lc, SelectOptions{BudgetBytes: 9})
 	if !equalIDs(ids(kept), "sticky", "fat") {
 		t.Fatalf("survivors = %v, want sticky exempt from budget clip and promoted", ids(kept))
+	}
+	// 停机点之后的 sticky 活跃者同样豁免（豁免与停机点位置无关）。
+	lc2 := NewLifecycle()
+	lc2.Turn = 2
+	lc2.Fired = map[string]int{"late": 1}
+	spread := []Scored{
+		candidate("hog", "九个字九个字九个字", func(e *Entry) { e.Priority = 9 }),
+		candidate("mid", "三个字", func(e *Entry) { e.Priority = 5 }),
+		candidate("late", "短", func(e *Entry) { e.StickyTurns = 3 }),
+	}
+	// hog 27 字节装下预算 30，mid 9 字节溢出即停（mid 位处停机点出局），
+	// late 豁免存活——豁免与停机点位置无关。
+	kept = Select(spread, lc2, SelectOptions{BudgetBytes: 30})
+	if !equalIDs(ids(kept), "late", "hog") {
+		t.Fatalf("survivors = %v, want sticky exempt even past the stop point", ids(kept))
 	}
 }
 

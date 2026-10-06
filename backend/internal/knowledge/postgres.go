@@ -96,6 +96,27 @@ func (s *PostgresStore) Get(ctx context.Context, id string) (Record, error) {
 	return record, nil
 }
 
+// entryInsertArgs 是 Put 与 PutIfAbsent 共用的实参构造（同一列序、同一
+// 归一口径——两写入口永远一致）。
+func entryInsertArgs(ctx context.Context, entry Entry, operator string) ([]byte, []byte, []any, error) {
+	topicsJSON, err := json.Marshal(entry.Topics)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	triggersJSON, err := json.Marshal(entry.Triggers)
+	if err != nil {
+		return nil, nil, nil, err
+	}
+	args := []any{
+		entry.ID, topicsJSON, entry.Answer, entry.Source, entry.Confidence,
+		entry.EffectiveAt, triggersJSON, entry.Quote,
+		entry.Priority, entry.InclusionGroup, entry.StickyTurns, entry.CooldownTurns,
+		entry.Probability,
+		strings.TrimSpace(operator),
+	}
+	return topicsJSON, triggersJSON, args, nil
+}
+
 // Put 是保存即生效的 upsert：新条目记 created_by/created_at，已有条目只
 // 更新内容字段并推进 updated_at（首建留痕保留）。幂等 seed 走 SeedDir 的
 // 先查后插，不经过本路径覆盖运营编辑。
@@ -104,11 +125,7 @@ func (s *PostgresStore) Put(ctx context.Context, entry Entry, operator string) (
 	if err != nil {
 		return Record{}, err
 	}
-	topicsJSON, err := json.Marshal(entry.Topics)
-	if err != nil {
-		return Record{}, err
-	}
-	triggersJSON, err := json.Marshal(entry.Triggers)
+	_, _, args, err := entryInsertArgs(ctx, entry, operator)
 	if err != nil {
 		return Record{}, err
 	}
@@ -130,11 +147,7 @@ func (s *PostgresStore) Put(ctx context.Context, entry Entry, operator string) (
 			probability = EXCLUDED.probability,
 			updated_at = now()
 		RETURNING `+entryColumns+`
-	`, entry.ID, topicsJSON, entry.Answer, entry.Source, entry.Confidence,
-		entry.EffectiveAt, triggersJSON, entry.Quote,
-		entry.Priority, entry.InclusionGroup, entry.StickyTurns, entry.CooldownTurns,
-		entry.Probability,
-		strings.TrimSpace(operator)))
+	`, args...))
 	if err != nil {
 		return Record{}, err
 	}
@@ -151,11 +164,7 @@ func (s *PostgresStore) PutIfAbsent(ctx context.Context, entry Entry, operator s
 	if err != nil {
 		return false, err
 	}
-	topicsJSON, err := json.Marshal(entry.Topics)
-	if err != nil {
-		return false, err
-	}
-	triggersJSON, err := json.Marshal(entry.Triggers)
+	_, _, args, err := entryInsertArgs(ctx, entry, operator)
 	if err != nil {
 		return false, err
 	}
@@ -163,11 +172,7 @@ func (s *PostgresStore) PutIfAbsent(ctx context.Context, entry Entry, operator s
 		INSERT INTO knowledge_entries (`+entryColumns+`)
 		VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9, $10, $11, $12, $13, $14, now(), now())
 		ON CONFLICT (id) DO NOTHING
-	`, entry.ID, topicsJSON, entry.Answer, entry.Source, entry.Confidence,
-		entry.EffectiveAt, triggersJSON, entry.Quote,
-		entry.Priority, entry.InclusionGroup, entry.StickyTurns, entry.CooldownTurns,
-		entry.Probability,
-		strings.TrimSpace(operator))
+	`, args...)
 	if err != nil {
 		return false, err
 	}

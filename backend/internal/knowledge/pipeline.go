@@ -3,8 +3,9 @@ package knowledge
 // 检索后处理管道（openspec/changes/knowledge-worldinfo，只抄 SillyTavern
 // World Info 的算法思想，Go 自写、全确定性）。四段依序：
 //
-//	1. 预算裁剪：priority 降序稳定排序后依序累计答案字符，预算耗尽即停
-//	   （BudgetChars ≤0 = 不限）；sticky 活跃条目豁免（连续话题保位）。
+//	1. 预算裁剪：priority 降序稳定排序后依序累计答案字节，预算耗尽即停
+//	   （BudgetBytes ≤0 = 不限）；sticky 活跃条目豁免——无条件存活且不计
+//	   入预算（连续话题保位，不受停机点位置影响）。
 //	2. 互斥消歧：非空 InclusionGroup 内按当前序只留第一个（取最高——当前
 //	   序已是 priority→得分→声明序）；互斥是策展显式意图，sticky 不豁免。
 //	3. 生命周期状态机：cooldown（turn-last ≤ CooldownTurns → 剔除，冷却中
@@ -58,11 +59,11 @@ func (lc *Lifecycle) Advance() int {
 	return lc.Turn
 }
 
-// SelectOptions 是管道参数：预算字符总预算（0=不限）与概率掷骰种子。
+// SelectOptions 是管道参数：预算字节总预算（0=不限）与概率掷骰种子。
 // Seed 相同 + 轮次相同 + 条目相同 ⇒ 骰果相同（evals 传固定值即种子可复现；
 // 运行时传按用户派生的盐，跨用户独立、重放一致）。
 type SelectOptions struct {
-	BudgetChars int
+	BudgetBytes int
 	Seed        uint64
 }
 
@@ -90,7 +91,8 @@ func Select(candidates []Scored, lc *Lifecycle, opts SelectOptions) []Scored {
 		return ok && entry.StickyTurns > 0 && turn > last && turn-last <= entry.StickyTurns
 	}
 
-	// 1) 预算裁剪：priority 降序稳定排序（同优先级保持候选序），预算耗尽即停。
+	// 1) 预算裁剪：priority 降序稳定排序（同优先级保持候选序），预算耗尽
+	// 即停；sticky 活跃者无条件存活且不计入预算（豁免与停机点位置无关）。
 	ordered := make([]Scored, len(candidates))
 	copy(ordered, candidates)
 	sort.SliceStable(ordered, func(i, j int) bool {
@@ -98,10 +100,18 @@ func Select(candidates []Scored, lc *Lifecycle, opts SelectOptions) []Scored {
 	})
 	clipped := make([]Scored, 0, len(ordered))
 	used := 0
+	stopped := false
 	for _, candidate := range ordered {
-		if opts.BudgetChars > 0 && !stickyActive(candidate.Entry) &&
-			used+len(candidate.Entry.Answer) > opts.BudgetChars {
-			break
+		if stickyActive(candidate.Entry) {
+			clipped = append(clipped, candidate)
+			continue
+		}
+		if stopped {
+			continue
+		}
+		if opts.BudgetBytes > 0 && used+len(candidate.Entry.Answer) > opts.BudgetBytes {
+			stopped = true
+			continue
 		}
 		used += len(candidate.Entry.Answer)
 		clipped = append(clipped, candidate)
