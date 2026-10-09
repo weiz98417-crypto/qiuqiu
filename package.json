@@ -10,7 +10,7 @@
     "eval:observe": "promptfoo eval -c tests/promptfoo/promptfooconfig.yaml"
   },
   "devDependencies": {
-    "@playwright/test": "1.61.1",
+    "@playwright/test": "1.63.0",
     "promptfoo": "^0.123.1"
   }
 }
