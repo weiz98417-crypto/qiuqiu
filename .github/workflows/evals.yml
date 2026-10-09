@@ -19,7 +19,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22.x'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24.x'
           cache: npm
@@ -28,7 +28,7 @@ jobs:
         working-directory: backend
       # console 契约锁（console-contract-goldens）：编译错误与形状漂移的
       # TS 侧在此拦截；dist 同时供 browser 档 evals 的 /console 页面使用。
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24.x'
           cache: npm
@@ -78,7 +78,7 @@ jobs:
       - uses: actions/setup-go@v5
         with:
           go-version: '1.22.x'
-      - uses: actions/setup-node@v4
+      - uses: actions/setup-node@v6
         with:
           node-version: '24.x'
           cache: npm
