@@ -191,6 +191,7 @@ flowchart LR
 | 7 | squash 窗内起音 / <400ms 候选段 | 不可打断（不产话轮） | 抢断门 suppressed/rejected，段收口后判定全部重来；AutoFinishGuard 同步豁免两条自动收口路径 | 门内静默——无事件无日志（观测待补，见 §7） |
 | 8 | 用户语音（上行方向） | 不可被球球打断 | 球球话轮 `InterruptMode` 默认 `never`（不打断用户）；用户在说时取 `after_user` 等用户说完再播（`policy.go:427-436`）；用户开口同时取消排程查询与主动排程（`watchconnection.go:1044-1050`） | `DeliveryPolicy.InterruptMode` 随 trace；排程取消落账本 |
 | 9 | 「再见/退出」语音退出（FR-VOICE-023） | 规划中（未实现，P0）；落地后为最高级不可拦截 | 规划语义：语音退出指令 → 立即停止语音输出 → 结束陪看会话 + 停主动排程；挽留语义为红线（01 篇 RED-04），「先挽留再说再见」违规 | 现网底座：session_closed 双向、打断链路（第 1 行）、应用退出；端到端断言「无任何后续语音输出」为落地验收项 |
+| 10 | 危机安抚话轮（L3/L4，分级判定与逐级响应唯一出处 05 篇 §4.4） | 规划中（未实现，P1）；落地后为不可打断——危机话轮让位规则 | 规划语义：L3/L4 危机安抚话轮不可被抢断门打断（门让位，非门放行——用户语音永远优先的第 8 行让路语义不受影响）；同期赛点播报与主动触达中止（04 篇 §7 第 5 条、07 篇 §8.1 DX-84），舞台锁定安抚档（10 篇 §6） | 分级与响应正身在 05 篇 §4.4；现网由值守人工判定并经 takeover 停排程（已实现通道，ADR-0008，06 篇 §4.9）；打断让位规则随危机检测立项（06 篇 §4.9 承诺落点即本行）补门实现与验收断言 |
 
 表 B——分级速查：
 
@@ -198,7 +199,7 @@ flowchart LR
 | --- | --- | --- |
 | 可打断 | A1/A2/A3/A4/A5 | 全双工下抢断门三条件即断；断错自愈，断多了自动退半双工 |
 | 仅唤醒词可入 | KWS armed 态 | 收音窗未开，说话不进链路；「你好球球」是唯一免手门铃 |
-| 不可打断 | A6/A7/A8 + 退出指令（落地后） | 半双工物理不可断；门内候选不成话轮；用户语音永远优先 |
+| 不可打断 | A6/A7/A8 + 退出指令、危机安抚话轮（两者落地后） | 半双工物理不可断；门内候选不成话轮；用户语音永远优先；危机话轮门让位 |
 
 ### 2.3 打断执行链与自愈（how-to）
 
@@ -496,15 +497,17 @@ node scripts/evals/run.mjs --tier pr
 | ASR 云腿 | mimo-v2.5-asr、language=zh、hints 热词；HTTP 超时 30s；熔断 3 次/10s | `backend/internal/asr/client.go` |
 | TTS 云腿 | mimo-v2.5-tts「冰糖」（`MIMO_VOICE`）；熔断 3 次/10s；`cgSg` 前缀失效音色自动回落默认音色 | `backend/internal/tts/client.go` |
 | TTS 供给 | 三态 cloud（默认）/local/local_first；健康门 30s 周期试合成、连续 2 次过门；状态键 `tts_supply`（migration 055） | `backend/internal/tts/supply.go`、`local_health.go` |
+| TTS 指令通道 | Affect 五档 × 沟通动作十类模板全表（快照测试锁定，改一字即测试红）；≤12 字短反应自动追加紧凑尾巴 | `backend/internal/tts/instruction.go`、`backend/cmd/server/tts_style.go` |
+| 语音补发 | 断线期入补发队列 ≤4 条 FIFO（超限淘汰最旧）；重连后串行出队；服务端按原 deliveryKey 回放未送达回合（只取 resolved 态，source=`recovered_delivery`） | `websocket_service.dart:787-793`、`backend/cmd/server/delivery.go:421-448` |
 | 微反应 | 白名单 4 事件；半场 ≤3 / 全场 ≤6；风暴去重 10s；短语 ≤10 字；TTS 预算 5s 失败即弃；quiet 档禁用；one-shot `Synthesize` 对 ≤10 字无流式需求（SSE 留尾维持为独立任务） | `backchannel.go:17-26,98`；`backchannel_audio.go:16` |
 | 误打断判定 | <4 字 且 重叠 ≥0.5；连续 3 次降级 | `match_session_controller.dart:198-200` |
 | 惰性恢复退避 | 3min 起步、翻倍、封顶 30min；无后台定时器 | `match_session_controller.dart:206-207` |
 | 重连 | ≤5 次；退避 2^(n-1) 秒钳 1-8s；心跳 25s；补发队列 ≤4 条 FIFO | `websocket_service.dart:59,161,178,193` |
 | 音频去重 | 客户端 DeliveryDeduplicator 容量 256 | `match_session_controller.dart:170` |
-| 连接保护 | 每 IP ≤5；单帧 1MB；读 60s / 写 10s；服务端 ping 30s；看守重验 30s | `config.go:213-227` |
+| 连接保护 | 每 IP ≤5；单帧 1MB；读 60s / 写 10s；服务端 ping 30s；看守重验 30s | `config.go:213-227`、`handler.go:237` |
 | 唤醒词 | score 1.8 / threshold 0.3 / cooldown 1.5s / openTimeout 8s；模型 3.3M int8 | `wake_service.dart:74-77` |
 | 旁路 sidecar | 气氛 8090 / 情绪 8092；情绪置信门 0.55、新鲜窗 2 分钟；三 sidecar 默认关（profile 门控） | `docker-compose.yml:148-210` |
-| 延迟观测 | 五锚点；锚点表 64 满则重置；告警判断值 3000/1800/3/600；发布闸门 P95<3s | `watchconnection.go:152-199`；`rules.yml` |
+| 延迟观测 | 五锚点；锚点表 64 满则重置；告警判断值 3000/1800/3/600；发布闸门 P95<3s；五场景压测工具 `backend/cmd/latency-test` | `watchconnection.go:152-199,236-238`；`voice_stage_buffers.go`；`rules.yml` |
 | 主动排程寿命 | 事件类型为底：关键 45s / 普通 12s；决策 TTLSeconds 覆盖：30s/90s | `main.go:1212-1217`；`policy.go:427` |
 
 ---
@@ -516,3 +519,4 @@ node scripts/evals/run.mjs --tier pr
 | v3.0 | 2026-06-08 | 初版：自 v2 档案 49/50 章叙事体重写为语音链路 runbook；链路总览逐节点核代码、打断策略三级分级、生命周期事件全集（含观测待补标注）、FP/FN 六场景矩阵、延迟分段预算、五症状排查手册 | a7e5100 |
 | v3.0.1 | 2026-06-09 | 复核修复（对照附录 B §6／PRD FR-DLG-001／07 篇口径） | 复核修复：classify 计数勘误 12 类 → **13 类（+unknown）**——§1.1 链路图与 §1.2 节点 11 两处；match_reaction 为主动回合别名不独立计；与意图注册表 13 命名意图口径对齐 |
 | v3.0.2 | 2026-06-09 | 主编通读修订（E2；读者报告 A/B/C 冗余清单） | ① 本篇定位补语音链路权威序（参数源=附录 B｜工程源=本篇｜体验源=06｜需求源=PRD，与 06 篇 §2 头同步）；② §5 延迟预算表与 §5.1 告警明细的 rules.yml 文案残差注记改指针（唯一出处 21 篇 §3.1），§5.1 加「告警正身唯一出处 21 篇」声明；③ 附录 A 微反应行补 SSE 留尾注（自 PRD FR-VOICE-018 行为细则收敛的工程细节落位） |
+| v3.0.3 | 2026-06-09 | 复评残留清零（R；读者报告 B #11/P2-4、A P1-1 关联） | ① §2.2 表 A 新增第 10 行「危机安抚话轮（L3/L4）」占位行：落地后为不可打断——门让位规则，分级判定与逐级响应唯一出处 05 篇 §4.4，规划中（未实现，P1）——06 篇 §4.9「随 CR-02 立项落 20 篇 §2.2」承诺的落点自此在册（危机族七篇联动唯一漏掉的本落点闭合）；表 B「不可打断」行补「危机安抚话轮（落地后）」；② 附录 A 先落位 06 篇 §2 代码出处列收缩的迁出项：新增「TTS 指令通道」（instruction.go/tts_style.go）与「语音补发」（websocket_service.dart:787-793/delivery.go:421-448）两行，连接保护行补 handler.go:237、延迟观测行补 watchconnection.go:236-238/voice_stage_buffers.go/latency-test |
