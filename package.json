@@ -11,6 +11,6 @@
   },
   "devDependencies": {
     "@playwright/test": "1.61.1",
-    "promptfoo": "^0.123.1"
+    "promptfoo": "^0.124.1"
   }
 }
